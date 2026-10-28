@@ -1,35 +1,35 @@
 # Devify Desktop
 
-Devify 桌面端应用的私有代码仓库，由 OneProLabs 维护。
+The private repository for the Devify desktop application, maintained by OneProLabs.
 
-## 项目简介
+## Overview
 
-本项目用于承载 Devify 桌面端应用的开发与维护，集中管理客户端源码、桌面功能集成、构建打包配置及版本发布文档。
+This repository hosts the development and maintenance of Devify Desktop, including client source code, desktop integrations, build and packaging configuration, and release documentation.
 
-## 仓库范围
+## Scope
 
-- **客户端开发**：桌面端界面、交互与业务功能。
-- **桌面集成**：按产品需求接入本地文件、系统通知、窗口管理等原生能力。
-- **服务对接**：管理桌面端与 Devify 相关服务的接口集成。
-- **构建与发布**：维护应用打包、版本管理及发布流程。
-- **项目文档**：记录开发环境、架构设计与协作约定。
+- **Client development**: Desktop user interface, interactions, and application features.
+- **Desktop integrations**: Native capabilities such as local file access, system notifications, and window management, as required by the product.
+- **Service integrations**: Client-side integration with Devify services and APIs.
+- **Build and release**: Application packaging, version management, and release workflows.
+- **Documentation**: Development setup, architecture decisions, and contribution guidelines.
 
-## 当前状态
+## Project Status
 
-项目处于初始化阶段。技术栈、支持平台、目录结构与开发命令将在工程方案确定后补充。
+The project is in its initial setup phase. The technology stack, supported platforms, repository structure, and development commands will be documented once the engineering approach is established.
 
-## 后续规划
+## Roadmap
 
-- [ ] 明确首版产品范围与目标平台。
-- [ ] 确定桌面应用技术栈并初始化工程。
-- [ ] 补充本地开发、调试和构建指南。
-- [ ] 建立基础检查与持续集成流程。
-- [ ] 完善版本发布与更新方案。
+- [ ] Define the initial product scope and target platforms.
+- [ ] Select the desktop application stack and initialize the project.
+- [ ] Document local development, debugging, and build workflows.
+- [ ] Set up basic checks and continuous integration.
+- [ ] Establish release and update workflows.
 
-## 协作方式
+## Contributing
 
-通过 GitHub Issues 跟踪需求与问题，通过 Pull Requests 提交变更并进行代码审查。
+Use GitHub Issues to track feature requests and bugs. Submit changes through pull requests for code review.
 
-## 访问与使用
+## Access and Use
 
-本仓库为私有仓库，仅面向获得授权的项目成员。代码与文档的使用及分发遵循项目所有者的授权约定。
+This is a private repository for authorized project members. Use and distribution of its code and documentation are subject to authorization from the project owner.
