@@ -1,0 +1,50 @@
+# JavaScript dependencies and build output
+node_modules/
+dist/
+
+# Rust and Tauri build output
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/*.app/
+src-tauri/*.dmg
+src-tauri/*.deb
+src-tauri/*.rpm
+src-tauri/*.msi
+src-tauri/*.AppImage
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local databases and application data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+wechat-cache/
+wechat-keys.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local design review artifacts
+.impeccable/
+docs/
+mcp/
+skills/

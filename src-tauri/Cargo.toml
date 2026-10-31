@@ -1,0 +1,48 @@
+[package]
+name = "wechat-devify-bridge"
+version = "0.0.1"
+description = "Manually review and forward selected chat text to a self-hosted Devify inbox"
+authors = ["You"]
+edition = "2021"
+default-run = "wechat-devify-bridge"
+
+[lib]
+name = "wechat_devify_bridge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+hmac = "0.12"
+sha2 = "0.10"
+pbkdf2 = "0.12"
+hex = "0.4"
+md-5 = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
+zstd = "0.13"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tokio = { version = "1", features = ["net", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+tempfile = "3"
+getrandom = "0.2"
+base64 = "0.22"
+url = "2"
+tauri-plugin-deep-link = "2"
+zip = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.4"
+
+# Local database decryption is CPU-bound (AES + HMAC per 4 KiB page). Optimizing only the
+# dependencies keeps debug builds usable without giving up debug info for this crate.
+[profile.dev.package."*"]
+opt-level = 2
