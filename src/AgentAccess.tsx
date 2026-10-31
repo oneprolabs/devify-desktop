@@ -185,7 +185,7 @@ export function AgentAccess() {
 
       {status && !status.running && (
         <div className="config warn">
-          服务没有监听，提示词里的下载会失败。请确认 Wechatify 仍在运行；如果端口被占用，可在启动前设置
+          服务没有监听，提示词里的下载会失败。请确认 AImyChats 仍在运行；如果端口被占用，可在启动前设置
           <code>WECHAT_AGENT_BIND</code> 换一个地址。
         </div>
       )}

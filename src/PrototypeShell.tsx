@@ -11,6 +11,7 @@ import { TopicsPage } from './Topics';
 import { AskPage } from './Ask';
 import { Tasks } from './Tasks';
 import './prototype-shell.css';
+import appIcon from './assets/app-icon.png';
 
 type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'agent' | 'about' | 'history' | 'automation';
@@ -65,7 +66,7 @@ export default function PrototypeShell() {
   return <main className="prototype-shell">
     <aside className="prototype-rail" aria-label="主导航">
       <div className="prototype-drag" data-tauri-drag-region />
-      <div className="prototype-logo" aria-label="Aimychats">a</div>
+      <div className="prototype-logo" aria-label="AImyChats"><img src={appIcon} alt="" /></div>
       <nav className="prototype-nav">{sections.map(navButton)}</nav>
       <div className="prototype-spacer" />
       <nav className="prototype-nav">

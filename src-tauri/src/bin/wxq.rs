@@ -654,7 +654,7 @@ fn pretty(value: &Value) -> Result<String, String> {
 
 fn usage() -> String {
     format!(
-        "wxq — 只读读取 Wechatify 白名单聊天记录
+        "wxq — 只读读取 AImyChats 白名单聊天记录
 
 用法:
   wxq [--endpoint URL] [--token TOKEN] [--json] <命令> [参数]

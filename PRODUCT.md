@@ -16,7 +16,7 @@ The secondary reader is the same person's local AI agent, which reads chats thro
 
 ## Product Purpose
 
-Wechatify turns the WeChat history already on this Mac into readable, organizable, deliverable work material. It decrypts a copy of the local SQLCipher databases with a key the user supplies, shows whitelisted conversations in a reader built for review rather than chat, lets the user pick work content across conversations and time ranges, and produces a local rule-based organizing pass or an AI summary through a locally installed agent CLI. Scheduled digests are delivered to the user's own self-hosted Devify inbox.
+AImyChats turns the WeChat history already on this Mac into readable, organizable, deliverable work material. It decrypts a copy of the local SQLCipher databases with a key the user supplies, shows whitelisted conversations in a reader built for review rather than chat, lets the user pick work content across conversations and time ranges, and produces a local rule-based organizing pass or an AI summary through a locally installed agent CLI. Scheduled digests are delivered to the user's own self-hosted Devify inbox.
 
 Success is: the user opens the app, finds the conversation they were thinking of, selects what matters, and ends with a summary they can send — without ever leaving the machine or trusting a cloud service.
 
@@ -47,7 +47,7 @@ Constraints that bind any visual work:
 
 ## Brand Commitments
 
-- Name **Wechatify**; app icon is a white speech bubble with a dark-green envelope on a green→deep-green gradient (already shipped, not part of this redesign).
+- Name **AImyChats**; app icon uses the official AImyChats gradient A-mark from https://aimychats.com/zh/.
 - The interface accent is green, matching the app icon and the product's WeChat context.
 - **2026-10-28, user's explicit choice:** after a currant-accent pass, the user asked for the earlier green back — green is the accent again, on the neutral native chrome.
 - The interface must read as a native macOS application.

@@ -2009,7 +2009,7 @@ const checkMark = (value: boolean | undefined) =>
             <strong>{wizard && wizardStep === 'wizard-permission' ? '系统授权' : wizard && wizardStep === 'wizard-account' ? '账号扫描' : scan && scan.accounts.length > 1 ? '选择账号' : '当前账号'}</strong>
             {wizard && wizardStep === 'wizard-permission' ? (
               <>
-                <p className="wxv-muted">先确认 Wechatify 可以读取微信本机数据；授权完成后进入下一步扫描账号。</p>
+                <p className="wxv-muted">先确认 AImyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。</p>
                 <DiskAccessCard onRescan={() => void doScan()} />
                 {account && <div className="wxv-wizard-state">系统授权已完成，可以继续扫描微信账号。</div>}
               </>

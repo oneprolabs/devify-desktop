@@ -83,7 +83,7 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
 
       {fromImage && (
         <p className="wxv-keyguide-warn">
-          你现在直接从磁盘映像（DMG）里运行，授权不会保留。先把 Wechatify 拖到「应用程序」文件夹，
+          你现在直接从磁盘映像（DMG）里运行，授权不会保留。先把 AImyChats 拖到「应用程序」文件夹，
           再从那里启动，然后按下面的步骤授权。
         </p>
       )}
@@ -100,12 +100,12 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
           打开 <strong>系统设置 → 隐私与安全性 → 完全磁盘访问权限</strong>。
         </li>
         <li>
-          点列表下方的 <strong>+</strong>，在「应用程序」里选中 <strong>Wechatify</strong>；如果已经能看见
-          Wechatify 的条目，直接跳到下一步（重复条目先按 − 删掉）。首次添加需要输入密码或触控 ID。
+          点列表下方的 <strong>+</strong>，在「应用程序」里选中 <strong>AImyChats</strong>；如果已经能看见
+          AImyChats 的条目，直接跳到下一步（重复条目先按 − 删掉）。首次添加需要输入密码或触控 ID。
         </li>
-        <li>确认 Wechatify 右侧的开关是打开的。</li>
+        <li>确认 AImyChats 右侧的开关是打开的。</li>
         <li>
-          回到 Wechatify，<strong>按 ⌘Q 完全退出再重新打开</strong>。权限只在应用启动时生效，
+          回到 AImyChats，<strong>按 ⌘Q 完全退出再重新打开</strong>。权限只在应用启动时生效，
           只关窗口或切回前台不会刷新。
         </li>
         <li>重新打开后回到这一步，点「重新检测」——能读到微信目录时这张提示会自动消失。</li>
@@ -143,7 +143,7 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
         <summary>按上面做完还是读不到？</summary>
         <ul className="wxv-keyguide-steps">
           <li>
-            确认加进列表的是上面的 <code>Wechatify.app</code> 本身——不是里面的可执行文件，也不是 DMG 里的那份。
+            确认加进列表的是上面的 <code>AImyChats.app</code> 本身——不是里面的可执行文件，也不是 DMG 里的那份。
           </li>
           <li>确认开关是开的，并且确实按 ⌘Q 完全退出过（不是点红叉关窗口）。</li>
           <li>
@@ -151,7 +151,7 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
           </li>
           <li>
             不想给整块磁盘权限：在「终端」里运行
-            <code>Wechatify.app/Contents/MacOS/wechat-devify-bridge</code>，它会继承终端已有的权限；
+            <code>AImyChats.app/Contents/MacOS/wechat-devify-bridge</code>，它会继承终端已有的权限；
             代价是关掉终端应用就退出。
           </li>
         </ul>

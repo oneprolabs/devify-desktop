@@ -331,7 +331,7 @@ pub fn build_prompt(
         ""
     };
     let mut prompt = String::new();
-    prompt.push_str("你正在为 Wechatify 安装只读的 Agent 工具与 Skills。请按顺序执行，完成后汇报结果。不要修改微信数据，不要把聊天内容或 Token 写入日志、文件或外部服务。\n\n");
+    prompt.push_str("你正在为 AImyChats 安装只读的 Agent 工具与 Skills。请按顺序执行，完成后汇报结果。不要修改微信数据，不要把聊天内容或 Token 写入日志、文件或外部服务。\n\n");
     prompt.push_str("## 目标环境\n");
     prompt.push_str(&format!("- 当前工具：{}\n", target.name));
     if let Some(command) = &target.command {
@@ -342,13 +342,13 @@ pub fn build_prompt(
     prompt.push_str(&format!("- 本机服务：{base_url}\n"));
     prompt.push_str(&format!("- 认证：{auth_line}\n"));
     if !running {
-        prompt.push_str("- 注意：桌面应用当前没有在监听该地址。请先让用户打开 Wechatify，再重试下载。\n");
+        prompt.push_str("- 注意：桌面应用当前没有在监听该地址。请先让用户打开 AImyChats，再重试下载。\n");
     }
     prompt.push('\n');
 
     prompt.push_str("## 第 1 步：下载只读 CLI\n");
     if wxq_available {
-        prompt.push_str("wxq 由 Wechatify 的本机服务直接提供，不要从 GitHub、包管理器或其它来源另找版本：\n\n");
+        prompt.push_str("wxq 由 AImyChats 的本机服务直接提供，不要从 GitHub、包管理器或其它来源另找版本：\n\n");
         prompt.push_str(&format!("```bash\nmkdir -p {dir}\n", dir = sh_quote(&bin)));
         prompt.push_str(&format!(
             "curl -fsSL{auth} '{url}/agent/wxq' -o {tmp}\nchmod 755 {tmp}\nmv -f {tmp} {dst}\n```\n\n",
@@ -358,10 +358,10 @@ pub fn build_prompt(
             dst = sh_quote(&wxq_path)
         ));
         prompt.push_str(&format!(
-            "如果 `{wxq_path}` 已有同名的非 Wechatify 程序，停止并让用户确认，不要覆盖。\n\n"
+            "如果 `{wxq_path}` 已有同名的非 AImyChats 程序，停止并让用户确认，不要覆盖。\n\n"
         ));
     } else {
-        prompt.push_str("本机暂时没有可下载的 wxq。请停止，不要从网络自行下载未知二进制；告诉用户在 Wechatify 的「Agent 集成 → 工具接入」确认 CLI 可用后重新复制提示词。\n\n");
+        prompt.push_str("本机暂时没有可下载的 wxq。请停止，不要从网络自行下载未知二进制；告诉用户在 AImyChats 的「Agent 集成 → 工具接入」确认 CLI 可用后重新复制提示词。\n\n");
     }
 
     prompt.push_str("## 第 2 步：下载 Skills 描述\n");
@@ -384,7 +384,7 @@ pub fn build_prompt(
 
     prompt.push_str("## 第 3 步：验证\n");
     prompt.push_str(&format!("```bash\n{}\n{}\n```\n\n", sh_quote(&wxq_path) + " health", sh_quote(&wxq_path) + " policy"));
-    prompt.push_str("health 应返回 `ok · wechat-devify-bridge`；policy 应返回当前账号和白名单会话。若服务不可用，让用户打开 Wechatify 后重试；不要自行解密数据库或启动其它服务。白名单为空时，提示用户在应用的「聊天白名单」页配置。若服务需要 Token 而当前 shell 没有 `WECHAT_AGENT_TOKEN`，让用户自己导出后再运行验证，不要把 Token 写进命令或文件。\n\n");
+    prompt.push_str("health 应返回 `ok · wechat-devify-bridge`；policy 应返回当前账号和白名单会话。若服务不可用，让用户打开 AImyChats 后重试；不要自行解密数据库或启动其它服务。白名单为空时，提示用户在应用的「聊天白名单」页配置。若服务需要 Token 而当前 shell 没有 `WECHAT_AGENT_TOKEN`，让用户自己导出后再运行验证，不要把 Token 写进命令或文件。\n\n");
     prompt.push_str("## 第 4 步：汇报\n");
     prompt.push_str("只汇报：wxq 的最终路径、skills 目录、三个 `SKILL.md` 是否写入、health/policy 的结果摘要、失败原因。完成后提示用户重新打开或刷新当前工具的 Skills 列表。\n");
     prompt

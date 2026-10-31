@@ -1,4 +1,4 @@
-# Wechatify (Tauri 2)
+# AImyChats (Tauri 2)
 
 A local-first Windows/macOS desktop app for reading selected WeChat conversations locally, organizing work content, and delivering scheduled summaries to a self-hosted Devify inbox.
 
@@ -394,7 +394,7 @@ cp src-tauri/target/release/wxq "src-tauri/binaries/wxq-$(rustc -vV | sed -n 's/
 npm run tauri build
 ```
 
-Artifacts land in `src-tauri/target/release/bundle/` (`macos/Wechatify.app`, `dmg/Wechatify_0.0.1_aarch64.dmg`).
+Artifacts land in `src-tauri/target/release/bundle/` (`macos/AImyChats.app`, `dmg/AImyChats_0.0.1_aarch64.dmg`).
 
 Regenerate the icon set after editing the mark:
 

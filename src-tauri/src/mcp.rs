@@ -551,7 +551,7 @@ async fn agent_wxq(State(state): State<AppState>, headers: HeaderMap) -> Respons
         return api_unauthorized();
     }
     let Some(path) = access::resolve_wxq(&state.app_data) else {
-        return agent_unavailable("没有可下载的 wxq。请在 Wechatify 源码目录构建后重启应用。");
+        return agent_unavailable("没有可下载的 wxq。请在 AImyChats 源码目录构建后重启应用。");
     };
     match tokio::fs::read(&path).await {
         Ok(bytes) => (

@@ -72,7 +72,7 @@ export function defaultSettings(): AppSettings {
   return {
     active_account_id: '',
     chat: { allowed_usernames: {}, sync_interval_seconds: 30 },
-    devify: { base_url: 'https://app.aimychats.com', device_label: 'Wechatify', active_space_id: null, recipient: '', subject: '微信工作日报' },
+    devify: { base_url: 'https://app.aimychats.com', device_label: 'AImyChats', active_space_id: null, recipient: '', subject: '微信工作日报' },
     automation: {
       enabled: false,
       daily_summary_enabled: true,

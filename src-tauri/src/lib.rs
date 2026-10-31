@@ -1230,7 +1230,7 @@ async fn devify_auth_start(
                     let _ = callback_handle.emit("devify-auth-loopback", callback);
                 }
             }
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nLogin returned to Wechatify. You can close this page.".as_bytes();
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nLogin returned to AImyChats. You can close this page.".as_bytes();
             let _ = stream.write_all(response).await;
         }
     });
@@ -1250,7 +1250,7 @@ async fn devify_auth_start(
         .append_pair("code_challenge_method", "S256")
         .append_pair(
             "device_label",
-            device_label.as_deref().unwrap_or("Wechatify"),
+            device_label.as_deref().unwrap_or("AImyChats"),
         );
     Ok(url.to_string())
 }
@@ -1618,7 +1618,7 @@ struct AppInfo {
 #[tauri::command]
 fn app_info() -> AppInfo {
     AppInfo {
-        name: "Wechatify".to_string(),
+        name: "AImyChats".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         stage: "Alpha".to_string(),
         platform: std::env::consts::OS.to_string(),

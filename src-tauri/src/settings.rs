@@ -170,7 +170,7 @@ impl Default for DevifySettings {
             } else {
                 "https://app.aimychats.com".to_string()
             },
-            device_label: "Wechatify Desktop".to_string(),
+            device_label: "AImyChats Desktop".to_string(),
             active_space_id: None,
             recipient: String::new(),
             subject: "微信工作日报".to_string(),
