@@ -678,17 +678,23 @@ pub fn list_models(settings: &AgentSettings, app_data: &Path) -> Result<Vec<Stri
     Ok(models)
 }
 
-pub fn summarize(settings: &AgentSettings, input: &SummaryInput, app_data: &Path) -> Result<AgentRun, String> {
-    let prompt = build_prompt(input, &settings.instructions);
+pub fn summarize(
+    settings: &AgentSettings,
+    input: &SummaryInput,
+    language: &str,
+    app_data: &Path,
+) -> Result<AgentRun, String> {
+    let prompt = build_prompt(input, &settings.instructions, language);
     run_agent(settings, &prompt, app_data, timeout_of(settings))
 }
 
 /// Prompt shared by the interactive summary and the daily automation. The structure is
 /// deliberately explicit: these agents happily invent detail when asked to "summarise".
-pub fn build_prompt(input: &SummaryInput, instructions: &str) -> String {
+pub fn build_prompt(input: &SummaryInput, instructions: &str, language: &str) -> String {
     let extra = instructions.trim();
     let mut prompt = String::new();
-    prompt.push_str("你是一名严谨的中文工作助理。请把下面这段微信聊天记录整理成一份可直接阅读的工作总结。\n\n");
+    prompt.push_str("你是一名严谨的工作助理。请把下面这段微信聊天记录整理成一份可直接阅读的工作总结。\n\n");
+    prompt.push_str(&format!("输出语言：{}\n\n", language_directive(language)));
     prompt.push_str("硬性要求：\n");
     prompt.push_str("- 只依据给出的聊天记录，不要引入外部知识，不要编造人名、数字、日期、结论或承诺。\n");
     prompt.push_str("- 记录没有提到的内容不要补；信息不足或存在歧义时明确写「待确认」。\n");
@@ -719,6 +725,15 @@ pub fn build_prompt(input: &SummaryInput, instructions: &str) -> String {
     }
     prompt.push_str("</transcript>\n");
     prompt
+}
+
+/// Turns the 语言 page setting into a sentence for the prompt.
+fn language_directive(language: &str) -> &'static str {
+    match language {
+        "English" => "使用英文书写全部内容。",
+        "按原文语言" => "按聊天原文的主要语言书写；中英混排时以中文为主。",
+        _ => "使用简体中文书写全部内容。",
+    }
 }
 
 #[cfg(test)]
@@ -762,7 +777,7 @@ mod tests {
 
     #[test]
     fn prompt_carries_instructions_and_transcript() {
-        let prompt = build_prompt(&sample_input(), "重点关注交付风险");
+        let prompt = build_prompt(&sample_input(), "重点关注交付风险", "跟随界面");
         assert!(prompt.contains("重点关注交付风险"));
         assert!(prompt.contains("<transcript>"));
         assert!(prompt.contains("周五前给出方案"));
@@ -772,7 +787,7 @@ mod tests {
 
     #[test]
     fn prompt_defaults_instructions_to_none() {
-        let prompt = build_prompt(&sample_input(), "   ");
+        let prompt = build_prompt(&sample_input(), "   ", "跟随界面");
         assert!(prompt.contains("用户补充要求：无"));
     }
 
@@ -780,7 +795,7 @@ mod tests {
     fn truncated_input_is_disclosed() {
         let mut input = sample_input();
         input.truncated = true;
-        assert!(build_prompt(&input, "").contains("已按时间顺序截断"));
+        assert!(build_prompt(&input, "", "跟随界面").contains("已按时间顺序截断"));
     }
 
     #[test]

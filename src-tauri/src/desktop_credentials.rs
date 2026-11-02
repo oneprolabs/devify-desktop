@@ -26,6 +26,14 @@ pub fn load(app_data: &Path, base_url: &str) -> Result<Credentials, String> {
     Ok(credentials)
 }
 
+pub fn clear(app_data: &Path) -> Result<(), String> {
+    match fs::remove_file(app_data.join(FILE_NAME)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("无法清除 Devify 登录凭据。".to_string()),
+    }
+}
+
 pub fn save(app_data: &Path, credentials: &Credentials) -> Result<(), String> {
     fs::create_dir_all(app_data).map_err(|_| "无法创建客户端数据目录。".to_string())?;
     let mut temp = tempfile::NamedTempFile::new_in(app_data)

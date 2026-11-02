@@ -1006,6 +1006,15 @@ pub fn messages(
     messages_inner(cache, username, limit, before, me.as_deref())
 }
 
+/// Newest message time and local id of one conversation, without the self-identification
+/// vote.
+///
+/// Automatic upload uses this to skip a conversation before packaging when nothing is new.
+pub fn latest_message(cache: &Path, username: &str) -> Result<Option<(i64, i64)>, String> {
+    let messages = messages_inner(cache, username, 1, None, None)?;
+    Ok(messages.first().map(|message| (message.time, message.local_id)))
+}
+
 fn messages_inner(
     cache: &Path,
     username: &str,

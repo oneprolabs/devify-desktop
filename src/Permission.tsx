@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
+type PlatformCapabilities = { platform: string; key_acquisition: string; supports_memory_scan: boolean; supports_macos_capture: boolean; supports_key_import: boolean };
 type DiskAccess = {
   granted: boolean;
   state: 'granted' | 'denied' | 'unknown' | string;
@@ -26,6 +27,7 @@ const POLL_MS = 2500;
  */
 export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
   const [access, setAccess] = useState<DiskAccess | null>(null);
+  const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
 
@@ -35,6 +37,7 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
       return;
     }
     try {
+      setPlatform(await invoke<PlatformCapabilities>('wechat_platform_capabilities'));
       setAccess(await invoke<DiskAccess>('perm_status'));
       setError('');
     } catch (e) {
@@ -64,6 +67,12 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
   };
 
   if (access?.granted) return null;
+  if (platform?.platform === 'windows') return <div className="wxv-keyguide attention perm-card">
+    <div className="wxv-keyguide-head"><div><strong>Windows 权限检查</strong><p className="wxv-muted">Windows 不需要 macOS 的「完全磁盘访问权限」。请保持微信已登录，并确保 AIMyChats 与微信使用同一 Windows 用户；如果读取进程内存失败，请用管理员身份重新启动本应用。</p></div><div className="perm-badge">Windows</div></div>
+    <div className="perm-actions"><button type="button" className="wxv-btn primary" onClick={() => { void refresh(); onRescan?.(); }}>重新检测</button><span className="perm-poll">密钥方式：{platform.key_acquisition}</span></div>
+    {error && <p className="wxv-keyguide-warn">{error}</p>}
+  </div>;
+  if (platform && platform.platform !== 'macos') return <div className="wxv-keyguide attention perm-card"><div className="wxv-keyguide-head"><div><strong>当前系统使用导入模式</strong><p className="wxv-muted">当前平台不提供应用内密钥捕获，请导入可信工具导出的密钥 JSON，再由本地数据库第 1 页 HMAC 校验。</p></div><div className="perm-badge">{platform.platform}</div></div></div>;
 
   const fromImage = access?.location === 'volumes' || access?.location === 'translocated';
   const misplaced = Boolean(access && access.bundled && !fromImage && !access.installed);
@@ -83,7 +92,7 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
 
       {fromImage && (
         <p className="wxv-keyguide-warn">
-          你现在直接从磁盘映像（DMG）里运行，授权不会保留。先把 AImyChats 拖到「应用程序」文件夹，
+          你现在直接从磁盘映像（DMG）里运行，授权不会保留。先把 AIMyChats 拖到「应用程序」文件夹，
           再从那里启动，然后按下面的步骤授权。
         </p>
       )}
@@ -100,12 +109,12 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
           打开 <strong>系统设置 → 隐私与安全性 → 完全磁盘访问权限</strong>。
         </li>
         <li>
-          点列表下方的 <strong>+</strong>，在「应用程序」里选中 <strong>AImyChats</strong>；如果已经能看见
-          AImyChats 的条目，直接跳到下一步（重复条目先按 − 删掉）。首次添加需要输入密码或触控 ID。
+          点列表下方的 <strong>+</strong>，在「应用程序」里选中 <strong>AIMyChats</strong>；如果已经能看见
+          AIMyChats 的条目，直接跳到下一步（重复条目先按 − 删掉）。首次添加需要输入密码或触控 ID。
         </li>
-        <li>确认 AImyChats 右侧的开关是打开的。</li>
+        <li>确认 AIMyChats 右侧的开关是打开的。</li>
         <li>
-          回到 AImyChats，<strong>按 ⌘Q 完全退出再重新打开</strong>。权限只在应用启动时生效，
+          回到 AIMyChats，<strong>按 ⌘Q 完全退出再重新打开</strong>。权限只在应用启动时生效，
           只关窗口或切回前台不会刷新。
         </li>
         <li>重新打开后回到这一步，点「重新检测」——能读到微信目录时这张提示会自动消失。</li>
@@ -143,7 +152,7 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
         <summary>按上面做完还是读不到？</summary>
         <ul className="wxv-keyguide-steps">
           <li>
-            确认加进列表的是上面的 <code>AImyChats.app</code> 本身——不是里面的可执行文件，也不是 DMG 里的那份。
+            确认加进列表的是上面的 <code>AIMyChats.app</code> 本身——不是里面的可执行文件，也不是 DMG 里的那份。
           </li>
           <li>确认开关是开的，并且确实按 ⌘Q 完全退出过（不是点红叉关窗口）。</li>
           <li>
@@ -151,7 +160,7 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
           </li>
           <li>
             不想给整块磁盘权限：在「终端」里运行
-            <code>AImyChats.app/Contents/MacOS/wechat-devify-bridge</code>，它会继承终端已有的权限；
+            <code>AIMyChats.app/Contents/MacOS/wechat-devify-bridge</code>，它会继承终端已有的权限；
             代价是关掉终端应用就退出。
           </li>
         </ul>

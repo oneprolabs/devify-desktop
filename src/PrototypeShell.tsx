@@ -1,15 +1,23 @@
-import { useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
 import { HistoryPage } from './History';
 import { AgentHub } from './AgentHub';
 import { About } from './About';
-import { DevifySettings, ServerAnalysisSettings, StrategySettings, WhitelistSettings } from './Settings';
-import { Icons } from './icons';
+import { DevifySettings, StrategySettings, WhitelistSettings } from './Settings';
+import { BackupSchedule } from './BackupSchedule';
+import { AnalysisSettings } from './AnalysisSettings';
+import { LanguageSettings } from './LanguageSettings';
+import { Icons, RailIcons } from './icons';
 import { Connectors } from './Connectors';
 import { CloudAnalysisPage } from './CloudAnalysis';
 import { TopicsPage } from './Topics';
 import { AskPage } from './Ask';
 import { Tasks } from './Tasks';
+import { ChatEntry } from './ChatLanding';
+import { ChatWorkbench } from './ChatWorkbench';
+import { LoginGate } from './LoginGate';
 import './prototype-shell.css';
 import appIcon from './assets/app-icon.png';
 
@@ -17,24 +25,27 @@ type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'set
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'agent' | 'about' | 'history' | 'automation';
 
 const sections: { id: Section; label: string; icon: ReactNode }[] = [
-  { id: 'chat', label: '聊天', icon: Icons.chat },
-  { id: 'events', label: '事件', icon: Icons.allow },
-  { id: 'topics', label: '主题', icon: Icons.clock },
-  { id: 'reports', label: '报告', icon: Icons.history },
-  { id: 'ask', label: '问答', icon: Icons.agent },
+  { id: 'chat', label: '聊天', icon: RailIcons.chat },
+  { id: 'events', label: '事件', icon: RailIcons.events },
+  { id: 'topics', label: '主题', icon: RailIcons.topics },
+  { id: 'reports', label: '报告', icon: RailIcons.reports },
+  { id: 'ask', label: '问答', icon: RailIcons.ask },
 ];
-const settingsPages: { id: SettingsPage; label: string }[] = [
-  { id: 'connectors', label: '连接器' },
-  { id: 'imports', label: '导入管理' },
-  { id: 'backup', label: '备份周期' },
-  { id: 'analysis', label: '智能分析' },
-  { id: 'automation', label: '本地自动化' },
-  { id: 'history', label: '总结记录' },
-  { id: 'account', label: '账户' },
-  { id: 'agent', label: 'Agent 集成' },
-  { id: 'about', label: '关于' },
+const settingsPages: { id: SettingsPage; label: string; group?: 'main' | 'local' }[] = [
+  // The first six follow protype.html (连接器 / 导入管理 / 备份周期 / 智能分析 / 语言 / 账户);
+  // the rest are pages this build has on top of the prototype.
+  { id: 'connectors', label: '连接器', group: 'main' },
+  { id: 'imports', label: '导入管理', group: 'main' },
+  { id: 'backup', label: '备份周期', group: 'main' },
+  { id: 'analysis', label: '智能分析', group: 'main' },
+  { id: 'language', label: '语言', group: 'main' },
+  { id: 'account', label: '账户', group: 'main' },
+  { id: 'automation', label: '本地自动化', group: 'local' },
+  { id: 'history', label: '总结记录', group: 'local' },
+  { id: 'agent', label: 'Agent 集成', group: 'local' },
+  { id: 'about', label: '关于', group: 'local' },
 ];
-const wizardSettingsPages: Array<{ id: SettingsPage; label: string }> = [
+const wizardSettingsPages: Array<{ id: SettingsPage; label: string; group?: 'main' | 'local' }> = [
   { id: 'connectors', label: '连接器' },
   { id: 'imports', label: '导入管理' },
   { id: 'backup', label: '备份周期' },
@@ -45,6 +56,41 @@ const wizardSettingsPages: Array<{ id: SettingsPage; label: string }> = [
 
 export default function PrototypeShell() {
   const [section, setSection] = useState<Section>('chat');
+  const [eventFocusId, setEventFocusId] = useState<number | null>(null);
+  const [chatReady, setChatReady] = useState(false);
+  const [startTaskCreate, setStartTaskCreate] = useState(false);
+  const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous'>('checking');
+  const [authNotice, setAuthNotice] = useState('');
+  const handleAuthenticated = useCallback(() => { setAuthState('authed'); setAuthNotice(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); }, []);
+  useEffect(() => {
+    let active = true;
+    let cleanExpired: (() => void) | undefined;
+    void invoke<{ authenticated: boolean }>('devify_auth_status')
+      .then(status => { if (active) setAuthState(status.authenticated ? 'authed' : 'anonymous'); })
+      .catch(() => { if (active) setAuthState('anonymous'); });
+    // The backend drops stale credentials and emits this when the server rejects
+    // the stored session (expired, revoked or deleted account), so the app falls
+    // back to the login gate instead of showing every Devify page as broken.
+    void listen<{ message?: string }>('devify-auth-expired', event => {
+      setAuthNotice(event.payload?.message ?? '登录状态已失效，请重新登录。');
+      setAuthState('anonymous');
+    }).then(unlisten => { if (active) cleanExpired = unlisten; else unlisten(); }).catch(() => {});
+    const onAuthChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ authenticated?: boolean }>).detail;
+      setAuthNotice('');
+      setAuthState(detail?.authenticated === false ? 'anonymous' : 'authed');
+      setChatReady(false);
+      setSection('chat');
+    };
+    window.addEventListener('aimychats:auth-changed', onAuthChanged);
+    return () => {
+      active = false;
+      cleanExpired?.();
+      window.removeEventListener('aimychats:auth-changed', onAuthChanged);
+    };
+  }, []);
+  const openNewUpload = () => { setStartTaskCreate(true); setSection('tasks'); };
+  const handleChatReady = useCallback(() => setChatReady(true), []);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('connectors');
   const [wechatGuide, setWechatGuide] = useState(false);
   const [wechatGuideEdit, setWechatGuideEdit] = useState(false);
@@ -58,31 +104,52 @@ export default function PrototypeShell() {
   };
   const wizardPrev = () => { const index = wizardOrder.indexOf(wizardStep); if (index > 0) setWizard(wizardOrder[index - 1]); };
   const wizardNext = () => { const index = wizardOrder.indexOf(wizardStep); if (index >= 0 && index < wizardOrder.length - 1) setWizard(wizardOrder[index + 1]); };
+  const openEvent = (eventId: number) => { setEventFocusId(eventId); setSection('events'); };
   const navButton = (item: { id: Section; label: string; icon: ReactNode }) => <button
     key={item.id} type="button" className={section === item.id ? 'prototype-nav-item active' : 'prototype-nav-item'}
-    aria-current={section === item.id ? 'page' : undefined} onClick={() => setSection(item.id)}
+    aria-current={section === item.id ? 'page' : undefined}
+    onClick={() => { if (item.id !== 'events') setEventFocusId(null); if (item.id === 'chat') setChatReady(false); setStartTaskCreate(false); setSection(item.id); }}
   ><span>{item.icon}</span><small>{item.label}</small></button>;
 
   return <main className="prototype-shell">
     <aside className="prototype-rail" aria-label="主导航">
       <div className="prototype-drag" data-tauri-drag-region />
-      <div className="prototype-logo" aria-label="AImyChats"><img src={appIcon} alt="" /></div>
+      <div className="prototype-logo" aria-label="AIMyChats"><img src={appIcon} alt="" /></div>
       <nav className="prototype-nav">{sections.map(navButton)}</nav>
       <div className="prototype-spacer" />
       <nav className="prototype-nav">
-        {navButton({ id: 'tasks', label: '任务', icon: Icons.list })}
-        {navButton({ id: 'settings', label: '设置', icon: Icons.info })}
+        {navButton({ id: 'tasks', label: '任务', icon: RailIcons.tasks })}
+        {navButton({ id: 'settings', label: '设置', icon: RailIcons.settings })}
       </nav>
     </aside>
     <section className="prototype-content">
-      {section === 'chat' && <WeChatLocal onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} />}
-      {section === 'tasks' && <Tasks onNewUpload={() => openSettings('account')} />}
+      {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
+      {authState === 'anonymous' && <LoginGate notice={authNotice} onAuthenticated={handleAuthenticated}/>}
+      {authState === 'authed' && <>
+      {section === 'chat' && <>
+        {!chatReady && <ChatEntry
+          onConnect={(connector) => connector && connector !== '微信' ? openSettings('connectors') : openSettings('connectors', true, false)}
+          onImport={() => openSettings('imports')}
+          onBackup={openNewUpload}
+          onSchedule={() => openSettings('backup')}
+          onReady={handleChatReady}
+          onUnlock={() => openSettings('connectors', true, true)}
+        />}
+        {chatReady && <ChatWorkbench onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} />}
+      </>}
+      {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
       {section === 'settings' && <div className="prototype-settings-layout">
-        <header className="prototype-settings-breadcrumb" data-tauri-drag-region>设置 <span>/</span> 数据源与定时上传</header>
+        <header className="prototype-settings-breadcrumb" data-tauri-drag-region>设置 <span>/</span> {(wechatGuide ? wizardSettingsPages : settingsPages).find(item => item.id === settingsPage)?.label ?? ''}</header>
         <div className="prototype-settings">
         <aside className="prototype-settings-nav">
           <h1>设置</h1>
-          {(wechatGuide ? wizardSettingsPages : settingsPages).map(item => <button key={item.id} type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { setSettingsPage(item.id); setWechatGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}>{item.label}</button>)}
+          {(wechatGuide ? wizardSettingsPages : settingsPages).map((item, index, list) => {
+            const divider = !wechatGuide && item.group === 'local' && list[index - 1]?.group === 'main';
+            return <Fragment key={item.id}>
+              {divider && <div className="prototype-settings-divider" aria-hidden="true"/>}
+              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { setSettingsPage(item.id); setWechatGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}>{item.label}</button>
+            </Fragment>;
+          })}
         </aside>
         <div className="prototype-settings-content">
           {settingsPage === 'connectors' && (wechatGuide ? <div className="wechat-wizard">
@@ -98,10 +165,10 @@ export default function PrototypeShell() {
             {wizardStep === 'wizard-done' ? <section className="wizard-complete"><div className="wizard-complete-mark">✓</div><h2>连接向导完成</h2><p>账号、密钥和解密记录完成后，聊天内容会在「聊天」页面显示。</p><button type="button" className="wizard-next" onClick={() => setSection('chat')}>打开聊天</button></section> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
           </div> : <Connectors onOpenWechat={(configured) => { setWechatGuide(true); setWechatGuideEdit(configured); setWizardStep('wizard-method'); }} />)}
           {settingsPage === 'imports' && <WhitelistSettings />}
-          {settingsPage === 'backup' && <StrategySettings title="备份周期" description="设置本机数据同步频率和日报策略。上传范围仍由导入管理控制，事件、主题和报告由 Devify 服务端生成。" />}
-          {settingsPage === 'analysis' && <ServerAnalysisSettings />}
+          {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} />}
+          {settingsPage === 'analysis' && <AnalysisSettings />}
           {settingsPage === 'automation' && <StrategySettings />}
-          {settingsPage === 'language' && <div className="prototype-settings-empty"><h2>语言</h2><p>界面语言和 AI 输出语言设置将在服务端同步完成后提供。</p></div>}
+          {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings />}
           {settingsPage === 'agent' && <AgentHub />}
           {settingsPage === 'history' && <HistoryPage />}
@@ -109,10 +176,11 @@ export default function PrototypeShell() {
         </div>
         </div>
       </div>}
-      {section === 'events' && <CloudAnalysisPage kind="events" />}
+      {section === 'events' && <CloudAnalysisPage kind="events" focusId={eventFocusId} onOpenEvent={openEvent} />}
       {section === 'reports' && <CloudAnalysisPage kind="reports" />}
-      {section === 'topics' && <TopicsPage />}
-      {section === 'ask' && <AskPage />}
+      {section === 'topics' && <TopicsPage onOpenEvent={openEvent} />}
+      {section === 'ask' && <AskPage onOpenEvent={openEvent} />}
+      </>}
     </section>
   </main>;
 }

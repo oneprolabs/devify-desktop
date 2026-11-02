@@ -299,7 +299,10 @@ fn salt_bytes(salt_hex: Option<&str>) -> Option<Vec<u8>> {
 fn is_chat_db(rel: &str) -> bool {
     rel == "session/session.db"
         || rel == "contact/contact.db"
-        || rel.starts_with("message/message_")
+        // WeChat 4.x also keeps `message/message_0.kvdb` LevelDB sidecars next to the shards.
+        // They are not SQLCipher databases, have no derived key, and are not needed to read
+        // messages, so the suffix matters here.
+        || (rel.starts_with("message/message_") && rel.ends_with(".db"))
         // Avatars live beside the chat databases and are keyed by username, so they are part
         // of rendering a conversation rather than a separate feature.
         || rel.starts_with("head_image/")
@@ -489,6 +492,22 @@ pub fn decrypt_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_dbs_exclude_kvdb_sidecars() {
+        assert!(is_chat_db("message/message_0.db"));
+        assert!(is_chat_db("message/message_fts.db"));
+        assert!(is_chat_db("message/message_resource.db"));
+        assert!(is_chat_db("session/session.db"));
+        assert!(is_chat_db("contact/contact.db"));
+        assert!(is_chat_db("head_image/head_image.db"));
+        // WeChat 4.x LevelDB sidecars have no derived key and are not chat databases.
+        assert!(!is_chat_db("message/message_0.kvdb"));
+        assert!(!is_chat_db("message/biz_message_0.kvdb"));
+        assert!(!is_chat_db("message/media_0.kvdb"));
+        assert!(!is_chat_db("message/biz_message_0.db"));
+        assert!(!is_chat_db("contact/contact_fts.db"));
+    }
 
     fn db(encrypted: bool) -> DbFile {
         DbFile {

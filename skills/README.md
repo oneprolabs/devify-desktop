@@ -1,6 +1,6 @@
 # WeChat Devify Agent Skills
 
-这三个 Skill 由桌面应用 **AImyChats** 直接提供，不需要从仓库构建或手动复制：
+这三个 Skill 由桌面应用 **AIMyChats** 直接提供，不需要从仓库构建或手动复制：
 
 - `wechat-chat-records`：白名单聊天记录读取与检索。
 - `wechat-work-exploration`：跨会话探索、项目重点和 timeline。
@@ -8,7 +8,7 @@
 
 ## 一条提示词安装
 
-打开 AImyChats 的 **Agent 集成** 页，切到 **工具接入**：
+打开 AIMyChats 的 **Agent 集成** 页，切到 **工具接入**：
 
 1. 选择当前工具，确认 CLI 目录（如 `~/.local/bin`）和 Skills 目录（如 `~/.claude/skills`）。
 2. 复制页面生成的提示词，粘贴到该工具的会话中，允许它执行 shell。

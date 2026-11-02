@@ -39,7 +39,9 @@ pub struct ScanResult {
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 /// Containers/directories that may hold WeChat data. Discovery, not a fixed path list.
@@ -51,7 +53,10 @@ fn candidate_bases() -> Vec<PathBuf> {
             if let Ok(entries) = fs::read_dir(&containers) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_lowercase();
-                    if name.contains("wechat") || name.contains("weixin") || name.contains("tencent") {
+                    if name.contains("wechat")
+                        || name.contains("weixin")
+                        || name.contains("tencent")
+                    {
                         bases.push(entry.path());
                     }
                 }
@@ -61,7 +66,11 @@ fn candidate_bases() -> Vec<PathBuf> {
         // only worth looking at when no container exists. Checking it unconditionally makes
         // macOS ask for「文稿」access the app never actually needs.
         if bases.is_empty() {
-            for rel in ["Documents/xwechat_files", "Documents/WeChat Files", "Documents/WeChat"] {
+            for rel in [
+                "Documents/xwechat_files",
+                "Documents/WeChat Files",
+                "Documents/WeChat",
+            ] {
                 let candidate = home.join(rel);
                 if candidate.is_dir() {
                     bases.push(candidate);
@@ -73,6 +82,20 @@ fn candidate_bases() -> Vec<PathBuf> {
         let candidate = PathBuf::from(appdata).join("Tencent");
         if candidate.is_dir() {
             bases.push(candidate);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        let profile = PathBuf::from(profile);
+        for rel in [
+            "Documents\\xwechat_files",
+            "Documents\\WeChat Files",
+            "AppData\\Roaming\\Tencent\\xwechat_files",
+        ] {
+            let candidate = profile.join(rel);
+            if candidate.is_dir() {
+                bases.push(candidate);
+            }
         }
     }
     bases.sort();
@@ -126,7 +149,13 @@ fn collect_dbs(db_storage: &Path) -> Vec<DbFile> {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".db") || name.ends_with("-wal.db") || name.ends_with("-shm.db") {
+            let database_file = name.ends_with(".db") || name.ends_with(".kvdb");
+            if !database_file
+                || name.ends_with("-wal.db")
+                || name.ends_with("-shm.db")
+                || name.ends_with("-wal.kvdb")
+                || name.ends_with("-shm.kvdb")
+            {
                 continue;
             }
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -222,7 +251,10 @@ pub fn scan() -> ScanResult {
     }
     accounts.sort_by(|a, b| a.id.cmp(&b.id));
     ScanResult {
-        roots: bases.iter().map(|b| b.to_string_lossy().to_string()).collect(),
+        roots: bases
+            .iter()
+            .map(|b| b.to_string_lossy().to_string())
+            .collect(),
         accounts,
         skipped,
     }

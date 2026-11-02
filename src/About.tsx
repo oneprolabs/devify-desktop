@@ -53,7 +53,7 @@ export function About() {
     <header className="page-head about-hero">
       <div className="about-lockup">
         <img className="about-mark" src={appIcon} alt="" width={44} height={44} />
-        <h2>{info?.name ?? 'AImyChats'}</h2>
+        <h2>{info?.name ?? 'AIMyChats'}</h2>
       </div>
       <p className="about-tagline">
         本地优先的微信工作台：只读查看白名单聊天，整理工作内容，并把日报交付到自己的 Devify 收件箱。

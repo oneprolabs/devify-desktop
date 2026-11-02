@@ -14,7 +14,7 @@ function timeLabel(value: string | number): string {
   return Number.isNaN(time.getTime()) ? '时间未知' : time.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-export function Tasks({ onNewUpload }: { onNewUpload: () => void }) {
+export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () => void; startCreating?: boolean }) {
   const [creating, setCreating] = useState(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -27,6 +27,7 @@ export function Tasks({ onNewUpload }: { onNewUpload: () => void }) {
   const [retryPreview, setRetryPreview] = useState<RetryPreview | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState('');
+  useEffect(() => { if (startCreating) setCreating(true); }, [startCreating]);
   const load = useCallback(async () => {
     if (!isTauri()) return;
     setLoading(true); setError('');

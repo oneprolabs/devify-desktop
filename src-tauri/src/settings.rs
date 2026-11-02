@@ -14,7 +14,110 @@ pub struct AppSettings {
     pub automation: AutomationSettings,
     pub agent: AgentSettings,
     pub keys: KeysSettings,
+    pub sync: SyncSettings,
+    pub backup: BackupSettings,
+    pub language: LanguageSettings,
     pub upload_queue: Vec<UploadJob>,
+}
+
+/// When the automatic backup runs, and when it is allowed to run.
+///
+/// ``mode`` is ``interval`` (every ``chat.sync_interval_seconds``), ``times`` (at each entry of
+/// ``times``, local time) or ``manual`` (never on its own). The window and weekday list only
+/// apply when ``window_enabled`` is set: ``deny`` pauses uploads inside the window, ``allow``
+/// restricts them to it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct BackupSettings {
+    pub mode: String,
+    pub times: Vec<String>,
+    pub window_enabled: bool,
+    pub window_mode: String,
+    pub window_start: String,
+    pub window_end: String,
+    /// 0 = 周一 … 6 = 周日, matching ``chrono``'s num_days_from_monday.
+    pub days: Vec<u8>,
+}
+
+/// Output language for generated text. ``ui`` is the interface language, ``summary`` what the
+/// agent writes for summaries and daily reports, ``ask`` the preferred answer language.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct LanguageSettings {
+    pub ui: String,
+    pub summary: String,
+    pub ask: String,
+}
+
+impl Default for LanguageSettings {
+    fn default() -> Self {
+        Self {
+            ui: "中文".into(),
+            summary: "跟随界面".into(),
+            ask: "跟随提问".into(),
+        }
+    }
+}
+
+impl Default for BackupSettings {
+    fn default() -> Self {
+        Self {
+            mode: "interval".into(),
+            times: vec!["18:00".into()],
+            window_enabled: false,
+            window_mode: "deny".into(),
+            window_start: "23:00".into(),
+            window_end: "07:00".into(),
+            days: (0..7).collect(),
+        }
+    }
+}
+
+/// Where a conversation's last successful upload ended.
+///
+/// ``time`` is the newest message time already uploaded, and ``local_id`` is that message's
+/// identifier. The time alone cannot tell "nothing new" from "a new message landed in the
+/// same second", so the pair decides whether a run is needed. Uploads still start at
+/// ``time`` (inclusive) and the server deduplicates by ``message_key``.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
+#[serde(default)]
+pub struct SyncCursor {
+    pub time: i64,
+    pub local_id: i64,
+}
+
+impl SyncCursor {
+    /// True when ``newest`` is not newer than what was already uploaded.
+    pub fn covers(&self, newest: (i64, i64)) -> bool {
+        newest.0 < self.time || (newest.0 == self.time && newest.1 <= self.local_id)
+    }
+}
+
+/// Incremental upload state for the allowlisted conversations.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct SyncSettings {
+    pub enabled: bool,
+    /// account id → conversation username → upload position.
+    pub cursors: HashMap<String, HashMap<String, SyncCursor>>,
+    pub last_run_at: Option<String>,
+    /// idle | syncing | success | failed
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+    pub last_message_count: u64,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cursors: HashMap::new(),
+            last_run_at: None,
+            last_status: None,
+            last_error: None,
+            last_message_count: 0,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -148,6 +251,9 @@ impl Default for AppSettings {
             automation: AutomationSettings::default(),
             agent: AgentSettings::default(),
             keys: KeysSettings::default(),
+            sync: SyncSettings::default(),
+            backup: BackupSettings::default(),
+            language: LanguageSettings::default(),
             upload_queue: Vec::new(),
         }
     }
@@ -170,7 +276,7 @@ impl Default for DevifySettings {
             } else {
                 "https://app.aimychats.com".to_string()
             },
-            device_label: "AImyChats Desktop".to_string(),
+            device_label: "AIMyChats Desktop".to_string(),
             active_space_id: None,
             recipient: String::new(),
             subject: "微信工作日报".to_string(),
@@ -247,8 +353,48 @@ pub fn save(app_data: &Path, settings: &AppSettings) -> Result<(), String> {
 }
 
 pub fn validate(settings: &AppSettings) -> Result<(), String> {
-    if !(1..=3600).contains(&settings.chat.sync_interval_seconds) {
-        return Err("同步间隔必须在 1 到 3600 秒之间。".into());
+    if !(1..=604_800).contains(&settings.chat.sync_interval_seconds) {
+        return Err("同步间隔必须在 1 秒到 7 天之间。".into());
+    }
+    let backup = &settings.backup;
+    if !matches!(backup.mode.as_str(), "interval" | "times" | "manual") {
+        return Err("备份方式必须是按间隔、每天定点或仅手动。".into());
+    }
+    if backup.times.len() > 24 {
+        return Err("每天定点最多 24 个时间。".into());
+    }
+    if backup.mode == "times" && backup.times.is_empty() {
+        return Err("按每天定点备份时至少需要一个时间。".into());
+    }
+    if backup.times.iter().any(|time| !is_valid_time(time)) {
+        return Err("备份时间必须使用 HH:MM 格式。".into());
+    }
+    if !matches!(backup.window_mode.as_str(), "deny" | "allow") {
+        return Err("限制方式必须是只在此时段上传或此时段内不上传。".into());
+    }
+    if !is_valid_time(&backup.window_start) || !is_valid_time(&backup.window_end) {
+        return Err("限制时段必须使用 HH:MM 格式。".into());
+    }
+    if backup.days.len() > 7 || backup.days.iter().any(|day| *day > 6) {
+        return Err("生效日必须是周一到周日之间的 0 到 7 天。".into());
+    }
+    if backup.window_enabled && backup.days.is_empty() {
+        return Err("限制上传时间时至少要选择一个生效日。".into());
+    }
+    if !matches!(settings.language.ui.as_str(), "中文" | "English") {
+        return Err("界面语言必须是中文或 English。".into());
+    }
+    if !matches!(
+        settings.language.summary.as_str(),
+        "跟随界面" | "中文" | "English" | "按原文语言"
+    ) {
+        return Err("总结与报告语言取值无效。".into());
+    }
+    if !matches!(
+        settings.language.ask.as_str(),
+        "跟随提问" | "跟随界面" | "中文" | "English"
+    ) {
+        return Err("问答回答语言取值无效。".into());
     }
     if !is_valid_time(&settings.automation.daily_time) {
         return Err("日报时间必须使用 HH:MM 格式。".into());
@@ -273,6 +419,26 @@ pub fn validate(settings: &AppSettings) -> Result<(), String> {
     }
     validate_agent(&settings.agent)?;
     validate_keys(&settings.keys)?;
+    validate_sync(&settings.sync)?;
+    Ok(())
+}
+
+fn validate_sync(sync: &SyncSettings) -> Result<(), String> {
+    if sync.cursors.len() > 20 {
+        return Err("最多支持 20 个微信账号的同步进度。".into());
+    }
+    for cursors in sync.cursors.values() {
+        if cursors.len() > 1000
+            || cursors.iter().any(|(username, cursor)| {
+                username.is_empty()
+                    || username.len() > 512
+                    || cursor.time < 0
+                    || cursor.local_id < 0
+            })
+        {
+            return Err("同步进度无效，请重新保存自动化策略。".into());
+        }
+    }
     Ok(())
 }
 
@@ -417,6 +583,52 @@ mod tests {
         settings.chat.sync_interval_seconds = 30;
         settings.automation.daily_time = "25:00".to_string();
         assert!(validate(&settings).is_err());
+    }
+
+    #[test]
+    fn sync_defaults_are_off_and_cursors_are_bounded() {
+        let mut settings = AppSettings::default();
+        assert!(!settings.sync.enabled);
+        assert!(settings.sync.cursors.is_empty());
+
+        settings.sync.enabled = true;
+        settings.sync.cursors.insert(
+            "account".into(),
+            HashMap::from([(
+                "group".to_string(),
+                SyncCursor {
+                    time: 1_700_000_000,
+                    local_id: 42,
+                },
+            )]),
+        );
+        assert!(validate(&settings).is_ok());
+
+        settings
+            .sync
+            .cursors
+            .get_mut("account")
+            .unwrap()
+            .insert(
+                "bad".into(),
+                SyncCursor {
+                    time: -1,
+                    local_id: 0,
+                },
+            );
+        assert!(validate(&settings).is_err());
+    }
+
+    #[test]
+    fn sync_cursor_covers_messages_at_or_before_its_position() {
+        let cursor = SyncCursor {
+            time: 100,
+            local_id: 7,
+        };
+        assert!(cursor.covers((99, 900)));
+        assert!(cursor.covers((100, 7)));
+        assert!(!cursor.covers((100, 8)));
+        assert!(!cursor.covers((101, 1)));
     }
 
     #[test]

@@ -26,6 +26,7 @@ extern crate self as wechat_devify_bridge_lib;
 
 pub mod access;
 pub mod agent;
+pub mod backup;
 mod desktop_credentials;
 pub mod history;
 pub mod perm;
@@ -40,6 +41,8 @@ use wechat::decrypt::{self, DecryptOutcome};
 use wechat::discover::{self, ScanResult};
 use wechat::keys::{self, KeyStore};
 use wechat::query::{self, DigestReport, MessageItem, SearchReport, SessionItem};
+#[cfg(target_os = "windows")]
+use wechat::windows_keys;
 
 #[derive(Default)]
 struct SyncState {
@@ -78,6 +81,9 @@ fn begin_retry<'a>(state: &'a UploadState, id: &str) -> Result<RetryGuard<'a>, S
 #[derive(Default)]
 struct DevifyAuthState {
     pending: Mutex<Option<(String, String)>>,
+    /// Keeps the loopback listener task so a new attempt can abort a stale one
+    /// instead of failing with `Address already in use` on port 47832.
+    listener: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 #[derive(Serialize)]
@@ -144,7 +150,13 @@ async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<St
         .send()
         .await
         .map_err(|e| format!("刷新 Devify token 失败：{e}"))?;
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            // The refresh token was revoked or its account no longer exists.
+            // Keep trying it forever would only hide the real problem.
+            let _ = desktop_credentials::clear(app_data);
+        }
         return Err("Devify token 已失效，请重新登录。".into());
     }
     let payload: serde_json::Value = response
@@ -171,6 +183,8 @@ struct DevifyUploadResult {
     status: String,
     message_count: usize,
     conversations: usize,
+    /// Newest local message included in the package, used to advance the sync cursor.
+    latest_position: Option<(i64, i64)>,
 }
 
 #[derive(Serialize)]
@@ -194,13 +208,18 @@ async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUpl
         .send()
         .await
         .map_err(|e| format!("读取上传状态失败：{e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("读取上传状态失败：{}", response.status()));
-    }
+    let status = response.status();
     let payload: serde_json::Value = response
         .json()
         .await
         .map_err(|e| format!("读取上传状态响应失败：{e}"))?;
+    if !status.is_success() {
+        let fallback = format!("HTTP {status}");
+        return Err(format!(
+            "读取上传状态失败：{}",
+            devify_response_error(&app, status, &payload, &fallback)
+        ));
+    }
     let data = payload.get("data").unwrap_or(&payload);
     Ok(DevifyUploadStatus {
         batch_id,
@@ -265,6 +284,46 @@ async fn devify_space_takeover(
     Ok(())
 }
 
+
+/// Prefer the personal space the server creates for every account; fall back to the first
+/// space the account can see. Used after login and by `devify_space_ensure`.
+fn pick_personal_space(spaces: &[DevifySpace]) -> Option<i64> {
+    spaces
+        .iter()
+        .find(|space| space.kind.eq_ignore_ascii_case("personal"))
+        .or_else(|| spaces.iter().find(|space| space.name.contains("个人")))
+        .or_else(|| spaces.iter().find(|space| space.kind.eq_ignore_ascii_case("private")))
+        .or_else(|| spaces.first())
+        .map(|space| space.id)
+}
+
+/// Login should not leave the app without an upload target: select the personal space when
+/// nothing is chosen yet (or when the stored space no longer exists).
+async fn ensure_active_space(app: &AppHandle) -> Option<i64> {
+    let data = app_data(app);
+    let mut settings = settings::load(&data).ok()?;
+    let spaces = devify_spaces(app.clone()).await.ok()?;
+    let known = |id: i64| spaces.iter().any(|space| space.id == id);
+    let chosen = settings
+        .devify
+        .active_space_id
+        .filter(|id| known(*id))
+        .or_else(|| pick_personal_space(&spaces));
+    if settings.devify.active_space_id != chosen {
+        settings.devify.active_space_id = chosen;
+        let _ = settings::save(&data, &settings);
+    }
+    chosen
+}
+
+#[tauri::command]
+async fn devify_space_ensure(app: AppHandle) -> Result<Option<i64>, String> {
+    match ensure_active_space(&app).await {
+        Some(id) => Ok(Some(id)),
+        None => Ok(None),
+    }
+}
+
 #[tauri::command]
 async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
     let settings = settings::load(&app_data(&app))?;
@@ -277,13 +336,18 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
         .send()
         .await
         .map_err(|e| format!("读取 Devify 空间失败：{e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("读取 Devify 空间失败：{}", response.status()));
-    }
+    let status = response.status();
     let payload: serde_json::Value = response
         .json()
         .await
         .map_err(|e| format!("读取空间响应失败：{e}"))?;
+    if !status.is_success() {
+        let fallback = format!("HTTP {status}");
+        return Err(format!(
+            "读取 Devify 空间失败：{}",
+            devify_response_error(&app, status, &payload, &fallback)
+        ));
+    }
     let data = payload.get("data").unwrap_or(&payload);
     serde_json::from_value(data.clone()).map_err(|e| format!("空间响应格式无效：{e}"))
 }
@@ -333,10 +397,7 @@ async fn devify_analysis_list(
             .await
             .map_err(|e| format!("读取服务端{kind}响应失败：{e}"))?;
         if !status.is_success() {
-            let detail = payload
-                .get("detail")
-                .and_then(|value| value.as_str())
-                .unwrap_or("服务端拒绝了请求");
+            let detail = devify_response_error(&app, status, &payload, "服务端拒绝了请求");
             return Err(format!("同步服务端{kind}失败：{detail}"));
         }
         let data = payload.get("data").cloned().unwrap_or(payload);
@@ -367,6 +428,92 @@ fn validate_devify_space(settings: &settings::AppSettings, space_id: i64) -> Res
         return Err("Devify 空间已改变，请重新选择后再同步。".into());
     }
     Ok(())
+}
+
+/// Turn a Devify error payload into the message the user should see.
+///
+/// The server wraps every response as `{"code", "message", "data"}`, so the
+/// useful reason lives under `data.detail` (permission, not found, auth) or as
+/// field errors under `data` (validation). Reading only the top-level `detail`
+/// hid all of that and turned every failure into "服务端拒绝了请求".
+fn devify_error_message(payload: &serde_json::Value) -> Option<String> {
+    fn flatten(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(text) => {
+                let text = text.trim();
+                (!text.is_empty()).then(|| text.to_string())
+            }
+            serde_json::Value::Array(items) => {
+                let parts: Vec<String> = items.iter().filter_map(flatten).collect();
+                (!parts.is_empty()).then(|| parts.join("；"))
+            }
+            serde_json::Value::Object(map) => {
+                let parts: Vec<String> = map
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "code" && key.as_str() != "message")
+                    .filter_map(|(key, value)| {
+                        flatten(value).map(|text| format!("{key}：{text}"))
+                    })
+                    .collect();
+                (!parts.is_empty()).then(|| parts.join("；"))
+            }
+            _ => None,
+        }
+    }
+    // The envelope's own `message` is always "failed"/"success", never a reason.
+    fn meaningful(value: Option<String>) -> Option<String> {
+        value.filter(|text| !matches!(text.as_str(), "failed" | "success"))
+    }
+
+    let data = payload.get("data").unwrap_or(payload);
+    meaningful(data.get("detail").and_then(flatten))
+        .or_else(|| meaningful(data.get("message").and_then(flatten)))
+        .or_else(|| flatten(data))
+        .or_else(|| meaningful(payload.get("detail").and_then(flatten)))
+        .or_else(|| meaningful(payload.get("message").and_then(flatten)))
+        .or_else(|| flatten(payload))
+}
+
+fn devify_error_text(payload: &serde_json::Value, fallback: &str) -> String {
+    devify_error_message(payload).unwrap_or_else(|| fallback.to_string())
+}
+
+/// The server rejected the stored credentials (expired, revoked or the account
+/// no longer exists). Drop them and tell the UI to reopen the login gate
+/// instead of retrying the same request until every page looks broken.
+fn forget_devify_session(app: &AppHandle, payload: &serde_json::Value) -> String {
+    let _ = desktop_credentials::clear(&app_data(app));
+    let detail = devify_error_message(payload);
+    let message = detail
+        .clone()
+        .unwrap_or_else(|| "登录状态已失效，请重新登录。".to_string());
+    let _ = app.emit(
+        "devify-auth-expired",
+        serde_json::json!({ "message": message }),
+    );
+    "登录状态已失效，请重新登录 Devify。".to_string()
+}
+
+fn devify_response_error(
+    app: &AppHandle,
+    status: reqwest::StatusCode,
+    payload: &serde_json::Value,
+    fallback: &str,
+) -> String {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return forget_devify_session(app, payload);
+    }
+    devify_friendly_error(status, &devify_error_text(payload, fallback))
+}
+
+/// Translate server wording that means "pick another space" into something the
+/// user can act on. The API hides the space when the caller is not a member
+/// (or an admin without a takeover), so both cases share the same 404.
+fn devify_friendly_error(status: reqwest::StatusCode, detail: &str) -> String {
+    if status == reqwest::StatusCode::NOT_FOUND && detail.contains("Space not found") {
+        return "当前 Devify 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。".into();
+    }
+    detail.to_string()
 }
 
 async fn devify_json_request(
@@ -400,10 +547,7 @@ async fn devify_json_request(
         .await
         .map_err(|e| format!("读取 Devify 响应失败：{e}"))?;
     if !status.is_success() {
-        let detail = payload
-            .get("detail")
-            .and_then(|value| value.as_str())
-            .unwrap_or("服务端拒绝了请求");
+        let detail = devify_response_error(app, status, &payload, "服务端拒绝了请求");
         return Err(format!("Devify 请求失败：{detail}"));
     }
     Ok(payload.get("data").cloned().unwrap_or(payload))
@@ -421,7 +565,11 @@ async fn devify_analysis_detail(
     }
     let settings = settings::load(&app_data(&app))?;
     validate_devify_space(&settings, space_id)?;
-    let resource = if kind == "events" { "events" } else { "reports" };
+    let resource = if kind == "events" {
+        "events"
+    } else {
+        "reports"
+    };
     devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -457,11 +605,109 @@ async fn devify_event_notes(
     let mut notes = Vec::new();
     for id in ids {
         let Some(id) = id.as_i64() else { continue };
-        if let Ok(note) = devify_json_request(&app, reqwest::Method::GET, format!("/api/v1/notes/{id}"), None).await {
+        if let Ok(note) = devify_json_request(
+            &app,
+            reqwest::Method::GET,
+            format!("/api/v1/notes/{id}"),
+            None,
+        )
+        .await
+        {
             notes.push(note);
         }
     }
     Ok(serde_json::Value::Array(notes))
+}
+
+#[tauri::command]
+async fn devify_conversations(
+    app: AppHandle,
+    space_id: i64,
+    search: Option<String>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let settings = settings::load(&app_data(&app))?;
+    validate_devify_space(&settings, space_id)?;
+    let mut path = format!(
+        "/api/v1/spaces/{space_id}/conversations?page={}&page_size={}",
+        page.unwrap_or(1).max(1),
+        page_size.unwrap_or(25).clamp(1, 100)
+    );
+    let keyword = search.unwrap_or_default().trim().to_string();
+    if !keyword.is_empty() {
+        let encoded: String = url::form_urlencoded::byte_serialize(keyword.as_bytes()).collect();
+        path.push_str(&format!("&search={encoded}"));
+    }
+    devify_json_request(&app, reqwest::Method::GET, path, None).await
+}
+
+#[tauri::command]
+async fn devify_conversation_detail(
+    app: AppHandle,
+    space_id: i64,
+    conversation_id: i64,
+) -> Result<serde_json::Value, String> {
+    let settings = settings::load(&app_data(&app))?;
+    validate_devify_space(&settings, space_id)?;
+    if conversation_id <= 0 {
+        return Err("会话标识无效。".into());
+    }
+    devify_json_request(
+        &app,
+        reqwest::Method::GET,
+        format!("/api/v1/spaces/{space_id}/conversations/{conversation_id}"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn devify_conversation_messages(
+    app: AppHandle,
+    space_id: i64,
+    conversation_id: i64,
+    page: Option<u32>,
+    page_size: Option<u32>,
+    focus_message_id: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let settings = settings::load(&app_data(&app))?;
+    validate_devify_space(&settings, space_id)?;
+    if conversation_id <= 0 {
+        return Err("会话标识无效。".into());
+    }
+    let mut path = format!(
+        "/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages?page={}&page_size={}",
+        page.unwrap_or(1).max(1),
+        page_size.unwrap_or(50).clamp(1, 100)
+    );
+    if let Some(message_id) = focus_message_id.filter(|id| *id > 0) {
+        path.push_str(&format!("&focus_message_id={message_id}"));
+    }
+    devify_json_request(&app, reqwest::Method::GET, path, None).await
+}
+
+#[tauri::command]
+async fn devify_message_detail(
+    app: AppHandle,
+    space_id: i64,
+    conversation_id: i64,
+    message_id: i64,
+) -> Result<serde_json::Value, String> {
+    if conversation_id <= 0 || message_id <= 0 {
+        return Err("消息标识无效。".into());
+    }
+    let settings = settings::load(&app_data(&app))?;
+    validate_devify_space(&settings, space_id)?;
+    devify_json_request(
+        &app,
+        reqwest::Method::GET,
+        format!(
+            "/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages/{message_id}"
+        ),
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -502,6 +748,62 @@ async fn devify_topic_create(
         Some(serde_json::json!({"title": title, "instruction": instruction, "period": period})),
     )
     .await
+}
+
+#[tauri::command]
+async fn devify_topic_detail(
+    app: AppHandle,
+    space_id: i64,
+    topic_id: i64,
+) -> Result<serde_json::Value, String> {
+    if topic_id <= 0 {
+        return Err("主题标识无效。".into());
+    }
+    let settings = settings::load(&app_data(&app))?;
+    validate_devify_space(&settings, space_id)?;
+    let topic = devify_json_request(
+        &app,
+        reqwest::Method::GET,
+        format!("/api/v1/topics/{topic_id}"),
+        None,
+    )
+    .await?;
+    if topic
+        .get("space_id")
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|topic_space_id| topic_space_id != space_id)
+    {
+        return Err("主题不属于当前 Devify 空间。".into());
+    }
+    Ok(topic)
+}
+
+#[tauri::command]
+async fn devify_note_detail(
+    app: AppHandle,
+    space_id: i64,
+    note_id: i64,
+) -> Result<serde_json::Value, String> {
+    if note_id <= 0 {
+        return Err("原文标识无效。".into());
+    }
+    let settings = settings::load(&app_data(&app))?;
+    validate_devify_space(&settings, space_id)?;
+    let note = devify_json_request(
+        &app,
+        reqwest::Method::GET,
+        format!("/api/v1/notes/{note_id}"),
+        None,
+    )
+    .await?;
+    if note
+        .get("space_id")
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|note_space_id| note_space_id != space_id)
+    {
+        return Err("原文不属于当前 Devify 空间。".into());
+    }
+    Ok(note)
 }
 
 #[tauri::command]
@@ -551,6 +853,26 @@ async fn devify_questions(app: AppHandle, space_id: i64) -> Result<serde_json::V
 }
 
 #[tauri::command]
+async fn devify_question_detail(
+    app: AppHandle,
+    space_id: i64,
+    question_id: i64,
+) -> Result<serde_json::Value, String> {
+    if question_id <= 0 {
+        return Err("问答标识无效。".into());
+    }
+    let settings = settings::load(&app_data(&app))?;
+    validate_devify_space(&settings, space_id)?;
+    devify_json_request(
+        &app,
+        reqwest::Method::GET,
+        format!("/api/v1/spaces/{space_id}/questions/{question_id}"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn devify_question_ask(
     app: AppHandle,
     space_id: i64,
@@ -590,6 +912,8 @@ struct PreparedUpload {
     conversations: Vec<serde_json::Value>,
     messages: Vec<serde_json::Value>,
     parts: Vec<serde_json::Value>,
+    /// Newest local message (time, local id) included in this package.
+    latest_position: Option<(i64, i64)>,
 }
 
 fn upload_fingerprint(value: &serde_json::Value) -> String {
@@ -715,12 +1039,15 @@ fn prepare_upload(
         return Err("部分所选会话已不可用，请重新选择。".into());
     }
     selected.sort_by(|a, b| a.username.cmp(&b.username));
+    // The server uses this key to tell the user's own messages apart.
+    let self_key = query::self_username(cache).unwrap_or_default();
     let mut conversations = Vec::new();
     let mut messages = Vec::new();
     let mut parts = Vec::new();
     let mut summary = Vec::new();
+    let mut latest_position: Option<(i64, i64)> = None;
     for session in &selected {
-        conversations.push(serde_json::json!({"conversation_id":session.username,"title":session.display,"kind":if session.is_group {"group"} else {"direct"}}));
+        conversations.push(serde_json::json!({"conversation_id":session.username,"title":session.display,"kind":if session.is_group {"group"} else {"direct"},"self_sender_key":self_key}));
         let mut session_messages =
             collect_upload_messages(cache, &session.username, since, until, None)?;
         session_messages = filter_upload_messages(
@@ -740,9 +1067,15 @@ fn prepare_upload(
             display: session.display.clone(),
             message_count: session_messages.len(),
         });
-        for message in session_messages {
-            messages.push(serde_json::json!({"conversation_id":session.username,"message_key":format!("src:{}",message.local_id),"source_message_id":message.local_id.to_string(),"sender_key":message.sender,"sender_name":message.sender_name,"direction":if message.is_self {"outgoing"} else {"incoming"},"occurred_at":chrono::DateTime::from_timestamp(message.time,0).map(|v|v.to_rfc3339()),"source_fields":{"kind":message.kind}}));
-            parts.push(serde_json::json!({"conversation_id":session.username,"message_key":format!("src:{}",message.local_id),"part_key":"text-0","kind":"text","text":message.text}));
+        for (index, message) in session_messages.into_iter().enumerate() {
+            latest_position = Some(
+                latest_position
+                    .map_or((message.time, message.local_id), |current| {
+                        current.max((message.time, message.local_id))
+                    }),
+            );
+            messages.push(serde_json::json!({"conversation_id":session.username,"message_key":format!("src:{}",message.local_id),"source_message_id":message.local_id.to_string(),"sender_key":message.sender,"sender_name":message.sender_name,"direction":if message.is_self {"outgoing"} else {"incoming"},"occurred_at":chrono::DateTime::from_timestamp(message.time,0).map(|v|v.to_rfc3339()),"source_order":index as i64 + 1,"record_kind":"message","source_fields":{"kind":message.kind}}));
+            parts.push(serde_json::json!({"conversation_id":session.username,"message_key":format!("src:{}",message.local_id),"part_key":"text-0","ordinal":0,"kind":"text","text":message.text}));
         }
     }
     if messages.is_empty() {
@@ -761,6 +1094,7 @@ fn prepare_upload(
         conversations,
         messages,
         parts,
+        latest_position,
     })
 }
 
@@ -1060,6 +1394,10 @@ async fn devify_upload_wechat(
     )?;
     let message_count = prepared.preview.message_count;
     let session_count = prepared.preview.sessions.len();
+    let latest_position = prepared.latest_position;
+    let package_key = prepared.preview.fingerprint.clone();
+    let mut whitelist: Vec<String> = allowed.iter().cloned().collect();
+    whitelist.sort();
     let PreparedUpload {
         conversations,
         messages,
@@ -1072,6 +1410,8 @@ async fn devify_upload_wechat(
         "source_namespace": account_id,
         "counts": { "conversations": conversations.len(), "messages": messages.len() },
         "scope": { "conversation_ids": usernames },
+        "whitelist_snapshot": whitelist,
+        "client": { "name": "AIMyChats", "version": env!("CARGO_PKG_VERSION") },
     });
     let mut archive = Cursor::new(Vec::new());
     {
@@ -1118,11 +1458,9 @@ async fn devify_upload_wechat(
     }
     let token = devify_access_token_async(&data, &settings.devify.base_url).await?;
     let client = reqwest::Client::new();
-    let key = format!(
-        "wechat-{}-{}",
-        account_id,
-        chrono::Utc::now().timestamp_millis()
-    );
+    // The key is derived from the packaged content, so retrying the same range reuses its
+    // batch instead of creating a duplicate one.
+    let key = format!("wechat-{}-{}", account_id, &package_key[..32]);
     let created = client
         .post(format!(
             "{}/api/v1/spaces/{space_id}/chat/uploads",
@@ -1133,7 +1471,6 @@ async fn devify_upload_wechat(
             "source_type": "wechat",
             "source_account_id": account_id,
             "idempotency_key": key,
-            "archive_size": body.len(),
         }))
         .send()
         .await
@@ -1150,6 +1487,21 @@ async fn devify_upload_wechat(
         .get("id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| "上传响应缺少批次 ID。".to_string())?;
+    let batch_status = batch
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if matches!(batch_status, "processing" | "completed") {
+        // This package was already accepted; never upload or submit it a second time.
+        return Ok(DevifyUploadResult {
+            job_id: String::new(),
+            batch_id,
+            status: batch_status.to_string(),
+            message_count,
+            conversations: session_count,
+            latest_position,
+        });
+    }
     let form = reqwest::multipart::Form::new().part(
         "archive",
         reqwest::multipart::Part::bytes(body)
@@ -1188,6 +1540,7 @@ async fn devify_upload_wechat(
         status: "processing".into(),
         message_count,
         conversations: session_count,
+        latest_position,
     })
 }
 
@@ -1207,16 +1560,37 @@ async fn devify_auth_start(
     let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
     let digest = sha2::Sha256::digest(verifier.as_bytes());
     let challenge = URL_SAFE_NO_PAD.encode(digest);
-    state
-        .pending
-        .lock()
-        .map_err(|_| "读取登录状态失败。".to_string())?
-        .replace((oauth_state.clone(), verifier));
-    let listener = TcpListener::bind("127.0.0.1:47832")
-        .await
-        .map_err(|e| format!("无法启动本地登录回调服务（47832）：{e}"))?;
+    {
+        let mut previous = state
+            .listener
+            .lock()
+            .map_err(|_| "读取登录回调状态失败。".to_string())?;
+        if let Some(handle) = previous.take() {
+            handle.abort();
+        }
+    }
+    let mut bound = None;
+    for attempt in 0..12 {
+        match TcpListener::bind("127.0.0.1:47832").await {
+            Ok(listener) => {
+                bound = Some(listener);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && attempt < 11 => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "无法启动本地登录回调服务（47832）：{error}。请关闭其他 AIMyChats 实例后重试。"
+                ))
+            }
+        }
+    }
+    let listener = bound.ok_or_else(|| {
+        "无法启动本地登录回调服务（47832）：端口已被占用。请关闭其他 AIMyChats 实例后重试，或改用 AI 邮箱用户名和密码登录。".to_string()
+    })?;
     let callback_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
+    let handle = tauri::async_runtime::spawn(async move {
         if let Ok((mut stream, _)) = listener.accept().await {
             let mut buffer = [0u8; 8192];
             if let Ok(size) = stream.read(&mut buffer).await {
@@ -1230,10 +1604,18 @@ async fn devify_auth_start(
                     let _ = callback_handle.emit("devify-auth-loopback", callback);
                 }
             }
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nLogin returned to AImyChats. You can close this page.".as_bytes();
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nLogin returned to AIMyChats. You can close this page.".as_bytes();
             let _ = stream.write_all(response).await;
         }
     });
+    if let Ok(mut slot) = state.listener.lock() {
+        *slot = Some(handle);
+    }
+    state
+        .pending
+        .lock()
+        .map_err(|_| "读取登录状态失败。".to_string())?
+        .replace((oauth_state.clone(), verifier));
     let mut url = Url::parse(&format!(
         "{}{}",
         settings.devify.base_url.trim_end_matches('/'),
@@ -1250,7 +1632,7 @@ async fn devify_auth_start(
         .append_pair("code_challenge_method", "S256")
         .append_pair(
             "device_label",
-            device_label.as_deref().unwrap_or("AImyChats"),
+            device_label.as_deref().unwrap_or("AIMyChats"),
         );
     Ok(url.to_string())
 }
@@ -1337,6 +1719,7 @@ async fn devify_auth_callback(
             refresh: refresh.to_string(),
         },
     )?;
+    let _ = ensure_active_space(&app).await;
     Ok(DevifyAuthResult {
         device_id: data
             .get("device_id")
@@ -1348,6 +1731,143 @@ async fn devify_auth_callback(
             .and_then(|v| v.as_u64())
             .unwrap_or_default(),
     })
+}
+
+#[tauri::command]
+fn devify_auth_cancel(state: State<'_, DevifyAuthState>) -> Result<(), String> {
+    if let Some(handle) = state
+        .listener
+        .lock()
+        .map_err(|_| "读取登录回调状态失败。".to_string())?
+        .take()
+    {
+        handle.abort();
+    }
+    state
+        .pending
+        .lock()
+        .map_err(|_| "读取登录状态失败。".to_string())?
+        .take();
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DevifyAuthStatus {
+    authenticated: bool,
+}
+
+/// Report whether usable desktop credentials exist. An expired access token is
+/// refreshed here so the UI can decide between the login gate and the app.
+///
+/// A refresh can succeed for an account that the server has since removed (the
+/// refresh endpoint only checks the token signature), so ask the server once for
+/// an authenticated resource. Only an explicit 401 invalidates the session;
+/// network errors keep it so an offline user is not sent back to the login gate.
+#[tauri::command]
+async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> {
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    let Ok(token) = devify_access_token_async(&data, &settings.devify.base_url).await else {
+        return Ok(DevifyAuthStatus {
+            authenticated: false,
+        });
+    };
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/api/v1/spaces",
+            settings.devify.base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(token)
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+            let _ = desktop_credentials::clear(&data);
+            Ok(DevifyAuthStatus {
+                authenticated: false,
+            })
+        }
+        _ => Ok(DevifyAuthStatus { authenticated: true }),
+    }
+}
+
+/// Sign in with an AI mailbox username and password, then store the same
+/// desktop credentials the browser callback produces.
+#[tauri::command]
+async fn devify_login_password(
+    app: AppHandle,
+    username: String,
+    password: String,
+) -> Result<DevifyAuthResult, String> {
+    let username = username.trim();
+    if username.is_empty() || password.is_empty() {
+        return Err("请输入用户名和密码。".to_string());
+    }
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    let base_url = settings.devify.base_url.trim_end_matches('/').to_string();
+    let response = reqwest::Client::new()
+        .post(format!("{base_url}/api/v1/auth/login"))
+        .json(&serde_json::json!({ "username": username, "password": password }))
+        .send()
+        .await
+        .map_err(|e| format!("连接 Devify 登录服务失败：{e}"))?;
+    let status = response.status();
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("读取 Devify 登录响应失败：{e}"))?;
+    if !status.is_success() {
+        let detail = payload
+            .get("data")
+            .and_then(|value| {
+                value
+                    .get("non_field_errors")
+                    .and_then(|errors| errors.as_array())
+                    .and_then(|errors| errors.first())
+                    .and_then(|error| error.as_str())
+                    .or_else(|| value.get("detail").and_then(|error| error.as_str()))
+            })
+            .or_else(|| payload.get("message").and_then(|message| message.as_str()))
+            .unwrap_or("用户名或密码不正确。");
+        return Err(if detail.contains("Unable to log in") {
+            "用户名或密码不正确。".to_string()
+        } else {
+            detail.to_string()
+        });
+    }
+    let tokens = payload
+        .get("data")
+        .filter(|value| value.is_object())
+        .unwrap_or(&payload);
+    let access = tokens
+        .get("access")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "登录响应缺少 access token。".to_string())?;
+    let refresh = tokens
+        .get("refresh")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "登录响应缺少 refresh token。".to_string())?;
+    desktop_credentials::save(
+        &data,
+        &desktop_credentials::Credentials {
+            base_url,
+            access: access.to_string(),
+            refresh: refresh.to_string(),
+        },
+    )?;
+    let _ = ensure_active_space(&app).await;
+    Ok(DevifyAuthResult {
+        device_id: String::new(),
+        expires_in: 3600,
+    })
+}
+
+#[tauri::command]
+fn devify_logout(app: AppHandle) -> Result<(), String> {
+    desktop_credentials::clear(&app_data(&app))
 }
 
 #[derive(Clone, Serialize)]
@@ -1618,7 +2138,7 @@ struct AppInfo {
 #[tauri::command]
 fn app_info() -> AppInfo {
     AppInfo {
-        name: "AImyChats".to_string(),
+        name: "AIMyChats".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         stage: "Alpha".to_string(),
         platform: std::env::consts::OS.to_string(),
@@ -1848,8 +2368,9 @@ async fn automation_tick(app: &AppHandle) {
                 let sessions = input.sessions;
                 let messages = input.messages;
                 let truncated = input.truncated;
+                let language = value.language.summary.clone();
                 let joined = tauri::async_runtime::spawn_blocking(move || {
-                    agent::summarize(&agent_settings, &input, &agent_data)
+                    agent::summarize(&agent_settings, &input, &language, &agent_data)
                 })
                 .await;
                 match joined {
@@ -1906,6 +2427,34 @@ async fn automation_tick(app: &AppHandle) {
     automation_result(app, value, &day, "sent", summary_error);
 }
 
+/// Scheduler tick for the backup plan saved in settings. Uploads only when the plan says a
+/// run is due (interval elapsed, scheduled time reached, and the window allows it).
+async fn backup_tick(app: &AppHandle) {
+    let data = app_data(app);
+    let Ok(value) = settings::load(&data) else {
+        return;
+    };
+    if !value.sync.enabled {
+        return;
+    }
+    let last_run = value
+        .sync
+        .last_run_at
+        .as_deref()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.with_timezone(&Local));
+    if !backup::due(
+        &value.backup,
+        value.chat.sync_interval_seconds,
+        last_run,
+        Local::now(),
+    ) {
+        return;
+    }
+    sync_automation_tick(app).await;
+    chat_sync_tick(app).await;
+}
+
 async fn sync_automation_tick(app: &AppHandle) {
     let data = app_data(app);
     let Ok(value) = settings::load(&data) else {
@@ -1937,6 +2486,362 @@ async fn sync_automation_tick(app: &AppHandle) {
     end_sync(&sync_state, &account_id);
 }
 
+#[derive(Serialize)]
+struct ChatSyncSummary {
+    status: String,
+    uploaded: usize,
+    skipped: usize,
+    message_count: usize,
+    error: Option<String>,
+}
+
+/// Bring queued upload jobs in line with the server before the next sync, so the local
+/// "not uploaded yet" marks clear once parsing finishes.
+async fn reconcile_upload_jobs(app: &AppHandle) {
+    let data = app_data(app);
+    let Ok(value) = settings::load(&data) else {
+        return;
+    };
+    let pending: Vec<settings::UploadJob> = value
+        .upload_queue
+        .iter()
+        .filter(|job| {
+            job.batch_id.is_some()
+                && matches!(
+                    job.status.as_str(),
+                    "queued" | "running" | "processing" | "uploading"
+                )
+        })
+        .take(25)
+        .cloned()
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let mut updates = Vec::new();
+    for job in pending {
+        let Some(batch_id) = job.batch_id else { continue };
+        let Ok(status) = devify_upload_status(app.clone(), batch_id).await else {
+            continue;
+        };
+        let mapped = match status.status.as_str() {
+            "completed" => Some((
+                "completed".to_string(),
+                format!("服务端解析完成，共 {} 条消息", status.message_count),
+            )),
+            "failed" => Some((
+                "failed".to_string(),
+                if status.error_message.is_empty() {
+                    "服务端解析失败".to_string()
+                } else {
+                    status.error_message
+                },
+            )),
+            _ => None,
+        };
+        if let Some((state, message)) = mapped {
+            updates.push((job.id, state, message));
+        }
+    }
+    if updates.is_empty() {
+        return;
+    }
+    let Ok(mut next) = settings::load(&data) else {
+        return;
+    };
+    for (id, state, message) in updates {
+        if let Some(item) = next.upload_queue.iter_mut().find(|item| item.id == id) {
+            item.status = state;
+            item.message = message;
+            item.updated_at = chrono::Utc::now().to_rfc3339();
+        }
+    }
+    let _ = settings::save(&data, &next);
+}
+
+fn sync_job(
+    account_id: &str,
+    space_id: i64,
+    username: &str,
+    ordinal: usize,
+    since: Option<i64>,
+    base_url: &str,
+    batch_id: Option<i64>,
+    status: &str,
+    message: &str,
+) -> settings::UploadJob {
+    let now = chrono::Utc::now().to_rfc3339();
+    settings::UploadJob {
+        // Conversations are uploaded in one tick, so the ordinal keeps the ids unique.
+        id: format!(
+            "sync-{}-{}-{}",
+            account_id,
+            chrono::Utc::now().timestamp_millis(),
+            ordinal
+        ),
+        space_id,
+        account_id: account_id.to_string(),
+        batch_id,
+        status: status.to_string(),
+        message: message.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        scope: Some(settings::UploadScope {
+            usernames: vec![username.to_string()],
+            since,
+            until: None,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            message_selection: BTreeMap::new(),
+        }),
+    }
+}
+
+/// True when the stored run status is missing or too old to answer "when did it last run".
+fn sync_status_is_stale(sync: &settings::SyncSettings) -> bool {
+    if sync.last_status.as_deref() != Some("success") {
+        return true;
+    }
+    let Some(at) = sync
+        .last_run_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+    else {
+        return true;
+    };
+    (chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_seconds() >= 60
+}
+
+/// Sessions uploaded per tick. Probing a conversation with nothing new is a single
+/// indexed query, so only actual uploads are capped.
+const SYNC_UPLOADS_PER_TICK: usize = 50;
+
+/// Decrypt the local cache, then upload every allowlisted conversation that has messages
+/// newer than its cursor. The first run of a conversation uploads its full local history.
+async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSummary, String> {
+    let data = app_data(app);
+    let value = settings::load(&data)?;
+    if !manual && !value.sync.enabled {
+        return Ok(ChatSyncSummary {
+            status: "idle".into(),
+            uploaded: 0,
+            skipped: 0,
+            message_count: 0,
+            error: None,
+        });
+    }
+    let account_id = value.active_account_id.clone();
+    if account_id.is_empty() {
+        return Err("尚未选择微信账号。".into());
+    }
+    let Some(space_id) = value.devify.active_space_id else {
+        return Err("请先在 Devify 配置中选择要同步到的空间。".into());
+    };
+    let mut whitelist = value
+        .chat
+        .allowed_usernames
+        .get(&account_id)
+        .cloned()
+        .unwrap_or_default();
+    if whitelist.is_empty() {
+        return Err("聊天白名单为空，没有可同步的会话。".into());
+    }
+    whitelist.sort();
+    whitelist.dedup();
+    let base_url = value.devify.base_url.clone();
+    reconcile_upload_jobs(app).await;
+
+    let scan = discover::scan();
+    let Some(account) = scan
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .cloned()
+    else {
+        return Err("未找到本机微信数据目录，请先在聊天记录页完成定位。".into());
+    };
+    let sync_state = app.state::<SyncState>();
+    if !begin_sync(&sync_state, &account_id) {
+        return Err("该账号正在同步，请稍后再试。".into());
+    }
+    let store = keys::load(&keys::store_path(&data));
+    let data_for_decrypt = data.clone();
+    let outcomes = tauri::async_runtime::spawn_blocking(move || {
+        decrypt::decrypt_account(&data_for_decrypt, &account, &store, true, true)
+    })
+    .await
+    .map_err(|e| format!("读取本机聊天记录失败：{e}"))?;
+    end_sync(&sync_state, &account_id);
+    if let Some(failure) = outcomes
+        .iter()
+        .find(|outcome| outcome.status == "failed" || outcome.status == "no-key")
+    {
+        let reason = failure
+            .error
+            .clone()
+            .unwrap_or_else(|| format!("{} 未能解密", failure.rel));
+        // Naming the database matters: a key that is missing for one new shard otherwise
+        // looks like "keys are configured but nothing works".
+        return Err(format!("读取本机聊天记录失败（{}）：{reason}", failure.rel));
+    }
+
+    let mut account_cursors = value
+        .sync
+        .cursors
+        .get(&account_id)
+        .cloned()
+        .unwrap_or_default();
+    let cache = decrypt::cache_dir(&data, &account_id);
+    let mut uploaded = 0usize;
+    let mut skipped = 0usize;
+    let mut message_count = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    let mut jobs: Vec<settings::UploadJob> = Vec::new();
+    let mut touched = false;
+
+    for (ordinal, username) in whitelist.iter().enumerate() {
+        if uploaded >= SYNC_UPLOADS_PER_TICK {
+            break;
+        }
+        let cursor = account_cursors.get(username).copied();
+        // Cheap probe first: packaging a conversation that has nothing new would only
+        // re-create the same idempotent batch every tick.
+        let needs_upload = match query::latest_message(&cache, username) {
+            Ok(None) => false,
+            Ok(Some(newest)) => !cursor.is_some_and(|current| current.covers(newest)),
+            // A whitelisted session without a local table is skipped, not retried forever.
+            Err(error) if error.contains("没有找到会话") => {
+                skipped += 1;
+                continue;
+            }
+            // The probe is an optimization only; let the uploader report the real error.
+            Err(_) => true,
+        };
+        if !needs_upload {
+            skipped += 1;
+            continue;
+        }
+        let since = cursor.map(|current| current.time);
+        let result = devify_upload_wechat(
+            app.clone(),
+            space_id,
+            account_id.clone(),
+            vec![username.clone()],
+            since,
+            None,
+            Some(base_url.clone()),
+            None,
+            BTreeMap::new(),
+        )
+        .await;
+        match result {
+            Ok(result) => {
+                uploaded += 1;
+                message_count += result.message_count;
+                jobs.push(sync_job(
+                    &account_id,
+                    space_id,
+                    username,
+                    ordinal,
+                    since,
+                    &base_url,
+                    Some(result.batch_id),
+                    "processing",
+                    &format!("自动同步：已提交 {} 条消息", result.message_count),
+                ));
+                if let Some((time, local_id)) = result.latest_position {
+                    account_cursors.insert(username.clone(), settings::SyncCursor { time, local_id });
+                }
+                touched = true;
+            }
+            Err(error) if error.contains("没有可上传的消息") => skipped += 1,
+            Err(error) => {
+                // Stop at the first failure so a server or network problem does not
+                // produce one failed job per conversation.
+                jobs.push(sync_job(
+                    &account_id,
+                    space_id,
+                    username,
+                    ordinal,
+                    since,
+                    &base_url,
+                    None,
+                    "failed",
+                    &error,
+                ));
+                failures.push(format!("{username}：{error}"));
+                break;
+            }
+        }
+    }
+
+    // A run with nothing to do is still a run: refresh the status, but do not rewrite the
+    // settings file on every idle tick.
+    if touched || !failures.is_empty() || sync_status_is_stale(&value.sync) {
+        let mut next = settings::load(&data)?;
+        if touched {
+            next.sync
+                .cursors
+                .insert(account_id.clone(), account_cursors);
+        }
+        if !jobs.is_empty() {
+            next.upload_queue.splice(0..0, jobs);
+        }
+        next.sync.last_run_at = Some(chrono::Utc::now().to_rfc3339());
+        next.sync.last_status =
+            Some(if failures.is_empty() { "success" } else { "failed" }.into());
+        next.sync.last_error = if failures.is_empty() {
+            None
+        } else {
+            Some(failures.join("；"))
+        };
+        next.sync.last_message_count = message_count as u64;
+        settings::save(&data, &next)?;
+    }
+
+    Ok(ChatSyncSummary {
+        status: if failures.is_empty() {
+            "success".into()
+        } else {
+            "failed".into()
+        },
+        uploaded,
+        skipped,
+        message_count,
+        error: if failures.is_empty() {
+            None
+        } else {
+            Some(failures.join("；"))
+        },
+    })
+}
+
+async fn chat_sync_tick(app: &AppHandle) {
+    let data = app_data(app);
+    let Ok(value) = settings::load(&data) else {
+        return;
+    };
+    if !value.sync.enabled {
+        return;
+    }
+    let Err(error) = perform_chat_sync(app, false).await else {
+        return;
+    };
+    // Only persist when the failure reason changed, otherwise every tick rewrites the file.
+    if value.sync.last_error.as_deref() == Some(error.as_str()) {
+        return;
+    }
+    let mut next = settings::load(&data).unwrap_or(value);
+    next.sync.last_run_at = Some(chrono::Utc::now().to_rfc3339());
+    next.sync.last_status = Some("failed".into());
+    next.sync.last_error = Some(error);
+    let _ = settings::save(&data, &next);
+}
+
+#[tauri::command]
+async fn devify_sync_now(app: AppHandle) -> Result<ChatSyncSummary, String> {
+    perform_chat_sync(&app, true).await
+}
+
 #[tauri::command]
 fn app_settings_get(app: AppHandle) -> Result<settings::AppSettings, String> {
     settings::load(&app_data(&app))
@@ -1947,8 +2852,16 @@ fn app_settings_save(
     app: AppHandle,
     mut value: settings::AppSettings,
 ) -> Result<settings::AppSettings, String> {
+    let stored = settings::load(&app_data(&app))?;
     // The queue is managed by upload commands, not by potentially stale settings forms.
-    value.upload_queue = settings::load(&app_data(&app))?.upload_queue;
+    value.upload_queue = stored.upload_queue;
+    // Settings forms only toggle automatic sync; cursors and run history stay owned by the
+    // sync loop.
+    value.sync.cursors = stored.sync.cursors;
+    value.sync.last_run_at = stored.sync.last_run_at;
+    value.sync.last_status = stored.sync.last_status;
+    value.sync.last_error = stored.sync.last_error;
+    value.sync.last_message_count = stored.sync.last_message_count;
     settings::save(&app_data(&app), &value)?;
     Ok(value)
 }
@@ -2979,6 +3892,75 @@ async fn wechat_import_saved_key(
     import_key_text(&app, &text, account_id.as_deref())
 }
 
+#[derive(Serialize)]
+struct WeChatPlatformCapabilities {
+    platform: String,
+    key_acquisition: String,
+    supports_memory_scan: bool,
+    supports_macos_capture: bool,
+    supports_key_import: bool,
+}
+
+#[tauri::command]
+fn wechat_platform_capabilities() -> WeChatPlatformCapabilities {
+    #[cfg(target_os = "windows")]
+    {
+        return WeChatPlatformCapabilities {
+            platform: "windows".into(),
+            key_acquisition: "windows_memory_scan_or_import".into(),
+            supports_memory_scan: true,
+            supports_macos_capture: false,
+            supports_key_import: true,
+        };
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return WeChatPlatformCapabilities {
+            platform: "macos".into(),
+            key_acquisition: "macos_capture_or_import".into(),
+            supports_memory_scan: false,
+            supports_macos_capture: true,
+            supports_key_import: true,
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return WeChatPlatformCapabilities {
+            platform: "linux".into(),
+            key_acquisition: "import_only".into(),
+            supports_memory_scan: false,
+            supports_macos_capture: false,
+            supports_key_import: true,
+        };
+    }
+    #[allow(unreachable_code)]
+    WeChatPlatformCapabilities {
+        platform: std::env::consts::OS.into(),
+        key_acquisition: "import_only".into(),
+        supports_memory_scan: false,
+        supports_macos_capture: false,
+        supports_key_import: true,
+    }
+}
+
+#[tauri::command]
+async fn wechat_windows_key_scan(
+    app: AppHandle,
+    account_id: Option<String>,
+) -> Result<KeyImportResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = windows_keys::scan()?;
+        let text = candidates.join("\n");
+        return import_key_text(&app, &text, account_id.as_deref());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, account_id);
+        Err("Windows 密钥扫描器只能在 Windows 上运行。".into())
+    }
+}
+
 #[tauri::command]
 async fn wechat_scan() -> ScanResult {
     discover::scan()
@@ -3311,8 +4293,9 @@ async fn agent_summarize(
         input.truncated,
     );
     let agent_settings = value.agent.clone();
+    let language = value.language.summary.clone();
     let run = tauri::async_runtime::spawn_blocking(move || {
-        agent::summarize(&agent_settings, &input, &data)
+        agent::summarize(&agent_settings, &input, &language, &data)
     })
     .await
     .map_err(|error| format!("Agent 总结任务失败：{error}"))??;
@@ -3383,12 +4366,10 @@ pub fn run() {
             let sync_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    sync_automation_tick(&sync_handle).await;
-                    let seconds = settings::load(&app_data(&sync_handle))
-                        .map(|value| value.chat.sync_interval_seconds)
-                        .unwrap_or(30)
-                        .clamp(1, 3600);
-                    tokio::time::sleep(Duration::from_secs(seconds)).await;
+                    backup_tick(&sync_handle).await;
+                    // A short fixed tick keeps "每天定点" close to the minute it promises;
+                    // `backup::due` decides whether this tick actually uploads.
+                    tokio::time::sleep(Duration::from_secs(30)).await;
                 }
             });
             Ok(())
@@ -3397,16 +4378,29 @@ pub fn run() {
             devify_auth_start,
             devify_auth_open,
             devify_auth_callback,
+            devify_auth_cancel,
+            devify_auth_status,
+            devify_login_password,
+            devify_logout,
             devify_spaces,
+            devify_space_ensure,
             devify_analysis_list,
             devify_analysis_detail,
             devify_event_notes,
+            devify_conversations,
+            devify_conversation_detail,
+            devify_conversation_messages,
+            devify_message_detail,
+            devify_sync_now,
             devify_topics,
             devify_topic_create,
+            devify_topic_detail,
             devify_topic_update,
             devify_topic_delete,
             devify_questions,
+            devify_question_detail,
             devify_question_ask,
+            devify_note_detail,
             devify_space_takeover,
             wechat_collection_messages,
             devify_upload_preview,
@@ -3418,6 +4412,8 @@ pub fn run() {
             app_settings_get,
             app_settings_save,
             wechat_scan,
+            wechat_platform_capabilities,
+            wechat_windows_key_scan,
             wechat_key_status,
             wechat_key_source_status,
             wechat_open_key_extractor,
@@ -3465,6 +4461,74 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
+}
+
+#[cfg(test)]
+mod devify_error_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reads_detail_nested_in_the_api_envelope() {
+        let payload = json!({
+            "code": "user_not_found",
+            "message": "failed",
+            "data": {"detail": "User not found", "code": "user_not_found"}
+        });
+        assert_eq!(
+            devify_error_message(&payload).as_deref(),
+            Some("User not found")
+        );
+    }
+
+    #[test]
+    fn reads_validation_field_errors_nested_in_the_envelope() {
+        let payload = json!({
+            "code": 400,
+            "message": "failed",
+            "data": {"title": ["不能为空。"], "period": ["周期无效。"]}
+        });
+        let message = devify_error_message(&payload).expect("message");
+        assert!(message.contains("title：不能为空。"), "{message}");
+        assert!(message.contains("period：周期无效。"), "{message}");
+    }
+
+    #[test]
+    fn falls_back_to_plain_top_level_errors() {
+        let payload = json!({"detail": "Method \"GET\" not allowed."});
+        assert_eq!(
+            devify_error_message(&payload).as_deref(),
+            Some("Method \"GET\" not allowed.")
+        );
+    }
+
+    #[test]
+    fn ignores_empty_error_payloads() {
+        assert_eq!(devify_error_message(&json!({})), None);
+    }
+
+    #[test]
+    fn falls_back_when_no_reason_is_present() {
+        assert_eq!(
+            devify_error_text(&json!({}), "服务端拒绝了请求"),
+            "服务端拒绝了请求"
+        );
+    }
+
+    #[test]
+    fn points_at_space_selection_when_the_space_is_gone() {
+        assert_eq!(
+            devify_friendly_error(
+                reqwest::StatusCode::NOT_FOUND,
+                "Space not found."
+            ),
+            "当前 Devify 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。"
+        );
+        assert_eq!(
+            devify_friendly_error(reqwest::StatusCode::NOT_FOUND, "Event not found."),
+            "Event not found."
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3864,5 +4928,37 @@ mod key_flow_tests {
         assert!(other.exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod space_tests {
+    use super::{pick_personal_space, DevifySpace};
+
+    fn space(id: i64, name: &str, kind: &str) -> DevifySpace {
+        DevifySpace {
+            id,
+            name: name.into(),
+            kind: kind.into(),
+            status: "active".into(),
+            role: None,
+            is_global_admin: false,
+            admin_takeover_active: false,
+        }
+    }
+
+    #[test]
+    fn personal_space_is_the_default_target() {
+        let spaces = vec![space(1, "团队空间", "team"), space(2, "个人空间", "personal")];
+        assert_eq!(pick_personal_space(&spaces), Some(2));
+    }
+
+    #[test]
+    fn falls_back_to_name_then_first_space() {
+        let named = vec![space(3, "团队", "team"), space(4, "我的个人空间", "shared")];
+        assert_eq!(pick_personal_space(&named), Some(4));
+        let unnamed = vec![space(7, "Alpha", "team"), space(8, "Beta", "team")];
+        assert_eq!(pick_personal_space(&unnamed), Some(7));
+        assert_eq!(pick_personal_space(&[]), None);
     }
 }

@@ -1,5 +1,5 @@
 ---
-name: AImyChats
+name: AIMyChats
 description: A native Mac viewer for your own WeChat history — one accent that only marks what you chose.
 colors:
   accent: "#0D7A45"
@@ -140,13 +140,13 @@ components:
     height: "24px"
 ---
 
-# Design System: AImyChats
+# Design System: AIMyChats
 
 ## Overview
 
 **Creative North Star: "The Reading Desk"**
 
-AImyChats is a Mac document tool that happens to read chat history. The window
+AIMyChats is a Mac document tool that happens to read chat history. The window
 is a unified title bar over a full-height source list, the reading plane is
 paper white, and the only colour in the product is a green mark on the thing the
 operator has decided to keep. Everything else — chrome, rules, counts, badges —

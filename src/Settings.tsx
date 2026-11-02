@@ -25,6 +25,13 @@ const DAILY_STATUS_LABEL: Record<string, string> = {
   error: '未完成',
 };
 
+const SYNC_STATUS_LABEL: Record<string, string> = {
+  success: '已完成',
+  failed: '未完成',
+  idle: '未运行',
+  syncing: '同步中',
+};
+
 /** Same rule as the chat page: the remembered account wins, otherwise the one WeChat is
  *  still writing to (the signed-in account), otherwise the only one found. */
 function currentAccount(accounts: Account[], remembered: string): Account | null {
@@ -42,6 +49,24 @@ export type AppSettings = {
   };
   devify: { base_url: string; device_label: string; active_space_id: number | null; recipient: string; subject: string };
   upload_queue?: Array<{ id: string; space_id: number; batch_id?: number | null; status: string; message: string; updated_at: string }>;
+  sync: {
+    enabled: boolean;
+    last_run_at: string | null;
+    last_status: string | null;
+    last_error: string | null;
+    last_message_count: number;
+  };
+  backup: {
+    mode: 'interval' | 'times' | 'manual';
+    times: string[];
+    window_enabled: boolean;
+    window_mode: 'deny' | 'allow';
+    window_start: string;
+    window_end: string;
+    /** 0 = 周一 … 6 = 周日. */
+    days: number[];
+  };
+  language: { ui: string; summary: string; ask: string };
   automation: {
     enabled: boolean;
     daily_summary_enabled: boolean;
@@ -60,19 +85,22 @@ export type AppSettings = {
   };
 };
 
-type MailStatus = {
-  configured: boolean;
-  host: string | null;
-  port: number | null;
-  from: string | null;
-  missing: string[];
-};
-
 export function defaultSettings(): AppSettings {
   return {
     active_account_id: '',
     chat: { allowed_usernames: {}, sync_interval_seconds: 30 },
-    devify: { base_url: 'https://app.aimychats.com', device_label: 'AImyChats', active_space_id: null, recipient: '', subject: '微信工作日报' },
+    devify: { base_url: 'https://app.aimychats.com', device_label: 'AIMyChats', active_space_id: null, recipient: '', subject: '微信工作日报' },
+    sync: { enabled: false, last_run_at: null, last_status: null, last_error: null, last_message_count: 0 },
+    language: { ui: '中文', summary: '跟随界面', ask: '跟随提问' },
+    backup: {
+      mode: 'interval',
+      times: ['18:00'],
+      window_enabled: false,
+      window_mode: 'deny',
+      window_start: '23:00',
+      window_end: '07:00',
+      days: [0, 1, 2, 3, 4, 5, 6],
+    },
     automation: {
       enabled: false,
       daily_summary_enabled: true,
@@ -103,6 +131,9 @@ export function mergeSettings(stored: AppSettings): AppSettings {
     ...stored,
     chat: { ...defaults.chat, ...stored.chat },
     devify: { ...defaults.devify, ...stored.devify },
+    sync: { ...defaults.sync, ...stored.sync },
+    backup: { ...defaults.backup, ...(stored.backup ?? {}) },
+    language: { ...defaults.language, ...(stored.language ?? {}) },
     automation: { ...defaults.automation, ...stored.automation },
     agent: { ...defaults.agent, ...stored.agent },
   };
@@ -115,6 +146,7 @@ export function WhitelistSettings() {
   const [catalog, setCatalog] = useState<SessionItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [kind, setKind] = useState<'all' | 'group' | 'direct'>('all');
+  const [open, setOpen] = useState(true);
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
@@ -230,67 +262,95 @@ export function WhitelistSettings() {
   };
 
   return <div className="settings-page imports-page">
-    <header className="imports-page-head">
-      <div><p className="imports-kicker">IMPORT MANAGEMENT</p><h2>导入管理</h2><p className="help">按连接器选择要导入的来源和会话。当前客户端先支持微信；其他来源接入后会在这里分别配置。</p></div>
-      <span className="imports-count">{accountId ? `微信 · 已选 ${allowedCount} 个会话` : '尚未连接微信'}</span>
+    <header className="page-head">
+      <h2>导入管理</h2>
+      <p className="help">每个平台单独选择要备份的群和会话。会话很多时，用筛选和批量操作，不必逐个点。连接向导里也可以设置。</p>
     </header>
-    <nav className="imports-platforms" aria-label="导入来源"><button type="button" className="active"><span className="imports-platform-mark green">微</span><span><strong>微信</strong><small>本机数据库 · 只读</small></span></button><button type="button" disabled><span className="imports-platform-mark teal">W</span><span><strong>WhatsApp</strong><small>尚未接入</small></span></button><button type="button" disabled><span className="imports-platform-mark blue">@</span><span><strong>邮件</strong><small>尚未接入</small></span></button></nav>
-    <section className="panel imports-panel">
-      {/* One WeChat account is the normal case, so the page just says which one it is
-          using; the picker only appears when this Mac really has several. */}
-      <div className="settings-account">
-        <span>当前账号</span>
-        {accounts.length > 1 ? (
-          <select value={accountId} onChange={event => setAccountId(event.target.value)}>
-            {accounts.map(account => <option key={account.id} value={account.id}>{accountLabel(account)}</option>)}
-          </select>
-        ) : (
-          <strong className="mono">{accountId || '未检测到微信账号'}</strong>
-        )}
-        {accountId && accounts.length <= 1 && <small>自动使用本机微信正在登录的账号</small>}
+
+    <section className={`plan-plat${open ? ' open' : ''}`}>
+      <div className="plan-plat-head">
+        <span className="plan-mark">微</span>
+        <button type="button" className="plan-plat-title" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <strong>微信</strong>
+          <small>{accountId ? `已选 ${allowedCount} 个会话 · 本机数据库 · 只读` : '尚未检测到账号'}<i>{open ? '收起' : '编辑'} →</i></small>
+        </button>
       </div>
-      <div className="settings-subheading"><strong>导入范围</strong><span>{accountId ? `已选 ${allowedCount} 个` : '未检测到微信账号'}</span></div>
-      <p className="help">群聊和单聊可以混合选择。未勾选任何会话时，聊天记录页面不会展示全部会话作为兜底。</p>
-      {catalog.length > 0 && <div className="settings-toolbar">
-        <div className="tabs" role="tablist" aria-label="按会话类型筛选">
-          <button type="button" role="tab" aria-selected={kind === 'all'} className={kind === 'all' ? 'on' : ''} onClick={() => setKind('all')}>全部 {matchedCatalog.length}</button>
-          <button type="button" role="tab" aria-selected={kind === 'group'} className={kind === 'group' ? 'on' : ''} onClick={() => setKind('group')}>群聊 {groupCount}</button>
-          <button type="button" role="tab" aria-selected={kind === 'direct'} className={kind === 'direct' ? 'on' : ''} onClick={() => setKind('direct')}>单聊 {matchedCatalog.length - groupCount}</button>
+      {open && <div className="plan-rows">
+        <div className="plan-row">
+          <div className="plan-row-label">
+            <span>当前账号</span>
+            <small>{accounts.length > 1 ? '检测到多个微信账号，选择要导入的那个' : '自动使用本机微信正在登录的账号'}</small>
+          </div>
+          <div className="plan-row-control">
+            {accounts.length > 1
+              ? <select className="plan-select" value={accountId} aria-label="微信账号" onChange={event => setAccountId(event.target.value)}>
+                {accounts.map(account => <option key={account.id} value={account.id}>{accountLabel(account)}</option>)}
+              </select>
+              : <span className="plan-kv mono">{accountId || '未检测到微信账号'}</span>}
+          </div>
         </div>
-        <div className="settings-search">
-          <input
-            type="text"
-            value={search}
-            onChange={event => setSearch(event.target.value)}
-            placeholder="搜索会话名或 wxid"
-            spellCheck={false}
-          />
-          {search && <button type="button" className="secondary" onClick={() => setSearch('')}>清空</button>}
-        </div>
-        <div className="imports-bulk-actions"><span>批量设置当前结果</span><button type="button" className="secondary" onClick={() => setVisibleSelection(true)} disabled={!visibleCatalog.length}>全部导入</button><button type="button" className="secondary" onClick={() => setVisibleSelection(false)} disabled={!visibleCatalog.length}>全部忽略</button></div>
-      </div>}
-      {!accountId && <p className="settings-empty">未发现微信账号。请先在本地数据页面扫描并解密。</p>}
-      {accountId && catalogLoading && <p className="settings-empty">正在加载会话候选…</p>}
-      {accountId && !catalogLoading && !catalog.length && <p className="settings-empty">没有可配置的会话。请先完成该账号的解密。</p>}
-      {catalog.length > 0 && search.trim() && !matchedCatalog.length && <p className="settings-empty">没有匹配「{search.trim()}」的会话。</p>}
-      {matchedCatalog.length > 0 && !visibleCatalog.length && <p className="settings-empty">{kind === 'group' ? '没有匹配的群聊。' : '没有匹配的单聊。'}</p>}
-      {visibleCatalog.length > 0 && <div className="settings-session-list">
-        {visibleCatalog.map(session => <label key={session.username} className="settings-session">
-          <input type="checkbox" checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/>
-          <span><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></span>
-        </label>)}
+
+        {catalog.length > 0 && <>
+          <div className="plan-row">
+            <div className="plan-row-label">
+              <span>筛选会话</span>
+              <small>群聊和单聊可以混合选择；未勾选任何会话时，聊天页不会兜底展示全部会话</small>
+            </div>
+            <div className="plan-row-control">
+              <div className="plan-pills" role="group" aria-label="按会话类型筛选">
+                <button type="button" aria-pressed={kind === 'all'} className={kind === 'all' ? 'on' : ''} onClick={() => setKind('all')}>全部 {matchedCatalog.length}</button>
+                <button type="button" aria-pressed={kind === 'group'} className={kind === 'group' ? 'on' : ''} onClick={() => setKind('group')}>群聊 {groupCount}</button>
+                <button type="button" aria-pressed={kind === 'direct'} className={kind === 'direct' ? 'on' : ''} onClick={() => setKind('direct')}>单聊 {matchedCatalog.length - groupCount}</button>
+              </div>
+              <input className="plan-input" type="text" value={search} spellCheck={false} placeholder="搜索会话名或 wxid" aria-label="搜索会话" onChange={event => setSearch(event.target.value)}/>
+              {search && <button type="button" className="plan-button" onClick={() => setSearch('')}>清空</button>}
+            </div>
+          </div>
+
+          <div className="plan-row">
+            <div className="plan-row-label">
+              <span>批量设置</span>
+              <small>只作用于当前筛选结果，共 {visibleCatalog.length} 个会话</small>
+            </div>
+            <div className="plan-row-control">
+              <button type="button" className="plan-button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(true)}>全部导入</button>
+              <button type="button" className="plan-button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(false)}>全部忽略</button>
+            </div>
+          </div>
+
+          <div className="imports-list">
+            {visibleCatalog.map(session => <label key={session.username} className="imports-session">
+              <input type="checkbox" checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/>
+              <span><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></span>
+            </label>)}
+          </div>
+        </>}
+
+        {!accountId && <p className="plan-empty">未发现微信账号。请先在「连接器」完成扫描并解密。</p>}
+        {accountId && catalogLoading && <p className="plan-empty">正在加载会话候选…</p>}
+        {accountId && !catalogLoading && !catalog.length && <p className="plan-empty">没有可配置的会话。请先完成该账号的解密。</p>}
+        {catalog.length > 0 && search.trim() && !matchedCatalog.length && <p className="plan-empty">没有匹配「{search.trim()}」的会话。</p>}
+        {matchedCatalog.length > 0 && !visibleCatalog.length && <p className="plan-empty">{kind === 'group' ? '没有匹配的群聊。' : '没有匹配的单聊。'}</p>}
       </div>}
     </section>
+
+    <div className="plan-off-list">
+      {[{ mark: 'W', name: 'WhatsApp' }, { mark: '@', name: '邮件' }].map(item => <div className="plan-off" key={item.name}>
+        <span className="plan-mark dim alt">{item.mark}</span>
+        <div><strong>{item.name}</strong><small>连接后可单独设置导入范围</small></div>
+        <button type="button" className="ghost" disabled>尚未接入</button>
+      </div>)}
+    </div>
 
     {notice && <div className="notice">{notice}</div>}
     {error && <div className="error">{error}</div>}
     <div className="page-actions">
-      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存微信导入范围'}</button>
+      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存导入范围'}</button>
     </div>
   </div>;
 }
 
-export function StrategySettings({ title = '自动化策略', description = '集中策略负责准实时同步和每日总结；聊天范围由“聊天白名单”页面单独管理。默认不自动发送。' }: { title?: string; description?: string } = {}) {
+export function StrategySettings({ title = '本地自动化', description = '每日总结在本机生成后投递到 Devify。上传频率、上传时段由「备份周期」页面单独配置。' }: { title?: string; description?: string } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
@@ -308,7 +368,7 @@ export function StrategySettings({ title = '自动化策略', description = '集
     setNotice('');
     try {
       await invoke('app_settings_save', { value: settings });
-      setNotice('自动化策略已保存。');
+      setNotice('本地自动化设置已保存。');
     } catch (e) {
       setError(String(e));
     } finally {
@@ -324,9 +384,6 @@ export function StrategySettings({ title = '自动化策略', description = '集
     <section className="panel">
       <label className="confirm"><input type="checkbox" checked={settings.automation.enabled} onChange={event => setSettings(current => ({ ...current, automation: { ...current.automation, enabled: event.target.checked } }))}/><span>启用自动化调度</span></label>
       <div className="grid">
-        <label>同步间隔（秒）
-          <input type="number" min={1} max={3600} value={settings.chat.sync_interval_seconds} onChange={event => setSettings(current => ({ ...current, chat: { ...current.chat, sync_interval_seconds: Number(event.target.value) || 1 } }))}/>
-        </label>
         <label>日报时间
           <input type="time" value={settings.automation.daily_time} onChange={event => setSettings(current => ({ ...current, automation: { ...current.automation, daily_time: event.target.value } }))}/>
         </label>
@@ -344,43 +401,44 @@ export function StrategySettings({ title = '自动化策略', description = '集
     {notice && <div className="notice">{notice}</div>}
     {error && <div className="error">{error}</div>}
     <div className="page-actions">
-      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存自动化策略'}</button>
+      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存本地自动化'}</button>
     </div>
-  </div>;
-}
-
-export function ServerAnalysisSettings() {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [error, setError] = useState('');
-  useEffect(() => { void invoke<AppSettings>('app_settings_get').then(setSettings).catch(reason => setError(String(reason))); }, []);
-  const connected = Boolean(settings?.devify.active_space_id);
-  return <div className="settings-page analysis-page">
-    <header className="analysis-page-head"><div><p className="analysis-kicker">DEVIFY · SERVER ANALYSIS</p><h2>智能分析</h2><p className="help">事件、主题和报告由 Devify 服务端生成，桌面端负责提交数据并同步结果，不在本地伪造分析内容。</p></div><span className={connected ? 'analysis-connection on' : 'analysis-connection'}>{connected ? '服务端已连接' : '未选择空间'}</span></header>
-    {error && <p className="error" role="alert">{error}</p>}
-    <section className="analysis-cards"><article><span className="analysis-card-mark">事</span><div><h3>事件分析</h3><p>从已上传的聊天中识别待办、决定和进展，并在事件页面同步。</p><small>服务端生成 · 自动处理</small></div></article><article><span className="analysis-card-mark">题</span><div><h3>主题订阅</h3><p>按订阅周期回溯匹配的事件，生成主题结果和历史执行记录。</p><small>在「主题」页面管理</small></div></article><article><span className="analysis-card-mark">报</span><div><h3>日报 / 周报 / 月报</h3><p>基于服务端事件和已上传记录生成报告，结果在「报告」页面查看。</p><small>服务端生成 · 客户端同步</small></div></article></section>
-    <section className="panel analysis-boundary"><strong>当前分析范围</strong><p>{connected ? '当前 Devify 空间中的已上传聊天、事件和笔记。未上传的本地记录不会进入服务端分析。' : '登录 Devify 并选择空间后，才能查看服务端分析结果。'}</p><div className="page-actions">{!connected && <span className="muted">请先完成 Devify 账户配置</span>}</div></section>
   </div>;
 }
 
 export function DevifySettings() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
-  const [status, setStatus] = useState<MailStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [authStatus, setAuthStatus] = useState('');
+  const [authenticated, setAuthenticated] = useState(false);
   const [spaces, setSpaces] = useState<DevifySpace[]>([]);
   const [takeoverReason, setTakeoverReason] = useState('');
   const [spacesStatus, setSpacesStatus] = useState('');
 
   useEffect(() => {
-    void Promise.all([
-      invoke<AppSettings>('app_settings_get'),
-      invoke<MailStatus>('mail_config_status'),
-    ]).then(([stored, mail]) => {
-      setSettings({ ...defaultSettings(), ...stored, devify: { ...defaultSettings().devify, ...stored.devify } });
-      setStatus(mail);
-    }).catch(e => setError(String(e)));
+    void invoke<AppSettings>('app_settings_get')
+      .then(stored => setSettings({ ...defaultSettings(), ...stored, devify: { ...defaultSettings().devify, ...stored.devify } }))
+      .catch(e => setError(String(e)));
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void invoke<{ authenticated: boolean }>('devify_auth_status')
+      .then(status => {
+        if (!active) return;
+        setAuthenticated(status.authenticated);
+        if (!status.authenticated) return;
+        void (async () => {
+          await invoke<number | null>('devify_space_ensure').catch(() => null);
+          if (!active) return;
+          setSettings(mergeSettings(await invoke<AppSettings>('app_settings_get')));
+          await loadSpaces();
+        })();
+      })
+      .catch(() => {});
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -391,6 +449,9 @@ export function DevifySettings() {
       try {
         const result = await invoke<{ device_id: string }>('devify_auth_callback', { callbackUrl: url });
         if (!active) return;
+        setAuthenticated(true);
+        await invoke<number | null>('devify_space_ensure').catch(() => null);
+        setSettings(mergeSettings(await invoke<AppSettings>('app_settings_get')));
         setAuthStatus(`Devify 已登录，设备 ${result.device_id}`);
         setSpacesStatus('正在读取可用空间…');
         const available = await invoke<DevifySpace[]>('devify_spaces');
@@ -440,6 +501,18 @@ export function DevifySettings() {
     }
   };
 
+  const logoutDevify = async () => {
+    setError('');
+    try {
+      await invoke('devify_logout');
+      setAuthenticated(false);
+      setSpaces([]);
+      setSpacesStatus('');
+      setAuthStatus('已退出登录。');
+      window.dispatchEvent(new CustomEvent('aimychats:auth-changed', { detail: { authenticated: false } }));
+    } catch (e) { setError(String(e)); }
+  };
+
   const loadSpaces = async () => {
     setError('');
     setSpacesStatus('正在读取可用空间…');
@@ -451,6 +524,7 @@ export function DevifySettings() {
   };
 
   const selectedSpace = spaces.find(space => space.id === settings.devify.active_space_id);
+  const activeSpace = selectedSpace;
   const needsTakeover = Boolean(selectedSpace?.is_global_admin && !selectedSpace.admin_takeover_active);
   const takeoverSpace = async () => {
     if (!selectedSpace || !takeoverReason.trim()) return;
@@ -461,42 +535,73 @@ export function DevifySettings() {
     } catch (e) { setError(String(e)); }
   };
 
-  return <div className="settings-page">
+  /** 账户页的控件直接落库：文本字段在失焦时提交，选择类立刻提交。 */
+  const persist = (next: AppSettings) => {
+    setSettings(next);
+    void invoke<AppSettings>('app_settings_save', { value: next })
+      .then(saved => { setSettings(mergeSettings(saved)); setError(''); })
+      .catch(e => setError(`保存失败：${String(e)}`));
+  };
+  const setDevify = (patch: Partial<AppSettings['devify']>) => ({ ...settings, devify: { ...settings.devify, ...patch } });
+
+  return <div className="settings-page account-settings">
     <header className="page-head">
-      <h2>Devify 接收配置</h2>
-      <p className="help">客户端只需要配置 Devify 服务地址。设备身份、空间和上传目标由 Devify 登录后管理。</p>
+      <h2>账户</h2>
+      <p className="help">管理当前登录的 AIMyChats 账号。登录后默认使用个人空间，聊天记录与报告都写入这里。</p>
     </header>
-    <section className="panel">
-      <div className="grid">
-        <label>Devify 服务地址
-          <input type="url" value={settings.devify.base_url} onChange={event => setSettings(current => ({ ...current, devify: { ...current.devify, base_url: event.target.value } }))}/>
-        </label>
+
+    <div className="plan-items">
+      <div className="plan-row">
+        <div className="plan-row-label">
+          <span>当前账号</span>
+          <small>{authenticated ? (authStatus || 'Devify 已登录，设备身份由服务端签发') : '未登录 Devify，上传与报告同步都不可用'}</small>
+        </div>
+        <div className="plan-row-control">
+          {authenticated
+            ? <button type="button" className="plan-button" onClick={() => void logoutDevify()}>退出登录</button>
+            : <button type="button" className="plan-button primary" onClick={() => void loginDevify()}>登录 Devify</button>}
+        </div>
       </div>
-      <div className="page-actions"><button className="secondary" onClick={() => void loginDevify()}>登录 Devify</button>{authStatus && <span className="muted">{authStatus}</span>}</div>
-      <div className="grid">
-        <label>上传目标空间
-          <select value={settings.devify.active_space_id ?? ''} onChange={event => setSettings(current => ({ ...current, devify: { ...current.devify, active_space_id: event.target.value ? Number(event.target.value) : null } }))}>
-            <option value="">尚未选择</option>
-            {spaces.map(space => <option key={space.id} value={space.id}>{space.name} · {space.role || space.kind}</option>)}
-          </select>
-        </label>
+
+      <div className="plan-row">
+        <div className="plan-row-label">
+          <span>Devify 服务地址</span>
+          <small>自托管实例的根地址，上传与同步都发往这里</small>
+        </div>
+        <div className="plan-row-control">
+          <input
+            className="plan-input"
+            type="url"
+            aria-label="Devify 服务地址"
+            value={settings.devify.base_url}
+            onChange={event => setSettings(setDevify({ base_url: event.target.value }))}
+            onBlur={() => persist(settings)}
+          />
+        </div>
       </div>
-      {needsTakeover && <div className="config warn"><p>当前账号是全局管理员，访问空间业务数据前需要先接管空间并记录原因。</p><label>接管原因<input value={takeoverReason} maxLength={500} onChange={event => setTakeoverReason(event.target.value)} /></label><button type="button" className="secondary" disabled={!takeoverReason.trim()} onClick={() => void takeoverSpace()}>确认接管空间</button></div>}
-      <div className="page-actions"><button className="secondary" onClick={() => void loadSpaces()}>读取可用空间</button></div>
-      {!settings.devify.active_space_id && <p className="help">请先选择并保存上传目标空间。</p>}
-      {spacesStatus && <div className="muted" role="status">{spacesStatus}</div>}
-      <div className={`config ${status?.configured ? 'ok' : 'warn'}`}>
-        {status === null ? '正在检查 SMTP 配置…' : status.configured ? `SMTP 已配置：${status.host}:${status.port}，发件人 ${status.from}` : `SMTP 未配置。缺少：${status.missing.join(', ')}`}
+
+      <div className="plan-row">
+        <div className="plan-row-label">
+          <span>当前空间</span>
+          <small>{activeSpace ? '登录后自动使用个人空间，聊天记录、事件与报告都写入这里' : (spacesStatus || '登录后自动选择个人空间')}</small>
+        </div>
+        <div className="plan-row-control">
+          <span className="plan-kv">{activeSpace ? `${activeSpace.name} · ${activeSpace.role || activeSpace.kind}` : (authenticated ? '正在读取空间…' : '未登录')}</span>
+        </div>
       </div>
-      <p className="help">
-        开发阶段通过 <code>DEVIFY_SMTP_HOST</code>、<code>DEVIFY_SMTP_PORT</code>、<code>DEVIFY_SMTP_USERNAME</code>、
-        <code>DEVIFY_SMTP_PASSWORD</code> 和 <code>DEVIFY_MAIL_FROM</code> 配置 SMTP。正式版本再迁移到系统凭据存储。
-      </p>
-    </section>
+
+    </div>
+
+    {needsTakeover && <section className="account-takeover">
+      <strong>当前账号是全局管理员</strong>
+      <p>访问空间业务数据前需要先接管空间并记录原因。</p>
+      <div className="account-takeover-actions">
+        <input value={takeoverReason} maxLength={500} placeholder="接管原因" onChange={event => setTakeoverReason(event.target.value)}/>
+        <button type="button" className="plan-button" disabled={!takeoverReason.trim()} onClick={() => void takeoverSpace()}>确认接管空间</button>
+      </div>
+    </section>}
+
     {notice && <div className="notice">{notice}</div>}
     {error && <div className="error">{error}</div>}
-    <div className="page-actions">
-      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存 Devify 配置'}</button>
-    </div>
   </div>;
 }

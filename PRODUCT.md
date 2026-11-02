@@ -16,7 +16,7 @@ The secondary reader is the same person's local AI agent, which reads chats thro
 
 ## Product Purpose
 
-AImyChats turns the WeChat history already on this Mac into readable, organizable, deliverable work material. It decrypts a copy of the local SQLCipher databases with a key the user supplies, shows whitelisted conversations in a reader built for review rather than chat, lets the user pick work content across conversations and time ranges, and produces a local rule-based organizing pass or an AI summary through a locally installed agent CLI. Scheduled digests are delivered to the user's own self-hosted Devify inbox.
+AIMyChats turns the WeChat history already on this Mac into readable, organizable, deliverable work material. It decrypts a copy of the local SQLCipher databases with a key the user supplies, shows whitelisted conversations in a reader built for review rather than chat, lets the user pick work content across conversations and time ranges, and produces a local rule-based organizing pass or an AI summary through a locally installed agent CLI. Scheduled digests are delivered to the user's own self-hosted Devify inbox.
 
 Success is: the user opens the app, finds the conversation they were thinking of, selects what matters, and ends with a summary they can send — without ever leaving the machine or trusting a cloud service.
 
@@ -40,6 +40,7 @@ Eight top-level areas, unchanged by any redesign: 聊天记录 (default), 总结
 Constraints that bind any visual work:
 
 - The chat surface is a three-region working view: conversation list, message history, and a drawer for selection / summary / history detail. Cross-conversation message selection and Shift range selection must stay usable.
+- **Cloud records are a separate reading surface.** 聊天 → 云端记录 reads the user's own Devify space through the server API (conversation list, message pager, jump-to-message from event evidence). The source is always labelled (微信 for the local reader, Devify 空间 for cloud records), the server view is read-only, and an empty or unparsed batch is stated as empty instead of being filled with local content.
 - State is real and often long: partial decryption (`n/20` databases), WAL caveats, per-message truncation flags, agent timeouts, network-less SMTP. Errors are stated as facts plus a next action, never as a spinner that never ends.
 - Rich messages (links, files, quotes, mini programs, transfers) render as typed labels, never raw XML.
 - Content is Simplified Chinese with heavy Latin/digit mixing (account ids, hashes, paths, model names). Any type choice must hold both.
@@ -47,7 +48,7 @@ Constraints that bind any visual work:
 
 ## Brand Commitments
 
-- Name **AImyChats**; app icon uses the official AImyChats gradient A-mark from https://aimychats.com/zh/.
+- Name **AIMyChats**; app icon uses the official AIMyChats gradient A-mark from https://aimychats.com/zh/.
 - The interface accent is green, matching the app icon and the product's WeChat context.
 - **2026-10-28, user's explicit choice:** after a currant-accent pass, the user asked for the earlier green back — green is the accent again, on the neutral native chrome.
 - The interface must read as a native macOS application.

@@ -114,6 +114,8 @@ type SearchReport = {
   hits: SearchHit[];
 };
 
+type PlatformCapabilities = { platform: 'macos' | 'windows' | 'linux' | string; key_acquisition: string; supports_memory_scan: boolean; supports_macos_capture: boolean; supports_key_import: boolean };
+
 type WechatEnv = {
   app_data_dir: string;
   cache_root: string;
@@ -493,6 +495,10 @@ export default function WeChatLocal({
   wizardStep = 'wizard-method',
   onWizardBack,
   onWizardNext,
+  openSummary = false,
+  onSummaryRequestHandled,
+  focusConversation,
+  focusMessageId,
 }: {
   mode?: 'chat' | 'settings';
   onOpenChat?: () => void;
@@ -502,8 +508,13 @@ export default function WeChatLocal({
   wizardStep?: string;
   onWizardBack?: () => void;
   onWizardNext?: () => void;
+  openSummary?: boolean;
+  onSummaryRequestHandled?: () => void;
+  focusConversation?: string | null;
+  focusMessageId?: string | number | null;
 } = {}) {
   const [env, setEnv] = useState<WechatEnv | null>(null);
+  const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [accountId, setAccountId] = useState('');
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
@@ -553,6 +564,7 @@ export default function WeChatLocal({
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [whitelistConfigured, setWhitelistConfigured] = useState<boolean | null>(null);
   const [showKeyGuide, setShowKeyGuide] = useState(false);
+  const [windowsScanBusy, setWindowsScanBusy] = useState(false);
   useEffect(() => { if (wizard) setShowKeyGuide(true); }, [wizard]);
   const [keyImport, setKeyImport] = useState<KeyImportResult | null>(null);
   const [freshSource, setFreshSource] = useState(false);
@@ -576,6 +588,7 @@ export default function WeChatLocal({
 
   const messageRef = useRef<HTMLDivElement | null>(null);
   const pendingHighlight = useRef<string>('');
+  const pendingFocusMessage = useRef<string>('');
   const syncLock = useRef(false);
   const clearingRef = useRef(false);
   const sourceSeen = useRef<{ exists: boolean; modifiedAt: number | null } | null>(null);
@@ -869,6 +882,16 @@ export default function WeChatLocal({
     } finally {
       setBusy(null);
     }
+  };
+
+  const scanWindowsKeys = async () => {
+    setWindowsScanBusy(true); setError(''); setNotice('');
+    try {
+      const result = await invoke<KeyImportResult>('wechat_windows_key_scan', { accountId: account?.id ?? null });
+      setKeyImport(result); await refreshKeys();
+      setNotice(result.message || 'Windows 密钥已校验并导入。');
+    } catch (reason) { setError(String(reason)); }
+    finally { setWindowsScanBusy(false); }
   };
 
   const importSavedKey = async () => {
@@ -1179,7 +1202,7 @@ export default function WeChatLocal({
   };
 
   const openSession = useCallback(
-    async (session: SessionItem, keyword = '') => {
+    async (session: SessionItem, keyword = '', focusMessageId?: string | number) => {
       if (!account) return;
       setActive(session);
       setMessages([]);
@@ -1213,6 +1236,7 @@ export default function WeChatLocal({
         setMessages(list);
         setHasMore(list.length >= PAGE);
         pendingHighlight.current = keyword;
+      pendingFocusMessage.current = focusMessageId == null ? '' : String(focusMessageId);
       } catch (e) {
         setError(String(e));
       } finally {
@@ -1247,7 +1271,13 @@ export default function WeChatLocal({
     const root = messageRef.current;
     if (!root) return;
     const keyword = pendingHighlight.current;
+    const focusMessageId = pendingFocusMessage.current;
     pendingHighlight.current = '';
+    pendingFocusMessage.current = '';
+    if (focusMessageId) {
+      const focused = root.querySelector<HTMLElement>(`#msg-${CSS.escape(focusMessageId)}`);
+      if (focused) { focused.scrollIntoView({ block: 'center' }); focused.classList.add('wxv-message-focus'); window.setTimeout(() => focused.classList.remove('wxv-message-focus'), 2400); return; }
+    }
     if (keyword) {
       const hit = Array.from(root.querySelectorAll<HTMLElement>('[data-hit="true"]'))[0];
       if (hit) {
@@ -1344,6 +1374,19 @@ export default function WeChatLocal({
       setWorkSelected(current => [...current, active.username]);
     }
   };
+
+  useEffect(() => {
+    if (openSummary && ready && !workOpen) {
+      openWorkPicker();
+      onSummaryRequestHandled?.();
+    }
+  }, [openSummary, ready]);
+
+  useEffect(() => {
+    if (!focusConversation || !ready || !account || !sessions.length) return;
+    const session = sessions.find(item => item.username === focusConversation);
+    if (session) void openSession(session, '', focusMessageId ?? undefined);
+  }, [focusConversation, focusMessageId, ready, account, sessions, openSession]);
 
   const toggleWorkSession = (username: string) => {
     setWorkSelected(current =>
@@ -2009,7 +2052,7 @@ const checkMark = (value: boolean | undefined) =>
             <strong>{wizard && wizardStep === 'wizard-permission' ? '系统授权' : wizard && wizardStep === 'wizard-account' ? '账号扫描' : scan && scan.accounts.length > 1 ? '选择账号' : '当前账号'}</strong>
             {wizard && wizardStep === 'wizard-permission' ? (
               <>
-                <p className="wxv-muted">先确认 AImyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。</p>
+                <p className="wxv-muted">先确认 AIMyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。</p>
                 <DiskAccessCard onRescan={() => void doScan()} />
                 {account && <div className="wxv-wizard-state">系统授权已完成，可以继续扫描微信账号。</div>}
               </>
@@ -2061,16 +2104,18 @@ const checkMark = (value: boolean | undefined) =>
               <code>{'{"passphrase":"…"}'}</code>。导入时只保留通过第 1 页 HMAC 校验的内容。
             </p>
 
-            <div className={`wxv-keyguide ${noKeysYet || freshSource ? 'attention' : ''}`}>
+            <div className={`wxv-keyguide ${noKeysYet || freshSource ? 'attention' : ''} ${platform?.platform === 'windows' ? 'windows' : ''}`}>
               <div className="wxv-keyguide-head">
                 <div>
-                  <strong>没有密钥？在本应用里直接获取</strong>
+                  <strong>{platform?.platform === 'windows' ? '使用 Windows 方式获取密钥' : '没有密钥？在本应用里直接获取'}</strong>
                   <p className="wxv-muted">
-                    {savedKeySource?.exists
-                      ? `已检测到口令文件（${formatAge(savedKeySource.age_seconds)}），可以导入并逐库校验。`
-                      : captureStatus?.pending
-                        ? '正在进行密钥捕获：按下面的步骤完成即可，中途不要手动改动微信。'
-                        : '按下面四步在本机完成捕获：环境检查 → 安全准备并启动捕获 → 登录时读取口令 → 自动恢复并逐库校验。全程不需要修改系统完整性保护，也不需要另装工具。'}
+                    {platform?.platform === 'windows'
+                      ? 'Windows 通过读取已登录 Weixin.exe 的可读内存寻找候选密钥，并用本地数据库第 1 页 HMAC 逐库校验；找不到时可导入可信工具导出的密钥 JSON。'
+                      : savedKeySource?.exists
+                        ? `已检测到口令文件（${formatAge(savedKeySource.age_seconds)}），可以导入并逐库校验。`
+                        : captureStatus?.pending
+                          ? '正在进行密钥捕获：按下面的步骤完成即可，中途不要手动改动微信。'
+                          : '按下面四步在本机完成捕获：环境检查 → 安全准备并启动捕获 → 登录时读取口令 → 自动恢复并逐库校验。全程不需要修改系统完整性保护，也不需要另装工具。'}
                   </p>
                 </div>
                 <div className="wxv-keyguide-head-actions">
@@ -2081,7 +2126,16 @@ const checkMark = (value: boolean | undefined) =>
                 </div>
               </div>
 
-{showKeyGuide && (
+{platform?.platform === 'windows' && (
+                <div className="wxv-windows-keyguide">
+                  <strong>Windows 密钥扫描</strong>
+                  <p className="wxv-muted">请先启动微信并登录目标账号。扫描只读取本机 Weixin.exe 的内存，不上传密钥；候选结果必须通过数据库 HMAC 校验才会保存。</p>
+                  <div className="wxv-row"><button type="button" className="wxv-btn primary" onClick={() => void scanWindowsKeys()} disabled={windowsScanBusy || !account}>{windowsScanBusy ? '扫描并校验中…' : '扫描微信内存并校验'}</button><span className="wxv-muted">支持旧版 x'&lt;key&gt;&lt;salt&gt;' 格式；新版本可导入可信 JSON。</span></div>
+                  {platform.key_acquisition && <p className="wxv-keyguide-path">当前策略：<code>{platform.key_acquisition}</code></p>}
+                </div>
+              )}
+
+              {showKeyGuide && (
                 <>
                   {/* Environment: the reference flow refuses to touch WeChat unless every
                       one of these checks passes, so they are shown before the first action. */}

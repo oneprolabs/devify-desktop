@@ -270,31 +270,31 @@ mod tests {
 
     #[test]
     fn bundle_is_found_from_the_macos_directory() {
-        let exe = Path::new("/Applications/AImyChats.app/Contents/MacOS/wechat-devify-bridge");
+        let exe = Path::new("/Applications/AIMyChats.app/Contents/MacOS/wechat-devify-bridge");
         assert_eq!(
             bundle_of(exe),
-            Some(PathBuf::from("/Applications/AImyChats.app"))
+            Some(PathBuf::from("/Applications/AIMyChats.app"))
         );
     }
 
     #[test]
     fn bare_binaries_have_no_bundle() {
         assert_eq!(bundle_of(Path::new("/tmp/target/debug/wechat-devify-bridge")), None);
-        assert_eq!(bundle_of(Path::new("/tmp/AImyChats.app/wechat-devify-bridge")), None);
+        assert_eq!(bundle_of(Path::new("/tmp/AIMyChats.app/wechat-devify-bridge")), None);
     }
 
     #[test]
     fn location_distinguishes_installed_mounted_and_build_copies() {
         assert_eq!(
-            location_of(Path::new("/Applications/AImyChats.app/Contents/MacOS/wechat-devify-bridge")),
+            location_of(Path::new("/Applications/AIMyChats.app/Contents/MacOS/wechat-devify-bridge")),
             "applications"
         );
         assert_eq!(
-            location_of(Path::new("/Volumes/AImyChats/AImyChats.app/Contents/MacOS/wechat-devify-bridge")),
+            location_of(Path::new("/Volumes/AIMyChats/AIMyChats.app/Contents/MacOS/wechat-devify-bridge")),
             "volumes"
         );
         assert_eq!(
-            location_of(Path::new("/Users/me/Downloads/AImyChats.app/Contents/MacOS/wechat-devify-bridge")),
+            location_of(Path::new("/Users/me/Downloads/AIMyChats.app/Contents/MacOS/wechat-devify-bridge")),
             "other"
         );
         assert_eq!(
@@ -306,11 +306,11 @@ mod tests {
     #[test]
     fn translocation_is_detected_from_the_mount_path() {
         let path = Path::new(
-            "/private/var/folders/x/AppTranslocation/ABC-123/d/AImyChats.app/Contents/MacOS/wechat-devify-bridge",
+            "/private/var/folders/x/AppTranslocation/ABC-123/d/AIMyChats.app/Contents/MacOS/wechat-devify-bridge",
         );
         assert!(is_translocated(path));
         assert!(!is_translocated(Path::new(
-            "/Applications/AImyChats.app/Contents/MacOS/wechat-devify-bridge"
+            "/Applications/AIMyChats.app/Contents/MacOS/wechat-devify-bridge"
         )));
     }
 

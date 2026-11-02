@@ -89,3 +89,50 @@ export const Icons = {
 };
 
 export type IconName = keyof typeof Icons;
+
+/* Left rail icons: the prototype draws these on a 24px grid with a 1.6 stroke, so the rail
+   keeps its own set instead of scaling the 16px button icons up. Paths are copied verbatim
+   from protype.html so the two stay identical. */
+const rail = (children: ReactNode) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.6}
+    strokeLinejoin="round"
+    strokeLinecap="round"
+    aria-hidden="true"
+    focusable="false"
+  >
+    {children}
+  </svg>
+);
+
+export const RailIcons = {
+  chat: rail(<path d="M4 5.5h16v10H9l-4 3.5v-3.5H4z" />),
+  events: rail(<>
+    <rect x="4.5" y="4.5" width="15" height="15" rx="2.5" />
+    <path d="M8.5 12l2.5 2.5 4.5-5" />
+  </>),
+  topics: rail(<>
+    <path d="M6 16.5V11a6 6 0 0112 0v5.5l1.5 1.5h-15z" />
+    <path d="M10 20.5h4" />
+  </>),
+  reports: rail(<>
+    <path d="M6.5 3.5h8l3 3v14h-11z" />
+    <path d="M9.5 11h5M9.5 14.5h5" />
+  </>),
+  ask: rail(<>
+    <path d="M12 3.8l1.9 5 5 1.9-5 1.9-1.9 5-1.9-5-5-1.9 5-1.9z" />
+    <path d="M18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" />
+  </>),
+  tasks: rail(<>
+    <path d="M4 8l8-4 8 4-8 4z" />
+    <path d="M4 12l8 4 8-4" />
+    <path d="M4 16l8 4 8-4" />
+  </>),
+  settings: rail(<>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 3.5v2.5M12 18v2.5M3.5 12H6M18 12h2.5M6 6l1.8 1.8M16.2 16.2L18 18M6 18l1.8-1.8M16.2 7.8L18 6" />
+  </>),
+};

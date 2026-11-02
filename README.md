@@ -1,4 +1,4 @@
-# AImyChats (Tauri 2)
+# AIMyChats (Tauri 2)
 
 A local-first Windows/macOS desktop app for reading selected WeChat conversations locally, organizing work content, and delivering scheduled summaries to a self-hosted Devify inbox.
 
@@ -6,7 +6,7 @@ Main areas:
 
 1. **聊天记录** — on explicit user action, locates the local WeChat 4.x data directory, decrypts a copy of the SQLCipher databases with keys you supply, and opens a WeChat-style three-pane viewer: conversation list (single chats and group chats, with member counts and unread badges), message history with day/time separators, and keyword search across conversations. Messages can be clicked into a cross-conversation selection that survives switching chats. The work-content picker can select a time range, one or more conversations, or all conversations located by a keyword, then expands the selected conversations together for review.
 2. **聊天白名单** — independently selects which group chats and one-to-one chats are visible for each WeChat account.
-3. **自动化策略** — configures local sync interval, daily rule-based summary, and scheduled Devify delivery.
+3. **自动化策略** — configures local sync interval, incremental upload of allowlisted conversations to Devify, daily rule-based summary, and scheduled Devify delivery.
 4. **Devify 配置** — configures the delivery recipient and default subject, and shows SMTP readiness.
 5. **Agent 集成** — one settings tab with two sections. **本地总结** picks a local CLI agent, model, timeout, and extra instructions for chat summaries (also usable for the daily report). **工具接入** generates one prompt that installs the read-only `wxq` CLI and the three `SKILL.md` documents from the app's in-process download service into directories you choose, then verifies them with `wxq health` / `wxq policy`. No MCP configuration is involved.
 6. **关于** — shows the current build (`Alpha 0.0.1`), the runtime platform, and the app identifier. The version is read from the Rust build (`Cargo.toml`), which is kept in sync with `package.json` and `tauri.conf.json`.
@@ -38,6 +38,8 @@ The app never modifies, deletes, or writes to WeChat's own database files. It do
 - **Daily delivery**: while the Tauri app is running, a backend scheduler checks the local time, syncs the encrypted database/WAL, creates the daily digest for the current day, and sends it once to Devify. When an agent is configured and “每日自动日报也使用该 Agent” is on, the digest body is written by that agent; generation failures fall back to the rule-based digest and are recorded in the automation status instead of skipping the send. Tray/background execution after the app exits is not implemented yet.
 - **Read-only service and agent kit**: the desktop app starts an in-process listener at `127.0.0.1:18765` and stops it with the app. Chat data is exposed as whitelist-checked REST (`/api/policy`, `/api/sessions`, `/api/messages`, `/api/search`, `/api/digest`, plus `/health`). The same listener distributes the agent kit: `/agent/manifest`, `/agent/wxq` (the read-only CLI binary), `/agent/skills`, `/agent/skills/<name>` and `/agent/install.sh`. The **Agent 集成 → 工具接入** page turns this into one prompt: the user picks a host and two directories, copies the prompt, and the receiving agent downloads both artifacts and verifies the connection. The CLI speaks the REST side, so any agent with shell access can read chats. `WECHAT_AGENT_BIND` moves the listener and `WECHAT_AGENT_TOKEN` is mandatory for any non-loopback bind (the older `WECHAT_MCP_*` names still work as aliases). Every request re-reads `app-settings.json` and re-checks the whitelist, so policy changes take effect without a restart. Nothing can decrypt, write, or send mail. MCP over SSE remains available for existing GUI clients but is not part of the page or the prompt; the standalone `wechat-mcp-sse` binary is only a debugging entry point (see `mcp/README.md`).
 - **Per-conversation browsing**: newest-first messages, page size 100 with "load older", day dividers, and time stamps only when messages are more than five minutes apart.
+- **Incremental upload to Devify**: while automatic sync is on, every interval decrypts the local cache and uploads only the allowlisted conversations that have messages newer than their saved cursor. The first run of a conversation sends its full local history. Batches are idempotent by content, and the client never invents messages the local database does not contain. See [Sync chat records to a Devify space](#sync-chat-records-to-a-devify-space).
+- **Cloud records view**: the 聊天 page opens a **云端记录** tab that reads the selected Devify space's conversations and messages (search, paging, jump-to-message). Event evidence links open the matching server-side message instead of the local viewer.
 - **Clear cache** action deletes only the decrypted copies, never WeChat's originals.
 
 ## Prerequisites
@@ -273,7 +275,18 @@ Not guaranteed:
 4. Ensure the sender's SMTP server can deliver to that domain. A local-only SMTP hostname generally cannot receive internet mail unless your network/DNS is deliberately configured for it.
 5. Verify the end-to-end workflow using non-sensitive test text before sending real chat content.
 
-The application sends a plain-text scheduled summary email. It does not call any Devify HTTP API. SMTP acceptance means the sender's SMTP server accepted the message; it does **not** guarantee Devify processed it. Inbound processing depends on Devify's email-domain, Haraka, worker, and Threadline configuration.
+The application sends a plain-text scheduled summary email and can also upload chat archives to the Devify HTTP API when automatic sync is enabled. SMTP acceptance means the sender's SMTP server accepted the message; it does **not** guarantee Devify processed it. Inbound processing depends on Devify's email-domain, Haraka, worker, and Threadline configuration.
+
+## Sync chat records to a Devify space
+
+Settings → 备份周期 owns the upload plan: one card per connected platform with its own switch, schedule (every N minutes, at fixed times, or manual only), optional upload window (allow or deny, with the weekday list) and a **立即备份一次** action. Settings → 本地自动化 keeps the daily report. Both require a configured Devify account and a selected space; the whitelist still decides what is sent.
+
+- **Scope**: one package per conversation, containing only that conversation's allowlisted messages. The first sync of a conversation uploads its full local history, later runs start at the saved cursor. The cursor is inclusive on purpose (several messages can share a second); the server deduplicates by `message_key`.
+- **Package**: `wechat.v1` archive with `manifest.json` (`schema_version`, `platform`, `source_namespace`, `counts`, `scope.conversation_ids`, `whitelist_snapshot`, `client`), `conversations.jsonl` (`conversation_id`, `title`, `kind`, `self_sender_key`), `messages.jsonl` (`message_key`, `source_message_id`, `sender_key`, `sender_name`, `direction`, `occurred_at`, `source_order`, `record_kind`, `source_fields`) and `message_parts.jsonl` (`part_key`, `ordinal`, `kind`, `text`).
+- **Idempotency**: the create key is derived from the packaged content, so a retry reuses its batch. A batch the server already accepted (`processing` or `completed`) is reported as success without uploading again, and `archive_size` is not declared at create time so retries cannot conflict with it.
+- **Status**: every upload becomes a job in 任务 with its batch id, and finished batches are reconciled back to `completed` / `failed`. 备份周期 shows the next planned run, the last run time, status, message count, and the last error.
+- **Schedule**: the scheduler wakes every 30 s and asks `src-tauri/src/backup.rs` whether a run is due, so `interval` means "at least this long since the last run", `times` catches up to the newest scheduled time of the day (a sleeping Mac uploads once it wakes), and `window` only limits when that is allowed.
+- **Viewing**: the 聊天 page's 云端记录 tab lists the space's conversations and reads messages through `GET /api/v1/spaces/<id>/conversations` and `/conversations/<id>/messages`, including `focus_message_id` for jumping to a specific message.
 
 ## Connect an external agent (one prompt)
 
@@ -391,15 +404,59 @@ cargo build --release --bin wxq --manifest-path src-tauri/Cargo.toml
 mkdir -p src-tauri/binaries
 cp src-tauri/target/release/wxq "src-tauri/binaries/wxq-$(rustc -vV | sed -n 's/^host: //p')"
 
-npm run tauri build
+scripts/macos-build.sh            # builds + signs with the stable identity
+scripts/macos-build.sh --install  # ... and copies it to /Applications/AIMyChats.app
 ```
 
-Artifacts land in `src-tauri/target/release/bundle/` (`macos/AImyChats.app`, `dmg/AImyChats_0.0.1_aarch64.dmg`).
+Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.1_aarch64.dmg`).
 
-Regenerate the icon set after editing the mark:
+### macOS signing (why not ad-hoc)
+
+macOS binds Full Disk Access to the app's **designated requirement**. With an ad-hoc signature
+that requirement is the CDHash, which changes on every build, so the user has to re-grant access
+after each rebuild. This repo signs with a local self-signed identity instead, so the requirement
+is `identifier "local.wechat.devifybridge" and certificate leaf = H"…"` and survives rebuilds.
+
+One-time setup on a Mac:
 
 ```bash
+mkdir -p ~/.config/aimychats-signing && cd ~/.config/aimychats-signing
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout signing.key.pem -out signing.cert.pem \
+  -subj "/CN=AIMyChats Local Signing" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning" \
+  -addext "basicConstraints=critical,CA:false"
+
+# Dedicated keychain so `codesign` never prompts (password is local and disposable).
+security create-keychain -p aimychats ~/Library/Keychains/signing.keychain-db
+security set-keychain-settings -lut 86400 ~/Library/Keychains/signing.keychain-db
+security unlock-keychain -p aimychats ~/Library/Keychains/signing.keychain-db
+security import signing.cert.pem -k ~/Library/Keychains/signing.keychain-db
+security import signing.key.pem  -k ~/Library/Keychains/signing.keychain-db -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k aimychats ~/Library/Keychains/signing.keychain-db
+security list-keychains -d user -s ~/Library/Keychains/login.keychain-db ~/Library/Keychains/signing.keychain-db
+
+# Trust it for code signing (one system prompt), and keep the keychain password for the build script.
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db signing.cert.pem
+printf 'aimychats' > ~/.config/aimychats-signing/keychain.pass && chmod 600 ~/.config/aimychats-signing/keychain.pass
+```
+
+`scripts/macos-build.sh` signs the app itself (nested binaries first, then the bundle) and rebuilds
+the DMG from the signed app, because `codesign` only finds the private key in that keychain when it
+is passed `--keychain`, which the Tauri bundler does not do. `spctl` still rejects the result since
+it is not notarized by Apple — expected for a self-signed build, and only matters for downloads that
+carry the quarantine attribute.
+
+If signing starts failing with `errSecInternalComponent`, the signing keychain is locked or has lost
+its partition list; recreate it with the import + `set-key-partition-list` steps above.
+
+Regenerate the icon set after replacing the mark in `src/assets/app-icon-source.png`:
+
+```bash
+# Adds the macOS tile: 1024 canvas, 824 body, 185px rounded corners, transparent outside.
 python3 src-tauri/app-icon.py src-tauri/app-icon.png
+cp src-tauri/app-icon.png src/assets/app-icon.png   # runtime logo (sidebar, About, login)
 npx tauri icon src-tauri/app-icon.png
 ```
 
