@@ -215,7 +215,7 @@ pub(crate) fn is_executable(path: &Path) -> bool {
 
 /// Resolve executables through PATH/search dirs first, then through the user's login
 /// shell so nvm/asdf/mise style setups keep working for a Finder-launched app.
-fn resolve_bins(bins: &[&str]) -> HashMap<String, PathBuf> {
+pub(crate) fn resolve_bins(bins: &[&str]) -> HashMap<String, PathBuf> {
     let mut found = HashMap::new();
     let dirs = search_dirs();
     for bin in bins {

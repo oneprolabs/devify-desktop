@@ -54,8 +54,10 @@ function nextRunLabel(plan: AppSettings['backup'], intervalSeconds: number, last
   }
   if (!lastRun) return '启动后立即';
   const due = new Date(lastRun.getTime() + intervalSeconds * 1000);
-  if (due.getTime() <= now.getTime()) return '马上' + blocked;
-  const minutes = Math.round((due.getTime() - now.getTime()) / 60000);
+  const seconds = Math.round((due.getTime() - now.getTime()) / 1000);
+  if (seconds <= 30) return '马上' + blocked;
+  if (seconds < 90) return '不到 1 分钟内' + blocked;
+  const minutes = Math.round(seconds / 60);
   return `约 ${minutes < 60 ? `${minutes} 分钟` : `${(minutes / 60).toFixed(1)} 小时`}后${blocked}`;
 }
 
@@ -126,7 +128,34 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
 
   const plan = settings.backup;
   const intervalSeconds = settings.chat.sync_interval_seconds;
-  const lastRun = settings.sync.last_run_at ? new Date(settings.sync.last_run_at) : null;
+  // The scheduler runs in the backend while this page stays open, so the run
+  // status is polled instead of being frozen at mount time.
+  const [runStatus, setRunStatus] = useState<AppSettings['sync'] | null>(null);
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const stored = await invoke<AppSettings>('app_settings_get');
+        if (!active) return;
+        setRunStatus(mergeSettings(stored).sync);
+      } catch {
+        /* a failed poll keeps the last known status */
+      }
+    };
+    void load();
+    // WebKit throttles timers while the window is in the background, so a fresh
+    // focus also refreshes the run status immediately.
+    const onFocus = () => void load();
+    window.addEventListener('focus', onFocus);
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+  const syncState = runStatus ?? settings.sync;
+  const lastRun = syncState.last_run_at ? new Date(syncState.last_run_at) : null;
 
   /** Every control saves straight away, so the page never needs a separate "保存" step. */
   const update = useCallback((change: (current: AppSettings) => AppSettings) => {
@@ -289,10 +318,10 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
           </>}
           {settings.sync.enabled && plan.mode !== 'manual' && <Row label="下次备份"><span className="plan-kv">{nextRunLabel(plan, intervalSeconds, lastRun)}</span></Row>}
           <Row label="最近备份"><span className="plan-kv">{lastRun
-            ? `${lastRun.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${STATUS_LABEL[settings.sync.last_status ?? ''] ?? '未知'} · ${settings.sync.last_message_count} 条消息`
+            ? `${lastRun.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${STATUS_LABEL[syncState.last_status ?? ''] ?? '未知'} · ${syncState.last_message_count ? `${syncState.last_message_count} 条新消息` : '没有新消息'}`
             : '还没有运行过'}</span></Row>
         </div>}
-        {open && settings.sync.last_error && <div className="backup-error">{settings.sync.last_error}</div>}
+        {open && syncState.last_error && <div className="backup-error">{syncState.last_error}</div>}
         {open && <div className="plan-plat-actions">
           <button type="button" className="secondary" disabled={busy} onClick={() => void syncNow()}>{busy ? '正在备份…' : '立即备份一次'}</button>
         </div>}

@@ -78,7 +78,11 @@ export const Icons = {
     <path d="M8 6.4v2.9M8 11.2v.3" />
   </>),
   minus: stroke(<path d="M4.9 8h6.2" />),
-  list: stroke(<>
+  download: stroke(<>
+    <path d="M8 2.9v7.1" />
+    <path d="M5.3 7.4 8 10.1l2.7-2.7" />
+    <path d="M3.1 12.8h9.8" />
+  </>),  list: stroke(<>
     <path d="M3.1 4.7h1.1M6.4 4.7h6.5" />
     <path d="M3.1 8h1.1M6.4 8h6.5" />
     <path d="M3.1 11.3h1.1M6.4 11.3h4.4" />

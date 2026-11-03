@@ -13,6 +13,20 @@ type AgentInfo = {
 
 type TestResult = { ok: boolean; text: string };
 
+type VoiceEngine = {
+  id: string;
+  label: string;
+  path: string | null;
+  model_hint: string;
+  available: boolean;
+};
+
+type VoiceStatus = {
+  settings: { engine: string; model: string; language: string };
+  engines: VoiceEngine[];
+  selected: string | null;
+};
+
 const MAX_TIMEOUT = 900;
 const MIN_TIMEOUT = 30;
 
@@ -28,6 +42,18 @@ export function AgentSettings() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [voiceState, setVoiceState] = useState<VoiceStatus | null>(null);
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState('');
+  const [voiceError, setVoiceError] = useState('');
+
+  const loadVoice = useCallback(async () => {
+    try {
+      setVoiceState(await invoke<VoiceStatus>('wechat_voice_status'));
+    } catch (e) {
+      setVoiceError(String(e));
+    }
+  }, []);
 
   const scanAgents = useCallback(async () => {
     setScanning(true);
@@ -53,6 +79,30 @@ export function AgentSettings() {
       await scanAgents();
     })();
   }, [scanAgents]);
+
+  useEffect(() => {
+    void loadVoice();
+  }, [loadVoice]);
+
+  const saveVoice = async () => {
+    if (!voiceState) return;
+    setVoiceSaving(true);
+    setVoiceNotice('');
+    setVoiceError('');
+    try {
+      const next = await invoke<VoiceStatus>('wechat_voice_settings_save', {
+        engine: voiceState.settings.engine,
+        model: voiceState.settings.model,
+        language: voiceState.settings.language,
+      });
+      setVoiceState(next);
+      setVoiceNotice(next.selected ? `已保存，使用「${next.selected}」转写语音。` : '已保存，但本机还没有可用的转写引擎。');
+    } catch (e) {
+      setVoiceError(String(e));
+    } finally {
+      setVoiceSaving(false);
+    }
+  };
 
   const agent = settings.agent;
   const selected = agents.find(item => item.id === agent.provider_id) ?? null;
@@ -262,6 +312,85 @@ export function AgentSettings() {
           在这里选一个它已配置的模型即可。补充要求会追加到内置总结提示词，不能覆盖“只依据原文、不编造”的约束。超时时间限制在
           {MIN_TIMEOUT}–{MAX_TIMEOUT} 秒；超时或失败不会写入任何总结结果。
         </p>
+      </section>
+
+      <section className="panel">
+        <h2>语音转写</h2>
+        <p className="help">
+          微信语音是 SILK v3，应用内置解码器把它转成 24 kHz WAV，再交给本机的转写命令行工具。
+          转写只在本机执行，结果按账号和消息缓存，不会重复计算。
+        </p>
+        {voiceState ? (
+          <>
+            <div className="settings-subheading">
+              <strong>本机检测结果</strong>
+              <span>
+                {voiceState.engines.filter(engine => engine.available).length
+                  ? `可用：${voiceState.engines.filter(engine => engine.available).map(engine => engine.label).join('、')}`
+                  : '没有检测到转写引擎'}
+              </span>
+            </div>
+            <div className="grid">
+              <label>转写引擎
+                <select
+                  value={voiceState.settings.engine}
+                  onChange={event =>
+                    setVoiceState(current =>
+                      current ? { ...current, settings: { ...current.settings, engine: event.target.value } } : current,
+                    )
+                  }
+                >
+                  <option value="">自动选择（第一个可用）</option>
+                  {voiceState.engines.map(engine => (
+                    <option key={engine.id} value={engine.id} disabled={!engine.available}>
+                      {engine.label} · {engine.available ? '可用' : '未检测到'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>模型 / 模型路径
+                <input
+                  value={voiceState.settings.model}
+                  onChange={event =>
+                    setVoiceState(current =>
+                      current ? { ...current, settings: { ...current.settings, model: event.target.value } } : current,
+                    )
+                  }
+                  placeholder="留空使用引擎默认值"
+                  spellCheck={false}
+                />
+              </label>
+              <label>语言
+                <input
+                  value={voiceState.settings.language}
+                  onChange={event =>
+                    setVoiceState(current =>
+                      current ? { ...current, settings: { ...current.settings, language: event.target.value } } : current,
+                    )
+                  }
+                  placeholder="zh"
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+            <p className="help">
+              {voiceState.engines.find(engine => engine.id === (voiceState.settings.engine || voiceState.selected))
+                ?.model_hint ?? '选择一个引擎后，这里会显示它的模型说明。'}
+            </p>
+            <div className="agent-actions">
+              <button type="button" className="secondary" onClick={() => void loadVoice()}>
+                重新检测
+              </button>
+              <button type="button" className="primary" onClick={() => void saveVoice()} disabled={voiceSaving}>
+                {voiceSaving ? '正在保存…' : '保存语音设置'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="help">{voiceError || '正在检测本机转写引擎…'}</p>
+        )}
+        {voiceNotice && <div className="config ok">{voiceNotice}</div>}
+        {voiceError && voiceState && <div className="config warn">{voiceError}</div>}
       </section>
 
       {notice && <div className="notice">{notice}</div>}

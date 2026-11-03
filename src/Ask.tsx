@@ -5,10 +5,28 @@ type Citation = { kind: string; id: number; title: string; excerpt: string; conv
 type Question = { id: number; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };
 type SourceDetail = { id?: number; title?: string; content?: string; body?: string; text?: string; preview?: string; occurred_at?: string | null; start_at?: string | null; end_at?: string | null; source?: string; conversation_id?: number | string; parts?: Array<{ text?: string | null }> };
 type Settings = { devify?: { active_space_id: number | null } };
-const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
-const citationKind = (citation: Citation) => citation.kind.toLowerCase();
 
+const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
+const rangerOptions = ['全部', '近 7 天', '今天'];
+const citationKind = (citation: Citation) => citation.kind.toLowerCase();
 const dateLabel = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '刚刚';
+const dayLabel = (value?: string) => {
+  if (!value) return '刚刚';
+  const date = new Date(value);
+  const now = new Date();
+  const day = date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  if (date.toDateString() === now.toDateString()) return `今天 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+  return `${day} ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+};
+const kindLabel = (kind: string) => ({ message: '原文', note: '笔记', event: '事件' } as Record<string, string>)[kind] || kind;
+
+function inRange(question: Question, range: string): boolean {
+  if (range === '全部') return true;
+  if (!question.created_at) return true;
+  const time = new Date(question.created_at).getTime();
+  if (range === '今天') { const start = new Date(); start.setHours(0, 0, 0, 0); return time >= start.getTime(); }
+  return time >= Date.now() - 7 * 86400000;
+}
 
 export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => void }) {
   const [spaceId, setSpaceId] = useState<number | null>(null);
@@ -18,6 +36,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const [pending, setPending] = useState('');
   const [loading, setLoading] = useState(isTauri());
   const [asking, setAsking] = useState(false);
+  const [range, setRange] = useState('全部');
   const [error, setError] = useState('');
   const [source, setSource] = useState<SourceDetail | null>(null);
   const [sourceLoading, setSourceLoading] = useState(false);
@@ -35,7 +54,10 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+
   const selected = useMemo(() => questions.find(item => item.id === selectedId) ?? null, [questions, selectedId]);
+  const visibleQuestions = useMemo(() => questions.filter(question => inRange(question, range)), [questions, range]);
+
   const polling = useRef(new Set<number>());
   const timedOut = useRef(new Set<number>());
   useEffect(() => {
@@ -63,6 +85,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     })();
     return () => { cancelled = true; polling.current.delete(questionId); };
   }, [spaceId, selected?.id, selected?.status]);
+
   const openCitation = async (citation: Citation) => {
     const kind = citationKind(citation);
     const eventId = citation.event_id ?? (kind === 'event' ? citation.id : null);
@@ -94,12 +117,155 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     const question = value.trim();
     if (!spaceId || !question || asking) return;
     setAsking(true); setPending(question); setDraft(''); setError('');
-    try { const result = await invoke<Question>('devify_question_ask', { spaceId, question }); setQuestions(current => [result, ...current]); setSelectedId(result.id); }
-    catch (reason) { setError(String(reason)); }
+    try {
+      const result = await invoke<Question>('devify_question_ask', { spaceId, question });
+      setQuestions(current => [result, ...current]); setSelectedId(result.id);
+    } catch (reason) { setError(String(reason)); }
     finally { setPending(''); setAsking(false); }
   };
 
-  if (!isTauri()) return <div className="ask-page ask-empty"><h1>问答</h1><p>问答由 Devify 服务端基于已上传记录生成，请在桌面应用中使用。</p></div>;
-  if (loading) return <div className="ask-page ask-empty"><h1>问答</h1><p>正在读取问答记录…</p></div>;
-  return <div className="ask-page"><aside className="ask-history"><header><h1>问答</h1><p>基于已上传的聊天与服务端事件提问</p></header><button type="button" className="ask-new" onClick={() => { setSelectedId(null); setDraft(''); }}>＋ 新问题</button><div className="ask-history-list">{questions.map(item => <button type="button" key={item.id} className={item.id === selectedId ? 'selected' : ''} onClick={() => setSelectedId(item.id)}><strong>{item.question}</strong><small>{dateLabel(item.created_at)} · {(item.status === 'ready' ? '已回答' : item.status === 'queued' ? '生成中' : item.status === 'failed' ? '生成失败' : item.status)}</small></button>)}</div></aside><main className="ask-main"><header className="ask-main-head"><div><h2>{selected?.question || '问问你的聊天记录'}</h2><p>回答基于已上传记录和服务端生成的事件，每条结论附原文依据。</p></div><span>当前空间 · {spaceId ? '已连接' : '未选择'}</span></header><div className="ask-scroll">{!spaceId && <div className="ask-empty"><h3>还没有选择 Devify 空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}{spaceId && !selected && !pending && <><div className="ask-welcome"><h3>问问你的聊天记录</h3><p>跨已上传的聊天、事件和笔记提问，答案由 Devify 服务端生成。</p></div><div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div></>}{pending && <div className="ask-turn"><div className="ask-user-bubble">{pending}</div><div className="ask-pending">服务端正在检索并生成回答…</div></div>}{selected && <div className="ask-turn"><div className="ask-user-bubble">{selected.question}</div>{selected.status === 'failed' ? <div className="ask-answer ask-error">{selected.error || '服务端回答失败，请重新提问。'}</div> : selected.status === 'queued' ? <div className="ask-answer"><p>服务端正在检索并生成回答…</p></div> : <div className="ask-answer"><p>{selected.answer || '这次回答没有内容，请重新提问。'}</p>{selected.citations?.length > 0 && <div className="ask-citations"><strong>原文依据</strong>{selected.citations.map(citation => <button type="button" className="ask-citation" key={`${citation.kind}-${citation.id}`} onClick={() => void openCitation(citation)}><span>{citation.title}</span><small>{citation.excerpt}</small><em>{citationKind(citation) === 'event' ? '跳转到事件 →' : citationKind(citation) === 'note' ? '查看整理 →' : '查看原文 →'}</em></button>)}</div>}</div>}</div>}{error && <p className="ask-error" role="alert">{error}</p>}</div>{source && <div className="ask-source-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setSource(null); }}><section className="ask-source-modal" role="dialog" aria-modal="true" aria-labelledby="ask-source-title"><header><div><span>原文</span><h3 id="ask-source-title">{source.title || '原文记录'}</h3></div><button type="button" aria-label="关闭原文" onClick={() => setSource(null)}>×</button></header><div className="ask-source-meta">{source.occurred_at || source.start_at || source.end_at || source.source || source.conversation_id || '来源信息不可用'}</div><p>{source.content || source.body || source.text || '服务端未返回原文内容。'}</p></section></div>}{sourceLoading && <div className="ask-source-loading">正在读取原文…</div>}<form className="ask-compose" onSubmit={event => { event.preventDefault(); void ask(); }}><textarea value={draft} onChange={event => setDraft(event.target.value)} rows={2} placeholder="输入问题，例如：哪些客户事项还没有跟进？" disabled={!spaceId || asking} /><button type="submit" disabled={!spaceId || asking || !draft.trim()}>{asking ? '生成中…' : '发送 ↑'}</button></form></main></div>;
+  const newThread = () => { setSelectedId(null); setDraft(''); setPending(''); setError(''); };
+  const startNew = () => { setSelectedId(null); setPending(''); setError(''); };
+
+  const renderTurn = (question: Question, answer: string, citations: Citation[], status: string, created?: string) => {
+    const events = citations.filter(citation => citationKind(citation) === 'event' || citation.event_id);
+    const sources = citations.filter(citation => !(citationKind(citation) === 'event' || citation.event_id));
+    const paragraphs = answer.split(/\n{2,}/).map(text => text.trim()).filter(Boolean);
+    return <div className="ask-turn">
+      <div className="ask-user"><p>{question.question}</p></div>
+      <div className="ask-bot">
+        <span className="ask-avatar" aria-hidden="true">a</span>
+        <div className="ask-content">
+          {status === 'failed'
+            ? <p className="ask-answer-text ask-error">{question.error || '服务端回答失败，请重新提问。'}</p>
+            : status === 'queued'
+              ? <p className="ask-pending">服务端正在检索并生成回答…</p>
+              : paragraphs.length
+                ? paragraphs.map((text, index) => <p className="ask-answer-text" key={index}>{text}</p>)
+                : <p className="ask-answer-text">这次回答没有内容，请重新提问。</p>}
+
+          {events.length > 0 && <section className="ask-block">
+            <h3>相关事件</h3>
+            <div className="ask-events">
+              {events.map(citation => <button
+                type="button"
+                key={`e-${citation.id}`}
+                className="ask-event"
+                onClick={() => void openCitation(citation)}
+              >
+                <span className="ask-event-dot" aria-hidden="true"/>
+                <strong>{citation.title}</strong>
+                <span className="ask-event-meta">{citation.excerpt ? citation.excerpt.slice(0, 18) : ''} →</span>
+              </button>)}
+            </div>
+          </section>}
+
+          {sources.length > 0 && <section className="ask-block">
+            <h3>原文依据</h3>
+            <div className="ask-quotes">
+              {sources.map(citation => <button
+                type="button"
+                key={`s-${citation.kind}-${citation.id}`}
+                className="ask-quote"
+                onClick={() => void openCitation(citation)}
+              >
+                <span className="ask-quote-head">
+                  <span className="ask-quote-badge">{kindLabel(citationKind(citation)).slice(0, 1)}</span>
+                  <span className="ask-quote-title">{citation.title}</span>
+                  <span className="ask-quote-kind">{kindLabel(citationKind(citation))}</span>
+                </span>
+                <span className="ask-quote-text">{citation.excerpt}</span>
+              </button>)}
+            </div>
+          </section>}
+
+          {created && <p className="ask-foot">基于 {events.length} 个事件、{sources.length} 条原文 · {dayLabel(created)} · 范围：{range}</p>}
+        </div>
+      </div>
+    </div>;
+  };
+
+  if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>问答由 Devify 服务端基于已上传记录生成，请在桌面应用中使用。</p></div>;
+  if (loading) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>正在读取问答记录…</p></div>;
+
+  return <div className="ask-page">
+    <aside className="ask-side">
+      <h1>问答</h1>
+      <p className="ask-side-sub">自由提问，跨会话检索</p>
+      <button type="button" className="ask-new" onClick={newThread}>＋ 新对话</button>
+      <div className="ask-side-label">最近</div>
+      <div className="ask-threads">
+        {visibleQuestions.map(item => <button
+          type="button"
+          key={item.id}
+          className={item.id === selectedId ? 'on' : ''}
+          onClick={() => { setSelectedId(item.id); setPending(''); }}
+        >
+          <strong>{item.question}</strong>
+          <small>{dayLabel(item.created_at)} · {item.status === 'queued' ? '生成中' : item.status === 'failed' ? '失败' : '1 轮'}</small>
+        </button>)}
+        {!visibleQuestions.length && <p className="ask-threads-empty">{range === '全部' ? '还没有提问记录。' : '这个时间范围内没有提问。'}</p>}
+      </div>
+    </aside>
+
+    <main className="ask-main">
+      <header className="ask-head">
+        <div className="ask-head-text">
+          <h2>{selected?.question || (pending || '新对话')}</h2>
+          <p>仅检索已上传的会话与事件 · 回答附原文依据</p>
+        </div>
+        <div className="ask-time">
+          <span>时间</span>
+          {rangerOptions.map(option => <button
+            key={option}
+            type="button"
+            aria-pressed={range === option}
+            className={range === option ? 'on' : ''}
+            onClick={() => setRange(option)}
+          >{option}</button>)}
+        </div>
+      </header>
+
+      <div className="ask-scroll">
+        {!spaceId && <div className="ask-welcome"><h3>还没有选择 Devify 空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
+        {error && <p className="ask-error" role="alert">{error}</p>}
+
+        {spaceId && !selected && !pending && <div className="ask-welcome">
+          <h3>问问你的聊天记录</h3>
+          <p>跨已上传的聊天、事件和笔记提问，答案由 Devify 服务端生成，并附上原文依据。</p>
+          <div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div>
+        </div>}
+
+        {pending && <div className="ask-turn">
+          <div className="ask-user"><p>{pending}</p></div>
+          <div className="ask-bot">
+            <span className="ask-avatar" aria-hidden="true">a</span>
+            <div className="ask-content"><p className="ask-pending">服务端正在检索并生成回答…</p></div>
+          </div>
+        </div>}
+
+        {selected && renderTurn(selected, selected.answer || '', selected.citations ?? [], selected.status, selected.created_at)}
+      </div>
+
+      <footer className="ask-composer">
+        <input
+          value={draft}
+          placeholder="问任何关于聊天记录的问题，例如：这周客户有哪些没回复的问题？"
+          onChange={event => setDraft(event.target.value)}
+          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void ask(); } }}
+        />
+        <button type="button" onClick={() => void ask()} disabled={!draft.trim() || asking || !spaceId}>{asking ? '提问中…' : '发送'}</button>
+      </footer>
+    </main>
+
+    {source && <div className="ask-source-backdrop" role="dialog" aria-modal="true" onClick={() => setSource(null)}>
+      <div className="ask-source-card" onClick={event => event.stopPropagation()}>
+        <header>
+          <strong>{source.title || '原文'}</strong>
+          <button type="button" onClick={() => setSource(null)}>关闭</button>
+        </header>
+        {sourceLoading ? <p>正在读取…</p> : <pre>{source.content || source.body || source.text || source.preview || '没有可显示的正文。'}</pre>}
+      </div>
+    </div>}
+  </div>;
 }

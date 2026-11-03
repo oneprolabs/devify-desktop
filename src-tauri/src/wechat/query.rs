@@ -664,7 +664,7 @@ pub fn is_visible_chat_username(username: &str) -> bool {
     !normalized.starts_with("gh_") && !SYSTEM_USERNAMES.contains(&normalized.as_str())
 }
 
-fn md5_hex(value: &str) -> String {
+pub fn md5_hex(value: &str) -> String {
     let mut hasher = Md5::new();
     hasher.update(value.as_bytes());
     hex::encode(hasher.finalize())
@@ -1003,7 +1003,19 @@ pub fn messages(
     before: Option<i64>,
 ) -> Result<Vec<MessageItem>, String> {
     let me = self_username(cache);
-    messages_inner(cache, username, limit, before, me.as_deref())
+    messages_inner(cache, username, limit, before, None, None, me.as_deref())
+}
+
+/// Messages inside an explicit time window, newest first. Used by media export.
+pub fn messages_between(
+    cache: &Path,
+    username: &str,
+    since: i64,
+    until: i64,
+    limit: usize,
+) -> Result<Vec<MessageItem>, String> {
+    let me = self_username(cache);
+    messages_inner(cache, username, limit, None, Some(since), Some(until), me.as_deref())
 }
 
 /// Newest message time and local id of one conversation, without the self-identification
@@ -1011,8 +1023,107 @@ pub fn messages(
 ///
 /// Automatic upload uses this to skip a conversation before packaging when nothing is new.
 pub fn latest_message(cache: &Path, username: &str) -> Result<Option<(i64, i64)>, String> {
-    let messages = messages_inner(cache, username, 1, None, None)?;
+    let messages = messages_inner(cache, username, 1, None, None, None, None)?;
     Ok(messages.first().map(|message| (message.time, message.local_id)))
+}
+
+/// Newest `(time, local id)` of one conversation without decoding message bodies.
+///
+/// The chat list asks for this on every refresh, so it skips the contact table and the text
+/// pipeline that [`latest_message`] needs to build full records.
+pub fn latest_position(cache: &Path, username: &str) -> Result<Option<(i64, i64)>, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let mut newest: Option<(i64, i64)> = None;
+    let mut found_table = false;
+    for shard in message_shards(cache) {
+        let Ok(conn) = open_readonly(&shard) else {
+            continue;
+        };
+        if !tables(&conn).iter().any(|t| t == &table) {
+            continue;
+        }
+        found_table = true;
+        let cols = columns(&conn, &table);
+        let Some(create_time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else {
+            continue;
+        };
+        let local = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
+        let sql = format!(
+            "SELECT {}, {} FROM {} WHERE {} IS NOT NULL ORDER BY {} DESC, {} DESC LIMIT 1",
+            quote(create_time),
+            quote(local),
+            quote(&table),
+            quote(create_time),
+            quote(create_time),
+            quote(local)
+        );
+        let Ok(row) = conn.query_row(&sql, [], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        }) else {
+            continue;
+        };
+        if newest.map_or(true, |current| (row.0, row.1) > current) {
+            newest = Some(row);
+        }
+    }
+    if !found_table {
+        return Err(format!(
+            "在解密后的消息库中没有找到会话 {username} 对应的表（{table}）。"
+        ));
+    }
+    Ok(newest)
+}
+
+/// Number of messages strictly newer than an upload position.
+///
+/// Mirrors [`messages`]' shard and column discovery without materialising the rows, so the
+/// chat list can report "N new records" without paging through the conversation.
+pub fn count_after(
+    cache: &Path,
+    username: &str,
+    time: i64,
+    local_id: i64,
+) -> Result<usize, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let mut total = 0usize;
+    let mut found_table = false;
+    for shard in message_shards(cache) {
+        let Ok(conn) = open_readonly(&shard) else {
+            continue;
+        };
+        if !tables(&conn).iter().any(|t| t == &table) {
+            continue;
+        }
+        found_table = true;
+        let cols = columns(&conn, &table);
+        let Some(create_time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else {
+            continue;
+        };
+        let local = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE {} IS NOT NULL AND ({} > {} OR ({} = {} AND {} > {}))",
+            quote(&table),
+            quote(create_time),
+            quote(create_time),
+            time,
+            quote(create_time),
+            time,
+            quote(local),
+            local_id
+        );
+        // A shard that cannot count is skipped: the label only needs a lower bound, and the
+        // uploader still reports real read failures.
+        let Ok(count) = conn.query_row(&sql, [], |row| row.get::<_, i64>(0)) else {
+            continue;
+        };
+        total = total.saturating_add(count.max(0) as usize);
+    }
+    if !found_table {
+        return Err(format!(
+            "在解密后的消息库中没有找到会话 {username} 对应的表（{table}）。"
+        ));
+    }
+    Ok(total)
 }
 
 fn messages_inner(
@@ -1020,10 +1131,12 @@ fn messages_inner(
     username: &str,
     limit: usize,
     before: Option<i64>,
+    since: Option<i64>,
+    until: Option<i64>,
     me: Option<&str>,
 ) -> Result<Vec<MessageItem>, String> {
     let table = format!("Msg_{}", md5_hex(username));
-    let limit = limit.clamp(1, 500);
+    let limit = limit.clamp(1, 5000);
     let mut collected: Vec<MessageItem> = Vec::new();
     let mut found_table = false;
     let names = contacts(cache);
@@ -1069,6 +1182,12 @@ fn messages_inner(
         sql.push_str(&format!(" WHERE {} IS NOT NULL", quote(create_time)));
         if let Some(before) = before {
             sql.push_str(&format!(" AND {} < {}", quote(create_time), before));
+        }
+        if let Some(since) = since {
+            sql.push_str(&format!(" AND {} >= {}", quote(create_time), since));
+        }
+        if let Some(until) = until {
+            sql.push_str(&format!(" AND {} <= {}", quote(create_time), until));
         }
         sql.push_str(&format!(
             " ORDER BY {} DESC LIMIT {}",
@@ -1120,6 +1239,108 @@ fn messages_inner(
     collected.sort_by(|a, b| b.time.cmp(&a.time).then(b.local_id.cmp(&a.local_id)));
     collected.truncate(limit);
     Ok(collected)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RawMessage {
+    pub local_id: i64,
+    pub server_id: i64,
+    pub time: i64,
+    pub kind: i64,
+    /// Decompressed, sender-prefix-free payload. Rich messages stay as XML.
+    pub content: String,
+}
+
+/// Raw message payloads inside a time window, used by the attachment manifest and export.
+///
+/// Unlike [`messages`] this keeps the original XML so the media layer can read `md5`,
+/// `length`, `title` and the other attachment attributes.
+pub fn raw_messages_between(
+    cache: &Path,
+    username: &str,
+    since: i64,
+    until: i64,
+    limit: usize,
+) -> Result<Vec<RawMessage>, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let limit = limit.clamp(1, 20000);
+    let mut out = Vec::new();
+    let mut found_table = false;
+
+    for shard in message_shards(cache) {
+        let Ok(conn) = open_readonly(&shard) else {
+            continue;
+        };
+        if !tables(&conn).iter().any(|t| t == &table) {
+            continue;
+        }
+        found_table = true;
+        let cols = columns(&conn, &table);
+        let Some(create_time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else {
+            continue;
+        };
+        let Some(content) = pick(&cols, &["message_content", "content"]) else {
+            continue;
+        };
+        let local_id = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
+        let kind_col = pick(&cols, &["local_type", "type"]).unwrap_or("0");
+        let server_col = pick(&cols, &["server_id", "serverId"]);
+        let compress_col = pick(&cols, &["WCDB_CT_message_content", "compress_flag"])
+            .unwrap_or("NULL");
+
+        let sql = format!(
+            "SELECT {}, {}, {}, {}, {}, {} FROM {} WHERE {} >= {} AND {} <= {} ORDER BY {} DESC LIMIT {}",
+            quote(local_id),
+            server_col.map(quote).unwrap_or_else(|| "0".to_string()),
+            quote(create_time),
+            quote(kind_col),
+            quote(content),
+            quote(compress_col),
+            quote(&table),
+            quote(create_time),
+            since,
+            quote(create_time),
+            until,
+            quote(create_time),
+            limit
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            continue;
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0).unwrap_or(0),
+                row.get::<_, i64>(1).unwrap_or(0),
+                row.get::<_, i64>(2).unwrap_or(0),
+                row.get::<_, i64>(3).unwrap_or(0),
+                value_to_bytes(row.get_ref(4)?),
+                row.get::<_, Option<i64>>(5).ok().flatten(),
+            ))
+        });
+        let Ok(rows) = rows else {
+            continue;
+        };
+        for (local, server, time, kind, raw, compress) in rows.flatten() {
+            let decoded = decode_text(raw, compress);
+            let content = split_sender_prefix(decoded).1;
+            out.push(RawMessage {
+                local_id: local,
+                server_id: server,
+                time,
+                kind,
+                content,
+            });
+        }
+    }
+
+    if !found_table {
+        return Err(format!(
+            "在解密后的消息库中没有找到会话 {username} 对应的表（{table}）。"
+        ));
+    }
+    out.sort_by(|a, b| b.time.cmp(&a.time).then(b.local_id.cmp(&a.local_id)));
+    out.truncate(limit);
+    Ok(out)
 }
 
 fn snippet_around(text: &str, needle: &str) -> String {
@@ -1554,7 +1775,7 @@ pub fn digest_filtered(
             continue;
         };
         let display = session.display.clone();
-        let Ok(list) = messages_inner(cache, username, per_session_limit, None, me.as_deref())
+        let Ok(list) = messages_inner(cache, username, per_session_limit, None, None, None, me.as_deref())
         else {
             continue;
         };
@@ -1829,7 +2050,7 @@ pub fn summary_input(
         let Some(session) = lookup.get(username.as_str()) else {
             continue;
         };
-        let Ok(list) = messages_inner(cache, username, SUMMARY_FETCH_LIMIT, None, me.as_deref())
+        let Ok(list) = messages_inner(cache, username, SUMMARY_FETCH_LIMIT, None, None, None, me.as_deref())
         else {
             continue;
         };

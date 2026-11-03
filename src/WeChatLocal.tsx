@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import './wechat.css';
 import { Icons } from './icons';
 import { DiskAccessCard } from './Permission';
@@ -14,6 +14,7 @@ import {
   type NewSummaryRecord,
   type SummaryRecord,
 } from './summary';
+import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
 
 type DbFile = {
   rel: string;
@@ -88,6 +89,38 @@ type MessageItem = {
   kind: number;
   text: string;
   is_self: boolean;
+};
+
+type MediaItem = {
+  local_id: number;
+  server_id: number;
+  kind: 'image' | 'video' | 'file' | 'voice' | 'emoji' | string;
+  name: string | null;
+  rel_path: string | null;
+  size: number | null;
+  exists: boolean;
+  encrypted: boolean;
+  decoded: boolean;
+  thumb: string | null;
+  preview: string | null;
+  sources: string[];
+  duration: number | null;
+  note: string | null;
+};
+
+type MediaReport = {
+  items: MediaItem[];
+  counts: { images: number; videos: number; files: number; voices: number; encrypted: number; missing: number };
+};
+
+type VoiceResult = {
+  server_id: number;
+  local_id: number;
+  wav: string | null;
+  duration_secs: number;
+  text: string | null;
+  cached: boolean;
+  error: string | null;
 };
 
 type SearchSnippet = {
@@ -259,7 +292,7 @@ type SelectedMessage = {
 };
 
 type WorkInsightItem = SelectedMessage & {
-  category: '待办' | '决定' | '风险' | '问题' | '数据';
+  category: InsightCategory;
 };
 
 type WorkInsights = {
@@ -296,6 +329,74 @@ const WORK_MAX_MESSAGES_PER_SESSION = 5000;
 const AI_MESSAGES_PER_SESSION = 400;
 /** Matches `SUMMARY_MAX_CHARS` in the Rust transcript builder. */
 const AI_MAX_CHARS = 45_000;
+/* Decoding a WxAM original runs ffmpeg, so previews are built lazily and at most a few at
+   a time. The backend caches the result on disk; this queue only throttles the IPC calls. */
+const previewQueue: Array<() => void> = [];
+let previewActive = 0;
+const PREVIEW_CONCURRENCY = 3;
+function enqueuePreview(task: () => Promise<void>) {
+  previewQueue.push(() => {
+    previewActive += 1;
+    void task().finally(() => {
+      previewActive -= 1;
+      const next = previewQueue.shift();
+      if (next) next();
+    });
+  });
+  if (previewActive < PREVIEW_CONCURRENCY) {
+    const next = previewQueue.shift();
+    if (next) next();
+  }
+}
+
+function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: MediaItem; onOpen: () => void }) {
+  const [src, setSrc] = useState<string | null>(item.preview ? convertFileSrc(item.preview) : null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (src || failed) return;
+    let cancelled = false;
+    enqueuePreview(async () => {
+      try {
+        const path = await invoke<string | null>('wechat_media_preview', {
+          accountId,
+          localId: item.local_id,
+          paths: item.sources,
+        });
+        if (!cancelled) {
+          if (path) setSrc(convertFileSrc(path));
+          else setFailed(true);
+        }
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, item.local_id, src, failed]);
+
+  if (!src) {
+    return (
+      <span className="wxv-attach-chip">
+        图片 · {failed ? '本机只有缩略图或无法解码' : '正在解码…'}
+      </span>
+    );
+  }
+  const onlyThumb = item.sources.length > 0 && item.sources.every(path => path.endsWith('_t.dat'));
+  return (
+    <button
+      type="button"
+      className="wxv-attach-thumb"
+      onClick={onOpen}
+      title={onlyThumb ? '本机只有缩略图（微信未下载原图）' : '查看原图'}
+      data-open-image={item.local_id}
+    >
+      <img src={src} alt="图片" loading="lazy" data-open-image={item.local_id} />
+      {onlyThumb && <span className="wxv-attach-badge">仅缩略图</span>}
+    </button>
+  );
+}
+
 function formatSize(bytes: number): string {
   if (bytes > 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
   if (bytes > 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -376,28 +477,6 @@ function currentAccount(accounts: Account[], remembered: string): Account | null
 
 function messageKey(username: string, message: MessageItem): string {
   return `${username}:${message.local_id}:${message.time}`;
-}
-
-function classifyWorkText(text: string): WorkInsightItem['category'] | null {
-  if (/(风险|问题|异常|报错|失败|阻塞|卡住|延期|延迟|缺少|缺口|bug|故障|回滚)/i.test(text)) return '风险';
-  if (/(决定|确定|定了|结论|同意|通过|就按|最终|敲定|拍板)/i.test(text)) return '决定';
-  if (/(需要|请|麻烦|尽快|务必|安排|负责|跟进|推进|提交|截止|deadline|之前完成|今天|明天|后天|本周|下周|月底)/i.test(text)) return '待办';
-  if (/(https?:\/\/|www\.|%|％|万元|完成率|gmv|roi|成本|预算|收入|转化)/i.test(text)) return '数据';
-  if (text.trim().endsWith('？') || text.trim().endsWith('?')) return '问题';
-  return null;
-}
-
-function extractWorkTerms(messages: SelectedMessage[]): string[] {
-  const stopWords = new Set(['我们', '这个', '那个', '可以', '已经', '还是', '然后', '一下', '现在', '因为', '所以', '没有', '不是']);
-  const counts = new Map<string, number>();
-  for (const item of messages) {
-    const terms = item.message.text.match(/[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_-]{2,}/g) ?? [];
-    for (const term of terms) {
-      const normalized = term.toLowerCase();
-      if (!stopWords.has(normalized) && normalized.length >= 2) counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
-    }
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([term]) => term);
 }
 
 function isPlaceholder(text: string): boolean {
@@ -499,6 +578,11 @@ export default function WeChatLocal({
   onSummaryRequestHandled,
   focusConversation,
   focusMessageId,
+  searchKeyword = '',
+  onClearSearch,
+  workRequest = 0,
+  exportRequest = 0,
+  onChatState,
 }: {
   mode?: 'chat' | 'settings';
   onOpenChat?: () => void;
@@ -512,6 +596,14 @@ export default function WeChatLocal({
   onSummaryRequestHandled?: () => void;
   focusConversation?: string | null;
   focusMessageId?: string | number | null;
+  /** Keyword typed in the embedding page's header. Highlights matches in the open chat. */
+  searchKeyword?: string;
+  onClearSearch?: () => void;
+  /** Counters from the embedding page header's 整理工作内容 / 导出 buttons. */
+  workRequest?: number;
+  exportRequest?: number;
+  /** Reports whether the page-level 整理/导出 actions may be shown at all. */
+  onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
 } = {}) {
   const [env, setEnv] = useState<WechatEnv | null>(null);
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
@@ -531,6 +623,10 @@ export default function WeChatLocal({
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [active, setActive] = useState<SessionItem | null>(null);
   const [messages, setMessages] = useState<MessageItem[]>([]);
+  /** Keyword from the embedding page's header, used for in-conversation search. */
+  const [inlineKeyword, setInlineKeyword] = useState('');
+  const messagesRef = useRef<MessageItem[]>([]);
+  const deepSearchKey = useRef('');
   /** Real avatars by WeChat username; a missing entry keeps the letter avatar. */
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const avatarAsked = useRef<Set<string>>(new Set());
@@ -591,16 +687,34 @@ export default function WeChatLocal({
   const pendingFocusMessage = useRef<string>('');
   const syncLock = useRef(false);
   const clearingRef = useRef(false);
+  const handledWorkRequest = useRef(0);
+  const handledExportRequest = useRef(0);
   const sourceSeen = useRef<{ exists: boolean; modifiedAt: number | null } | null>(null);
   const [loadSeq, setLoadSeq] = useState(0);
+
+  /** Attachment manifest for the loaded message window, keyed by `local_id`. */
+  const [mediaByMessage, setMediaByMessage] = useState<Record<string, MediaItem[]>>({});
+  const [voiceText, setVoiceText] = useState<Record<number, string>>({});
+  const [voiceError, setVoiceError] = useState<Record<number, string>>({});
+  const [voiceBusy, setVoiceBusy] = useState<Record<number, boolean>>({});
+  const [exportMenu, setExportMenu] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportReport, setExportReport] = useState<{ directory: string; copied: number; skipped: number } | null>(null);
 
   useEffect(() => {
     void invoke<{ chat?: { sync_interval_seconds?: number } }>('app_settings_get')
       .then(value => setSyncIntervalSeconds(Math.max(1, value.chat?.sync_interval_seconds ?? 30)))
       .catch(() => undefined);
-    void invoke<AgentCurrent>('agent_current')
-      .then(setAgentCurrent)
-      .catch(() => setAgentCurrent(null));
+    // The agent can be configured from Settings while this page stays mounted, so a
+    // return to the window is also a refresh point for the hidden actions' permission.
+    const loadAgent = () => {
+      void invoke<AgentCurrent>('agent_current')
+        .then(setAgentCurrent)
+        .catch(() => setAgentCurrent(null));
+    };
+    loadAgent();
+    window.addEventListener('focus', loadAgent);
+    return () => window.removeEventListener('focus', loadAgent);
   }, []);
 
   const account = useMemo(() => scan?.accounts.find(a => a.id === accountId) ?? null, [scan, accountId]);
@@ -1217,10 +1331,12 @@ export default function WeChatLocal({
           username: session.username,
           limit: PAGE,
         });
-        // A keyword hit can be older than the first page; pull a few more pages so the
-        // highlighted message is actually on screen instead of silently missing.
+        // A keyword hit can be older than the first page; pull more pages so the
+        // highlighted message is actually on screen instead of silently missing. Twelve
+        // pages covers ~1200 recent messages, which keeps the search responsive while
+        // handling month-old links in busy groups.
         let page = list;
-        for (let attempt = 0; keyword && attempt < 3 && page.length === PAGE; attempt += 1) {
+        for (let attempt = 0; keyword && attempt < 12 && page.length === PAGE; attempt += 1) {
           if (list.some(message => contains(message.text, keyword))) break;
           const oldest = page[page.length - 1]?.time;
           if (!oldest) break;
@@ -1245,6 +1361,116 @@ export default function WeChatLocal({
     },
     [account],
   );
+
+  /** Attachments follow the loaded window; debounced so paging does not re-scan twice. */
+  useEffect(() => {
+    if (!account || !active || !messages.length) {
+      setMediaByMessage({});
+      return;
+    }
+    const since = messages[messages.length - 1].time;
+    const until = messages[0].time;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void invoke<MediaReport>('wechat_message_media', {
+        accountId: account.id,
+        username: active.username,
+        since,
+        until,
+      })
+        .then(report => {
+          if (cancelled) return;
+          const map: Record<string, MediaItem[]> = {};
+          for (const item of report.items) {
+            (map[String(item.local_id)] ??= []).push(item);
+          }
+          setMediaByMessage(map);
+        })
+        .catch(() => {
+          if (!cancelled) setMediaByMessage({});
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [account?.id, active?.username, messages]);
+
+  const mediaFor = (localId: number): MediaItem[] => mediaByMessage[String(localId)] ?? [];
+
+  const transcribeVoice = async (item: MediaItem) => {
+    if (!account || !active) return;
+    setVoiceBusy(current => ({ ...current, [item.server_id]: true }));
+    setVoiceError(current => {
+      const next = { ...current };
+      delete next[item.server_id];
+      return next;
+    });
+    try {
+      const results = await invoke<VoiceResult[]>('wechat_voice_transcribe', {
+        accountId: account.id,
+        username: active.username,
+        items: [{ local_id: item.local_id, server_id: item.server_id }],
+      });
+      const result = results[0];
+      if (result?.text) {
+        setVoiceText(current => ({ ...current, [item.server_id]: result.text as string }));
+      } else if (result?.error) {
+        setVoiceError(current => ({ ...current, [item.server_id]: result.error as string }));
+      }
+    } catch (e) {
+      setVoiceError(current => ({ ...current, [item.server_id]: String(e) }));
+    } finally {
+      setVoiceBusy(current => ({ ...current, [item.server_id]: false }));
+    }
+  };
+
+  const playVoice = async (item: MediaItem) => {
+    if (!account || !active) return;
+    try {
+      const audio = await invoke<{ data_uri: string; duration_secs: number }>('wechat_voice_audio', {
+        accountId: account.id,
+        username: active.username,
+        serverId: item.server_id,
+      });
+      const player = new Audio(audio.data_uri);
+      void player.play();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const revealMedia = (item: MediaItem) => {
+    if (!account || !item.rel_path) return;
+    void invoke('wechat_media_reveal', { accountId: account.id, path: item.rel_path }).catch(e => setError(String(e)));
+  };
+
+  const openImage = (item: MediaItem) => {
+    const paths = item.sources.length ? item.sources : item.rel_path ? [item.rel_path] : [];
+    if (!account || !paths.length) return;
+    void invoke('wechat_media_open_image', { accountId: account.id, paths }).catch(e => setError(String(e)));
+  };
+
+  const exportBundle = async () => {
+    if (!account || !active || !messages.length) return;
+    setExportBusy(true);
+    setExportMenu(false);
+    try {
+      const report = await invoke<{ directory: string; copied: number; skipped: number }>('wechat_export_bundle', {
+        accountId: account.id,
+        username: active.username,
+        display: active.display,
+        since: messages[messages.length - 1].time,
+        until: messages[0].time,
+      });
+      setExportReport(report);
+      setNotice(`已导出到 ${report.directory}（复制 ${report.copied} 个附件，跳过 ${report.skipped} 个）。`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setExportBusy(false);
+    }
+  };
 
   const loadOlder = async () => {
     if (!account || !active || !messages.length) return;
@@ -1385,8 +1611,44 @@ export default function WeChatLocal({
   useEffect(() => {
     if (!focusConversation || !ready || !account || !sessions.length) return;
     const session = sessions.find(item => item.username === focusConversation);
-    if (session) void openSession(session, '', focusMessageId ?? undefined);
-  }, [focusConversation, focusMessageId, ready, account, sessions, openSession]);
+    if (!session) return;
+    // The session list is refreshed by the live-sync tick; reopening the conversation we are
+    // already on would clear the message list and make the pane flash every tick.
+    if (active?.username === focusConversation && !focusMessageId) return;
+    void openSession(session, '', focusMessageId ?? undefined);
+  }, [focusConversation, focusMessageId, ready, account, sessions, openSession, active?.username]);
+
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // Every conversation starts a fresh deep-search budget; otherwise a keyword already
+  // searched in the previous chat would suppress the search in the new one.
+  useEffect(() => { deepSearchKey.current = ''; }, [active?.username]);
+
+  // Header search from the embedding page: highlight matches in the open conversation and,
+  // when the loaded window has none, pull older pages for this keyword exactly once.
+  useEffect(() => {
+    const keyword = searchKeyword.trim();
+    setInlineKeyword(keyword);
+    if (!keyword || !active) {
+      deepSearchKey.current = '';
+      return;
+    }
+    const key = `${active.username}|${keyword}`;
+    if (deepSearchKey.current === key) return;
+    const timer = window.setTimeout(() => {
+      if (deepSearchKey.current === key) return;
+      deepSearchKey.current = key;
+      if (messagesRef.current.some(message => contains(message.text, keyword))) {
+        pendingHighlight.current = keyword;
+        const root = messageRef.current;
+        const hit = root?.querySelector<HTMLElement>('[data-hit="true"]');
+        hit?.scrollIntoView({ block: 'center' });
+        return;
+      }
+      void openSession(active, keyword);
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [searchKeyword, active, openSession]);
 
   const toggleWorkSession = (username: string) => {
     setWorkSelected(current =>
@@ -1695,7 +1957,7 @@ export default function WeChatLocal({
       const category = classifyWorkText(item.message.text);
       if (category) focus.push({ ...item, category });
     }
-    const terms = workKeyword.trim() ? [workKeyword.trim()] : extractWorkTerms(items);
+    const terms = workKeyword.trim() ? [workKeyword.trim()] : extractWorkTerms(items.map(item => item.message));
     const base: WorkInsights = {
       timeline: [...timelineMap.entries()].map(([day, messages]) => ({ day, messages })),
       focus: focus.slice(0, 80),
@@ -1838,6 +2100,29 @@ export default function WeChatLocal({
     URL.revokeObjectURL(url);
   };
 
+  // Header buttons live in the embedding page. They are requests, not state, so a click
+  // while the pane is hidden still opens the drawer / downloads once the chat is ready.
+  useEffect(() => {
+    if (!workRequest || workRequest === handledWorkRequest.current || !ready) return;
+    handledWorkRequest.current = workRequest;
+    openWorkPicker();
+  }, [workRequest, ready]);
+
+  useEffect(() => {
+    if (!exportRequest || exportRequest === handledExportRequest.current || !messages.length) return;
+    handledExportRequest.current = exportRequest;
+    setExportMenu(true);
+  }, [exportRequest, messages.length]);
+
+  useEffect(() => {
+    onChatState?.({
+      active: Boolean(active),
+      messages: messages.length,
+      selected: selectedMessages.length,
+      agentReady: Boolean(agentCurrent?.configured && agentCurrent.available),
+    });
+  }, [active?.username, messages.length, selectedMessages.length, agentCurrent?.configured, agentCurrent?.available, onChatState]);
+
   const groups = sessions.filter(session => session.is_group);
   const needle = query.trim().toLowerCase();
   const filteredSessions = useMemo(() => {
@@ -1866,11 +2151,17 @@ export default function WeChatLocal({
   }, [ordered]);
 
   // Only the conversation that actually matched should be dimmed/highlighted; otherwise
-  // a previous search keeps a stale banner on an unrelated chat.
-  const highlightKeyword = useMemo(() => {
+  // a previous search keeps a stale banner on an unrelated chat. The keyword typed in the
+  // embedding page's header wins, because that is the search the user just performed.
+  const searchHighlight = useMemo(() => {
     if (!search || !active) return '';
     return search.hits.some(hit => hit.username === active.username) ? search.keyword : '';
   }, [search, active]);
+  const highlightKeyword = inlineKeyword || searchHighlight;
+  const highlightHits = useMemo(
+    () => (highlightKeyword ? messages.filter(message => contains(message.text, highlightKeyword)).length : 0),
+    [messages, highlightKeyword],
+  );
 
   /* ── session list ─────────────────────────────────────────────────────────── */
 
@@ -2780,7 +3071,20 @@ const checkMark = (value: boolean | undefined) =>
             <div
               key={`${message.local_id}-${message.time}`}
               className={`wxv-system ${selected ? 'selected' : ''}`}
-              onClick={event => selectMessage(event.shiftKey)}
+              onClick={event => {
+                // A hit on the image opens the full-size copy even when the nested button
+                // does not receive the click itself (WebKit hit-testing on the bubble).
+                // Image messages are mostly picture: a plain click opens the readable copy,
+                // a shift-click still toggles the selection. Without this, clicking a
+                // 250 px thumbnail only highlighted the bubble and never showed the content.
+                const image = mediaFor(message.local_id).find(entry => entry.kind === 'image');
+                if (image && !event.shiftKey && (event.target as HTMLElement).closest('.wxv-bubble')) {
+                  event.stopPropagation();
+                  openImage(image);
+                  return;
+                }
+                selectMessage(event.shiftKey);
+              }}
               role="button"
               tabIndex={0}
               aria-pressed={selected}
@@ -2802,7 +3106,20 @@ const checkMark = (value: boolean | undefined) =>
               className={`wxv-msg ${message.is_self ? 'self' : ''} ${placeholder ? 'sticker' : ''} ${selected ? 'selected' : ''}`}
               data-hit={hit ? 'true' : 'false'}
               id={`msg-${message.local_id}`}
-              onClick={event => selectMessage(event.shiftKey)}
+              onClick={event => {
+                // A hit on the image opens the full-size copy even when the nested button
+                // does not receive the click itself (WebKit hit-testing on the bubble).
+                // Image messages are mostly picture: a plain click opens the readable copy,
+                // a shift-click still toggles the selection. Without this, clicking a
+                // 250 px thumbnail only highlighted the bubble and never showed the content.
+                const image = mediaFor(message.local_id).find(entry => entry.kind === 'image');
+                if (image && !event.shiftKey && (event.target as HTMLElement).closest('.wxv-bubble')) {
+                  event.stopPropagation();
+                  openImage(image);
+                  return;
+                }
+                selectMessage(event.shiftKey);
+              }}
               role="button"
               tabIndex={0}
               aria-pressed={selected}
@@ -2834,6 +3151,88 @@ const checkMark = (value: boolean | undefined) =>
                   ) : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
                   )}
+                  {mediaFor(message.local_id).map(item => {
+                    if (item.kind === 'voice') {
+                      const text = voiceText[item.server_id];
+                      const failure = voiceError[item.server_id];
+                      const busyVoice = Boolean(voiceBusy[item.server_id]);
+                      return (
+                        <div className="wxv-attach voice" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
+                          <button type="button" className="wxv-attach-play" onClick={() => void playVoice(item)} title="播放语音">
+                            ▶
+                          </button>
+                          <span className="wxv-attach-meta">{item.duration ?? 0}″</span>
+                          <button
+                            type="button"
+                            className="wxv-attach-link"
+                            onClick={() => void transcribeVoice(item)}
+                            disabled={busyVoice}
+                          >
+                            {busyVoice ? '转写中…' : text ? '重新转写' : '转写'}
+                          </button>
+                          {text && <p className="wxv-attach-text">{text}</p>}
+                          {failure && <p className="wxv-attach-error">{failure}</p>}
+                        </div>
+                      );
+                    }
+                    if (item.kind === 'image') {
+                      return (
+                        <div className="wxv-attach image" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
+                          {item.sources.length ? (
+                            <MediaThumb accountId={account?.id ?? ''} item={item} onOpen={() => openImage(item)} />
+                          ) : (
+                            <span className="wxv-attach-chip">图片 · 本地缺失</span>
+                          )}
+                          {item.sources.length > 0 && (
+                            <button type="button" className="wxv-attach-link" onClick={() => openImage(item)}>
+                              查看原图
+                            </button>
+                          )}
+                          {item.rel_path && (
+                            <button type="button" className="wxv-attach-link" onClick={() => revealMedia(item)}>
+                              在访达中显示
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
+                    if (item.kind === 'video') {
+                      return (
+                        <div className="wxv-attach video" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
+                          {item.thumb ? (
+                            <button type="button" className="wxv-attach-thumb" onClick={() => revealMedia(item)} title="在访达中显示">
+                              <img src={item.thumb} alt="视频封面" loading="lazy" />
+                              <span className="wxv-attach-badge">{item.duration ? `${item.duration}″` : '视频'}</span>
+                            </button>
+                          ) : (
+                            <span className="wxv-attach-chip">视频{item.duration ? ` · ${item.duration}″` : ''}</span>
+                          )}
+                          {item.rel_path && (
+                            <button type="button" className="wxv-attach-link" onClick={() => revealMedia(item)}>
+                              在访达中显示
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
+                    if (item.kind === 'file') {
+                      return (
+                        <div className="wxv-attach file" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
+                          <span className="wxv-attach-chip">
+                            📄 {item.name ?? '文件'}
+                            {item.size ? ` · ${formatSize(item.size)}` : ''}
+                            {!item.exists ? ' · 本地缺失' : ''}
+                          </span>
+                          {item.rel_path && (
+                            <button type="button" className="wxv-attach-link" onClick={() => revealMedia(item)}>
+                              打开
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })}
                 </div>
               </div>
             </div>
@@ -2890,8 +3289,18 @@ const checkMark = (value: boolean | undefined) =>
 
         {highlightKeyword && (
           <div className="wxv-filterbar">
-            正在高亮「{highlightKeyword}」的命中消息
-            <button type="button" className="wxv-link" onClick={clearSearch}>
+            {highlightHits
+              ? `正在高亮「${highlightKeyword}」的 ${highlightHits} 处命中`
+              : `「${highlightKeyword}」在当前记录中没有命中，已尝试向前加载更多消息`}
+            <button
+              type="button"
+              className="wxv-link"
+              onClick={() => {
+                setInlineKeyword('');
+                clearSearch();
+                onClearSearch?.();
+              }}
+            >
               取消高亮
             </button>
           </div>
@@ -2906,7 +3315,7 @@ const checkMark = (value: boolean | undefined) =>
           </span>
           <span>{selectedMessages.length
             ? `已选 ${selectedMessages.length} 条 · 点击消息可切换，Shift + 点击连续选择`
-            : '点击消息可加入跨会话选集，Shift + 点击可连续选择'}</span>
+            : '点击图片查看原图，Shift + 点击消息可加入跨会话选集'}</span>
           {selectedMessages.length > 0 && (
             <button type="button" className="wxv-link" onClick={clearSelectedMessages}>清空选中</button>
           )}
@@ -3318,6 +3727,65 @@ const checkMark = (value: boolean | undefined) =>
 
       {/* The capture guide needs the full column width; the digest drawer would clip it. */}
       {workOpen && !forceUnlock && renderWorkSelector()}
+
+      {exportMenu && createPortal((
+        <div
+          className="wxv-modal-layer"
+          role="presentation"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget) setExportMenu(false);
+          }}
+        >
+          <div className="wxv-modal-card" role="dialog" aria-modal="true" aria-labelledby="export-title">
+            <header className="wxv-modal-head">
+              <span className="wxv-modal-icon">{Icons.download}</span>
+              <div className="wxv-modal-title">
+                <h3 id="export-title">导出当前会话</h3>
+                <p>{active?.display ?? ''} · {messages.length} 条已加载消息</p>
+              </div>
+              <button type="button" className="wxv-modal-close" onClick={() => setExportMenu(false)} aria-label="关闭">
+                {Icons.close}
+              </button>
+            </header>
+            <div className="wxv-export-options">
+              <button
+                type="button"
+                className="wxv-action-option"
+                onClick={() => {
+                  downloadTranscript();
+                  setExportMenu(false);
+                }}
+              >
+                <span className="wxv-action-icon">{Icons.list}</span>
+                <span className="wxv-action-text">
+                  <strong>仅文本 (.txt)</strong>
+                  <small>当前已加载的消息，纯文本，不含附件。</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="wxv-action-option"
+                onClick={() => void exportBundle()}
+                disabled={exportBusy}
+              >
+                <span className="wxv-action-icon">{Icons.download}</span>
+                <span className="wxv-action-text">
+                  <strong>{exportBusy ? '正在导出…' : '目录 + 媒体清单'}</strong>
+                  <small>导出到「下载/AIMyChats」：transcript.md、manifest.json、media/（明文附件）。</small>
+                </span>
+              </button>
+            </div>
+            {exportReport && (
+              <p className="wxv-modal-note">
+                已导出到 <span className="mono">{exportReport.directory}</span>，复制 {exportReport.copied} 个附件，跳过 {exportReport.skipped} 个。
+              </p>
+            )}
+            <p className="wxv-modal-note">
+              图片按本机 kvcomm 密钥离线解密：聊天里显示微信缓存的可读尺寸，导出时优先原图；WxAM（HEVC）图片仍无法解码。
+            </p>
+          </div>
+        </div>
+      ), document.body)}
     </div>
   );
 }

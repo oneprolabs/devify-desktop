@@ -303,6 +303,9 @@ fn is_chat_db(rel: &str) -> bool {
         // They are not SQLCipher databases, have no derived key, and are not needed to read
         // messages, so the suffix matters here.
         || (rel.starts_with("message/message_") && rel.ends_with(".db"))
+        // Voice payloads live in `message/media_0.db` (`VoiceInfo.voice_data`), so the media
+        // shard has to be decrypted for transcription and attachment metadata.
+        || (rel.starts_with("message/media_") && rel.ends_with(".db"))
         // Avatars live beside the chat databases and are keyed by username, so they are part
         // of rendering a conversation rather than a separate feature.
         || rel.starts_with("head_image/")

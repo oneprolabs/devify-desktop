@@ -23,7 +23,9 @@ The app never modifies, deletes, or writes to WeChat's own database files. It do
 - **Key import with proof, not trust**: accepts pasted `x'<64 hex key><32 hex salt>'`, bare hex, `all_keys.json`-style JSON, or an account **passphrase**. A bare 64-hex value is tried as a raw key first and then as a passphrase, in which case the per-database key is derived with `PBKDF2-HMAC-SHA512(passphrase, salt, 256000, 32)` (SQLCipher 4 defaults). Every candidate is verified against the database's page-1 HMAC-SHA512 before being stored. Keys that do not verify are rejected and everything else is kept unchanged (no privilege escalation, no guessing). Re-importing re-verifies stored keys and replaces rotated ones, and reports “无需重复导入” when nothing changed (also stating that the submitted material added no new key, so a mistyped value cannot pass as a success); **清除本账号密钥** resets one account without touching WeChat's files.
 - **Key store**: `<app_data_dir>/wechat-keys.json`, mode `0600`, containing only verified `(account, db path) → key + salt` entries.
 - **Per-page decryption**: SQLCipher 4 layout — page size 4096, reserve 80 (16-byte IV + 64-byte HMAC), `mac_key = PBKDF2-HMAC-SHA512(enc_key, salt ^ 0x3a, 2, 32)`. Every page is authenticated before being written; a single mismatch aborts the whole file, so no partially decrypted database is ever published. Output is written to a temporary file and renamed atomically.
-- **Scoped by default**: only `session/session.db`, `contact/contact.db`, and `message/message_*.db` are decrypted, so chat browsing does not touch FTS indexes, media metadata, or head images. Clear the checkbox to process every database.
+- **Scoped by default**: only `session/session.db`, `contact/contact.db`, `message/message_*.db`, `message/media_*.db` (voice payloads) and `head_image/*` are decrypted, so chat browsing does not touch FTS indexes or unrelated databases. Clear the checkbox to process every database.
+- **Attachment manifest**: every image, video, document and voice message gets a manifest entry (kind, name, size, path, existence). Documents (`msg/file`), videos (`msg/video`) and their covers are plaintext and open in Finder. Image `.dat` payloads (V2: AES-128-ECB prefix + single-byte-XOR trailer) are **decrypted offline** with keys derived from the account's own `kvcomm` cache. Previews are built lazily as images scroll into view (full-size originals are capped at 900 px), **查看原图** opens the native-resolution image, and export writes `media/images/**` as real JPEG/PNG. `WxAM` (HEVC) originals are decoded through `ffmpeg` when it is installed; messages whose original was never downloaded keep the 微信 thumbnail and say so. Export writes `transcript.md`, `manifest.json` and a `media/` folder to `~/Downloads/AIMyChats/<chat>-<timestamp>/`.
+- **Voice transcription**: WeChat voice is SILK v3 stored in `message/media_0.db` (`VoiceInfo.voice_data`). The app decodes it with a vendored Skype SILK reference decoder to 24 kHz mono WAV (cached under `<app_data>/voice-cache/`), plays it inline, and transcribes on demand with a local CLI (`whisper-cli`, `mlx_whisper` or `whisper`) configured under **Agent 集成 → 语音转写**. Transcripts are cached per `account|server_id`; nothing is uploaded and no model is bundled.
 - **Limited WAL replay**: committed prefix only, with per-frame salt and page-HMAC checks. SQLite's rolling checksum chain is **not** validated, so the result can miss the newest committed transaction. The UI says so for every database.
 - **Schema discovery, not assumption**: `PRAGMA table_info` is used everywhere; missing columns produce an explicit error instead of fabricated messages. Sessions come from `session/session.db`, display names from `contact/contact.db`, messages from `Msg_<md5(username)>` tables across all `message/message_*.db` shards, with `Name2Id` used for sender ids. The viewer only exposes one-to-one and group chats; official accounts, service accounts, built-in WeChat service sessions, and synthetic placeholder sessions are filtered out consistently from browsing, search, exploration, and digest input.
 - **Group chats**: sessions ending in `@chatroom` are marked as groups, with member counts from `chat_room` ⋈ `chatroom_member`. The inline `sender_username:` prefix that WeChat stores inside group message content is stripped, used as the sender fallback, and never shown as part of the text.
@@ -388,6 +390,47 @@ Every generated result is also written to `summary-history.json` in the app data
 - **每日自动日报** stores the exact body that was mailed, but only after the send succeeded; an agent failure is kept in the record's note.
 
 The file is written atomically with owner-only (`0600`) permissions, capped at the **newest 50 records** (older ones are dropped automatically), and never uploaded. In the drawer, **最近整理** lists the records saved for the current account; open one to re-read it and close it to return to the live preview, or delete it individually. Deleting only affects this local file — it cannot touch the original WeChat database or a report that was already mailed.
+
+## Image decryption (offline)
+
+WeChat 4.x stores chat images as `msg/attach/<md5(username)>/<YYYY-MM>/Img/*.dat`:
+
+```text
+[15B header: 07 08 "V2" 08 07 | u32le aes_size | u32le xor_size | 1B pad]
+[AES-128-ECB ciphertext, PKCS#7 padded] [plaintext middle] [XOR trailer]
+```
+
+The keys are **derived, not scraped from the running client**:
+
+| Key | Derivation |
+|---|---|
+| `code` | digits in `<WeChat config>/…/kvcomm/key_<code>_*.statistic` |
+| `xor_key` | `code & 0xFF` |
+| `aes_key` | `md5("{code}{wxid}").hexdigest()[:16]`, used as **16 ASCII bytes** |
+| `wxid` | account directory name with its `_<hash>` suffix stripped |
+
+Several codes can exist after an update, so every candidate is verified against a real ciphertext block: decrypting the first block must produce `FF D8 FF` / `PNG` / `GIF` / `wxgf`. A wrong key effectively never matches three leading bytes. Nothing is read from WeChat's process memory; only kvcomm statistic files and the `.dat` files themselves.
+
+Legacy single-byte-XOR payloads and the older `V1` magic (fixed AES key `md5("0")`) are handled too.
+
+`WxAM` originals (`wxgf` magic) wrap a HEVC stream. Their Annex-B bitstream is extracted by scanning for the start code and decoded with `ffmpeg` (`brew install ffmpeg`, optional):
+
+- Chat previews use WeChat's own bubble JPEG, the `_t.dat` thumbnail, or a 900 px render of the original.
+- **查看原图 / export** decode the full-size original (`2352×684`, `1702×1276`, …) as PNG.
+- When only a thumbnail exists locally (WeChat downloads originals on demand), the entry is marked 「本机只有缩略图」 instead of pretending it is the original.
+
+## Configure voice transcription
+
+Voice messages are decoded in-process; only the speech-to-text step uses an external CLI. Nothing is uploaded and no model is bundled.
+
+1. Install one engine (any of them):
+   - `brew install whisper-cpp` plus a ggml model (for example `ggml-large-v3-turbo.bin`); point the model field at the file.
+   - `pip install mlx-whisper` on Apple Silicon; the default `mlx-community/whisper-large-v3-mlx` downloads on first use.
+   - `pip install openai-whisper`; the default `small` downloads on first use.
+2. Open **Agent 集成 → 语音转写**, pick the engine, optionally set the model/language, and save. `自动选择` uses the first available engine.
+3. In a conversation, a voice message shows its length plus **转写**; the transcript appears inline and is cached in `voice-transcripts.json` (keyed by account and `server_id`). **重新转写** re-runs one clip.
+
+The WAV decoder lives in `src-tauri/vendor/silk` (Skype's SILK reference implementation, BSD-style licence with an explicit **no patent grant**). It is compiled by `build.rs`; removing that directory only disables voice decoding, everything else keeps building.
 
 ## Run / build
 

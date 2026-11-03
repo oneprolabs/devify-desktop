@@ -134,6 +134,12 @@ pub struct UploadJob {
     /// The exact range and allowlisted conversations chosen when the job was created.
     /// Missing for legacy jobs, which cannot be safely retried.
     pub scope: Option<UploadScope>,
+    /// Per-conversation newest message (time, local id) included in this package.
+    ///
+    /// Only completed jobs count, and only the chat list reads this: it answers "does the
+    /// local history hold anything newer than what was already uploaded". The incremental
+    /// sync keeps its own cursor and is never advanced from here.
+    pub covered: BTreeMap<String, SyncCursor>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
@@ -196,6 +202,7 @@ impl Default for UploadJob {
             created_at: String::new(),
             updated_at: String::new(),
             scope: None,
+            covered: BTreeMap::new(),
         }
     }
 }

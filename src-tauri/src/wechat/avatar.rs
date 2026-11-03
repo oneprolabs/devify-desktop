@@ -15,6 +15,13 @@ pub struct Avatar {
     pub data_url: String,
 }
 
+/// Raw avatar bytes plus their media type, for the upload package.
+pub struct AvatarImage {
+    pub username: String,
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+}
+
 fn mime_of(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         Some("image/png")
@@ -48,6 +55,21 @@ fn base64(input: &[u8]) -> String {
 /// Look up the given usernames. Unknown names, an empty list and a missing database all just
 /// produce fewer results — the caller renders letters instead.
 pub fn avatars(cache: &Path, usernames: &[String]) -> Vec<Avatar> {
+    images(cache, usernames)
+        .into_iter()
+        .map(|image| Avatar {
+            username: image.username,
+            data_url: format!(
+                "data:{};base64,{}",
+                image.content_type,
+                base64(&image.bytes)
+            ),
+        })
+        .collect()
+}
+
+/// Raw avatar bytes for the upload package, keeping only real images.
+pub fn images(cache: &Path, usernames: &[String]) -> Vec<AvatarImage> {
     let path = cache.join("head_image").join("head_image.db");
     if !path.is_file() || usernames.is_empty() {
         return Vec::new();
@@ -74,10 +96,11 @@ pub fn avatars(cache: &Path, usernames: &[String]) -> Vec<Avatar> {
     rows.flatten()
         .filter_map(|(username, bytes)| {
             let bytes = bytes?;
-            let mime = mime_of(&bytes)?;
-            Some(Avatar {
+            let content_type = mime_of(&bytes)?;
+            Some(AvatarImage {
                 username,
-                data_url: format!("data:{mime};base64,{}", base64(&bytes)),
+                bytes,
+                content_type,
             })
         })
         .collect()

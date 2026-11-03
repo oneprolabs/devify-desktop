@@ -112,9 +112,13 @@ export default function PrototypeShell() {
   ><span>{item.icon}</span><small>{item.label}</small></button>;
 
   return <main className="prototype-shell">
+    <header className="prototype-titlebar" data-tauri-drag-region>
+      <div className="prototype-titlebar-brand">
+        <img src={appIcon} alt="" />
+        <span>AIMyChats</span>
+      </div>
+    </header>
     <aside className="prototype-rail" aria-label="主导航">
-      <div className="prototype-drag" data-tauri-drag-region />
-      <div className="prototype-logo" aria-label="AIMyChats"><img src={appIcon} alt="" /></div>
       <nav className="prototype-nav">{sections.map(navButton)}</nav>
       <div className="prototype-spacer" />
       <nav className="prototype-nav">
@@ -135,7 +139,7 @@ export default function PrototypeShell() {
           onReady={handleChatReady}
           onUnlock={() => openSettings('connectors', true, true)}
         />}
-        {chatReady && <ChatWorkbench onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} />}
+        {chatReady && <ChatWorkbench onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
       </>}
       {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
       {section === 'settings' && <div className="prototype-settings-layout">
