@@ -318,8 +318,31 @@ export function AgentSettings() {
         <h2>语音转写</h2>
         <p className="help">
           微信语音是 SILK v3，应用内置解码器把它转成 24 kHz WAV，再交给本机的转写命令行工具。
-          转写只在本机执行，结果按账号和消息缓存，不会重复计算。
+          转写在本机执行，结果按账号和消息缓存，不会重复计算；开启上传后只提交转写文本，不上传原始语音。
         </p>
+        <label className="confirm">
+          <input
+            type="checkbox"
+            checked={settings.voice.auto_transcribe}
+            onChange={event => setSettings(current => ({
+              ...current,
+              voice: { ...current.voice, auto_transcribe: event.target.checked },
+            }))}
+          />
+          <span>上传前自动转写新的语音</span>
+        </label>
+        <label className="confirm">
+          <input
+            type="checkbox"
+            checked={settings.voice.upload_transcripts}
+            onChange={event => setSettings(current => ({
+              ...current,
+              voice: { ...current.voice, upload_transcripts: event.target.checked },
+            }))}
+          />
+          <span>将语音转写文本上传到 Devify</span>
+        </label>
+        <p className="help">默认只上传转写文本，不上传原始语音文件。没有本地引擎或转写失败时，会保留待转写状态并在下次同步重试。</p>
         {voiceState ? (
           <>
             <div className="settings-subheading">

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 
 type Citation = { kind: string; id: number; title: string; excerpt: string; conversation_id?: number | null; event_id?: number | null; note_id?: number | null };
 type Question = { id: number; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };
-type SourceDetail = { id?: number; title?: string; content?: string; body?: string; text?: string; preview?: string; occurred_at?: string | null; start_at?: string | null; end_at?: string | null; source?: string; conversation_id?: number | string; parts?: Array<{ text?: string | null }> };
 type Settings = { devify?: { active_space_id: number | null } };
 
 const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
@@ -38,8 +38,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const [asking, setAsking] = useState(false);
   const [range, setRange] = useState('全部');
   const [error, setError] = useState('');
-  const [source, setSource] = useState<SourceDetail | null>(null);
-  const [sourceLoading, setSourceLoading] = useState(false);
+  const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
 
   const load = useCallback(async () => {
     if (!isTauri()) { setLoading(false); return; }
@@ -86,31 +85,16 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     return () => { cancelled = true; polling.current.delete(questionId); };
   }, [spaceId, selected?.id, selected?.status]);
 
-  const openCitation = async (citation: Citation) => {
+  const openCitation = (citation: Citation) => {
     const kind = citationKind(citation);
     const eventId = citation.event_id ?? (kind === 'event' ? citation.id : null);
-    if (eventId) { onOpenEvent?.(eventId); return; }
-    if (!spaceId || !isTauri()) return;
+    if (eventId) { setEvidence({ kind: 'event', id: eventId, title: citation.title, excerpt: citation.excerpt }); return; }
     if (kind === 'message') {
-      if (!citation.conversation_id) { setSource({ title: citation.title, content: citation.excerpt }); return; }
-      setSourceLoading(true);
-      try {
-        const message = await invoke<SourceDetail>('devify_message_detail', { spaceId, conversationId: citation.conversation_id, messageId: citation.id });
-        setSource({
-          ...message,
-          title: message.title || citation.title,
-          content: message.parts?.map(part => part.text).filter(Boolean).join('\n') || message.preview || citation.excerpt,
-        });
-      } catch (reason) { setError(String(reason)); }
-      finally { setSourceLoading(false); }
+      setEvidence({ kind: 'message', id: citation.id, conversation_id: citation.conversation_id ?? null, title: citation.title, excerpt: citation.excerpt });
       return;
     }
     const noteId = citation.note_id ?? (kind === 'note' ? citation.id : null);
-    if (!noteId) return;
-    setSourceLoading(true);
-    try { setSource(await invoke<SourceDetail>('devify_note_detail', { spaceId, noteId })); }
-    catch (reason) { setError(String(reason)); }
-    finally { setSourceLoading(false); }
+    if (noteId) setEvidence({ kind: 'note', id: noteId, title: citation.title, excerpt: citation.excerpt });
   };
 
   const ask = async (value = draft) => {
@@ -153,9 +137,12 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
                 className="ask-event"
                 onClick={() => void openCitation(citation)}
               >
-                <span className="ask-event-dot" aria-hidden="true"/>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6.25" fill="#fff" stroke="#a8a8b0" strokeWidth="1.5"/>
+                </svg>
                 <strong>{citation.title}</strong>
-                <span className="ask-event-meta">{citation.excerpt ? citation.excerpt.slice(0, 18) : ''} →</span>
+                {citation.excerpt && <span className="ask-event-meta">{citation.excerpt.slice(0, 18)}</span>}
+                <span className="ask-event-arrow" aria-hidden="true">→</span>
               </button>)}
             </div>
           </section>}
@@ -192,7 +179,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     <aside className="ask-side">
       <h1>问答</h1>
       <p className="ask-side-sub">自由提问，跨会话检索</p>
-      <button type="button" className="ask-new" onClick={newThread}>＋ 新对话</button>
+      <button type="button" className="ask-new" onClick={newThread}><span aria-hidden="true">＋</span>新对话</button>
       <div className="ask-side-label">最近</div>
       <div className="ask-threads">
         {visibleQuestions.map(item => <button
@@ -216,13 +203,15 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
         </div>
         <div className="ask-time">
           <span>时间</span>
-          {rangerOptions.map(option => <button
-            key={option}
-            type="button"
-            aria-pressed={range === option}
-            className={range === option ? 'on' : ''}
-            onClick={() => setRange(option)}
-          >{option}</button>)}
+          <div className="ask-time-seg" role="group" aria-label="时间范围">
+            {rangerOptions.map(option => <button
+              key={option}
+              type="button"
+              aria-pressed={range === option}
+              className={range === option ? 'on' : ''}
+              onClick={() => setRange(option)}
+            >{option}</button>)}
+          </div>
         </div>
       </header>
 
@@ -230,17 +219,19 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
         {!spaceId && <div className="ask-welcome"><h3>还没有选择 Devify 空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
         {error && <p className="ask-error" role="alert">{error}</p>}
 
-        {spaceId && !selected && !pending && <div className="ask-welcome">
-          <h3>问问你的聊天记录</h3>
-          <p>跨已上传的聊天、事件和笔记提问，答案由 Devify 服务端生成，并附上原文依据。</p>
+        {spaceId && !selected && !pending && <>
+          <div className="ask-welcome">
+            <h3>问问你的聊天记录</h3>
+            <p>跨已上传的聊天、事件和笔记提问，答案由 Devify 服务端生成，每条结论都附原文依据。</p>
+          </div>
           <div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div>
-        </div>}
+        </>}
 
         {pending && <div className="ask-turn">
           <div className="ask-user"><p>{pending}</p></div>
           <div className="ask-bot">
             <span className="ask-avatar" aria-hidden="true">a</span>
-            <div className="ask-content"><p className="ask-pending">服务端正在检索并生成回答…</p></div>
+            <div className="ask-content"><p className="ask-pending">正在检索事件与原始记录…</p></div>
           </div>
         </div>}
 
@@ -248,24 +239,31 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       </div>
 
       <footer className="ask-composer">
-        <input
-          value={draft}
-          placeholder="问任何关于聊天记录的问题，例如：这周客户有哪些没回复的问题？"
-          onChange={event => setDraft(event.target.value)}
-          onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void ask(); } }}
-        />
-        <button type="button" onClick={() => void ask()} disabled={!draft.trim() || asking || !spaceId}>{asking ? '提问中…' : '发送'}</button>
+        <div className="ask-composer-box">
+          <textarea
+            rows={2}
+            value={draft}
+            placeholder="问任何关于聊天记录的问题，例如：这周客户有哪些没回复的问题？"
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void ask(); } }}
+          />
+          <button
+            type="button"
+            className={`ask-send${draft.trim() && !asking && spaceId ? ' on' : ''}`}
+            aria-label="发送"
+            onClick={() => void ask()}
+            disabled={!draft.trim() || asking || !spaceId}
+          >↑</button>
+        </div>
       </footer>
     </main>
 
-    {source && <div className="ask-source-backdrop" role="dialog" aria-modal="true" onClick={() => setSource(null)}>
-      <div className="ask-source-card" onClick={event => event.stopPropagation()}>
-        <header>
-          <strong>{source.title || '原文'}</strong>
-          <button type="button" onClick={() => setSource(null)}>关闭</button>
-        </header>
-        {sourceLoading ? <p>正在读取…</p> : <pre>{source.content || source.body || source.text || source.preview || '没有可显示的正文。'}</pre>}
-      </div>
-    </div>}
+    {evidence && <EvidenceDrawer
+      spaceId={spaceId}
+      target={evidence}
+      onClose={() => setEvidence(null)}
+      onNavigate={setEvidence}
+      onOpenDetail={target => { if (target.kind === 'event') onOpenEvent?.(target.id); }}
+    />}
   </div>;
 }

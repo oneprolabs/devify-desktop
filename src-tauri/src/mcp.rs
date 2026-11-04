@@ -49,7 +49,10 @@ struct MessagesArgs {
     account_id: Option<String>,
     username: String,
     limit: Option<usize>,
+    /// Timestamp of the oldest message already read; pair it with `before_id`.
     before: Option<i64>,
+    /// Local id of that same message, so pages never skip a shared timestamp.
+    before_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -128,6 +131,9 @@ struct Context {
 
 fn context(app_data: &Path, account_id: Option<String>) -> Result<Context, String> {
     let settings = settings::load(app_data)?;
+    if !settings.connectors.wechat_enabled {
+        return Err("微信连接已断开，重新连接后才能通过 MCP 读取聊天。".into());
+    }
     let account_id = account_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| settings.active_account_id.clone());
@@ -185,7 +191,8 @@ fn tools() -> Value {
                         "account_id": {"type": "string"},
                         "username": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
-                        "before": {"type": "integer", "description": "只返回这个时间戳之前的消息"}
+                        "before": {"type": "integer", "description": "只返回这个时间戳之前的消息；与 before_id 一起使用时从上一页最后一条之后继续"},
+                        "before_id": {"type": "integer", "description": "上一页最后一条消息的 local_id，用于同一秒内多条消息的可靠分页；响应的 next_cursor 已给出这两个值"}
                     }
                 }
             },
@@ -255,13 +262,18 @@ fn messages_json(app_data: &Path, args: MessagesArgs) -> Result<Value, String> {
     let context = context(app_data, args.account_id)?;
     ensure_allowed(&context, &args.username)?;
     let limit = args.limit.unwrap_or(100).clamp(1, 500);
-    let messages = query::messages(&context.cache, &args.username, limit, args.before)?;
+    let cursor = args.before.map(|time| match args.before_id {
+        Some(id) => query::MessageCursor::new(time, id),
+        None => query::MessageCursor::before_time(time),
+    });
+    let messages = query::messages(&context.cache, &args.username, limit, cursor)?;
     let has_more = messages.len() == limit;
     Ok(json!({
         "account_id": context.account_id,
         "username": args.username,
         "messages": messages,
-        "has_more": has_more
+        "has_more": has_more,
+        "next_cursor": messages.last().map(|m| json!({"before": m.time, "before_id": m.local_id}))
     }))
 }
 

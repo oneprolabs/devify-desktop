@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
+import { exportNotSupported } from './toast';
 
 type Kind = 'events' | 'reports';
 type EventItem = { id: number; title: string; content: string; status?: string | null; tags?: Array<{ label?: string }>; last_activity_at?: string | null; opened_at?: string | null; updated_at?: string | null };
@@ -168,6 +170,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
   const [actionBusy, setActionBusy] = useState<'save' | 'status' | 'link' | 'unlink' | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
   const [actionError, setActionError] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState('');
@@ -453,12 +456,6 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
       setSelectedId(eventId);
     } else onOpenEvent?.(eventId);
   };
-  const exportMarkdown = () => {
-    if (!report) return;
-    const sections = report.sections?.map(section => `## ${section.title}\n\n${(section.items ?? []).map(item => `### ${item.title}\n\n${item.summary}`).join('\n\n')}`).join('\n\n') ?? '';
-    const markdown = `# ${report.title}\n\n${reportContent}\n\n${sections}`;
-    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' })); link.download = `${report.title || 'Devify报告'}.md`; link.click(); URL.revokeObjectURL(link.href);
-  };
   const generateReport = async () => {
     if (!spaceId || generating) return;
     setGenerating(true);
@@ -549,8 +546,8 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
         <div className="analysis-crumbs"><span className="analysis-crumb-root">{copy.title}</span><span className="analysis-crumb-sep">/</span><span className="analysis-crumb-current">{filterLabel}</span></div>
         <div className="analysis-top-actions">
           {kind === 'reports' && report && <>
-            <button type="button" onClick={exportMarkdown}>导出 Markdown</button>
-            <button type="button" className="primary" onClick={() => window.print()}>导出 PDF</button>
+            <button type="button" onClick={exportNotSupported}>导出 Markdown</button>
+            <button type="button" className="primary" onClick={exportNotSupported}>导出 PDF</button>
           </>}
           {kind === 'events' && event && <>
             <button type="button" disabled={!!actionBusy} onClick={startEdit}>编辑</button>
@@ -728,12 +725,16 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
             <h3>{section.title}{section.items?.length ? ` · ${section.items.length}` : ''}</h3>
             <div className="report-items">
               {(section.items ?? []).map(item => {
-                const target = item.sources?.find(source => source.event_id)?.event_id;
+                const eventSource = item.sources?.find(source => source.event_id)?.event_id;
+                const noteSource = item.sources?.find(source => source.note_id)?.note_id;
+                const target: EvidenceTarget | null = eventSource
+                  ? { kind: 'event', id: eventSource }
+                  : noteSource ? { kind: 'note', id: noteSource } : null;
                 return <button
                   type="button"
                   className="report-item"
                   key={item.id}
-                  onClick={() => target && openRelatedEvent(target)}
+                  onClick={() => target && setEvidence(target)}
                   disabled={!target}
                 >
                   <span className="report-item-dot" aria-hidden="true"/>
@@ -749,7 +750,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
             </div>
           </section>)}
 
-          <p className="report-note">每一项都是事件，点击可查看它的时间线。</p>
+          <p className="report-note">每一项都是事件，点击可在右侧预览；需要完整时间线时再打开详情。</p>
         </article>}
         </>}
 
@@ -776,5 +777,13 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
         <footer>关联：两件事相关，但各自独立跟踪。你的操作会反馈给云端，之后的新消息按此归类。</footer>
       </div>
     </div>}
+
+    {evidence && <EvidenceDrawer
+      spaceId={spaceId}
+      target={evidence}
+      onClose={() => setEvidence(null)}
+      onNavigate={setEvidence}
+      onOpenDetail={target => { if (target.kind === 'event') onOpenEvent?.(target.id); }}
+    />}
   </div>;
 }

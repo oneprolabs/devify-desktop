@@ -15,6 +15,7 @@ import {
   type SummaryRecord,
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
+import { exportNotSupported } from './toast';
 
 type DbFile = {
   rel: string;
@@ -506,18 +507,6 @@ function Highlight({ text, keyword }: { text: string; keyword: string }) {
   );
 }
 
-function toMarkdownTranscript(session: SessionItem, messages: MessageItem[]): string {
-  const lines = messages
-    .map(message => {
-      const who = message.is_self ? '我' : message.sender_name || message.sender || '未知';
-      return `[${dayLabel(toDate(message.time) ?? new Date())}] ${who}: ${message.text}`;
-    })
-    .join('\n');
-  return `会话：${session.display}${session.is_group ? '（群聊）' : ''}\n导出时间：${new Date().toLocaleString('zh-CN', {
-    hour12: false,
-  })}\n\n${lines}`;
-}
-
 function rangeStart(range: RangeKey): number | undefined {
   const now = new Date();
   if (range === 'all' || range === 'custom') return undefined;
@@ -581,7 +570,6 @@ export default function WeChatLocal({
   searchKeyword = '',
   onClearSearch,
   workRequest = 0,
-  exportRequest = 0,
   onChatState,
 }: {
   mode?: 'chat' | 'settings';
@@ -599,9 +587,8 @@ export default function WeChatLocal({
   /** Keyword typed in the embedding page's header. Highlights matches in the open chat. */
   searchKeyword?: string;
   onClearSearch?: () => void;
-  /** Counters from the embedding page header's 整理工作内容 / 导出 buttons. */
+  /** Counters from the embedding page header's 整理工作内容 button. */
   workRequest?: number;
-  exportRequest?: number;
   /** Reports whether the page-level 整理/导出 actions may be shown at all. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
 } = {}) {
@@ -655,6 +642,7 @@ export default function WeChatLocal({
   /** The single footer entry splits into two paths; this reveals the two choices. */
   const [actionPicker, setActionPicker] = useState(false);
   const [liveSync, setLiveSync] = useState(true);
+  const [wechatEnabled, setWechatEnabled] = useState(true);
   const [syncIntervalSeconds, setSyncIntervalSeconds] = useState(30);
   const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'ready' | 'error'>('idle');
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
@@ -688,7 +676,6 @@ export default function WeChatLocal({
   const syncLock = useRef(false);
   const clearingRef = useRef(false);
   const handledWorkRequest = useRef(0);
-  const handledExportRequest = useRef(0);
   const sourceSeen = useRef<{ exists: boolean; modifiedAt: number | null } | null>(null);
   const [loadSeq, setLoadSeq] = useState(0);
 
@@ -697,14 +684,24 @@ export default function WeChatLocal({
   const [voiceText, setVoiceText] = useState<Record<number, string>>({});
   const [voiceError, setVoiceError] = useState<Record<number, string>>({});
   const [voiceBusy, setVoiceBusy] = useState<Record<number, boolean>>({});
-  const [exportMenu, setExportMenu] = useState(false);
-  const [exportBusy, setExportBusy] = useState(false);
-  const [exportReport, setExportReport] = useState<{ directory: string; copied: number; skipped: number } | null>(null);
 
   useEffect(() => {
-    void invoke<{ chat?: { sync_interval_seconds?: number } }>('app_settings_get')
-      .then(value => setSyncIntervalSeconds(Math.max(1, value.chat?.sync_interval_seconds ?? 30)))
+    void invoke<{ chat?: { sync_interval_seconds?: number }; connectors?: { wechat_enabled?: boolean } }>('app_settings_get')
+      // The chat view refreshes far more often than the backup job: the backup interval is
+      // 30 minutes by default, which would make a live conversation look frozen. Keep the
+      // on-screen cadence between 10 and 120 seconds.
+      .then(value => {
+        setSyncIntervalSeconds(Math.min(120, Math.max(10, value.chat?.sync_interval_seconds ?? 30)));
+        setWechatEnabled(value.connectors?.wechat_enabled ?? true);
+      })
       .catch(() => undefined);
+    // Disconnecting happens on the settings page while this page can stay mounted, so a
+    // return to the window re-reads the switch and stops the live poll.
+    const loadConnection = () => {
+      void invoke<{ connectors?: { wechat_enabled?: boolean } }>('app_settings_get')
+        .then(value => setWechatEnabled(value.connectors?.wechat_enabled ?? true))
+        .catch(() => undefined);
+    };
     // The agent can be configured from Settings while this page stays mounted, so a
     // return to the window is also a refresh point for the hidden actions' permission.
     const loadAgent = () => {
@@ -713,8 +710,12 @@ export default function WeChatLocal({
         .catch(() => setAgentCurrent(null));
     };
     loadAgent();
+    window.addEventListener('focus', loadConnection);
     window.addEventListener('focus', loadAgent);
-    return () => window.removeEventListener('focus', loadAgent);
+    return () => {
+      window.removeEventListener('focus', loadConnection);
+      window.removeEventListener('focus', loadAgent);
+    };
   }, []);
 
   const account = useMemo(() => scan?.accounts.find(a => a.id === accountId) ?? null, [scan, accountId]);
@@ -824,14 +825,14 @@ export default function WeChatLocal({
   }, [account, active, messages]);
 
   useEffect(() => {
-    if (!liveSync || !account || !ready) return;
+    if (!liveSync || !account || !ready || !wechatEnabled) return;
     void syncLatest();
     const timer = window.setInterval(() => {
       if (clearingRef.current) return;
       void syncLatest();
     }, syncIntervalSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [account, liveSync, ready, syncLatest, syncIntervalSeconds]);
+  }, [account, liveSync, ready, wechatEnabled, syncLatest, syncIntervalSeconds]);
 
   /** Persist the account in use, so the whitelist page and background jobs never have to
    *  ask which WeChat account this is. */
@@ -1338,13 +1339,14 @@ export default function WeChatLocal({
         let page = list;
         for (let attempt = 0; keyword && attempt < 12 && page.length === PAGE; attempt += 1) {
           if (list.some(message => contains(message.text, keyword))) break;
-          const oldest = page[page.length - 1]?.time;
-          if (!oldest) break;
+          const last = page[page.length - 1];
+          if (!last) break;
           page = await invoke<MessageItem[]>('wechat_messages', {
             accountId: account.id,
             username: session.username,
             limit: PAGE,
-            before: oldest,
+            before: last.time,
+            beforeId: last.local_id,
           });
           if (!page.length) break;
           list = [...list, ...page];
@@ -1451,37 +1453,17 @@ export default function WeChatLocal({
     void invoke('wechat_media_open_image', { accountId: account.id, paths }).catch(e => setError(String(e)));
   };
 
-  const exportBundle = async () => {
-    if (!account || !active || !messages.length) return;
-    setExportBusy(true);
-    setExportMenu(false);
-    try {
-      const report = await invoke<{ directory: string; copied: number; skipped: number }>('wechat_export_bundle', {
-        accountId: account.id,
-        username: active.username,
-        display: active.display,
-        since: messages[messages.length - 1].time,
-        until: messages[0].time,
-      });
-      setExportReport(report);
-      setNotice(`已导出到 ${report.directory}（复制 ${report.copied} 个附件，跳过 ${report.skipped} 个）。`);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setExportBusy(false);
-    }
-  };
-
   const loadOlder = async () => {
     if (!account || !active || !messages.length) return;
-    const oldest = messages[messages.length - 1].time;
+    const last = messages[messages.length - 1];
     setBusy('messages');
     try {
       const older = await invoke<MessageItem[]>('wechat_messages', {
         accountId: account.id,
         username: active.username,
         limit: PAGE,
-        before: oldest,
+        before: last.time,
+        beforeId: last.local_id,
       });
       setMessages(current => [...current, ...older]);
       setHasMore(older.length >= PAGE);
@@ -1698,6 +1680,7 @@ export default function WeChatLocal({
   const loadWorkMessages = async (session: SessionItem, since?: number, until?: number): Promise<WorkGroup> => {
     if (!account) return { session, messages: [], truncated: false };
     let before: number | undefined;
+    let beforeId: number | undefined;
     let collected: MessageItem[] = [];
     let truncated = false;
 
@@ -1707,10 +1690,12 @@ export default function WeChatLocal({
         username: session.username,
         limit: WORK_PAGE,
         before,
+        beforeId,
       });
       if (!page.length) break;
       collected = [...collected, ...page];
-      const oldest = page[page.length - 1]?.time;
+      const last = page[page.length - 1];
+      const oldest = last?.time;
       const oldestSeconds = oldest ? (oldest > 1e12 ? oldest / 1000 : oldest) : undefined;
       if ((since !== undefined && oldestSeconds !== undefined && oldestSeconds <= since) || page.length < WORK_PAGE) break;
       if (collected.length >= WORK_MAX_MESSAGES_PER_SESSION) {
@@ -1718,7 +1703,8 @@ export default function WeChatLocal({
         truncated = true;
         break;
       }
-      before = oldest;
+      before = last.time;
+      beforeId = last.local_id;
     }
 
     const messages = collected.filter(message => {
@@ -2088,18 +2074,6 @@ export default function WeChatLocal({
     );
   };
 
-  const downloadTranscript = () => {
-    if (!active || !messages.length) return;
-    const text = toMarkdownTranscript(active, [...messages].reverse());
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${active.display.replace(/[\\/:*?"<>|]/g, '_')}.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   // Header buttons live in the embedding page. They are requests, not state, so a click
   // while the pane is hidden still opens the drawer / downloads once the chat is ready.
   useEffect(() => {
@@ -2107,12 +2081,6 @@ export default function WeChatLocal({
     handledWorkRequest.current = workRequest;
     openWorkPicker();
   }, [workRequest, ready]);
-
-  useEffect(() => {
-    if (!exportRequest || exportRequest === handledExportRequest.current || !messages.length) return;
-    handledExportRequest.current = exportRequest;
-    setExportMenu(true);
-  }, [exportRequest, messages.length]);
 
   useEffect(() => {
     onChatState?.({
@@ -3281,7 +3249,7 @@ const checkMark = (value: boolean | undefined) =>
             <button type="button" className="wxv-btn" onClick={openWorkPicker} disabled={!messages.length}>
               整理工作内容
             </button>
-            <button type="button" className="wxv-btn" onClick={downloadTranscript} disabled={!messages.length}>
+            <button type="button" className="wxv-btn" onClick={exportNotSupported}>
               导出
             </button>
           </div>
@@ -3619,8 +3587,10 @@ const checkMark = (value: boolean | undefined) =>
                   : '等待扫描'}
             </small>
             {ready && (
-              <small className={`wxv-sync-status ${syncState}`}>
-                {syncState === 'syncing' ? '正在同步最新消息…' : syncState === 'error' ? '同步暂不可用' : lastSyncAt ? `准实时同步 · ${timeOnly(Math.floor(lastSyncAt.getTime() / 1000))}` : '准实时同步已开启'}
+              <small className={`wxv-sync-status ${wechatEnabled ? syncState : 'error'}`}>
+                {!wechatEnabled
+                  ? '微信已断开 · 到「连接器」重新连接'
+                  : syncState === 'syncing' ? '正在同步最新消息…' : syncState === 'error' ? '同步暂不可用' : lastSyncAt ? `准实时同步 · ${timeOnly(Math.floor(lastSyncAt.getTime() / 1000))}` : '准实时同步已开启'}
               </small>
             )}
           </div>
@@ -3727,65 +3697,6 @@ const checkMark = (value: boolean | undefined) =>
 
       {/* The capture guide needs the full column width; the digest drawer would clip it. */}
       {workOpen && !forceUnlock && renderWorkSelector()}
-
-      {exportMenu && createPortal((
-        <div
-          className="wxv-modal-layer"
-          role="presentation"
-          onMouseDown={event => {
-            if (event.target === event.currentTarget) setExportMenu(false);
-          }}
-        >
-          <div className="wxv-modal-card" role="dialog" aria-modal="true" aria-labelledby="export-title">
-            <header className="wxv-modal-head">
-              <span className="wxv-modal-icon">{Icons.download}</span>
-              <div className="wxv-modal-title">
-                <h3 id="export-title">导出当前会话</h3>
-                <p>{active?.display ?? ''} · {messages.length} 条已加载消息</p>
-              </div>
-              <button type="button" className="wxv-modal-close" onClick={() => setExportMenu(false)} aria-label="关闭">
-                {Icons.close}
-              </button>
-            </header>
-            <div className="wxv-export-options">
-              <button
-                type="button"
-                className="wxv-action-option"
-                onClick={() => {
-                  downloadTranscript();
-                  setExportMenu(false);
-                }}
-              >
-                <span className="wxv-action-icon">{Icons.list}</span>
-                <span className="wxv-action-text">
-                  <strong>仅文本 (.txt)</strong>
-                  <small>当前已加载的消息，纯文本，不含附件。</small>
-                </span>
-              </button>
-              <button
-                type="button"
-                className="wxv-action-option"
-                onClick={() => void exportBundle()}
-                disabled={exportBusy}
-              >
-                <span className="wxv-action-icon">{Icons.download}</span>
-                <span className="wxv-action-text">
-                  <strong>{exportBusy ? '正在导出…' : '目录 + 媒体清单'}</strong>
-                  <small>导出到「下载/AIMyChats」：transcript.md、manifest.json、media/（明文附件）。</small>
-                </span>
-              </button>
-            </div>
-            {exportReport && (
-              <p className="wxv-modal-note">
-                已导出到 <span className="mono">{exportReport.directory}</span>，复制 {exportReport.copied} 个附件，跳过 {exportReport.skipped} 个。
-              </p>
-            )}
-            <p className="wxv-modal-note">
-              图片按本机 kvcomm 密钥离线解密：聊天里显示微信缓存的可读尺寸，导出时优先原图；WxAM（HEVC）图片仍无法解码。
-            </p>
-          </div>
-        </div>
-      ), document.body)}
     </div>
   );
 }

@@ -16,7 +16,7 @@ description: 基于 wxq 的白名单聊天记录做跨会话探索、项目重�
 
 1. `wxq policy`——确认账号与白名单范围。
 2. `wxq search --keyword 项目名 --groups-only`——按项目名、客户名、人员名和关键术语定位候选会话。输出会给出 `扫描 / 跳过 / 命中` 计数与每条命中的上下文片段。
-3. `wxq messages --chat USERNAME --limit 100`——对命中的白名单会话按时间翻页取原文证据（`--before TS` 继续向前）。
+3. `wxq messages --chat USERNAME --limit 100`——对命中的白名单会话按时间翻页取原文证据（`--before TS --before-id ID` 继续向前，两个值都会打印出来）。
 4. `wxq digest --chat A --chat B --since ... --until ...`——获取确定性待办、决定、问题、风险、数据和时间线素材。
 5. 结果按“证据原文 → 规则抽取 → Agent 分析”分层输出，并标注日期、会话和发言人。
 

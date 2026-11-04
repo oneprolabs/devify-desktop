@@ -11,7 +11,7 @@ type GateSettings = {
 
 type Tab = 'login' | 'register';
 
-const DEFAULT_BASE_URL = 'https://app.aimychats.com';
+const DEFAULT_BASE_URL = 'http://192.168.31.137:8001';
 
 export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; onAuthenticated: () => void }) {
   const [popup, setPopup] = useState(false);
@@ -141,7 +141,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       const parsed = new URL(value);
       if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('invalid');
     } catch {
-      setServerStatus('请输入完整的服务地址，例如 https://app.aimychats.com。');
+      setServerStatus('请输入完整的服务地址，例如 http://192.168.31.137:8001。');
       return;
     }
     try {

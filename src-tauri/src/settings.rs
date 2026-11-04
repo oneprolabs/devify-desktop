@@ -10,11 +10,13 @@ const SETTINGS_FILE: &str = "app-settings.json";
 pub struct AppSettings {
     pub active_account_id: String,
     pub chat: ChatPolicy,
+    pub connectors: ConnectorSettings,
     pub devify: DevifySettings,
     pub automation: AutomationSettings,
     pub agent: AgentSettings,
     pub keys: KeysSettings,
     pub sync: SyncSettings,
+    pub voice: VoiceUploadSettings,
     pub backup: BackupSettings,
     pub language: LanguageSettings,
     pub upload_queue: Vec<UploadJob>,
@@ -37,7 +39,17 @@ pub struct BackupSettings {
     pub window_end: String,
     /// 0 = 周一 … 6 = 周日, matching ``chrono``'s num_days_from_monday.
     pub days: Vec<u8>,
+    /// Skip automatic runs unless the active link is Wi-Fi or wired. Tethering a phone
+    /// counts as metered, so it is refused instead of burning the phone's data plan.
+    pub wifi_only: bool,
+    /// ``text`` (no attachment bytes), ``images`` (text + pictures) or ``all``
+    /// (pictures plus video, files and voice audio up to [`ATTACHMENT_LIMIT_BYTES`]).
+    pub attachments: String,
 }
+
+/// Per-attachment ceiling for the ``all`` scope. Bigger files stay referenced by their
+/// message but are uploaded as ``omitted`` parts.
+pub const ATTACHMENT_LIMIT_BYTES: u64 = 25 * 1024 * 1024;
 
 /// Output language for generated text. ``ui`` is the interface language, ``summary`` what the
 /// agent writes for summaries and daily reports, ``ask`` the preferred answer language.
@@ -69,6 +81,8 @@ impl Default for BackupSettings {
             window_start: "23:00".into(),
             window_end: "07:00".into(),
             days: (0..7).collect(),
+            wifi_only: true,
+            attachments: "images".into(),
         }
     }
 }
@@ -96,6 +110,24 @@ impl SyncCursor {
 /// Incremental upload state for the allowlisted conversations.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
+pub struct VoiceUploadSettings {
+    /// Automatically decode and transcribe voice messages during upload preparation.
+    pub auto_transcribe: bool,
+    /// Include successful voice transcripts as text parts in the upload archive.
+    pub upload_transcripts: bool,
+}
+
+impl Default for VoiceUploadSettings {
+    fn default() -> Self {
+        Self {
+            auto_transcribe: true,
+            upload_transcripts: true,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct SyncSettings {
     pub enabled: bool,
     /// account id → conversation username → upload position.
@@ -105,6 +137,16 @@ pub struct SyncSettings {
     pub last_status: Option<String>,
     pub last_error: Option<String>,
     pub last_message_count: u64,
+    /// account id → conversation username → voice messages without a successful transcript.
+    /// These are retried once automatic transcription becomes available.
+    pub pending_voice: HashMap<String, HashMap<String, Vec<VoiceRef>>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct VoiceRef {
+    pub local_id: i64,
+    pub time: i64,
+    pub server_id: i64,
 }
 
 impl Default for SyncSettings {
@@ -116,6 +158,7 @@ impl Default for SyncSettings {
             last_status: None,
             last_error: None,
             last_message_count: 0,
+            pending_voice: HashMap::new(),
         }
     }
 }
@@ -209,6 +252,27 @@ impl Default for UploadJob {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
+pub struct ConnectorSettings {
+    /// Candidate sources the user asked to be told about once they ship. Local only: the
+    /// desktop app has no notification service, so this is a remembered list, not a promise.
+    pub waitlist: Vec<String>,
+    /// When false the app stops reading WeChat (and stops automatic backups) but keeps the
+    /// stored keys and decrypted snapshot, so reconnecting needs no new key import. Uploaded
+    /// records on the server are never touched.
+    pub wechat_enabled: bool,
+}
+
+impl Default for ConnectorSettings {
+    fn default() -> Self {
+        Self {
+            waitlist: Vec::new(),
+            wechat_enabled: true,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct ChatPolicy {
     pub allowed_usernames: HashMap<String, Vec<String>>,
     pub sync_interval_seconds: u64,
@@ -219,6 +283,8 @@ pub struct ChatPolicy {
 pub struct DevifySettings {
     pub base_url: String,
     pub device_label: String,
+    pub device_id: String,
+    pub platform: String,
     pub active_space_id: Option<i64>,
     pub recipient: String,
     pub subject: String,
@@ -254,11 +320,13 @@ impl Default for AppSettings {
         Self {
             active_account_id: String::new(),
             chat: ChatPolicy::default(),
+            connectors: ConnectorSettings::default(),
             devify: DevifySettings::default(),
             automation: AutomationSettings::default(),
             agent: AgentSettings::default(),
             keys: KeysSettings::default(),
             sync: SyncSettings::default(),
+            voice: VoiceUploadSettings::default(),
             backup: BackupSettings::default(),
             language: LanguageSettings::default(),
             upload_queue: Vec::new(),
@@ -270,24 +338,51 @@ impl Default for ChatPolicy {
     fn default() -> Self {
         Self {
             allowed_usernames: HashMap::new(),
-            sync_interval_seconds: 30,
+            sync_interval_seconds: 1800,
         }
+    }
+}
+
+pub fn device_default_label() -> String {
+    hostname::get()
+        .ok()
+        .and_then(|name| name.into_string().ok())
+        .map(|name| name.trim_end_matches(".local").trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "AIMyChats Desktop".to_string())
+}
+
+/// Use the machine name unless the user has given the device its own label.
+pub fn resolved_device_label(settings: &DevifySettings) -> String {
+    let label = settings.device_label.trim();
+    if label.is_empty() || label == "AIMyChats" || label == "AIMyChats Desktop" {
+        device_default_label()
+    } else {
+        label.to_string()
     }
 }
 
 impl Default for DevifySettings {
     fn default() -> Self {
         Self {
-            base_url: if cfg!(debug_assertions) {
-                "http://127.0.0.1:8001".to_string()
-            } else {
-                "https://app.aimychats.com".to_string()
-            },
-            device_label: "AIMyChats Desktop".to_string(),
+            base_url: "http://192.168.31.137:8001".to_string(),
+            device_label: device_default_label(),
+            device_id: String::new(),
+            platform: default_platform(),
             active_space_id: None,
             recipient: String::new(),
             subject: "微信工作日报".to_string(),
         }
+    }
+}
+
+/// Stable platform name sent to Devify and shown on the web console.
+pub fn default_platform() -> String {
+    match std::env::consts::OS {
+        "macos" => "macos".to_string(),
+        "windows" => "windows".to_string(),
+        "linux" => "linux".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -296,7 +391,7 @@ impl Default for AutomationSettings {
         Self {
             enabled: false,
             daily_summary_enabled: true,
-            daily_time: "18:30".to_string(),
+            daily_time: "08:30".to_string(),
             last_daily_run: None,
             last_daily_status: None,
             last_daily_error: None,
@@ -344,7 +439,15 @@ pub fn load(app_data: &Path) -> Result<AppSettings, String> {
         return Ok(AppSettings::default());
     }
     let content = fs::read_to_string(&file).map_err(|e| format!("读取应用策略失败：{e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("应用策略格式无效：{e}"))
+    let mut settings: AppSettings =
+        serde_json::from_str(&content).map_err(|e| format!("应用策略格式无效：{e}"))?;
+    // Older builds stored a 30-second default the stepper could never display (it rounds to
+    // whole minutes). Fold it back to the 30-minute default, otherwise the next save fails
+    // validation and the user is stuck on a value they cannot see or change.
+    if settings.chat.sync_interval_seconds < 60 {
+        settings.chat.sync_interval_seconds = 1800;
+    }
+    Ok(settings)
 }
 
 pub fn save(app_data: &Path, settings: &AppSettings) -> Result<(), String> {
@@ -360,8 +463,10 @@ pub fn save(app_data: &Path, settings: &AppSettings) -> Result<(), String> {
 }
 
 pub fn validate(settings: &AppSettings) -> Result<(), String> {
-    if !(1..=604_800).contains(&settings.chat.sync_interval_seconds) {
-        return Err("同步间隔必须在 1 秒到 7 天之间。".into());
+    // The UI lets the user pick a whole number of minutes or hours between 1 and 999, which
+    // is stored in seconds. Anything shorter than a minute cannot be displayed or stepped.
+    if !(60..=3_596_400).contains(&settings.chat.sync_interval_seconds) {
+        return Err("同步间隔必须在 1 分钟到 999 小时之间。".into());
     }
     let backup = &settings.backup;
     if !matches!(backup.mode.as_str(), "interval" | "times" | "manual") {
@@ -387,6 +492,9 @@ pub fn validate(settings: &AppSettings) -> Result<(), String> {
     }
     if backup.window_enabled && backup.days.is_empty() {
         return Err("限制上传时间时至少要选择一个生效日。".into());
+    }
+    if !matches!(backup.attachments.as_str(), "text" | "images" | "all") {
+        return Err("附件范围必须是仅文本、文本 + 图片或全部。".into());
     }
     if !matches!(settings.language.ui.as_str(), "中文" | "English") {
         return Err("界面语言必须是中文或 English。".into());
@@ -574,11 +682,27 @@ mod tests {
     }
 
     #[test]
-    fn defaults_keep_automation_off_and_use_safe_daily_time() {
+    fn defaults_keep_automation_off_and_use_design_daily_time() {
         let settings = AppSettings::default();
         assert!(!settings.automation.enabled);
-        assert_eq!(settings.automation.daily_time, "18:30");
+        assert_eq!(settings.automation.daily_time, "08:30");
+        assert_eq!(settings.chat.sync_interval_seconds, 1800);
         assert!(settings.chat.allowed_usernames.is_empty());
+        assert!(settings.voice.auto_transcribe);
+        assert!(settings.voice.upload_transcripts);
+    }
+
+    #[test]
+    fn connectors_start_connected_and_disconnect_is_a_plain_switch() {
+        let settings = AppSettings::default();
+        assert!(settings.connectors.wechat_enabled);
+        assert!(settings.connectors.waitlist.is_empty());
+
+        // Disconnecting must remain a valid stored state: keys and the decrypted snapshot
+        // stay on disk, only the read gate flips.
+        let mut disconnected = AppSettings::default();
+        disconnected.connectors.wechat_enabled = false;
+        assert!(validate(&disconnected).is_ok());
     }
 
     #[test]
@@ -587,8 +711,16 @@ mod tests {
         settings.chat.sync_interval_seconds = 0;
         assert!(validate(&settings).is_err());
 
-        settings.chat.sync_interval_seconds = 30;
+        settings.chat.sync_interval_seconds = 1800;
         settings.automation.daily_time = "25:00".to_string();
+        assert!(validate(&settings).is_err());
+
+        // The stepper works in whole minutes/hours, so a sub-minute stored value must be
+        // rejected rather than shown as a rounded 1 minute.
+        settings.automation.daily_time = "08:30".to_string();
+        settings.chat.sync_interval_seconds = 30;
+        assert!(validate(&settings).is_err());
+        settings.chat.sync_interval_seconds = 3_596_401;
         assert!(validate(&settings).is_err());
     }
 
@@ -597,6 +729,7 @@ mod tests {
         let mut settings = AppSettings::default();
         assert!(!settings.sync.enabled);
         assert!(settings.sync.cursors.is_empty());
+        assert!(settings.sync.pending_voice.is_empty());
 
         settings.sync.enabled = true;
         settings.sync.cursors.insert(
@@ -611,12 +744,7 @@ mod tests {
         );
         assert!(validate(&settings).is_ok());
 
-        settings
-            .sync
-            .cursors
-            .get_mut("account")
-            .unwrap()
-            .insert(
+        settings.sync.cursors.get_mut("account").unwrap().insert(
                 "bad".into(),
                 SyncCursor {
                     time: -1,

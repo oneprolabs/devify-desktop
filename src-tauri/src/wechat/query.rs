@@ -967,40 +967,40 @@ pub fn self_username(cache: &Path) -> Option<String> {
         .map(|(name, _)| name)
 }
 
-/// Count all messages at a page boundary across shards. Upload pagination uses a
-/// timestamp cursor; this detects records that would otherwise be silently skipped.
-pub fn count_at_timestamp(cache: &Path, username: &str, timestamp: i64) -> Result<usize, String> {
-    let table = format!("Msg_{}", md5_hex(username));
-    let mut count = 0usize;
-    for shard in message_shards(cache) {
-        let conn = open_readonly(&shard)?;
-        if !tables(&conn).iter().any(|name| name == &table) {
-            continue;
-        }
-        let cols = columns(&conn, &table);
-        let time =
-            pick(&cols, &["create_time", "createTime", "timestamp"]).ok_or("消息库缺少时间列。")?;
-        let sql = format!(
-            "SELECT COUNT(*) FROM {} WHERE {} = ?1",
-            quote(&table),
-            quote(time)
-        );
-        let value: i64 = conn
-            .query_row(&sql, [timestamp], |row| row.get(0))
-            .map_err(|e| format!("检查消息分页失败：{e}"))?;
-        count = count
-            .checked_add(value as usize)
-            .ok_or("消息数量超出限制。")?;
+/// Where a page stopped: the last row already handed out.
+///
+/// A timestamp alone cannot order a conversation: busy groups routinely land dozens of
+/// messages in the same second, and a `create_time <` cursor would then drop the rest of
+/// that second at a page boundary. The local id breaks the tie, so every page continues
+/// strictly after the previous row and nothing is skipped or repeated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageCursor {
+    pub time: i64,
+    pub local_id: i64,
+}
+
+impl MessageCursor {
+    pub fn new(time: i64, local_id: i64) -> Self {
+        Self { time, local_id }
     }
-    Ok(count)
+
+    /// Cursor for "everything older than this timestamp", the pre-cursor semantics.
+    pub fn before_time(time: i64) -> Self {
+        Self {
+            time,
+            local_id: i64::MIN,
+        }
+    }
 }
 
 /// Messages of one conversation, newest first.
+///
+/// `before` is exclusive: pass the [`MessageCursor`] of the last row already read.
 pub fn messages(
     cache: &Path,
     username: &str,
     limit: usize,
-    before: Option<i64>,
+    before: Option<MessageCursor>,
 ) -> Result<Vec<MessageItem>, String> {
     let me = self_username(cache);
     messages_inner(cache, username, limit, before, None, None, me.as_deref())
@@ -1130,7 +1130,7 @@ fn messages_inner(
     cache: &Path,
     username: &str,
     limit: usize,
-    before: Option<i64>,
+    before: Option<MessageCursor>,
     since: Option<i64>,
     until: Option<i64>,
     me: Option<&str>,
@@ -1181,7 +1181,17 @@ fn messages_inner(
         let mut sql = format!("SELECT {} FROM {}", projection.join(", "), quote(&table));
         sql.push_str(&format!(" WHERE {} IS NOT NULL", quote(create_time)));
         if let Some(before) = before {
-            sql.push_str(&format!(" AND {} < {}", quote(create_time), before));
+            // Keyset pagination on (time, local id): a second shared by more messages than
+            // one page holds still resumes exactly after the last row handed out.
+            sql.push_str(&format!(
+                " AND ({} < {} OR ({} = {} AND {} < {}))",
+                quote(create_time),
+                before.time,
+                quote(create_time),
+                before.time,
+                quote(local_id),
+                before.local_id
+            ));
         }
         if let Some(since) = since {
             sql.push_str(&format!(" AND {} >= {}", quote(create_time), since));
@@ -1190,8 +1200,9 @@ fn messages_inner(
             sql.push_str(&format!(" AND {} <= {}", quote(create_time), until));
         }
         sql.push_str(&format!(
-            " ORDER BY {} DESC LIMIT {}",
+            " ORDER BY {} DESC, {} DESC LIMIT {}",
             quote(create_time),
+            quote(local_id),
             limit
         ));
 

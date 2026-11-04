@@ -17,7 +17,7 @@ description: 通过 wxq 从白名单聊天记录生成每日工作摘要草稿�
 1. `wxq policy`——确认当前账号、白名单会话数量与自动同步状态。
 2. `wxq sessions`——只用输出中出现的 `username`。
 3. `wxq digest --chat USERNAME [--chat USERNAME ...] --since 2026-10-20 --until 2026-10-27`——生成规则抽取草稿。时间也接受 Unix 秒；`--until` 只给日期时按当天 23:59:59 处理。
-4. 需要补充上下文时，用 `wxq messages --chat USERNAME --limit 100 --before TS` 取原文。
+4. 需要补充上下文时，用 `wxq messages --chat USERNAME --limit 100 --before TS --before-id ID` 取原文。
 5. 输出“事实/原文证据”“待办”“决定”“风险与问题”“时间线”“待确认项”几个部分。
 
 ## 输出边界

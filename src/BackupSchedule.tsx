@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
 
-type SyncSummary = { status: string; uploaded: number; skipped: number; message_count: number; error: string | null };
 type ScanResult = { accounts: Array<{ id: string }> };
 
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+/** The design's stepper allows 1–999 of the selected unit. */
+const MAX_STEP = 999;
 const MODES: Array<{ id: AppSettings['backup']['mode']; label: string }> = [
   { id: 'interval', label: '按间隔' },
   { id: 'times', label: '每天定点' },
@@ -19,12 +20,11 @@ const QUICK_INTERVALS = [
   { label: '1 小时', seconds: 3600 },
   { label: '6 小时', seconds: 21600 },
 ];
-const STATUS_LABEL: Record<string, string> = {
-  success: '已完成',
-  failed: '未完成',
-  idle: '未运行',
-  syncing: '同步中',
-};
+const ATTACHMENTS: Array<{ id: AppSettings['backup']['attachments']; label: string }> = [
+  { id: 'text', label: '仅文本' },
+  { id: 'images', label: '文本 + 图片' },
+  { id: 'all', label: '全部（≤ 25 MB）' },
+];
 
 function minutesOf(value: string): number | null {
   const match = /^(\d{2}):(\d{2})$/.exec(value);
@@ -104,10 +104,11 @@ function formatInterval(seconds: number): string {
 export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => void }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [connected, setConnected] = useState(false);
-  const [open, setOpen] = useState(false);
+  // The plan opens expanded, matching the settings screen the design was drawn for; the
+  // header folds it down to the summary line once it is configured.
+  const [open, setOpen] = useState(true);
   const [unitPref, setUnitPref] = useState<'auto' | '分钟' | '小时'>('auto');
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
+  const [newTime, setNewTime] = useState('12:00');
   const [error, setError] = useState('');
   const chain = useRef<Promise<void>>(Promise.resolve());
 
@@ -174,37 +175,23 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
   }, []);
 
   const setPlan = (patch: Partial<AppSettings['backup']>) => update(current => ({ ...current, backup: { ...current.backup, ...patch } }));
-  const setInterval = (seconds: number) => update(current => ({ ...current, chat: { ...current.chat, sync_interval_seconds: Math.min(604800, Math.max(60, seconds)) } }));
-
-  const syncNow = async () => {
-    setBusy(true);
-    setError('');
-    setNotice('');
-    try {
-      const result = await invoke<SyncSummary>('devify_sync_now');
-      setNotice(result.error
-        ? `备份未完成：${result.error}`
-        : result.message_count
-          ? `已上传 ${result.message_count} 条消息，等待服务端解析。`
-          : '白名单会话没有需要上传的新消息。');
-      setSettings(mergeSettings(await invoke<AppSettings>('app_settings_get')));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const setInterval = (seconds: number) => update(current => ({ ...current, chat: { ...current.chat, sync_interval_seconds: Math.min(MAX_STEP * 3600, Math.max(60, seconds)) } }));
 
   // The stepper keeps the unit the user picked; "auto" follows what the stored value divides by.
   const derivedUnit: '分钟' | '小时' = intervalSeconds % 3600 === 0 && intervalSeconds >= 3600 ? '小时' : '分钟';
   const unit = unitPref === 'auto' ? derivedUnit : unitPref;
   const perUnit = unit === '小时' ? 3600 : 60;
-  const stepValue = Math.max(1, Math.round(intervalSeconds / perUnit));
-  const step = (delta: number) => setInterval(Math.max(1, stepValue + delta) * perUnit);
+  const stepValue = Math.min(MAX_STEP, Math.max(1, Math.round(intervalSeconds / perUnit)));
+  const step = (delta: number) => {
+    const next = Math.min(MAX_STEP, Math.max(1, stepValue + delta));
+    setInterval(next * perUnit);
+  };
   const switchUnit = () => {
     const next: '分钟' | '小时' = unit === '小时' ? '分钟' : '小时';
+    const per = next === '小时' ? 3600 : 60;
+    const value = Math.min(MAX_STEP, Math.max(1, Math.round(intervalSeconds / per)));
     setUnitPref(next);
-    setInterval(Math.max(1, Math.round(intervalSeconds / (next === '小时' ? 3600 : 60))) * (next === '小时' ? 3600 : 60));
+    setInterval(value * per);
   };
 
   const summary = useMemo(() => {
@@ -217,7 +204,8 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
     const window = plan.window_enabled
       ? ` · ${plan.window_mode === 'deny' ? '避开' : '仅'} ${plan.window_start}–${plan.window_end}`
       : '';
-    return `${base}${window}`;
+    const network = plan.wifi_only ? ' · 仅 Wi-Fi' : '';
+    return `${base}${window}${network}`;
   }, [settings.sync.enabled, plan, intervalSeconds]);
 
   const windowHint = plan.window_start > plan.window_end
@@ -239,7 +227,7 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
           <span className="plan-mark">微</span>
           <button type="button" className="plan-plat-title" aria-expanded={open} onClick={() => setOpen(!open)}>
             <strong>微信</strong>
-            <small>{summary}<i>{open ? '收起' : '编辑'} →</i></small>
+            <small><span>{summary}</span><i>{open ? '收起' : '编辑'}</i></small>
           </button>
           <Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label="微信自动备份"/>
         </div>
@@ -272,13 +260,17 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
               </span>)}
               <input
                 type="time"
-                aria-label="添加备份时间"
-                onChange={event => {
-                  const value = event.target.value;
-                  if (value && !plan.times.includes(value)) setPlan({ times: [...plan.times, value].sort() });
-                  event.target.value = '';
-                }}
+                aria-label="备份时间"
+                value={newTime}
+                onChange={event => setNewTime(event.target.value)}
               />
+              <button
+                type="button"
+                className="plan-add"
+                onClick={() => {
+                  if (newTime && !plan.times.includes(newTime)) setPlan({ times: [...plan.times, newTime].sort() });
+                }}
+              >添加</button>
             </div>
           </Row>}
           <Row label="限制上传时间" desc="只在允许的时间段上传，或避开某个时间段">
@@ -316,15 +308,17 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
               </div>
             </Row>
           </>}
-          {settings.sync.enabled && plan.mode !== 'manual' && <Row label="下次备份"><span className="plan-kv">{nextRunLabel(plan, intervalSeconds, lastRun)}</span></Row>}
-          <Row label="最近备份"><span className="plan-kv">{lastRun
-            ? `${lastRun.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${STATUS_LABEL[syncState.last_status ?? ''] ?? '未知'} · ${syncState.last_message_count ? `${syncState.last_message_count} 条新消息` : '没有新消息'}`
-            : '还没有运行过'}</span></Row>
+          <Row label="仅在 Wi-Fi 下上传">
+            <Switch checked={plan.wifi_only} onChange={wifi_only => setPlan({ wifi_only })} label="仅在 Wi-Fi 下上传"/>
+          </Row>
+          <Row label="附件">
+            <Pills label="附件" value={plan.attachments} options={ATTACHMENTS} onChange={attachments => setPlan({ attachments })}/>
+          </Row>
+          {settings.sync.enabled && plan.mode === 'interval' && <Row label="下次备份">
+            <span className="plan-kv">{nextRunLabel(plan, intervalSeconds, lastRun)}</span>
+          </Row>}
         </div>}
         {open && syncState.last_error && <div className="backup-error">{syncState.last_error}</div>}
-        {open && <div className="plan-plat-actions">
-          <button type="button" className="secondary" disabled={busy} onClick={() => void syncNow()}>{busy ? '正在备份…' : '立即备份一次'}</button>
-        </div>}
       </section>}
 
       <div className="plan-off-head">未连接</div>
@@ -340,7 +334,6 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
       </div>)}
     </div>
 
-    {notice && <div className="notice">{notice}</div>}
     {error && <div className="error">{error}</div>}
   </div>;
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
+import { registerDevifyDevice } from './devifyDevice';
 
 type SessionItem = {
   username: string;
@@ -47,8 +48,13 @@ export type AppSettings = {
     allowed_usernames: Record<string, string[]>;
     sync_interval_seconds: number;
   };
-  devify: { base_url: string; device_label: string; active_space_id: number | null; recipient: string; subject: string };
+  connectors: { waitlist: string[]; wechat_enabled: boolean };
+  devify: { base_url: string; device_label: string; device_id: string; platform: string; active_space_id: number | null; recipient: string; subject: string };
   upload_queue?: Array<{ id: string; space_id: number; batch_id?: number | null; status: string; message: string; updated_at: string }>;
+  voice: {
+    auto_transcribe: boolean;
+    upload_transcripts: boolean;
+  };
   sync: {
     enabled: boolean;
     last_run_at: string | null;
@@ -65,6 +71,10 @@ export type AppSettings = {
     window_end: string;
     /** 0 = 周一 … 6 = 周日. */
     days: number[];
+    /** Only upload over Wi-Fi or a wired link, never a tethered phone. */
+    wifi_only: boolean;
+    /** text = no attachments, images = pictures, all = every attachment up to 25 MB. */
+    attachments: 'text' | 'images' | 'all';
   };
   language: { ui: string; summary: string; ask: string };
   automation: {
@@ -88,8 +98,10 @@ export type AppSettings = {
 export function defaultSettings(): AppSettings {
   return {
     active_account_id: '',
-    chat: { allowed_usernames: {}, sync_interval_seconds: 30 },
-    devify: { base_url: 'https://app.aimychats.com', device_label: 'AIMyChats', active_space_id: null, recipient: '', subject: '微信工作日报' },
+    chat: { allowed_usernames: {}, sync_interval_seconds: 1800 },
+    connectors: { waitlist: [], wechat_enabled: true },
+    devify: { base_url: 'http://192.168.31.137:8001', device_label: 'AIMyChats', device_id: '', platform: '', active_space_id: null, recipient: '', subject: '微信工作日报' },
+    voice: { auto_transcribe: true, upload_transcripts: true },
     sync: { enabled: false, last_run_at: null, last_status: null, last_error: null, last_message_count: 0 },
     language: { ui: '中文', summary: '跟随界面', ask: '跟随提问' },
     backup: {
@@ -100,11 +112,13 @@ export function defaultSettings(): AppSettings {
       window_start: '23:00',
       window_end: '07:00',
       days: [0, 1, 2, 3, 4, 5, 6],
+      wifi_only: true,
+      attachments: 'images',
     },
     automation: {
       enabled: false,
       daily_summary_enabled: true,
-      daily_time: '18:30',
+      daily_time: '08:30',
       last_daily_run: null,
       last_daily_status: null,
       last_daily_error: null,
@@ -126,11 +140,17 @@ function accountLabel(account: Account): string {
 
 export function mergeSettings(stored: AppSettings): AppSettings {
   const defaults = defaultSettings();
+  const chat = { ...defaults.chat, ...stored.chat };
+  // The stepper works in whole minutes/hours; a 30-second legacy value would be shown as
+  // "1 分钟" while the real schedule stayed at 30 seconds. Snap it back to the default.
+  if (!(chat.sync_interval_seconds >= 60)) chat.sync_interval_seconds = defaults.chat.sync_interval_seconds;
   return {
     ...defaults,
     ...stored,
-    chat: { ...defaults.chat, ...stored.chat },
+    chat,
+    connectors: { ...defaults.connectors, ...(stored.connectors ?? {}) },
     devify: { ...defaults.devify, ...stored.devify },
+    voice: { ...defaults.voice, ...(stored.voice ?? {}) },
     sync: { ...defaults.sync, ...stored.sync },
     backup: { ...defaults.backup, ...(stored.backup ?? {}) },
     language: { ...defaults.language, ...(stored.language ?? {}) },
@@ -431,6 +451,8 @@ export function DevifySettings() {
         setAuthenticated(status.authenticated);
         if (!status.authenticated) return;
         void (async () => {
+          await registerDevifyDevice();
+          if (!active) return;
           await invoke<number | null>('devify_space_ensure').catch(() => null);
           if (!active) return;
           setSettings(mergeSettings(await invoke<AppSettings>('app_settings_get')));
@@ -577,6 +599,19 @@ export function DevifySettings() {
             onChange={event => setSettings(setDevify({ base_url: event.target.value }))}
             onBlur={() => persist(settings)}
           />
+        </div>
+      </div>
+
+      <div className="plan-row">
+        <div className="plan-row-label">
+          <span>当前设备</span>
+          <small>平台与设备标识会随上传发送到服务端，并显示在网页的「设备与设置」</small>
+        </div>
+        <div className="plan-row-control">
+          <span className="plan-kv">
+            {settings.devify.device_label || '未命名设备'} · {settings.devify.platform || '自动识别'}
+            {settings.devify.device_id ? ` · ${settings.devify.device_id.slice(0, 8)}` : ' · 未登记'}
+          </span>
         </div>
       </div>
 

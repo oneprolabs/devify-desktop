@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 
 type TopicEvent = { id: number; title?: string; summary?: string; content?: string; status?: string | null; occurred_at?: string | null; event_id?: number };
 type TopicRun = { id: number; status?: string; started_at?: string | null; completed_at?: string | null; created_at?: string | null; matched_count?: number; error?: string | null };
@@ -48,6 +49,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
   const [error, setError] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
   const [topicDetail, setTopicDetail] = useState<Topic | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
 
   const load = useCallback(async () => {
     if (!isTauri()) { setLoading(false); return; }
@@ -220,7 +222,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
             {matchedEvents.map(event => {
               const id = event.event_id || event.id;
               const done = event.status === 'done';
-              return <button type="button" className="topic-event" key={id} onClick={() => onOpenEvent?.(id)}>
+              return <button type="button" className="topic-event" key={id} onClick={() => setEvidence({ kind: 'event', id, title: event.title })}>
                 <StateDot done={done}/>
                 <strong>{event.title || `事件 #${id}`}</strong>
                 <small>{statusLabel(event.status)}{done ? '' : ''}</small>
@@ -241,5 +243,13 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
         </section>
       </div>}
     </main>
+
+    {evidence && <EvidenceDrawer
+      spaceId={spaceId}
+      target={evidence}
+      onClose={() => setEvidence(null)}
+      onNavigate={setEvidence}
+      onOpenDetail={target => { if (target.kind === 'event') onOpenEvent?.(target.id); }}
+    />}
   </div>;
 }

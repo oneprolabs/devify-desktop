@@ -108,6 +108,7 @@ async function fetchRange(
   until: number,
 ): Promise<{ messages: MessageItem[]; truncated: boolean }> {
   let before: number | undefined;
+  let beforeId: number | undefined;
   let collected: MessageItem[] = [];
   let truncated = false;
   for (let page = 0; page < 50; page += 1) {
@@ -116,10 +117,12 @@ async function fetchRange(
       username,
       limit: WORK_PAGE,
       before,
+      beforeId,
     });
     if (!batch.length) break;
     collected = [...collected, ...batch];
-    const oldest = batch[batch.length - 1]?.time;
+    const last = batch[batch.length - 1];
+    const oldest = last?.time;
     const oldestSeconds = oldest ? (oldest > 1e12 ? oldest / 1000 : oldest) : undefined;
     if ((oldestSeconds !== undefined && oldestSeconds <= since) || batch.length < WORK_PAGE) break;
     if (collected.length >= WORK_MAX_MESSAGES_PER_SESSION) {
@@ -127,7 +130,8 @@ async function fetchRange(
       truncated = true;
       break;
     }
-    before = oldest;
+    before = last.time;
+    beforeId = last.local_id;
   }
   const messages = collected.filter(message => {
     const seconds = message.time > 1e12 ? message.time / 1000 : message.time;

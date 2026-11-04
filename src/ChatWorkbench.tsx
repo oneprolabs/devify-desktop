@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import WeChatLocal from './WeChatLocal';
 import { ChatSummary } from './ChatSummary';
 import type { SummaryRecord } from './summary';
+import { exportNotSupported } from './toast';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null };
 type Settings = { active_account_id?: string; chat?: { sync_interval_seconds?: number }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
@@ -68,7 +70,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
   // The raw pane owns the message list, so it reports back whether 整理/导出 can act.
   const [chatState, setChatState] = useState({ active: false, messages: 0, selected: 0, agentReady: false });
   const [workRequest, setWorkRequest] = useState(0);
-  const [exportRequest, setExportRequest] = useState(0);
+  const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
   // Mount the raw pane right away (hidden) so the first tab switch does not wait for the
   // conversation + message load; the work happens while the event feed is on screen.
   useEffect(() => { const timer = window.setTimeout(() => setRawMounted(true), 400); return () => window.clearTimeout(timer); }, []);
@@ -134,10 +136,11 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
   }, [accountId, sessions]);
   useEffect(() => {
     void refreshUploadState();
-    const seconds = Math.min(Math.max(settings?.chat?.sync_interval_seconds ?? 30, 10), 300);
-    const timer = window.setInterval(() => void refreshUploadState(), activeUploads.length ? 5000 : seconds * 1000);
+    // Upload badges are rebuilt from the local database, so refresh them on a fixed short
+    // cadence: tying this to the (now 30-minute) backup interval would leave status stale.
+    const timer = window.setInterval(() => void refreshUploadState(), activeUploads.length ? 5000 : 60000);
     return () => window.clearInterval(timer);
-  }, [refreshUploadState, activeUploads.length, settings?.chat?.sync_interval_seconds]);
+  }, [refreshUploadState, activeUploads.length]);
 
   const visibleSessions = useMemo(() => {
     // In the raw tab the header search targets message content, so the conversation list
@@ -180,11 +183,6 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     setView('raw');
     setWorkRequest(value => value + 1);
   };
-  const exportConversation = () => {
-    setView('raw');
-    setExportRequest(value => value + 1);
-  };
-
   if (!isTauri()) return null;
 
   const conversation = selectedSession?.display ?? '全部会话';
@@ -246,10 +244,10 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
             </button>
           </div>
           <input className="chat-workbench-head-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'}/>
-          {chatState.active && chatState.agentReady && <div className="chat-workbench-head-actions">
+          {chatState.active && <div className="chat-workbench-head-actions">
             {chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>已选 {chatState.selected} 条</button>}
-            <button type="button" disabled={!chatState.messages} onClick={openWorkPanel}>整理工作内容</button>
-            <button type="button" disabled={!chatState.messages} onClick={exportConversation}>导出</button>
+            {chatState.agentReady && <button type="button" disabled={!chatState.messages} onClick={openWorkPanel}>整理工作内容</button>}
+            <button type="button" onClick={exportNotSupported}>导出</button>
           </div>}
         </div>
       </header>
@@ -281,7 +279,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
                 <div className="chat-event-gutter">
                   <span className={`chat-event-tag${done ? ' done' : ''}`}>{statusLabel(event.status)}</span>
                 </div>
-                <button type="button" className="chat-event-card" onClick={() => openEventPage(event.id)}>
+                <button type="button" className="chat-event-card" onClick={() => setEvidence({ kind: 'event', id: event.id, title: event.title })}>
                   <span className="chat-event-head">
                     <StateDot done={done}/>
                     <strong>{event.title}</strong>
@@ -307,7 +305,6 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
           searchKeyword={view === 'raw' ? query : ''}
           onClearSearch={() => setQuery('')}
           workRequest={workRequest}
-          exportRequest={exportRequest}
           onChatState={setChatState}
           onOpenData={onOpenData}
           onOpenWhitelist={onOpenWhitelist}
@@ -327,5 +324,13 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
         />
       </div>
     </main>
+
+    {evidence && <EvidenceDrawer
+      spaceId={settings?.devify?.active_space_id ?? null}
+      target={evidence}
+      onClose={() => setEvidence(null)}
+      onNavigate={setEvidence}
+      onOpenDetail={target => { if (target.kind === 'event') openEventPage(target.id); }}
+    />}
   </div>;
 }

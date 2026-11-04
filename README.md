@@ -325,7 +325,7 @@ curl -fsSL 'http://127.0.0.1:18765/agent/install.sh?bin=~/.local/bin&skills=~/.c
 | `GET` | `/health` | — |
 | `GET` | `/api/policy` | `account_id?` |
 | `GET` | `/api/sessions` | `account_id?` |
-| `GET` | `/api/messages` | `username`, `limit` (1–500), `before?`, `account_id?` |
+| `GET` | `/api/messages` | `username`, `limit` (1–500), `before?`, `before_id?`, `account_id?` |
 | `GET` | `/api/search` | `keyword`, `groups_only?`, `max_sessions?` (1–200), `account_id?` |
 | `POST` | `/api/digest` | JSON `{"usernames":[…],"since?":…,"until?":…,"account_id"?}` |
 
@@ -340,7 +340,7 @@ wxq health
 wxq policy
 wxq sessions
 wxq messages --chat 56209716836@chatroom --limit 50
-wxq messages --chat 56209716836@chatroom --before 1793025903
+wxq messages --chat 56209716836@chatroom --before 1793025903 --before-id 4211
 wxq search --keyword 报价 --groups-only
 wxq digest --chat 56209716836@chatroom --since 2026-10-20 --until 2026-10-27
 ```

@@ -34,6 +34,11 @@ pub mod settings;
 pub mod wechat;
 
 pub mod mcp;
+mod network;
+
+/// Single-file page shown in the browser after the loopback callback fires.
+/// It is inlined because the listener answers exactly one request.
+const AUTH_COMPLETE_HTML: &str = include_str!("../assets/auth-complete.html");
 
 use wechat::capture;
 use wechat::crypto;
@@ -122,6 +127,22 @@ async fn devify_auth_config(base_url: &str) -> Result<DevifyAuthConfig, String> 
         .map_err(|e| format!("Devify 登录配置格式无效：{e}"))
 }
 
+/// Read a string claim from a JWT without verifying it. The server remains the
+/// authority; this only lets the client recover the device id it was issued.
+fn access_token_claim(access: &str, claim: &str) -> Option<String> {
+    access
+        .split('.')
+        .nth(1)
+        .and_then(|part| URL_SAFE_NO_PAD.decode(part).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|payload| {
+            payload
+                .get(claim)
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+}
+
 async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<String, String> {
     let mut tokens = desktop_credentials::load(app_data, base_url)?;
     let access = tokens.access.as_str();
@@ -190,6 +211,10 @@ struct DevifyUploadResult {
     /// Per-conversation newest message included in the package. Stored on the job so the
     /// chat list can tell "already uploaded" from "new local records" after a manual upload.
     covered: BTreeMap<String, settings::SyncCursor>,
+    /// Voice messages in this package that still have no successful transcript.
+    voice_pending: BTreeMap<String, Vec<settings::VoiceRef>>,
+    /// Voice messages considered by this package, used to replace retry state safely.
+    voice_processed: BTreeMap<String, Vec<settings::VoiceRef>>,
 }
 
 #[derive(Serialize)]
@@ -289,7 +314,6 @@ async fn devify_space_takeover(
     Ok(())
 }
 
-
 /// Prefer the personal space the server creates for every account; fall back to the first
 /// space the account can see. Used after login and by `devify_space_ensure`.
 fn pick_personal_space(spaces: &[DevifySpace]) -> Option<i64> {
@@ -297,7 +321,11 @@ fn pick_personal_space(spaces: &[DevifySpace]) -> Option<i64> {
         .iter()
         .find(|space| space.kind.eq_ignore_ascii_case("personal"))
         .or_else(|| spaces.iter().find(|space| space.name.contains("个人")))
-        .or_else(|| spaces.iter().find(|space| space.kind.eq_ignore_ascii_case("private")))
+        .or_else(|| {
+            spaces
+                .iter()
+                .find(|space| space.kind.eq_ignore_ascii_case("private"))
+        })
         .or_else(|| spaces.first())
         .map(|space| space.id)
 }
@@ -493,9 +521,7 @@ fn devify_error_message(payload: &serde_json::Value) -> Option<String> {
                 let parts: Vec<String> = map
                     .iter()
                     .filter(|(key, _)| key.as_str() != "code" && key.as_str() != "message")
-                    .filter_map(|(key, value)| {
-                        flatten(value).map(|text| format!("{key}：{text}"))
-                    })
+                    .filter_map(|(key, value)| flatten(value).map(|text| format!("{key}：{text}")))
                     .collect();
                 (!parts.is_empty()).then(|| parts.join("；"))
             }
@@ -621,11 +647,12 @@ async fn devify_analysis_detail(
     .await
 }
 
-
 /// The server serialises id lists as an array on some endpoints and as a JSON string
 /// (``"[22]"``) on others, so accept both before touching the notes.
 fn id_list(value: Option<&serde_json::Value>) -> Vec<i64> {
-    let Some(value) = value else { return Vec::new() };
+    let Some(value) = value else {
+        return Vec::new();
+    };
     let parsed = match value {
         serde_json::Value::String(text) => match serde_json::from_str(text) {
             Ok(parsed) => parsed,
@@ -903,7 +930,10 @@ async fn devify_event_relation_create(
     let settings = settings::load(&app_data(&app))?;
     validate_devify_space(&settings, space_id)?;
     let kind = relation_kind.unwrap_or_else(|| "related".into());
-    if !matches!(kind.as_str(), "same" | "related" | "separate" | "depends_on") {
+    if !matches!(
+        kind.as_str(),
+        "same" | "related" | "separate" | "depends_on"
+    ) {
         return Err("不支持的事件关系。".into());
     }
     let decision = decision.unwrap_or_else(|| "accepted".into());
@@ -1029,9 +1059,7 @@ async fn devify_message_detail(
     devify_json_request(
         &app,
         reqwest::Method::GET,
-        format!(
-            "/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages/{message_id}"
-        ),
+        format!("/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages/{message_id}"),
         None,
     )
     .await
@@ -1245,6 +1273,10 @@ struct PreparedUpload {
     avatar_files: Vec<(String, Vec<u8>)>,
     /// Decoded message images, addressed by their content digest.
     media_files: Vec<(String, Vec<u8>)>,
+    /// Voice messages that still need a transcript before the next automatic sync.
+    voice_pending: BTreeMap<String, Vec<settings::VoiceRef>>,
+    /// Voice messages examined while preparing this package.
+    voice_processed: BTreeMap<String, Vec<settings::VoiceRef>>,
     /// Newest local message (time, local id) included in this package.
     latest_position: Option<(i64, i64)>,
     /// Newest included message per conversation, keyed by username.
@@ -1310,19 +1342,13 @@ fn collect_upload_messages(
         if page.is_empty() {
             break;
         }
-        let oldest = page.iter().map(|message| message.time).min();
-        // A timestamp-only cursor cannot safely distinguish a full second at a page
-        // boundary. Refuse rather than silently omit records from a confirmed upload.
-        if page.len() == 500 {
-            if let Some(boundary) = oldest {
-                let seen = page.iter().filter(|m| m.time == boundary).count();
-                if query::count_at_timestamp(cache, username, boundary)? > seen {
-                    return Err(
-                        "聊天记录分页遇到相同时间戳，无法完整读取；请先使用其他方式导出。".into(),
-                    );
-                }
-            }
-        }
+        // Keyset cursor on (time, local id). Many messages can share one second, and a
+        // timestamp-only cursor would skip whatever is left of that second at a page
+        // boundary; this resumes exactly after the last row read.
+        let oldest = page.last().map(|message| message.time);
+        before = page
+            .last()
+            .map(|message| query::MessageCursor::new(message.time, message.local_id));
         session_messages.extend(page.into_iter().filter(|message| {
             since.map(|v| message.time >= v).unwrap_or(true)
                 && until.map(|v| message.time < v).unwrap_or(true)
@@ -1334,11 +1360,9 @@ fn collect_upload_messages(
             .zip(oldest)
             .map(|(start, oldest)| oldest <= start)
             .unwrap_or(false)
-            || oldest.is_none()
         {
             break;
         }
-        before = oldest;
     }
     Ok(session_messages)
 }
@@ -1351,15 +1375,25 @@ fn raw_messages_for_upload(
     let Some(first) = selected.iter().map(|message| message.time).min() else {
         return Ok(Vec::new());
     };
-    let last = selected.iter().map(|message| message.time).max().unwrap_or(first);
+    let last = selected
+        .iter()
+        .map(|message| message.time)
+        .max()
+        .unwrap_or(first);
     let until = last.checked_add(1).unwrap_or(i64::MAX);
-    let wanted = selected.iter().map(|message| message.local_id).collect::<HashSet<_>>();
-    Ok(query::raw_messages_between(cache, username, first, until, 20000)?
+    let wanted = selected
+        .iter()
+        .map(|message| message.local_id)
+        .collect::<HashSet<_>>();
+    Ok(
+        query::raw_messages_between(cache, username, first, until, 20000)?
         .into_iter()
         .filter(|message| wanted.contains(&message.local_id))
-        .collect())
+            .collect(),
+    )
 }
 
+#[cfg(test)]
 fn prepare_upload(
     cache: &Path,
     account_id: &str,
@@ -1369,6 +1403,79 @@ fn prepare_upload(
     since: Option<i64>,
     until: Option<i64>,
     message_selection: &BTreeMap<String, Vec<settings::MessageRef>>,
+) -> Result<PreparedUpload, String> {
+    let defaults = settings::VoiceUploadSettings::default();
+    prepare_upload_with_voice(
+        cache,
+        cache,
+        account_id,
+        space_id,
+        base_url,
+        usernames,
+        since,
+        until,
+        message_selection,
+        &defaults,
+        "images",
+    )
+}
+
+/// Total attachment payload the ``all`` scope is allowed to put in one archive. The server
+/// accepts far more; this only keeps a month of big group files from exhausting memory.
+const ATTACHMENT_TOTAL_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// What one local attachment contributes to the ``all`` scope.
+enum Attachment {
+    Bytes(Vec<u8>),
+    /// Bigger than [`settings::ATTACHMENT_LIMIT_BYTES`]; recorded as ``omitted``.
+    TooLarge,
+    /// The file is gone from this machine; recorded as ``missing``.
+    Missing,
+}
+
+fn read_attachment(cache: &Path, item: &media::MediaItem) -> Attachment {
+    let Some(rel) = item.rel_path.as_deref() else {
+        return Attachment::Missing;
+    };
+    let path = cache.join(rel);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return Attachment::Missing;
+    };
+    if meta.len() > settings::ATTACHMENT_LIMIT_BYTES {
+        return Attachment::TooLarge;
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) if !bytes.is_empty() => Attachment::Bytes(bytes),
+        _ => Attachment::Missing,
+    }
+}
+
+/// Extension for a media member, restricted to characters that are safe in a file name.
+fn attachment_extension(name: Option<&str>) -> String {
+    let extension = name
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, extension)| extension)
+        .filter(|extension| {
+            !extension.is_empty()
+                && extension.len() <= 8
+                && extension.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .unwrap_or("bin");
+    extension.to_lowercase()
+}
+
+fn prepare_upload_with_voice(
+    app_data: &Path,
+    cache: &Path,
+    account_id: &str,
+    space_id: i64,
+    base_url: &str,
+    usernames: &[String],
+    since: Option<i64>,
+    until: Option<i64>,
+    message_selection: &BTreeMap<String, Vec<settings::MessageRef>>,
+    voice_settings: &settings::VoiceUploadSettings,
+    attachments: &str,
 ) -> Result<PreparedUpload, String> {
     if usernames.is_empty() {
         return Err("请至少选择一个会话。".into());
@@ -1397,10 +1504,18 @@ fn prepare_upload(
     let mut messages = Vec::new();
     let mut parts = Vec::new();
     let mut media_files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut voice_pending: BTreeMap<String, Vec<settings::VoiceRef>> = BTreeMap::new();
+    let mut voice_processed: BTreeMap<String, Vec<settings::VoiceRef>> = BTreeMap::new();
     let mut media_paths = HashSet::new();
+    let mut media_budget = 0u64;
+    // "仅文本" keeps message text and voice transcripts but no attachment bytes; "全部"
+    // adds video, files and voice audio next to the pictures.
+    let include_images = attachments != "text";
+    let include_files = attachments == "all";
     let mut summary = Vec::new();
     let mut latest_position: Option<(i64, i64)> = None;
     let mut covered: BTreeMap<String, settings::SyncCursor> = BTreeMap::new();
+    let voice_language = voice::load_settings(app_data).language;
     for session in &selected {
         conversations.push(serde_json::json!({"conversation_id":session.username,"title":session.display,"kind":if session.is_group {"group"} else {"direct"},"self_sender_key":self_key}));
         let mut session_messages =
@@ -1434,14 +1549,25 @@ fn prepare_upload(
         let selected_messages = session_messages.clone();
         for (index, message) in session_messages.into_iter().enumerate() {
             latest_position = Some(
-                latest_position
-                    .map_or((message.time, message.local_id), |current| {
+                latest_position.map_or((message.time, message.local_id), |current| {
                         current.max((message.time, message.local_id))
                     }),
             );
             messages.push(serde_json::json!({"conversation_id":session.username,"message_key":format!("src:{}",message.local_id),"source_message_id":message.local_id.to_string(),"sender_key":message.sender,"sender_name":message.sender_name,"direction":if message.is_self {"outgoing"} else {"incoming"},"occurred_at":chrono::DateTime::from_timestamp(message.time,0).map(|v|v.to_rfc3339()),"source_order":index as i64 + 1,"record_kind":"message","source_fields":{"kind":message.kind}}));
             let message_key = format!("src:{}", message.local_id);
+            if message.kind == 34 {
+                parts.push(serde_json::json!({
+                    "conversation_id": session.username,
+                    "message_key": message_key,
+                    "part_key": format!("voice-{}", message.local_id),
+                    "ordinal": 0,
+                    "kind": "audio",
+                    "binding_state": "missing",
+                    "source_locator": {"source": "wechat_voice", "local_id": message.local_id},
+                }));
+            } else {
             parts.push(serde_json::json!({"conversation_id":session.username,"message_key":message_key,"part_key":"text-0","ordinal":0,"kind":"text","text":message.text}));
+        }
         }
 
         // Keep the original image bytes when WeChat has them locally. The
@@ -1450,7 +1576,8 @@ fn prepare_upload(
         let raw = raw_messages_for_upload(cache, &session.username, &selected_messages)?;
         let keys = media::resolve_image_keys(cache, &query::md5_hex(&session.username));
         let report = media::resolve(cache, &session.username, &raw, keys.as_ref());
-        for item in report.items.into_iter().filter(|item| item.kind == "image") {
+        if include_images {
+        for item in report.items.iter().filter(|item| item.kind == "image") {
             let sources = item
                 .sources
                 .iter()
@@ -1484,12 +1611,166 @@ fn prepare_upload(
                 }));
             }
         }
+        }
+
+        // "全部（≤ 25 MB）" also carries video and file attachments. Anything that is gone
+        // from this machine, or bigger than the ceiling, stays in the manifest as a
+        // missing/omitted part so the server still knows the message had an attachment.
+        if include_files {
+            for item in report
+                .items
+                .iter()
+                .filter(|item| item.kind == "video" || item.kind == "file")
+            {
+                let mut part = serde_json::json!({
+                    "conversation_id": session.username,
+                    "message_key": format!("src:{}", item.local_id),
+                    "part_key": format!("{}-{}", item.kind, item.local_id),
+                    "ordinal": 1,
+                    "kind": item.kind,
+                });
+                match read_attachment(cache, item) {
+                    Attachment::Bytes(bytes)
+                        if media_budget + bytes.len() as u64
+                            <= ATTACHMENT_TOTAL_LIMIT_BYTES =>
+                    {
+                        media_budget += bytes.len() as u64;
+                        let digest = hex::encode(sha2::Sha256::digest(&bytes));
+                        let extension = attachment_extension(item.name.as_deref());
+                        let path = format!("media/files/{digest}.{extension}");
+                        if media_paths.insert(path.clone()) {
+                            media_files.push((path.clone(), bytes));
+                        }
+                        part["upload_item_path"] = serde_json::json!(path);
+                    }
+                    Attachment::Bytes(_) | Attachment::TooLarge => {
+                        part["binding_state"] = serde_json::json!("omitted");
+                    }
+                    Attachment::Missing => {
+                        part["binding_state"] = serde_json::json!("missing");
+                    }
+                }
+                parts.push(part);
+            }
+        }
+
+        let voice_items: Vec<_> = report
+            .items
+            .iter()
+            .filter(|item| item.kind == "voice")
+            .collect();
+        if !voice_items.is_empty() {
+            let ids: Vec<i64> = voice_items.iter().map(|item| item.server_id).collect();
+            let blobs = voice::read_voice_blobs(cache, &ids).unwrap_or_default();
+            let mut transcripts = voice::load_transcripts(app_data);
+            let mut transcripts_changed = false;
+            let engine_ready =
+                voice_settings.auto_transcribe && voice::view(app_data).selected.is_some();
+            for item in voice_items {
+                let voice_ref = settings::VoiceRef {
+                    local_id: item.local_id,
+                    time: selected_messages
+                        .iter()
+                        .find(|message| message.local_id == item.local_id)
+                        .map(|message| message.time)
+                        .unwrap_or_default(),
+                    server_id: item.server_id,
+                };
+                voice_processed
+                    .entry(session.username.clone())
+                    .or_default()
+                    .push(voice_ref.clone());
+                let key = voice::transcript_key(account_id, item.server_id);
+                let mut transcript = transcripts.get(&key).cloned();
+                if transcript.is_none() && engine_ready {
+                    if let Some(blob) = blobs.get(&item.server_id) {
+                        if let Ok((wav, _)) =
+                            voice::ensure_wav(app_data, account_id, item.server_id, blob)
+                        {
+                            if let Ok((text, engine, model)) =
+                                voice::transcribe_file(app_data, &wav, 300)
+                            {
+                                let entry = voice::TranscriptEntry {
+                                    text,
+                                    engine,
+                                    model,
+                                    created_at: voice::now_secs(),
+                                };
+                                transcripts.insert(key.clone(), entry.clone());
+                                transcript = Some(entry);
+                                transcripts_changed = true;
+                            }
+                        }
+                    }
+                }
+                let has_transcript = transcript
+                    .as_ref()
+                    .is_some_and(|entry| !entry.text.trim().is_empty());
+                if voice_settings.upload_transcripts && has_transcript {
+                    if let Some(entry) = transcript {
+                        parts.push(serde_json::json!({
+                        "conversation_id": session.username,
+                        "message_key": format!("src:{}", item.local_id),
+                        "part_key": format!("voice-transcript-{}", item.server_id),
+                        "ordinal": 1,
+                        "kind": "text",
+                        "text": entry.text,
+                        "source_locator": {"source": "wechat_voice_transcript", "server_id": item.server_id, "local_id": item.local_id},
+                        "source_header": {"engine": entry.engine, "model": entry.model, "language": voice_language},
+                    }));
+                    }
+                }
+                if !has_transcript {
+                    voice_pending
+                        .entry(session.username.clone())
+                        .or_default()
+                        .push(voice_ref);
+                }
+                // "全部" sends the decoded voice as an audio member; the part record above
+                // already carries the same key, and a later record for a key wins.
+                if include_files {
+                    if let Some(blob) = blobs.get(&item.server_id) {
+                        let wav = voice::ensure_wav(app_data, account_id, item.server_id, blob);
+                        if let Ok((wav, _)) = wav {
+                            if let Ok(bytes) = std::fs::read(&wav) {
+                                if !bytes.is_empty()
+                                    && bytes.len() as u64 <= settings::ATTACHMENT_LIMIT_BYTES
+                                    && media_budget + bytes.len() as u64
+                                        <= ATTACHMENT_TOTAL_LIMIT_BYTES
+                                {
+                                    media_budget += bytes.len() as u64;
+                                    let digest = hex::encode(sha2::Sha256::digest(&bytes));
+                                    let path = format!("media/audio/{digest}.wav");
+                                    if media_paths.insert(path.clone()) {
+                                        media_files.push((path.clone(), bytes));
+                                    }
+                                    parts.push(serde_json::json!({
+                                        "conversation_id": session.username,
+                                        "message_key": format!("src:{}", item.local_id),
+                                        "part_key": format!("voice-{}", item.local_id),
+                                        "ordinal": 0,
+                                        "kind": "audio",
+                                        "upload_item_path": path,
+                                        "source_locator": {"source": "wechat_voice", "local_id": item.local_id},
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if transcripts_changed {
+                let _ = voice::save_transcripts(app_data, &transcripts);
+            }
+        }
     }
     if messages.is_empty() {
         return Err("所选会话在时间范围内没有可上传的消息。".into());
     }
-    let mut avatar_names: Vec<String> =
-        selected.iter().map(|session| session.username.clone()).collect();
+    let mut avatar_names: Vec<String> = selected
+        .iter()
+        .map(|session| session.username.clone())
+        .collect();
     for message in &messages {
         if let Some(key) = message.get("sender_key").and_then(|value| value.as_str()) {
             if !key.is_empty() {
@@ -1514,7 +1795,10 @@ fn prepare_upload(
         if written_paths.insert(path.clone()) {
             avatar_files.push((path.clone(), image.bytes));
         }
-        if selected.iter().any(|session| session.username == image.username) {
+        if selected
+            .iter()
+            .any(|session| session.username == image.username)
+        {
             avatars.push(serde_json::json!({
                 "scope": "conversation",
                 "conversation_id": image.username,
@@ -1548,6 +1832,8 @@ fn prepare_upload(
         avatars,
         avatar_files,
         media_files,
+        voice_pending,
+        voice_processed,
         latest_position,
         covered,
     })
@@ -1624,16 +1910,23 @@ async fn devify_upload_preview(
     let settings = settings::load(&data)?;
     validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
     let cache = decrypt::cache_dir(&data, &account_id);
+    let base_url = settings.devify.base_url.clone();
+    let voice_settings = settings.voice.clone();
+    let attachments = settings.backup.attachments.clone();
+    let selection = message_selection.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        prepare_upload(
+        prepare_upload_with_voice(
+            &data,
             &cache,
             &account_id,
             space_id,
-            &settings.devify.base_url,
+            &base_url,
             &usernames,
             since,
             until,
-            &message_selection.unwrap_or_default(),
+            &selection,
+            &voice_settings,
+            &attachments,
         )
         .map(|prepared| prepared.preview)
     })
@@ -1682,11 +1975,13 @@ async fn devify_upload_selected(
     let mut next_settings = settings.clone();
     next_settings.upload_queue.push(job.clone());
     settings::save(&app_data(&app), &next_settings)?;
+    let upload_account_id = account_id.clone();
+    let upload_usernames = usernames.clone();
     let result = devify_upload_wechat(
         app.clone(),
         space_id,
-        account_id,
-        usernames,
+        upload_account_id,
+        upload_usernames,
         since,
         until,
         Some(settings.devify.base_url.clone()),
@@ -1702,6 +1997,13 @@ async fn devify_upload_selected(
             job.status = "processing".into();
             job.message = "已提交服务端解析".into();
             job.updated_at = chrono::Utc::now().to_rfc3339();
+            update_pending_voice(
+                &mut next_settings.sync,
+                &account_id,
+                &usernames,
+                &result.voice_processed,
+                &result.voice_pending,
+            );
             next_settings.upload_queue.retain(|item| item.id != job.id);
             next_settings.upload_queue.insert(0, job);
             settings::save(&app_data(&app), &next_settings)?;
@@ -1735,16 +2037,22 @@ async fn devify_upload_retry_preview(
         .ok_or_else(|| "找不到上传任务。".to_string())?;
     let scope = job.retry_scope(&settings)?.clone();
     let cache = decrypt::cache_dir(&data, &job.account_id);
+    let voice_settings = settings.voice.clone();
+    let attachments = settings.backup.attachments.clone();
+    let account_id = job.account_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        prepare_upload(
+        prepare_upload_with_voice(
+            &data,
             &cache,
-            &job.account_id,
+            &account_id,
             job.space_id,
             &scope.base_url,
             &scope.usernames,
             scope.since,
             scope.until,
             &scope.message_selection,
+            &voice_settings,
+            &attachments,
         )
         .map(|prepared| prepared.preview)
     })
@@ -1772,16 +2080,21 @@ async fn devify_upload_retry(
         .cloned()
         .ok_or_else(|| "找不到上传任务。".to_string())?;
     let scope = job.retry_scope(&settings)?.clone();
+    let retry_usernames = scope.usernames.clone();
+    let retry_since = scope.since;
+    let retry_until = scope.until;
+    let retry_base_url = scope.base_url.clone();
+    let retry_selection = scope.message_selection.clone();
     let result = devify_upload_wechat(
         app.clone(),
         job.space_id,
         job.account_id.clone(),
-        scope.usernames,
-        scope.since,
-        scope.until,
-        Some(scope.base_url),
+        retry_usernames,
+        retry_since,
+        retry_until,
+        Some(retry_base_url),
         Some(fingerprint),
-        scope.message_selection,
+        retry_selection,
     )
     .await;
     let mut next = settings::load(&data)?;
@@ -1793,6 +2106,13 @@ async fn devify_upload_retry(
                 item.batch_id = Some(value.batch_id);
                 item.covered = value.covered.clone();
                 item.message = "已重新提交服务端解析".into();
+                update_pending_voice(
+                    &mut next.sync,
+                    &job.account_id,
+                    &scope.usernames,
+                    &value.voice_processed,
+                    &value.voice_pending,
+                );
             }
             Err(error) => {
                 item.status = "failed".into();
@@ -1827,21 +2147,31 @@ async fn devify_upload_wechat(
     }
     let data = app_data(&app);
     let cache = decrypt::cache_dir(&data, &account_id);
+    let current_settings = settings::load(&data)?;
     let base_url = expected_base_url
         .clone()
-        .unwrap_or(settings::load(&data)?.devify.base_url);
+        .unwrap_or_else(|| current_settings.devify.base_url.clone());
     let account_for_prepare = account_id.clone();
     let names_for_prepare = usernames.clone();
+    let voice_settings = current_settings.voice.clone();
+    let attachments = current_settings.backup.attachments.clone();
+    let selection_for_prepare = message_selection.clone();
+    let data_for_prepare = data.clone();
+    let cache_for_prepare = cache.clone();
+    let base_url_for_prepare = base_url.clone();
     let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_upload(
-            &cache,
+        prepare_upload_with_voice(
+            &data_for_prepare,
+            &cache_for_prepare,
             &account_for_prepare,
             space_id,
-            &base_url,
+            &base_url_for_prepare,
             &names_for_prepare,
             since,
             until,
-            &message_selection,
+            &selection_for_prepare,
+            &voice_settings,
+            &attachments,
         )
     })
     .await
@@ -1864,6 +2194,8 @@ async fn devify_upload_wechat(
         avatars,
         avatar_files,
         media_files,
+        voice_pending,
+        voice_processed,
         ..
     } = prepared;
     let manifest = serde_json::json!({
@@ -1929,6 +2261,16 @@ async fn devify_upload_wechat(
     }
     let token = devify_access_token_async(&data, &settings.devify.base_url).await?;
     let client = reqwest::Client::new();
+    let upload_platform = if settings.devify.platform.is_empty() {
+        settings::default_platform()
+    } else {
+        settings.devify.platform.clone()
+    };
+    let upload_device_id = if settings.devify.device_id.is_empty() {
+        access_token_claim(&token, "device_id").unwrap_or_default()
+    } else {
+        settings.devify.device_id.clone()
+    };
     // The key is derived from the packaged content, so retrying the same range reuses its
     // batch instead of creating a duplicate one.
     let key = format!("wechat-{}-{}", account_id, &package_key[..32]);
@@ -1942,6 +2284,9 @@ async fn devify_upload_wechat(
             "source_type": "wechat",
             "source_account_id": account_id,
             "idempotency_key": key,
+            "device_id": upload_device_id,
+            "device_label": settings::resolved_device_label(&settings.devify),
+            "platform": upload_platform,
         }))
         .send()
         .await
@@ -1958,10 +2303,7 @@ async fn devify_upload_wechat(
         .get("id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| "上传响应缺少批次 ID。".to_string())?;
-    let batch_status = batch
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let batch_status = batch.get("status").and_then(|v| v.as_str()).unwrap_or("");
     if matches!(batch_status, "processing" | "completed") {
         // This package was already accepted; never upload or submit it a second time.
         return Ok(DevifyUploadResult {
@@ -1972,6 +2314,8 @@ async fn devify_upload_wechat(
             conversations: session_count,
             latest_position,
             covered,
+            voice_pending,
+            voice_processed,
         });
     }
     let form = reqwest::multipart::Form::new().part(
@@ -2014,6 +2358,8 @@ async fn devify_upload_wechat(
         conversations: session_count,
         latest_position,
         covered,
+        voice_pending,
+        voice_processed,
     })
 }
 
@@ -2024,6 +2370,14 @@ async fn devify_auth_start(
     device_label: Option<String>,
 ) -> Result<String, String> {
     let settings = settings::load(&app_data(&app))?;
+    let device_label = device_label
+        .map(|value| value.trim().to_string())
+        .filter(|value| {
+            !value.is_empty()
+                && value != "AIMyChats"
+                && value != "AIMyChats Desktop"
+        })
+        .unwrap_or_else(settings::device_default_label);
     let auth_config = devify_auth_config(&settings.devify.base_url).await?;
     let mut state_bytes = [0u8; 24];
     let mut verifier_bytes = [0u8; 48];
@@ -2077,8 +2431,12 @@ async fn devify_auth_start(
                     let _ = callback_handle.emit("devify-auth-loopback", callback);
                 }
             }
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nLogin returned to AIMyChats. You can close this page.".as_bytes();
-            let _ = stream.write_all(response).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+                AUTH_COMPLETE_HTML.len(),
+                AUTH_COMPLETE_HTML
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
         }
     });
     if let Ok(mut slot) = state.listener.lock() {
@@ -2103,10 +2461,7 @@ async fn devify_auth_start(
         .append_pair("state", &oauth_state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256")
-        .append_pair(
-            "device_label",
-            device_label.as_deref().unwrap_or("AIMyChats"),
-        );
+        .append_pair("device_label", &device_label);
     Ok(url.to_string())
 }
 
@@ -2160,9 +2515,33 @@ async fn devify_auth_callback(
     if returned_state != expected_state {
         return Err("登录 state 校验失败。".into());
     }
-    let settings = settings::load(&app_data(&app))?;
+    let mut settings = settings::load(&app_data(&app))?;
     let auth_config = devify_auth_config(&settings.devify.base_url).await?;
-    let response = reqwest::Client::new().post(format!("{}{}", settings.devify.base_url.trim_end_matches('/'), auth_config.token_path)).json(&serde_json::json!({"grant_type":"authorization_code","client_id":auth_config.client_id,"redirect_uri":auth_config.redirect_uri,"code":code,"code_verifier":verifier,"device_label":settings.devify.device_label})).send().await.map_err(|e| format!("换取 Devify token 失败：{e}"))?;
+    let platform = if settings.devify.platform.is_empty() {
+        settings::default_platform()
+    } else {
+        settings.devify.platform.clone()
+    };
+    let device_label = settings::resolved_device_label(&settings.devify);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}{}",
+            settings.devify.base_url.trim_end_matches('/'),
+            auth_config.token_path
+        ))
+        .json(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "client_id": auth_config.client_id,
+            "redirect_uri": auth_config.redirect_uri,
+            "code": code,
+            "code_verifier": verifier,
+            "device_label": device_label.clone(),
+            "device_id": settings.devify.device_id.clone(),
+            "platform": platform.clone(),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("换取 Devify token 失败：{e}"))?;
     if !response.status().is_success() {
         return Err(format!("Devify 登录失败：{}", response.status()));
     }
@@ -2193,12 +2572,19 @@ async fn devify_auth_callback(
         },
     )?;
     let _ = ensure_active_space(&app).await;
+    let device_id = data
+        .get("device_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    settings.devify.device_id = device_id.clone();
+    settings.devify.platform = platform;
+    settings.devify.device_label = device_label;
+    if let Err(error) = settings::save(&app_data(&app), &settings) {
+        eprintln!("保存 Devify 设备信息失败：{error}");
+    }
     Ok(DevifyAuthResult {
-        device_id: data
-            .get("device_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
+        device_id,
         expires_in: data
             .get("expires_in")
             .and_then(|v| v.as_u64())
@@ -2260,8 +2646,85 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
                 authenticated: false,
             })
         }
-        _ => Ok(DevifyAuthStatus { authenticated: true }),
+        _ => Ok(DevifyAuthStatus {
+            authenticated: true,
+        }),
     }
+}
+
+#[derive(Serialize)]
+struct DevifyDeviceResult {
+    device_id: String,
+    label: String,
+    platform: String,
+    status: String,
+}
+
+/// Bind or refresh this machine on Devify without forcing a new browser login.
+///
+/// Tokens issued before device binding existed still authenticate, so the
+/// client calls this on startup and after login to make the device appear in
+/// the web console's 设备与设置 page.
+#[tauri::command]
+async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, String> {
+    let data = app_data(&app);
+    let mut settings = settings::load(&data)?;
+    let base = settings.devify.base_url.trim_end_matches('/').to_string();
+    let token = devify_access_token_async(&data, &base).await?;
+    let mut device_id = settings.devify.device_id.clone();
+    if device_id.is_empty() {
+        device_id = access_token_claim(&token, "device_id").unwrap_or_default();
+    }
+    let platform = if settings.devify.platform.is_empty() {
+        settings::default_platform()
+    } else {
+        settings.devify.platform.clone()
+    };
+    let device_label = settings::resolved_device_label(&settings.devify);
+    let response = reqwest::Client::new()
+        .post(format!("{base}/api/v1/auth/desktop/devices"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "device_id": device_id.clone(),
+            "label": device_label.clone(),
+            "platform": platform.clone(),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("登记设备失败：{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("登记设备失败：{}", response.status()));
+    }
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("读取设备响应失败：{e}"))?;
+    let device = payload.get("data").unwrap_or(&payload);
+    let device_id = device
+        .get("device_id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "设备响应缺少 device_id。".to_string())?
+        .to_string();
+    settings.devify.device_id = device_id.clone();
+    settings.devify.platform = platform.clone();
+    settings.devify.device_label = device_label.clone();
+    settings::save(&data, &settings)?;
+    Ok(DevifyDeviceResult {
+        device_id,
+        label: device
+            .get("label")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(device_label.as_str())
+            .to_string(),
+        platform,
+        status: device
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("active")
+            .to_string(),
+    })
 }
 
 /// Sign in with an AI mailbox username and password, then store the same
@@ -2331,9 +2794,10 @@ async fn devify_login_password(
             refresh: refresh.to_string(),
         },
     )?;
+    let device = devify_device_register(app.clone()).await.ok();
     let _ = ensure_active_space(&app).await;
     Ok(DevifyAuthResult {
-        device_id: String::new(),
+        device_id: device.map(|value| value.device_id).unwrap_or_default(),
         expires_in: 3600,
     })
 }
@@ -2636,9 +3100,29 @@ fn perm_reveal_app() -> Result<String, String> {
     perm::reveal_app()
 }
 
+/// Shown whenever a read is blocked because the user disconnected WeChat.
+const WECHAT_DISCONNECTED: &str = "微信连接已断开，重新连接后才能读取聊天。已上传的记录不受影响。";
+
+fn wechat_connected(app: &AppHandle) -> Result<bool, String> {
+    Ok(settings::load(&app_data(app))?.connectors.wechat_enabled)
+}
+
+/// Guard for every path that reads messages, including uploads and MCP. Disconnecting keeps
+/// the local keys and the decrypted snapshot, so reconnecting does not need a new key import.
+fn ensure_wechat_connected(app: &AppHandle) -> Result<(), String> {
+    if wechat_connected(app)? {
+        Ok(())
+    } else {
+        Err(WECHAT_DISCONNECTED.into())
+    }
+}
+
 fn allowed_usernames(app: &AppHandle, account_id: &str) -> Result<HashSet<String>, String> {
     validate_account_id(account_id)?;
     let settings = settings::load(&app_data(app))?;
+    if !settings.connectors.wechat_enabled {
+        return Err(WECHAT_DISCONNECTED.into());
+    }
     Ok(settings
         .chat
         .allowed_usernames
@@ -2910,6 +3394,11 @@ async fn backup_tick(app: &AppHandle) {
     // Finished server batches must be recorded even when the automatic plan is off,
     // otherwise a manual upload keeps its "not uploaded yet" badge forever.
     reconcile_upload_jobs(app).await;
+    // A disconnected WeChat still gets its finished batches recorded, but nothing new is
+    // read from the local database or uploaded.
+    if !value.connectors.wechat_enabled {
+        return;
+    }
     if !value.sync.enabled {
         return;
     }
@@ -2925,6 +3414,11 @@ async fn backup_tick(app: &AppHandle) {
         last_run,
         Local::now(),
     ) {
+        return;
+    }
+    // "仅在 Wi-Fi 下上传" holds the run back instead of skipping it: the next tick retries
+    // once the machine is back on Wi-Fi or a wired link.
+    if !network::allow_upload(value.backup.wifi_only) {
         return;
     }
     sync_automation_tick(app).await;
@@ -2996,7 +3490,9 @@ async fn reconcile_upload_jobs(app: &AppHandle) {
     }
     let mut updates = Vec::new();
     for job in pending {
-        let Some(batch_id) = job.batch_id else { continue };
+        let Some(batch_id) = job.batch_id else {
+            continue;
+        };
         let Ok(status) = devify_upload_status(app.clone(), batch_id).await else {
             continue;
         };
@@ -3033,6 +3529,38 @@ async fn reconcile_upload_jobs(app: &AppHandle) {
         }
     }
     let _ = settings::save(&data, &next);
+}
+
+fn update_pending_voice(
+    sync: &mut settings::SyncSettings,
+    account_id: &str,
+    usernames: &[String],
+    processed: &BTreeMap<String, Vec<settings::VoiceRef>>,
+    pending: &BTreeMap<String, Vec<settings::VoiceRef>>,
+) {
+    let account = sync
+        .pending_voice
+        .entry(account_id.to_string())
+        .or_default();
+    for username in usernames {
+        let Some(done) = processed.get(username) else {
+            continue;
+        };
+        let done: HashSet<_> = done.iter().cloned().collect();
+        let current = account.entry(username.clone()).or_default();
+        current.retain(|item| !done.contains(item));
+        if let Some(next) = pending.get(username) {
+            current.extend(next.iter().cloned());
+        }
+        current.sort_by_key(|item| (item.time, item.local_id, item.server_id));
+        current.dedup();
+        if current.is_empty() {
+            account.remove(username);
+        }
+    }
+    if account.is_empty() {
+        sync.pending_voice.remove(account_id);
+    }
 }
 
 fn sync_job(
@@ -3097,6 +3625,7 @@ const SYNC_UPLOADS_PER_TICK: usize = 50;
 async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSummary, String> {
     let data = app_data(app);
     let value = settings::load(&data)?;
+    ensure_wechat_connected(app)?;
     if !manual && !value.sync.enabled {
         return Ok(ChatSyncSummary {
             status: "idle".into(),
@@ -3173,6 +3702,11 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
     let mut message_count = 0usize;
     let mut failures: Vec<String> = Vec::new();
     let mut jobs: Vec<settings::UploadJob> = Vec::new();
+    let mut voice_updates: Vec<(
+        String,
+        BTreeMap<String, Vec<settings::VoiceRef>>,
+        BTreeMap<String, Vec<settings::VoiceRef>>,
+    )> = Vec::new();
     let mut touched = false;
 
     for (ordinal, username) in whitelist.iter().enumerate() {
@@ -3180,9 +3714,21 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
             break;
         }
         let cursor = account_cursors.get(username).copied();
+        let voice_retry_due = value.voice.upload_transcripts
+            && voice::view(&data).selected.is_some()
+            && value
+                .sync
+                .pending_voice
+                .get(&account_id)
+                .and_then(|items| items.get(username))
+                .is_some_and(|items| !items.is_empty());
         // Cheap probe first: packaging a conversation that has nothing new would only
-        // re-create the same idempotent batch every tick.
-        let needs_upload = match query::latest_message(&cache, username) {
+        // re-create the same idempotent batch every tick. A pending voice transcript is
+        // also a reason to retry, even when no newer chat message exists.
+        let needs_upload = if voice_retry_due {
+            true
+        } else {
+            match query::latest_message(&cache, username) {
             Ok(None) => false,
             Ok(Some(newest)) => !cursor.is_some_and(|current| current.covers(newest)),
             // A whitelisted session without a local table is skipped, not retried forever.
@@ -3192,12 +3738,24 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
             }
             // The probe is an optimization only; let the uploader report the real error.
             Err(_) => true,
+            }
         };
         if !needs_upload {
             skipped += 1;
             continue;
         }
-        let since = cursor.map(|current| current.time);
+        let pending_since = value
+            .sync
+            .pending_voice
+            .get(&account_id)
+            .and_then(|items| items.get(username))
+            .and_then(|items| items.iter().map(|item| item.time).min());
+        let since = match (cursor, pending_since) {
+            (Some(current), Some(pending)) => Some(current.time.min(pending)),
+            (Some(current), None) => Some(current.time),
+            (None, Some(pending)) => Some(pending),
+            (None, None) => None,
+        };
         let result = devify_upload_wechat(
             app.clone(),
             space_id,
@@ -3214,6 +3772,11 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
             Ok(result) => {
                 uploaded += 1;
                 message_count += result.message_count;
+                voice_updates.push((
+                    username.clone(),
+                    result.voice_processed.clone(),
+                    result.voice_pending.clone(),
+                ));
                 let mut job = sync_job(
                     &account_id,
                     space_id,
@@ -3228,7 +3791,8 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
                 if let Some((time, local_id)) = result.latest_position {
                     job.covered
                         .insert(username.clone(), settings::SyncCursor { time, local_id });
-                    account_cursors.insert(username.clone(), settings::SyncCursor { time, local_id });
+                    account_cursors
+                        .insert(username.clone(), settings::SyncCursor { time, local_id });
                 }
                 jobs.push(job);
                 touched = true;
@@ -3263,12 +3827,36 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
                 .cursors
                 .insert(account_id.clone(), account_cursors);
         }
+        for (username, processed, pending) in voice_updates {
+            let names = vec![username];
+            let mut processed_by_conversation = BTreeMap::new();
+            let mut pending_by_conversation = BTreeMap::new();
+            if let Some(items) = processed.get(names[0].as_str()) {
+                processed_by_conversation.insert(names[0].clone(), items.clone());
+            }
+            if let Some(items) = pending.get(names[0].as_str()) {
+                pending_by_conversation.insert(names[0].clone(), items.clone());
+            }
+            update_pending_voice(
+                &mut next.sync,
+                &account_id,
+                &names,
+                &processed_by_conversation,
+                &pending_by_conversation,
+            );
+        }
         if !jobs.is_empty() {
             next.upload_queue.splice(0..0, jobs);
         }
         next.sync.last_run_at = Some(chrono::Utc::now().to_rfc3339());
-        next.sync.last_status =
-            Some(if failures.is_empty() { "success" } else { "failed" }.into());
+        next.sync.last_status = Some(
+            if failures.is_empty() {
+                "success"
+            } else {
+                "failed"
+            }
+            .into(),
+        );
         next.sync.last_error = if failures.is_empty() {
             None
         } else {
@@ -3338,6 +3926,7 @@ fn app_settings_save(
     // Settings forms only toggle automatic sync; cursors and run history stay owned by the
     // sync loop.
     value.sync.cursors = stored.sync.cursors;
+    value.sync.pending_voice = stored.sync.pending_voice;
     value.sync.last_run_at = stored.sync.last_run_at;
     value.sync.last_status = stored.sync.last_status;
     value.sync.last_error = stored.sync.last_error;
@@ -4505,7 +5094,11 @@ struct VoiceAudio {
 }
 
 /// Whitelist + visibility guard shared by the media and voice commands.
-fn require_visible_session(app: &AppHandle, account_id: &str, username: &str) -> Result<(), String> {
+fn require_visible_session(
+    app: &AppHandle,
+    account_id: &str,
+    username: &str,
+) -> Result<(), String> {
     let cache = decrypt::cache_dir(&app_data(app), account_id);
     if !query::is_chat_session(&cache, username) {
         return Err("公众号、服务号和系统会话不在查看范围内。".into());
@@ -4739,8 +5332,19 @@ async fn wechat_voice_audio(
 
 #[tauri::command]
 async fn wechat_sessions(app: AppHandle, account_id: String) -> Result<Vec<SessionItem>, String> {
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    let allowed = allowed_usernames(&app, &account_id)?;
+    validate_account_id(&account_id)?;
+    let data = app_data(&app);
+    // The session list is deliberately readable while disconnected: the chat screen still
+    // renders its shell and the reconnect state, but no message content is returned.
+    let allowed: HashSet<String> = settings::load(&data)?
+        .chat
+        .allowed_usernames
+        .get(&account_id)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let cache = decrypt::cache_dir(&data, &account_id);
     query::sessions_filtered(&cache, Some(&allowed))
 }
 
@@ -4820,6 +5424,9 @@ async fn wechat_upload_state(
     validate_account_id(&account_id)?;
     let data = app_data(&app);
     let value = settings::load(&data)?;
+    if !value.connectors.wechat_enabled {
+        return Ok(Vec::new());
+    }
     let allowed: HashSet<String> = value
         .chat
         .allowed_usernames
@@ -4908,6 +5515,7 @@ async fn wechat_messages(
     username: String,
     limit: Option<usize>,
     before: Option<i64>,
+    before_id: Option<i64>,
 ) -> Result<Vec<MessageItem>, String> {
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     if !query::is_chat_session(&cache, &username) {
@@ -4917,7 +5525,13 @@ async fn wechat_messages(
     if !allowed.contains(&username) {
         return Err("该会话不在当前策略白名单中。".into());
     }
-    query::messages(&cache, &username, limit.unwrap_or(100), before)
+    // Both halves of the cursor come from the last row already on screen; without the id
+    // this degrades to the old timestamp-only paging, which cannot see past a shared second.
+    let cursor = before.map(|time| match before_id {
+        Some(id) => query::MessageCursor::new(time, id),
+        None => query::MessageCursor::before_time(time),
+    });
+    query::messages(&cache, &username, limit.unwrap_or(100), cursor)
 }
 
 /// Bounded keyword search over decrypted message content.
@@ -5229,6 +5843,7 @@ pub fn run() {
             devify_auth_callback,
             devify_auth_cancel,
             devify_auth_status,
+            devify_device_register,
             devify_login_password,
             devify_logout,
             devify_spaces,
@@ -5331,6 +5946,115 @@ pub fn run() {
 }
 
 #[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    #[test]
+    fn extension_keeps_only_safe_suffixes() {
+        assert_eq!(attachment_extension(Some("report.pdf")), "pdf");
+        assert_eq!(attachment_extension(Some("HOLIDAY.JPG")), "jpg");
+        assert_eq!(attachment_extension(Some("archive.tar.gz")), "gz");
+    }
+
+    #[test]
+    fn extension_falls_back_when_missing_or_unsafe() {
+        assert_eq!(attachment_extension(None), "bin");
+        assert_eq!(attachment_extension(Some("no-extension")), "bin");
+        assert_eq!(attachment_extension(Some("../../etc/passwd")), "bin");
+        assert_eq!(attachment_extension(Some("name.verylongextension")), "bin");
+        assert_eq!(attachment_extension(Some("name.we ird")), "bin");
+    }
+}
+
+/// The upload path used to abort with "分页遇到相同时间戳" whenever a full page ended in a
+/// second shared by more messages. These tests page a synthetic shard to prove every row
+/// comes back exactly once.
+#[cfg(test)]
+mod message_paging_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn cache_with_messages(username: &str, rows: &[(i64, i64)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "wc-paging-test-{}-{}",
+            std::process::id(),
+            rows.len()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("message")).unwrap();
+        let table = format!("Msg_{}", query::md5_hex(username));
+        let conn = Connection::open(root.join("message").join("message_0.db")).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE \"{table}\" (
+                local_id INTEGER PRIMARY KEY,
+                server_id INTEGER,
+                create_time INTEGER,
+                message_content BLOB,
+                local_type INTEGER,
+                real_sender_id INTEGER
+            );"
+        ))
+        .unwrap();
+        for (local_id, time) in rows {
+            conn.execute(
+                &format!(
+                    "INSERT INTO \"{table}\" (local_id, server_id, create_time, message_content, local_type, real_sender_id)
+                     VALUES (?1, ?1, ?2, ?3, 1, NULL)"
+                ),
+                rusqlite::params![local_id, time, format!("消息 {local_id}").into_bytes()],
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn a_full_page_sharing_one_second_no_longer_aborts_the_upload() {
+        let username = "123456789@chatroom";
+        // 1200 messages, all inside the same second: the old timestamp cursor stopped at
+        // 500 and the upload refused to continue.
+        let rows: Vec<(i64, i64)> = (1..=1200).map(|id| (id, 1_700_000_000)).collect();
+        let root = cache_with_messages(username, &rows);
+
+        let messages = collect_upload_messages(&root, username, None, None, None).unwrap();
+        assert_eq!(messages.len(), 1200, "每一条都必须读到");
+        let ids: HashSet<i64> = messages.iter().map(|message| message.local_id).collect();
+        assert_eq!(ids.len(), 1200, "不能重复");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn paging_continues_inside_a_second_that_straddles_the_page_boundary() {
+        let username = "wxid_boundary";
+        // Newest 200 share second 200, then 400 older ones share second 100: the cursor
+        // lands mid-second in both cases.
+        let mut rows: Vec<(i64, i64)> = (1..=200).map(|id| (id, 200)).collect();
+        rows.extend((201..=600).map(|id| (id, 100)));
+        let root = cache_with_messages(username, &rows);
+
+        let messages = collect_upload_messages(&root, username, None, None, None).unwrap();
+        assert_eq!(messages.len(), 600);
+        let times: Vec<i64> = messages.iter().map(|message| message.time).collect();
+        assert!(times.windows(2).all(|pair| pair[0] >= pair[1]), "保持从新到旧");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn since_stops_paging_without_dropping_the_boundary_second() {
+        let username = "wxid_since";
+        let rows: Vec<(i64, i64)> = (1..=900).map(|id| (id, 1_000 + id)).collect();
+        let root = cache_with_messages(username, &rows);
+
+        let messages = collect_upload_messages(&root, username, Some(1_500), None, None).unwrap();
+        assert_eq!(messages.len(), 401, "只保留 1500 及以后的消息");
+        assert!(messages.iter().all(|message| message.time >= 1_500));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
 mod devify_error_tests {
     use super::*;
     use serde_json::json;
@@ -5385,10 +6109,7 @@ mod devify_error_tests {
     #[test]
     fn points_at_space_selection_when_the_space_is_gone() {
         assert_eq!(
-            devify_friendly_error(
-                reqwest::StatusCode::NOT_FOUND,
-                "Space not found."
-            ),
+            devify_friendly_error(reqwest::StatusCode::NOT_FOUND, "Space not found."),
             "当前 Devify 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。"
         );
         assert_eq!(
@@ -5554,20 +6275,82 @@ mod key_flow_tests {
         .unwrap();
 
         assert_eq!(prepared.avatar_files.len(), 1);
-        assert!(prepared.avatar_files[0]
-            .0
-            .starts_with("media/avatars/"));
+        assert!(prepared.avatar_files[0].0.starts_with("media/avatars/"));
         assert!(prepared.avatar_files[0].0.ends_with(".png"));
         assert_eq!(prepared.avatar_files[0].1, png);
         assert!(prepared
             .avatars
             .iter()
-            .any(|row| row["scope"] == "conversation"
-                && row["conversation_id"] == "person"));
+            .any(|row| row["scope"] == "conversation" && row["conversation_id"] == "person"));
     }
 
     #[test]
-    fn upload_preview_rejects_truncated_same_second_boundary() {
+    fn upload_package_includes_cached_voice_transcript_without_audio_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("session")).unwrap();
+        std::fs::create_dir_all(dir.path().join("message")).unwrap();
+        let session = rusqlite::Connection::open(dir.path().join("session/session.db")).unwrap();
+        session
+            .execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','测试会话');")
+            .unwrap();
+        let message = rusqlite::Connection::open(dir.path().join("message/message_0.db")).unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        message
+            .execute_batch(&format!(
+                "CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,4242,100,'<msg><voicemsg voicelength=\\\"2300\\\" /></msg>',34);"
+            ))
+            .unwrap();
+        let media = rusqlite::Connection::open(dir.path().join("message/media_0.db")).unwrap();
+        media
+            .execute_batch("CREATE TABLE VoiceInfo (svr_id INTEGER, voice_data BLOB); INSERT INTO VoiceInfo VALUES (4242, X'02');")
+            .unwrap();
+        voice::save_transcripts(
+            dir.path(),
+            &BTreeMap::from([(
+                voice::transcript_key("account", 4242),
+                voice::TranscriptEntry {
+                    text: "明天下午三点开会".into(),
+                    engine: "test".into(),
+                    model: "fixture".into(),
+                    created_at: 1,
+                },
+            )]),
+        )
+        .unwrap();
+
+        let prepared = prepare_upload_with_voice(
+            dir.path(),
+            dir.path(),
+            "account",
+            7,
+            "https://example.test",
+            &["person".into()],
+            None,
+            None,
+            &BTreeMap::new(),
+            &settings::VoiceUploadSettings {
+                auto_transcribe: true,
+                upload_transcripts: true,
+            },
+            "images",
+        )
+        .unwrap();
+
+        assert!(prepared
+            .parts
+            .iter()
+            .any(|part| { part["kind"] == "audio" && part["binding_state"] == "missing" }));
+        assert!(prepared.parts.iter().any(|part| {
+            part["kind"] == "text"
+                && part["part_key"] == "voice-transcript-4242"
+                && part["text"] == "明天下午三点开会"
+                && part["source_header"]["engine"] == "test"
+        }));
+        assert!(prepared.voice_pending.is_empty());
+    }
+
+    #[test]
+    fn upload_preview_reads_a_shared_second_past_the_page_boundary() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("session")).unwrap();
         std::fs::create_dir_all(dir.path().join("message")).unwrap();
@@ -5580,7 +6363,9 @@ mod key_flow_tests {
         let message = rusqlite::Connection::open(dir.path().join("message/message_0.db")).unwrap();
         let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
         message.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<501) INSERT INTO {table} SELECT x,100,'text',1 FROM n;")).unwrap();
-        let result = prepare_upload(
+        // 501 messages inside one second: the cursor must walk the whole second instead of
+        // giving up with "分页遇到相同时间戳".
+        let prepared = prepare_upload(
             dir.path(),
             "account",
             7,
@@ -5589,8 +6374,16 @@ mod key_flow_tests {
             None,
             None,
             &BTreeMap::new(),
-        );
-        assert!(result.is_err());
+        )
+        .expect("分页必须读完整秒");
+        assert_eq!(prepared.preview.message_count, 501);
+        assert_eq!(prepared.messages.len(), 501);
+        let ids: HashSet<_> = prepared
+            .messages
+            .iter()
+            .map(|message| message["source_message_id"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(ids.len(), 501);
     }
 
     #[test]
@@ -5874,7 +6667,10 @@ mod space_tests {
 
     #[test]
     fn personal_space_is_the_default_target() {
-        let spaces = vec![space(1, "团队空间", "team"), space(2, "个人空间", "personal")];
+        let spaces = vec![
+            space(1, "团队空间", "team"),
+            space(2, "个人空间", "personal"),
+        ];
         assert_eq!(pick_personal_space(&spaces), Some(2));
     }
 

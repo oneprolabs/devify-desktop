@@ -53,6 +53,8 @@ codesign -d -r- "$APP" 2>&1 | tail -1
 if [ "${1:-}" = "--install" ]; then
   osascript -e 'quit app "AIMyChats"' >/dev/null 2>&1 || true
   sleep 2
+  # Replace instead of merging: ditto over an existing bundle can leave stale files.
+  rm -rf /Applications/AIMyChats.app
   ditto "$APP" /Applications/AIMyChats.app
   "$LSREGISTER" -f /Applications/AIMyChats.app
   echo "已安装到 /Applications/AIMyChats.app"

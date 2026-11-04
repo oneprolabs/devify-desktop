@@ -2,10 +2,9 @@ import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'reac
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
-import { HistoryPage } from './History';
 import { AgentHub } from './AgentHub';
 import { About } from './About';
-import { DevifySettings, StrategySettings, WhitelistSettings } from './Settings';
+import { DevifySettings, WhitelistSettings } from './Settings';
 import { BackupSchedule } from './BackupSchedule';
 import { AnalysisSettings } from './AnalysisSettings';
 import { LanguageSettings } from './LanguageSettings';
@@ -18,11 +17,12 @@ import { Tasks } from './Tasks';
 import { ChatEntry } from './ChatLanding';
 import { ChatWorkbench } from './ChatWorkbench';
 import { LoginGate } from './LoginGate';
+import { registerDevifyDevice } from './devifyDevice';
 import './prototype-shell.css';
 import appIcon from './assets/app-icon.png';
 
 type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
-type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'agent' | 'about' | 'history' | 'automation';
+type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'agent' | 'about';
 
 const sections: { id: Section; label: string; icon: ReactNode }[] = [
   { id: 'chat', label: '聊天', icon: RailIcons.chat },
@@ -40,8 +40,6 @@ const settingsPages: { id: SettingsPage; label: string; group?: 'main' | 'local'
   { id: 'analysis', label: '智能分析', group: 'main' },
   { id: 'language', label: '语言', group: 'main' },
   { id: 'account', label: '账户', group: 'main' },
-  { id: 'automation', label: '本地自动化', group: 'local' },
-  { id: 'history', label: '总结记录', group: 'local' },
   { id: 'agent', label: 'Agent 集成', group: 'local' },
   { id: 'about', label: '关于', group: 'local' },
 ];
@@ -61,12 +59,18 @@ export default function PrototypeShell() {
   const [startTaskCreate, setStartTaskCreate] = useState(false);
   const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous'>('checking');
   const [authNotice, setAuthNotice] = useState('');
-  const handleAuthenticated = useCallback(() => { setAuthState('authed'); setAuthNotice(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); }, []);
+  const handleAuthenticated = useCallback(() => { setAuthState('authed'); setAuthNotice(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
   useEffect(() => {
     let active = true;
     let cleanExpired: (() => void) | undefined;
     void invoke<{ authenticated: boolean }>('devify_auth_status')
-      .then(status => { if (active) setAuthState(status.authenticated ? 'authed' : 'anonymous'); })
+      .then(status => {
+        if (!active) return;
+        setAuthState(status.authenticated ? 'authed' : 'anonymous');
+        if (status.authenticated) {
+          void registerDevifyDevice();
+        }
+      })
       .catch(() => { if (active) setAuthState('anonymous'); });
     // The backend drops stale credentials and emits this when the server rejects
     // the stored session (expired, revoked or deleted account), so the app falls
@@ -171,11 +175,9 @@ export default function PrototypeShell() {
           {settingsPage === 'imports' && <WhitelistSettings />}
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} />}
           {settingsPage === 'analysis' && <AnalysisSettings />}
-          {settingsPage === 'automation' && <StrategySettings />}
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings />}
           {settingsPage === 'agent' && <AgentHub />}
-          {settingsPage === 'history' && <HistoryPage />}
           {settingsPage === 'about' && <About />}
         </div>
         </div>

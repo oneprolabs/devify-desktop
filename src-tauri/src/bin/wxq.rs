@@ -74,6 +74,17 @@ impl Parsed {
     fn time(&self, key: &str, end_of_day: bool) -> Result<Option<i64>, String> {
         self.last(key).map(|value| parse_time(value, end_of_day)).transpose()
     }
+
+    /// A bare signed integer. Ids are not timestamps, so they bypass `parse_time`.
+    fn signed(&self, key: &str) -> Result<Option<i64>, String> {
+        self.last(key)
+            .map(|value| {
+                value
+                    .parse::<i64>()
+                    .map_err(|_| format!("--{key} 需要整数，收到：{value}"))
+            })
+            .transpose()
+    }
 }
 
 struct Cli {
@@ -188,12 +199,18 @@ fn dispatch(cli: Cli) -> Result<String, String> {
             let chat = cli.args.required("chat")?;
             let limit = cli.args.number("limit")?.unwrap_or(100).clamp(1, 500);
             let before = cli.args.time("before", false)?;
+            let before_id = cli.args.signed("before-id")?;
             let mut path = format!(
                 "/api/messages?username={}&limit={limit}",
                 encode(chat)
             );
             if let Some(before) = before {
                 path.push_str(&format!("&before={before}"));
+            }
+            // Without the id the server can only page past the whole second, so people who
+            // hit a busy minute would silently miss messages; always forward it when known.
+            if let Some(before_id) = before_id {
+                path.push_str(&format!("&before_id={before_id}"));
             }
             let path = with_account(&path, account.as_deref());
             let body = request_json(&cli, "GET", &path, None)?;
@@ -320,8 +337,8 @@ fn format_messages(list: &MessageList) -> String {
     if list.has_more {
         if let Some(oldest) = list.messages.last() {
             out.push_str(&format!(
-                "\n继续读取更早消息：wxq messages --chat {} --before {}\n",
-                list.username, oldest.time
+                "\n继续读取更早消息：wxq messages --chat {} --before {} --before-id {}\n",
+                list.username, oldest.time, oldest.local_id
             ));
         }
     }
@@ -558,8 +575,8 @@ fn parse_flags(raw: &[String]) -> Result<Parsed, String> {
             "--help" | "-h" => {
                 parsed.flags.insert("help".to_string());
             }
-            "--account" | "--chat" | "--keyword" | "--limit" | "--before" | "--since"
-            | "--until" | "--max-sessions" => {
+            "--account" | "--chat" | "--keyword" | "--limit" | "--before" | "--before-id"
+            | "--since" | "--until" | "--max-sessions" => {
                 let value = take_value(name, inline, raw, &mut index)?;
                 let key = name.trim_start_matches("--").to_string();
                 parsed.values.entry(key).or_default().push(value);
@@ -663,7 +680,7 @@ fn usage() -> String {
   health                                    检查本地服务是否在运行
   policy   [--account ID]                   账号、白名单数量、可见会话
   sessions [--account ID]                   只列白名单会话
-  messages --chat USERNAME [--limit N] [--before TS] [--account ID]
+  messages --chat USERNAME [--limit N] [--before TS --before-id ID] [--account ID]
   search   --keyword KEY [--groups-only] [--max-sessions N] [--account ID]
   digest   --chat USERNAME [--chat ...] [--since TIME] [--until TIME] [--account ID]
 
@@ -779,6 +796,7 @@ mod tests {
         assert!(first < second, "oldest message must be printed first");
         assert!(text.contains("我: 第一条"));
         assert!(text.contains("--before 1700000000"));
+        assert!(text.contains("--before-id 1"));
     }
 
     #[test]
