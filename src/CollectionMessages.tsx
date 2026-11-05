@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
-export type MessageRef = { local_id: number; time: number };
+export type MessageRef = { local_id: number; time: number; source_shard: string };
 type Message = MessageRef & { text: string; sender: string | null; sender_name: string | null; is_self: boolean };
 
 export function CollectionMessages({ accountId, username, since, until, selected, onChange, busy }: {
@@ -20,12 +20,12 @@ export function CollectionMessages({ accountId, username, since, until, selected
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [accountId, username, since, until]);
-  const chosen = (message: MessageRef) => selected.some(item => item.local_id === message.local_id && item.time === message.time);
+  const chosen = (message: MessageRef) => selected.some(item => item.local_id === message.local_id && item.time === message.time && item.source_shard === message.source_shard);
   const toggle = (message: MessageRef) => onChange(chosen(message)
-    ? selected.filter(item => item.local_id !== message.local_id || item.time !== message.time)
-    : [...selected, { local_id: message.local_id, time: message.time }]);
+    ? selected.filter(item => item.local_id !== message.local_id || item.time !== message.time || item.source_shard !== message.source_shard)
+    : [...selected, { local_id: message.local_id, time: message.time, source_shard: message.source_shard }]);
   return <div className="collection-message-picker">
-    <div className="collection-message-head"><span>逐条选择 · 已选 {selected.length} 条</span><button type="button" disabled={busy || loading || !messages.length} onClick={() => onChange(messages.map(({ local_id, time }) => ({ local_id, time })))}>全选</button><button type="button" disabled={busy || !selected.length} onClick={() => onChange([])}>清空</button></div>
+    <div className="collection-message-head"><span>逐条选择 · 已选 {selected.length} 条</span><button type="button" disabled={busy || loading || !messages.length} onClick={() => onChange(messages.map(({ local_id, time, source_shard }) => ({ local_id, time, source_shard })))}>全选</button><button type="button" disabled={busy || !selected.length} onClick={() => onChange([])}>清空</button></div>
     {loading && <p>正在读取所选日期内的消息…</p>}
     {error && <p className="collection-error" role="alert">{error}</p>}
     {!loading && !error && !messages.length && <p>此范围内没有消息。</p>}

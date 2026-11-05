@@ -84,6 +84,7 @@ type SessionItem = {
 
 type MessageItem = {
   local_id: number;
+  source_shard: string;
   time: number;
   sender: string | null;
   sender_name: string | null;
@@ -95,6 +96,8 @@ type MessageItem = {
 type MediaItem = {
   local_id: number;
   server_id: number;
+  source_shard: string;
+  time: number;
   kind: 'image' | 'video' | 'file' | 'voice' | 'emoji' | string;
   name: string | null;
   rel_path: string | null;
@@ -182,7 +185,7 @@ type CaptureStatus = {
   prepared_process_exited: boolean | null;
   transaction_id: string | null;
   recovery_error_code: string | null;
-  entitlement_mode: 'preserved' | 'sanitized' | null;
+  entitlement_mode: 'preserved' | 'sanitized' | 'deep' | null;
   platform_supported: boolean;
   lldb_available: boolean;
   wechat_present: boolean;
@@ -204,7 +207,7 @@ type PrepareResult = {
   backup_path: string;
   backup_created: boolean;
   official_cdhash: string;
-  entitlement_mode: 'preserved' | 'sanitized';
+  entitlement_mode: 'preserved' | 'sanitized' | 'deep';
   dropped_entitlements: string[];
 };
 
@@ -477,7 +480,7 @@ function currentAccount(accounts: Account[], remembered: string): Account | null
 }
 
 function messageKey(username: string, message: MessageItem): string {
-  return `${username}:${message.local_id}:${message.time}`;
+  return `${username}:${message.source_shard}:${message.local_id}:${message.time}`;
 }
 
 function isPlaceholder(text: string): boolean {
@@ -1073,7 +1076,9 @@ export default function WeChatLocal({
     try {
       const result = await invoke<PrepareResult>('wechat_capture_prepare');
       const sanitized =
-        result.entitlement_mode === 'sanitized'
+        result.entitlement_mode === 'deep'
+          ? ' 本次临时副本及内部组件会被重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复原版。'
+          : result.entitlement_mode === 'sanitized'
           ? ` 这台 Mac 会拒绝 ad-hoc 签名携带腾讯团队的受限权限，本次临时副本已剔除 ${result.dropped_entitlements.length} 项受限权限（${result.dropped_entitlements.join('、')}），否则微信在启动前就会被系统拒绝；结束或取消时会换回腾讯原版。`
           : '';
       setNotice(
@@ -1347,6 +1352,7 @@ export default function WeChatLocal({
             limit: PAGE,
             before: last.time,
             beforeId: last.local_id,
+            beforeShard: last.source_shard,
           });
           if (!page.length) break;
           list = [...list, ...page];
@@ -1384,7 +1390,7 @@ export default function WeChatLocal({
           if (cancelled) return;
           const map: Record<string, MediaItem[]> = {};
           for (const item of report.items) {
-            (map[String(item.local_id)] ??= []).push(item);
+            (map[`${item.source_shard}:${item.local_id}:${item.time}`] ??= []).push(item);
           }
           setMediaByMessage(map);
         })
@@ -1398,7 +1404,7 @@ export default function WeChatLocal({
     };
   }, [account?.id, active?.username, messages]);
 
-  const mediaFor = (localId: number): MediaItem[] => mediaByMessage[String(localId)] ?? [];
+  const mediaFor = (message: MessageItem): MediaItem[] => mediaByMessage[`${message.source_shard}:${message.local_id}:${message.time}`] ?? [];
 
   const transcribeVoice = async (item: MediaItem) => {
     if (!account || !active) return;
@@ -1464,6 +1470,7 @@ export default function WeChatLocal({
         limit: PAGE,
         before: last.time,
         beforeId: last.local_id,
+        beforeShard: last.source_shard,
       });
       setMessages(current => [...current, ...older]);
       setHasMore(older.length >= PAGE);
@@ -1681,6 +1688,7 @@ export default function WeChatLocal({
     if (!account) return { session, messages: [], truncated: false };
     let before: number | undefined;
     let beforeId: number | undefined;
+    let beforeShard: string | undefined;
     let collected: MessageItem[] = [];
     let truncated = false;
 
@@ -1691,6 +1699,7 @@ export default function WeChatLocal({
         limit: WORK_PAGE,
         before,
         beforeId,
+        beforeShard,
       });
       if (!page.length) break;
       collected = [...collected, ...page];
@@ -1705,6 +1714,7 @@ export default function WeChatLocal({
       }
       before = last.time;
       beforeId = last.local_id;
+      beforeShard = last.source_shard;
     }
 
     const messages = collected.filter(message => {
@@ -2266,6 +2276,10 @@ const checkMark = (value: boolean | undefined) =>
     : undefined;
 
   const renderUnlock = () => {
+    const usableDb = (rel: string) => outcomes.some(outcome =>
+      outcome.rel === rel && (outcome.status === 'ok' || outcome.status === 'cached'));
+    const decryptedForWizard = usableDb('session/session.db') && outcomes.some(outcome =>
+      /^message\/message_\d+\.db$/.test(outcome.rel) && (outcome.status === 'ok' || outcome.status === 'cached'));
     const wizardCanNext = !wizard || (wizardStep === 'wizard-permission' || wizardStep === 'wizard-account'
       ? Boolean(account)
       : wizardStep === 'wizard-key'
@@ -2273,7 +2287,7 @@ const checkMark = (value: boolean | undefined) =>
         : wizardStep === 'wizard-import'
           ? keyedCount > 0
           : wizardStep === 'wx-connect-decrypt'
-            ? ready
+            ? ready || decryptedForWizard
             : true);
     return (
     <div className="wxv-onboard">
@@ -2411,7 +2425,7 @@ const checkMark = (value: boolean | undefined) =>
                         <span className={`wxv-keyguide-check ${checkTone(captureStatus?.lldb_available)}`}>
                           {checkMark(captureStatus?.lldb_available)}
                         </span>
-                        LLDB{captureStatus?.lldb_available ? ' 已就绪' : ' 未找到：先安装 Xcode Command Line Tools'}
+                        LLDB{captureStatus?.lldb_available ? ' 已就绪' : ' 或 Python 运行环境无法启动：请修复 Xcode Command Line Tools'}
                       </li>
                       <li>
                         {/* A running transaction re-signs WeChat on purpose: showing that as a
@@ -2455,7 +2469,7 @@ const checkMark = (value: boolean | undefined) =>
                       <strong>2 · 备份并临时重签微信</strong>
                       <p className="wxv-muted">
                         程序会先用 <code>ditto</code> 建立腾讯原版压缩备份和同卷写时复制保护，再把「副本」临时
-                        ad-hoc 签名（保留沙箱；macOS 15 起会自动剔除腾讯团队的受限权限），最后原子替换安装位置。整个过程不改动你的聊天数据。
+                        ad-hoc 签名，最后原子替换安装位置。部分系统使用无沙箱的深度重签，微信可能使用不同的数据目录。
                       </p>
                       <div className="wxv-keyguide-confirm">
                         <strong>开始前请确认</strong>
@@ -2518,6 +2532,9 @@ const checkMark = (value: boolean | undefined) =>
                   {captureStatus?.pending && (
                     <div className="wxv-keyguide-step">
                       <strong>3 · 打开微信、登录并完成捕获</strong>
+                      {captureStatus.entitlement_mode === 'deep' && (
+                        <p className="wxv-keyguide-note">临时微信及其内部组件已重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复官方微信。</p>
+                      )}
                       {captureStatus.entitlement_mode === 'sanitized' && (
                         <p className="wxv-keyguide-note">
                           本次临时副本已剔除腾讯团队的受限权限（application-identifier / team-identifier /
@@ -2709,7 +2726,7 @@ const checkMark = (value: boolean | undefined) =>
                                   : captureStatus.capture_phase === 'monitoring'
                                     ? '监测已就绪：现在重新登录同一账号'
                                     : captureStatus.capture_phase === 'captured'
-                                      ? '已捕获密钥，正在恢复微信'
+                                      ? '已捕获密钥，正在结束调试会话，随后校验并恢复微信'
                                       : captureStatus.capture_phase === 'validating'
                                         ? '正在逐库校验…'
                                         : '正在恢复腾讯原版微信…'}
@@ -2728,7 +2745,7 @@ const checkMark = (value: boolean | undefined) =>
                         </button>
                       </div>
 
-                      {captureStatus.prepared_process_exited && (
+                      {captureStatus.prepared_process_exited && captureStatus.stage !== 'capturing' && (
                         <p className="wxv-keyguide-warn">
                           临时微信进程已退出。请点「取消并恢复官方微信」换回腾讯原版后重新开始，不要自行改签名。
                         </p>
@@ -3045,7 +3062,7 @@ const checkMark = (value: boolean | undefined) =>
                 // Image messages are mostly picture: a plain click opens the readable copy,
                 // a shift-click still toggles the selection. Without this, clicking a
                 // 250 px thumbnail only highlighted the bubble and never showed the content.
-                const image = mediaFor(message.local_id).find(entry => entry.kind === 'image');
+                const image = mediaFor(message).find(entry => entry.kind === 'image');
                 if (image && !event.shiftKey && (event.target as HTMLElement).closest('.wxv-bubble')) {
                   event.stopPropagation();
                   openImage(image);
@@ -3080,7 +3097,7 @@ const checkMark = (value: boolean | undefined) =>
                 // Image messages are mostly picture: a plain click opens the readable copy,
                 // a shift-click still toggles the selection. Without this, clicking a
                 // 250 px thumbnail only highlighted the bubble and never showed the content.
-                const image = mediaFor(message.local_id).find(entry => entry.kind === 'image');
+                const image = mediaFor(message).find(entry => entry.kind === 'image');
                 if (image && !event.shiftKey && (event.target as HTMLElement).closest('.wxv-bubble')) {
                   event.stopPropagation();
                   openImage(image);
@@ -3119,7 +3136,7 @@ const checkMark = (value: boolean | undefined) =>
                   ) : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
                   )}
-                  {mediaFor(message.local_id).map(item => {
+                  {mediaFor(message).map(item => {
                     if (item.kind === 'voice') {
                       const text = voiceText[item.server_id];
                       const failure = voiceError[item.server_id];

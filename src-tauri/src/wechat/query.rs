@@ -26,6 +26,10 @@ pub struct SessionItem {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MessageItem {
     pub local_id: i64,
+    #[serde(default)]
+    pub server_id: i64,
+    #[serde(default)]
+    pub source_shard: String,
     pub time: i64,
     pub sender: Option<String>,
     pub sender_name: Option<String>,
@@ -973,15 +977,21 @@ pub fn self_username(cache: &Path) -> Option<String> {
 /// messages in the same second, and a `create_time <` cursor would then drop the rest of
 /// that second at a page boundary. The local id breaks the tie, so every page continues
 /// strictly after the previous row and nothing is skipped or repeated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageCursor {
     pub time: i64,
     pub local_id: i64,
+    #[serde(default)]
+    pub source_shard: String,
 }
 
 impl MessageCursor {
     pub fn new(time: i64, local_id: i64) -> Self {
-        Self { time, local_id }
+        Self { time, local_id, source_shard: String::new() }
+    }
+
+    pub fn from_message(message: &MessageItem) -> Self {
+        Self { time: message.time, local_id: message.local_id, source_shard: message.source_shard.clone() }
     }
 
     /// Cursor for "everything older than this timestamp", the pre-cursor semantics.
@@ -989,6 +999,7 @@ impl MessageCursor {
         Self {
             time,
             local_id: i64::MIN,
+            source_shard: String::new(),
         }
     }
 }
@@ -1004,6 +1015,50 @@ pub fn messages(
 ) -> Result<Vec<MessageItem>, String> {
     let me = self_username(cache);
     messages_inner(cache, username, limit, before, None, None, me.as_deref())
+}
+
+/// IDs are only unique inside a message shard, not across a conversation.
+pub fn local_id_inventory(cache: &Path, username: &str) -> Result<HashMap<i64, HashMap<i64, usize>>, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let mut inventory: HashMap<i64, HashMap<i64, usize>> = HashMap::new();
+    let mut found = false;
+    for shard in message_shards(cache) {
+        let conn = open_readonly(&shard).map_err(|error| format!("无法读取消息分片：{error}"))?;
+        if !tables(&conn).iter().any(|name| name == &table) { continue; }
+        found = true;
+        let cols = columns(&conn, &table);
+        let Some(time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else { continue };
+        let local = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
+        let sql = format!("SELECT {}, {} FROM {} WHERE {} IS NOT NULL", quote(local), quote(time), quote(&table), quote(time));
+        let mut stmt = conn.prepare(&sql).map_err(|error| format!("无法检查消息编号：{error}"))?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).map_err(|error| format!("无法检查消息编号：{error}"))?;
+        for row in rows {
+            let (id, timestamp) = row.map_err(|error| format!("无法读取消息编号：{error}"))?;
+            *inventory.entry(id).or_default().entry(timestamp).or_default() += 1;
+        }
+    }
+    if !found { return Err("未找到该会话的消息库。".into()); }
+    Ok(inventory)
+}
+
+pub fn server_id_counts(cache: &Path, username: &str) -> Result<HashMap<i64, usize>, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let mut counts = HashMap::new();
+    for shard in message_shards(cache) {
+        let conn = open_readonly(&shard).map_err(|e| format!("无法读取消息分片：{e}"))?;
+        if !tables(&conn).iter().any(|name| name == &table) { continue; }
+        let cols = columns(&conn, &table);
+        let Some(server) = pick(&cols, &["server_id", "serverId"]) else { continue };
+        let Some(time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else { continue };
+        let sql = format!("SELECT {}, COUNT(*) FROM {} WHERE {} IS NOT NULL AND {} IS NOT NULL AND {} != 0 GROUP BY {}", quote(server), quote(&table), quote(time), quote(server), quote(server), quote(server));
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("无法核对服务端消息编号：{e}"))?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?))).map_err(|e| format!("无法核对服务端消息编号：{e}"))?;
+        for row in rows {
+            let (id, count) = row.map_err(|e| format!("无法核对服务端消息编号：{e}"))?;
+            *counts.entry(id).or_default() += count;
+        }
+    }
+    Ok(counts)
 }
 
 /// Messages inside an explicit time window, newest first. Used by media export.
@@ -1025,6 +1080,23 @@ pub fn messages_between(
 pub fn latest_message(cache: &Path, username: &str) -> Result<Option<(i64, i64)>, String> {
     let messages = messages_inner(cache, username, 1, None, None, None, None)?;
     Ok(messages.first().map(|message| (message.time, message.local_id)))
+}
+
+pub fn count_at_time(cache: &Path, username: &str, timestamp: i64) -> Result<usize, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let mut count = 0usize;
+    let mut found = false;
+    for shard in message_shards(cache) {
+        let conn = open_readonly(&shard).map_err(|e| format!("无法读取消息分片：{e}"))?;
+        if !tables(&conn).iter().any(|t| t == &table) { continue; }
+        found = true;
+        let cols = columns(&conn, &table);
+        let time = pick(&cols, &["create_time", "createTime", "timestamp"]).ok_or("消息库缺少时间字段。")?;
+        let sql = format!("SELECT COUNT(*) FROM {} WHERE {} = ?1", quote(&table), quote(time));
+        count += conn.query_row(&sql, [timestamp], |row| row.get::<_, usize>(0)).map_err(|e| format!("无法核对消息数量：{e}"))?;
+    }
+    if !found { return Err("没有找到会话消息库。".into()); }
+    Ok(count)
 }
 
 /// Newest `(time, local id)` of one conversation without decoding message bodies.
@@ -1143,6 +1215,7 @@ fn messages_inner(
     let group = is_group_username(username);
 
     for shard in message_shards(cache) {
+        let source_shard = shard.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
         let Ok(conn) = open_readonly(&shard) else {
             continue;
         };
@@ -1161,6 +1234,7 @@ fn messages_inner(
         let kind_col = pick(&cols, &["local_type", "type"]);
         let sender_col = pick(&cols, &["real_sender_id", "sender_id", "sender"]);
         let compress_col = pick(&cols, &["WCDB_CT_message_content", "compress_flag"]);
+        let server_col = pick(&cols, &["server_id", "serverId"]);
 
         let sender_map = if sender_col.map(|c| c != "sender").unwrap_or(false) {
             shard_senders(&conn)
@@ -1177,10 +1251,11 @@ fn messages_inner(
             compress_col
                 .map(quote)
                 .unwrap_or_else(|| "NULL".to_string()),
+            server_col.map(quote).unwrap_or_else(|| "0".to_string()),
         ];
         let mut sql = format!("SELECT {} FROM {}", projection.join(", "), quote(&table));
         sql.push_str(&format!(" WHERE {} IS NOT NULL", quote(create_time)));
-        if let Some(before) = before {
+        if let Some(ref before) = before {
             // Keyset pagination on (time, local id): a second shared by more messages than
             // one page holds still resumes exactly after the last row handed out.
             sql.push_str(&format!(
@@ -1192,6 +1267,11 @@ fn messages_inner(
                 quote(local_id),
                 before.local_id
             ));
+            if !before.source_shard.is_empty() && source_shard < before.source_shard {
+                let suffix = format!(" OR ({} = {} AND {} = {})", quote(create_time), before.time, quote(local_id), before.local_id);
+                let end = sql.len() - 1;
+                sql.insert_str(end, &suffix);
+            }
         }
         if let Some(since) = since {
             sql.push_str(&format!(" AND {} >= {}", quote(create_time), since));
@@ -1216,12 +1296,13 @@ fn messages_inner(
             let kind: i64 = row.get(3).unwrap_or(0);
             let sender_id: Option<i64> = row.get(4).ok();
             let compress: Option<i64> = row.get(5).ok();
-            Ok((local, time, raw, kind, sender_id, compress))
+            let server: i64 = row.get(6).unwrap_or(0);
+            Ok((local, time, raw, kind, sender_id, compress, server))
         });
         let Ok(rows) = rows else {
             continue;
         };
-        for (local, time, raw, kind, sender_id, compress) in rows.flatten() {
+        for (local, time, raw, kind, sender_id, compress, server) in rows.flatten() {
             let stored = sender_id.and_then(|id| sender_map.get(&id).cloned());
             let (sender, text) = prepare_text(kind, raw, compress, group, stored);
             let sender_name = sender.as_ref().and_then(|s| names.get(s).cloned());
@@ -1231,6 +1312,8 @@ fn messages_inner(
             };
             collected.push(MessageItem {
                 local_id: local,
+                server_id: server,
+                source_shard: source_shard.clone(),
                 time,
                 sender,
                 sender_name,
@@ -1247,7 +1330,7 @@ fn messages_inner(
         ));
     }
 
-    collected.sort_by(|a, b| b.time.cmp(&a.time).then(b.local_id.cmp(&a.local_id)));
+    collected.sort_by(|a, b| b.time.cmp(&a.time).then(b.local_id.cmp(&a.local_id)).then(b.source_shard.cmp(&a.source_shard)));
     collected.truncate(limit);
     Ok(collected)
 }
@@ -1256,10 +1339,51 @@ fn messages_inner(
 pub struct RawMessage {
     pub local_id: i64,
     pub server_id: i64,
+    #[serde(default)]
+    pub source_shard: String,
     pub time: i64,
     pub kind: i64,
     /// Decompressed, sender-prefix-free payload. Rich messages stay as XML.
     pub content: String,
+}
+
+/// Fetch exactly the selected rows, so an upload never associates media with another shard.
+pub fn raw_messages_selected(cache: &Path, username: &str, selected: &[MessageItem]) -> Result<Vec<RawMessage>, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let wanted: std::collections::HashSet<_> = selected.iter().map(|m| (m.source_shard.clone(), m.local_id, m.time)).collect();
+    if wanted.len() != selected.len() { return Err("所选消息标识不唯一，无法安全关联附件。".into()); }
+    let mut found = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for shard in message_shards(cache) {
+        let shard_name = shard.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let mut ids: Vec<i64> = selected.iter().filter(|m| m.source_shard == shard_name).map(|m| m.local_id).collect();
+        if ids.is_empty() { continue; }
+        ids.sort_unstable(); ids.dedup();
+        let conn = open_readonly(&shard).map_err(|e| format!("无法读取附件来源：{e}"))?;
+        let cols = columns(&conn, &table);
+        let local = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
+        let time = pick(&cols, &["create_time", "createTime", "timestamp"]).ok_or("消息库缺少时间字段。")?;
+        let content = pick(&cols, &["message_content", "content"]).ok_or("消息库缺少内容字段。")?;
+        let kind = pick(&cols, &["local_type", "type"]).map(quote).unwrap_or_else(|| "0".into());
+        let server = pick(&cols, &["server_id", "serverId"]).map(quote).unwrap_or_else(|| "0".into());
+        let compressed = pick(&cols, &["WCDB_CT_message_content", "compress_flag"]).map(quote).unwrap_or_else(|| "NULL".into());
+        for chunk in ids.chunks(400) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!("SELECT {}, {}, {}, {}, {}, {} FROM {} WHERE {} IN ({})", quote(local), server, quote(time), kind, quote(content), compressed, quote(&table), quote(local), placeholders);
+            let mut statement = conn.prepare(&sql).map_err(|e| format!("无法读取附件来源：{e}"))?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk.iter()), |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1).unwrap_or(0), row.get::<_, i64>(2)?, row.get::<_, i64>(3).unwrap_or(0), value_to_bytes(row.get_ref(4)?), row.get::<_, Option<i64>>(5).ok().flatten())))
+                .map_err(|e| format!("无法读取附件来源：{e}"))?;
+            for row in rows {
+                let (local_id, server_id, timestamp, kind, raw, compressed) = row.map_err(|e| format!("无法读取附件来源：{e}"))?;
+                let key = (shard_name.clone(), local_id, timestamp);
+                if !wanted.contains(&key) { continue; }
+                if !found.insert(key) { return Err("附件来源存在重复记录，无法安全上传。".into()); }
+                out.push(RawMessage { local_id, server_id, source_shard: shard_name.clone(), time: timestamp, kind, content: split_sender_prefix(decode_text(raw, compressed)).1 });
+            }
+        }
+    }
+    if found.len() != wanted.len() { return Err("部分消息的附件来源不可用，请重新解密后重试。".into()); }
+    Ok(out)
 }
 
 /// Raw message payloads inside a time window, used by the attachment manifest and export.
@@ -1337,6 +1461,7 @@ pub fn raw_messages_between(
             out.push(RawMessage {
                 local_id: local,
                 server_id: server,
+                source_shard: shard.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default(),
                 time,
                 kind,
                 content,

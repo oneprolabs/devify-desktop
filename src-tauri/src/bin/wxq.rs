@@ -212,6 +212,9 @@ fn dispatch(cli: Cli) -> Result<String, String> {
             if let Some(before_id) = before_id {
                 path.push_str(&format!("&before_id={before_id}"));
             }
+            if let Some(shard) = cli.args.last("before-shard") {
+                path.push_str(&format!("&before_shard={}", encode(shard)));
+            }
             let path = with_account(&path, account.as_deref());
             let body = request_json(&cli, "GET", &path, None)?;
             if cli.json {
@@ -337,8 +340,8 @@ fn format_messages(list: &MessageList) -> String {
     if list.has_more {
         if let Some(oldest) = list.messages.last() {
             out.push_str(&format!(
-                "\n继续读取更早消息：wxq messages --chat {} --before {} --before-id {}\n",
-                list.username, oldest.time, oldest.local_id
+                "\n继续读取更早消息：wxq messages --chat {} --before {} --before-id {} --before-shard {}\n",
+                list.username, oldest.time, oldest.local_id, oldest.source_shard
             ));
         }
     }
@@ -575,7 +578,7 @@ fn parse_flags(raw: &[String]) -> Result<Parsed, String> {
             "--help" | "-h" => {
                 parsed.flags.insert("help".to_string());
             }
-            "--account" | "--chat" | "--keyword" | "--limit" | "--before" | "--before-id"
+            "--account" | "--chat" | "--keyword" | "--limit" | "--before" | "--before-id" | "--before-shard"
             | "--since" | "--until" | "--max-sessions" => {
                 let value = take_value(name, inline, raw, &mut index)?;
                 let key = name.trim_start_matches("--").to_string();
@@ -680,7 +683,7 @@ fn usage() -> String {
   health                                    检查本地服务是否在运行
   policy   [--account ID]                   账号、白名单数量、可见会话
   sessions [--account ID]                   只列白名单会话
-  messages --chat USERNAME [--limit N] [--before TS --before-id ID] [--account ID]
+  messages --chat USERNAME [--limit N] [--before TS --before-id ID --before-shard FILE] [--account ID]
   search   --keyword KEY [--groups-only] [--max-sessions N] [--account ID]
   digest   --chat USERNAME [--chat ...] [--since TIME] [--until TIME] [--account ID]
 
@@ -770,6 +773,8 @@ mod tests {
             username: "chat@chatroom".into(),
             messages: vec![
                 MessageItem {
+                    server_id: 0,
+                    source_shard: String::new(),
                     local_id: 2,
                     time: 1_700_000_120,
                     sender: Some("wxid_b".into()),
@@ -779,6 +784,8 @@ mod tests {
                     is_self: false,
                 },
                 MessageItem {
+                    server_id: 0,
+                    source_shard: String::new(),
                     local_id: 1,
                     time: 1_700_000_000,
                     sender: Some("me".into()),

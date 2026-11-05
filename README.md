@@ -117,24 +117,22 @@ without shell commands for the user to type:
 2. **备份并临时重签** — a verified `ditto` ZIP of the original bundle
    (`…/key-capture/wechat-app-backups/WeChat-<version>-<build>-original.zip`) plus a same-volume
    APFS clone into `/Applications/.WeChat.wedata-official-restore.app`. Only the **clone** is
-   re-signed ad-hoc (`codesign --force --preserve-metadata=entitlements --sign -`), so the sandbox,
-   app group and the still-Tencent-signed `WeChatAppEx` login helper keep working. The clone is then
+   re-signed ad-hoc. Depending on the probe result, this may include a deep re-sign of nested
+   components without sandbox entitlements. The clone is then
    exchanged with the installed bundle using `renameatx_np(RENAME_SWAP)`, so no half-copied
    application is ever left behind. You must tick the risk checkbox first: WeChat quits, the
-   temporary build needs a fresh QR login, and your chat data is never touched.
+   temporary build needs a fresh QR login and may use a different data directory.
 
    **macOS 15+ entitlement gate.** macOS 15 refuses to create a process whose ad-hoc signature still
    claims the team-bound entitlements (`com.apple.application-identifier`,
    `com.apple.developer.team-identifier`, `com.apple.security.application-groups`,
    `com.apple.security.temporary-exception.*`): launchd fails with errno 153 (`Launchd job spawn
    failed`) and WeChat never reaches `main`. Before touching the installed bundle, the app probes
-   **both** entitlement sets: it signs and starts a throwaway `/usr/bin/true` bundle with the exact
-   dictionary (AMFI, launchd and the sandbox all judge from the signature alone), keeps Tencent's
-   entitlements verbatim when that starts, and otherwise re-signs the clone with those claims
-   stripped (`codesign --force --sign - --entitlements …`, sandbox and network access kept). If
-   neither variant can start, **nothing is re-signed** — the installed WeChat is left untouched and
-   the guide says so (`in_place_amfi_rejected`). The step-3 panel names the mode used and which
-   claims were dropped.
+   the original and empty entitlement sets using a purpose-built probe. If the original set fails
+   and the empty set works, it deep-signs the clone without entitlements, including nested components.
+   The temporary app runs without the original sandbox and may create files in a different location.
+   The probe cannot guarantee that the full application will launch; if it fails, cancel to restore
+   the official app. If neither probe works, the installed WeChat is left untouched.
 3. **打开微信、登录并完成捕获** — you open WeChat and log in yourself (the app never bypasses a
    macOS security prompt). Then:
    - **检查启动** verifies the running process really is this transaction's ad-hoc build

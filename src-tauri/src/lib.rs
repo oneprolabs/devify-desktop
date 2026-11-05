@@ -429,12 +429,16 @@ async fn devify_analysis_list(
     kind: String,
     space_id: i64,
     page: Option<u32>,
+    conversation_id: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     if !matches!(kind.as_str(), "events" | "reports") {
         return Err("不支持的服务端分析类型。".into());
     }
     if space_id <= 0 {
         return Err("请先选择 Devify 空间。".into());
+    }
+    if conversation_id.is_some_and(|id| id <= 0) || (conversation_id.is_some() && kind != "events") {
+        return Err("会话标识无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
     if settings.devify.active_space_id != Some(space_id) {
@@ -452,10 +456,13 @@ async fn devify_analysis_list(
     let mut current_page = first_page;
     let mut total = None;
     for _ in 0..100 {
-        let url = format!(
+        let mut url = format!(
             "{}/api/v1/spaces/{space_id}/{resource}?page={current_page}&page_size=100",
             settings.devify.base_url.trim_end_matches('/')
         );
+        if let Some(id) = conversation_id {
+            url.push_str(&format!("&conversation_id={id}"));
+        }
         let response = client
             .get(url)
             .bearer_auth(&token)
@@ -1284,6 +1291,60 @@ struct PreparedUpload {
     covered: BTreeMap<String, settings::SyncCursor>,
 }
 
+#[derive(Default)]
+struct ExistingUploadKeys {
+    legacy: HashMap<i64, Option<i64>>,
+    stable: HashSet<String>,
+}
+type LegacyUploadKeys = HashMap<String, ExistingUploadKeys>;
+
+/// Read existing legacy message keys before assigning new identities. Never assume that a
+/// historic `src:<local_id>` belongs to the earliest or latest local shard.
+async fn load_legacy_upload_keys(app: &AppHandle, space_id: i64, account_id: &str, usernames: &[String]) -> Result<LegacyUploadKeys, String> {
+    let mut result = LegacyUploadKeys::new();
+    for username in usernames {
+        let encoded: String = url::form_urlencoded::byte_serialize(username.as_bytes()).collect();
+        let mut conversation = None;
+        for page in 1..=100 {
+            let path = format!("/api/v1/spaces/{space_id}/conversations?search={encoded}&page={page}&page_size=100");
+            let data = devify_json_request(app, reqwest::Method::GET, path, None).await?;
+            let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端会话列表。")?;
+            for item in items {
+                if item.get("platform").and_then(|v| v.as_str()) == Some("wechat")
+                    && item.get("source_namespace").and_then(|v| v.as_str()) == Some(account_id)
+                    && item.get("source_conversation_id").and_then(|v| v.as_str()) == Some(username.as_str()) {
+                    let id = item.get("id").and_then(|v| v.as_i64()).ok_or("云端会话标识无效。")?;
+                    if conversation.replace(id).is_some() { return Err("云端存在多个相同来源会话，无法安全上传。".into()); }
+                }
+            }
+            let next = data.pointer("/pagination/next").ok_or("云端会话分页信息不完整，无法安全校验旧消息。")?;
+            if next.is_null() { break; }
+            if page == 100 { return Err("云端会话列表过长，无法完整校验旧消息。".into()); }
+        }
+        let mut keys = ExistingUploadKeys::default();
+        if let Some(id) = conversation {
+            for page in 1..=10000 {
+                let path = format!("/api/v1/spaces/{space_id}/conversations/{id}/messages?page={page}&page_size=100");
+                let data = devify_json_request(app, reqwest::Method::GET, path, None).await?;
+                let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端消息列表。")?;
+                for item in items {
+                    let key = item.get("message_key").and_then(|v| v.as_str()).unwrap_or_default();
+                    if key.starts_with("srv:") || key.starts_with("local:") { keys.stable.insert(key.to_string()); }
+                    if let Some(id) = key.strip_prefix("src:").and_then(|s| s.parse::<i64>().ok()) {
+                        let time = item.get("occurred_at").and_then(|v| v.as_str()).and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok()).map(|v| v.timestamp());
+                        if keys.legacy.insert(id, time).is_some() { return Err("云端存在冲突的旧消息标识，无法安全上传。".into()); }
+                    }
+                }
+                let next = data.pointer("/pagination/next").ok_or("云端消息分页信息不完整，无法安全校验旧消息。")?;
+                if next.is_null() { break; }
+                if page == 10000 { return Err("云端消息过多，无法完整校验旧消息。".into()); }
+            }
+        }
+        result.insert(username.clone(), keys);
+    }
+    Ok(result)
+}
+
 fn upload_fingerprint(value: &serde_json::Value) -> String {
     hex::encode(sha2::Sha256::digest(value.to_string().as_bytes()))
 }
@@ -1315,9 +1376,12 @@ fn filter_upload_messages(
         let key = settings::MessageRef {
             local_id: message.local_id,
             time: message.time,
+            source_shard: message.source_shard.clone(),
         };
-        if wanted.contains(&key) {
-            if !seen.insert(key) {
+        let legacy = settings::MessageRef { source_shard: String::new(), ..key.clone() };
+        let selected_key = if wanted.contains(&key) { Some(key) } else if wanted.contains(&legacy) { Some(legacy) } else { None };
+        if let Some(selected_key) = selected_key {
+            if !seen.insert(selected_key) {
                 return Err("消息标识不唯一，无法安全选择。".into());
             }
             result.push(message);
@@ -1347,9 +1411,7 @@ fn collect_upload_messages(
         // timestamp-only cursor would skip whatever is left of that second at a page
         // boundary; this resumes exactly after the last row read.
         let oldest = page.last().map(|message| message.time);
-        before = page
-            .last()
-            .map(|message| query::MessageCursor::new(message.time, message.local_id));
+        before = page.last().map(query::MessageCursor::from_message);
         session_messages.extend(page.into_iter().filter(|message| {
             since.map(|v| message.time >= v).unwrap_or(true)
                 && until.map(|v| message.time < v).unwrap_or(true)
@@ -1373,25 +1435,7 @@ fn raw_messages_for_upload(
     username: &str,
     selected: &[MessageItem],
 ) -> Result<Vec<query::RawMessage>, String> {
-    let Some(first) = selected.iter().map(|message| message.time).min() else {
-        return Ok(Vec::new());
-    };
-    let last = selected
-        .iter()
-        .map(|message| message.time)
-        .max()
-        .unwrap_or(first);
-    let until = last.checked_add(1).unwrap_or(i64::MAX);
-    let wanted = selected
-        .iter()
-        .map(|message| message.local_id)
-        .collect::<HashSet<_>>();
-    Ok(
-        query::raw_messages_between(cache, username, first, until, 20000)?
-        .into_iter()
-        .filter(|message| wanted.contains(&message.local_id))
-            .collect(),
-    )
+    query::raw_messages_selected(cache, username, selected)
 }
 
 #[cfg(test)]
@@ -1418,6 +1462,7 @@ fn prepare_upload(
         message_selection,
         &defaults,
         "images",
+        &LegacyUploadKeys::new(),
     )
 }
 
@@ -1477,6 +1522,7 @@ fn prepare_upload_with_voice(
     message_selection: &BTreeMap<String, Vec<settings::MessageRef>>,
     voice_settings: &settings::VoiceUploadSettings,
     attachments: &str,
+    legacy_keys: &LegacyUploadKeys,
 ) -> Result<PreparedUpload, String> {
     if usernames.is_empty() {
         return Err("请至少选择一个会话。".into());
@@ -1525,12 +1571,44 @@ fn prepare_upload_with_voice(
             session_messages,
             message_selection.get(&session.username).map(Vec::as_slice),
         )?;
-        let mut ids = HashSet::new();
-        if session_messages
-            .iter()
-            .any(|message| !ids.insert(message.local_id))
-        {
-            return Err("会话中存在重复消息标识，无法安全上传。".into());
+        let inventory = query::local_id_inventory(cache, &session.username)?;
+        let server_counts = query::server_id_counts(cache, &session.username)?;
+        let ambiguous_local_ids: HashSet<i64> = inventory.iter().filter_map(|(id, times)| (times.values().sum::<usize>() > 1).then_some(*id)).collect();
+        let legacy = legacy_keys.get(&session.username);
+        let mut message_keys = HashMap::new();
+        let mut unique_keys = HashSet::new();
+        for message in &session_messages {
+            let occurrences = inventory.get(&message.local_id).ok_or("无法核对消息编号。")?;
+            let total: usize = occurrences.values().sum();
+            let previous = legacy.and_then(|items| items.legacy.get(&message.local_id));
+            let stable_key = if message.server_id != 0 {
+                format!("srv:{}", message.server_id)
+            } else {
+                format!("local:{}:{}:{}", message.source_shard, message.local_id, message.time)
+            };
+            let use_legacy = match previous {
+                Some(Some(time)) if *time == message.time => {
+                    if occurrences.get(time).copied().unwrap_or_default() != 1 {
+                        return Err("旧消息与多个本地记录匹配，无法安全上传。".into());
+                    }
+                    true
+                }
+                Some(None) => return Err("云端旧消息缺少时间，无法安全匹配。".into()),
+                Some(Some(_)) => false,
+                None => total == 1 && !legacy.is_some_and(|items| items.stable.contains(&stable_key)),
+            };
+            let key = if use_legacy {
+                format!("src:{}", message.local_id)
+            } else {
+                if message.server_id != 0 && server_counts.get(&message.server_id).copied().unwrap_or_default() != 1 {
+                    return Err("微信服务端消息编号存在重复，无法安全上传。".into());
+                }
+                stable_key
+            };
+            if !unique_keys.insert(key.clone()) {
+                return Err("消息的新标识仍有冲突，已停止上传以保护数据。".into());
+            }
+            message_keys.insert((message.source_shard.clone(), message.local_id, message.time), key);
         }
         session_messages.sort_by(|a, b| a.time.cmp(&b.time).then(a.local_id.cmp(&b.local_id)));
         if let Some(last) = session_messages.last() {
@@ -1539,6 +1617,7 @@ fn prepare_upload_with_voice(
                 settings::SyncCursor {
                     time: last.time,
                     local_id: last.local_id,
+                    boundary_count: Some(session_messages.iter().filter(|message| message.time == last.time).count()),
                 },
             );
         }
@@ -1554,8 +1633,8 @@ fn prepare_upload_with_voice(
                         current.max((message.time, message.local_id))
                     }),
             );
-            messages.push(serde_json::json!({"conversation_id":session.username,"message_key":format!("src:{}",message.local_id),"source_message_id":message.local_id.to_string(),"sender_key":message.sender,"sender_name":message.sender_name,"direction":if message.is_self {"outgoing"} else {"incoming"},"occurred_at":chrono::DateTime::from_timestamp(message.time,0).map(|v|v.to_rfc3339()),"source_order":index as i64 + 1,"record_kind":"message","source_fields":{"kind":message.kind}}));
-            let message_key = format!("src:{}", message.local_id);
+            let message_key = message_keys.get(&(message.source_shard.clone(), message.local_id, message.time)).ok_or("无法匹配消息标识。")?.clone();
+            messages.push(serde_json::json!({"conversation_id":session.username,"message_key":message_key,"source_message_id":message.local_id.to_string(),"sender_key":message.sender,"sender_name":message.sender_name,"direction":if message.is_self {"outgoing"} else {"incoming"},"occurred_at":chrono::DateTime::from_timestamp(message.time,0).map(|v|v.to_rfc3339()),"source_order":index as i64 + 1,"record_kind":"message","source_fields":{"kind":message.kind}}));
             if message.kind == 34 {
                 parts.push(serde_json::json!({
                     "conversation_id": session.username,
@@ -1582,9 +1661,18 @@ fn prepare_upload_with_voice(
             let sources = item
                 .sources
                 .iter()
+                .filter(|path| {
+                    if !ambiguous_local_ids.contains(&item.local_id) { return true; }
+                    let Some(raw) = raw.iter().find(|m| m.local_id == item.local_id && m.time == item.time && m.source_shard == item.source_shard) else { return false; };
+                    let name = Path::new(path).file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    let exact_prefix = format!("{}_{}_", item.local_id, item.time);
+                    if name.starts_with(&exact_prefix) { return true; }
+                    let hash = name.split('_').next().unwrap_or_default().split('.').next().unwrap_or_default();
+                    hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) && raw.content.to_lowercase().contains(hash)
+                })
                 .map(|path| cache.join(path))
                 .collect::<Vec<_>>();
-            let message_key = format!("src:{}", item.local_id);
+            let message_key = message_keys.get(&(item.source_shard.clone(), item.local_id, item.time)).ok_or("无法匹配图片所属消息。")?.clone();
             let decoded = media::decode_for_upload(cache, &sources).ok();
             if let Some((bytes, kind)) = decoded {
                 let digest = hex::encode(sha2::Sha256::digest(&bytes));
@@ -1625,12 +1713,13 @@ fn prepare_upload_with_voice(
             {
                 let mut part = serde_json::json!({
                     "conversation_id": session.username,
-                    "message_key": format!("src:{}", item.local_id),
+                    "message_key": message_keys.get(&(item.source_shard.clone(), item.local_id, item.time)).ok_or("无法匹配附件所属消息。")?,
                     "part_key": format!("{}-{}", item.kind, item.local_id),
                     "ordinal": 1,
                     "kind": item.kind,
                 });
-                match read_attachment(cache, item) {
+                let attachment = if ambiguous_local_ids.contains(&item.local_id) { Attachment::Missing } else { read_attachment(cache, item) };
+                match attachment {
                     Attachment::Bytes(bytes)
                         if media_budget + bytes.len() as u64
                             <= ATTACHMENT_TOTAL_LIMIT_BYTES =>
@@ -1670,9 +1759,10 @@ fn prepare_upload_with_voice(
             for item in voice_items {
                 let voice_ref = settings::VoiceRef {
                     local_id: item.local_id,
+                    source_shard: item.source_shard.clone(),
                     time: selected_messages
                         .iter()
-                        .find(|message| message.local_id == item.local_id)
+                        .find(|message| message.local_id == item.local_id && message.time == item.time && message.source_shard == item.source_shard)
                         .map(|message| message.time)
                         .unwrap_or_default(),
                     server_id: item.server_id,
@@ -1681,6 +1771,10 @@ fn prepare_upload_with_voice(
                     .entry(session.username.clone())
                     .or_default()
                     .push(voice_ref.clone());
+                if item.server_id == 0 {
+                    voice_pending.entry(session.username.clone()).or_default().push(voice_ref);
+                    continue;
+                }
                 let key = voice::transcript_key(account_id, item.server_id);
                 let mut transcript = transcripts.get(&key).cloned();
                 if transcript.is_none() && engine_ready {
@@ -1711,7 +1805,7 @@ fn prepare_upload_with_voice(
                     if let Some(entry) = transcript {
                         parts.push(serde_json::json!({
                         "conversation_id": session.username,
-                        "message_key": format!("src:{}", item.local_id),
+                        "message_key": message_keys.get(&(item.source_shard.clone(), item.local_id, item.time)).ok_or("无法匹配语音所属消息。")?,
                         "part_key": format!("voice-transcript-{}", item.server_id),
                         "ordinal": 1,
                         "kind": "text",
@@ -1747,7 +1841,7 @@ fn prepare_upload_with_voice(
                                     }
                                     parts.push(serde_json::json!({
                                         "conversation_id": session.username,
-                                        "message_key": format!("src:{}", item.local_id),
+                                        "message_key": message_keys.get(&(item.source_shard.clone(), item.local_id, item.time)).ok_or("无法匹配语音所属消息。")?,
                                         "part_key": format!("voice-{}", item.local_id),
                                         "ordinal": 0,
                                         "kind": "audio",
@@ -1915,6 +2009,7 @@ async fn devify_upload_preview(
     let voice_settings = settings.voice.clone();
     let attachments = settings.backup.attachments.clone();
     let selection = message_selection.unwrap_or_default();
+    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames).await?;
     tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
             &data,
@@ -1928,6 +2023,7 @@ async fn devify_upload_preview(
             &selection,
             &voice_settings,
             &attachments,
+            &legacy_keys,
         )
         .map(|prepared| prepared.preview)
     })
@@ -2041,6 +2137,7 @@ async fn devify_upload_retry_preview(
     let voice_settings = settings.voice.clone();
     let attachments = settings.backup.attachments.clone();
     let account_id = job.account_id.clone();
+    let legacy_keys = load_legacy_upload_keys(&app, job.space_id, &account_id, &scope.usernames).await?;
     tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
             &data,
@@ -2054,6 +2151,7 @@ async fn devify_upload_retry_preview(
             &scope.message_selection,
             &voice_settings,
             &attachments,
+            &legacy_keys,
         )
         .map(|prepared| prepared.preview)
     })
@@ -2152,6 +2250,10 @@ async fn devify_upload_wechat(
     let base_url = expected_base_url
         .clone()
         .unwrap_or_else(|| current_settings.devify.base_url.clone());
+    if base_url.trim_end_matches('/') != current_settings.devify.base_url.trim_end_matches('/') {
+        return Err("服务地址已更改，无法安全匹配旧消息。".into());
+    }
+    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames).await?;
     let account_for_prepare = account_id.clone();
     let names_for_prepare = usernames.clone();
     let voice_settings = current_settings.voice.clone();
@@ -2173,6 +2275,7 @@ async fn devify_upload_wechat(
             &selection_for_prepare,
             &voice_settings,
             &attachments,
+            &legacy_keys,
         )
     })
     .await
@@ -3738,7 +3841,10 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
         } else {
             match query::latest_message(&cache, username) {
             Ok(None) => false,
-            Ok(Some(newest)) => !cursor.is_some_and(|current| current.covers(newest)),
+            Ok(Some(newest)) => {
+                let count = query::count_at_time(&cache, username, newest.0).ok();
+                !cursor.is_some_and(|current| count.is_some_and(|count| current.covers_boundary(newest, count)))
+            },
             // A whitelisted session without a local table is skipped, not retried forever.
             Err(error) if error.contains("没有找到会话") => {
                 skipped += 1;
@@ -3796,11 +3902,9 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
                     "processing",
                     &format!("自动同步：已提交 {} 条消息", result.message_count),
                 );
-                if let Some((time, local_id)) = result.latest_position {
-                    job.covered
-                        .insert(username.clone(), settings::SyncCursor { time, local_id });
-                    account_cursors
-                        .insert(username.clone(), settings::SyncCursor { time, local_id });
+                if let Some(position) = result.covered.get(username).copied() {
+                    job.covered.insert(username.clone(), position);
+                    account_cursors.insert(username.clone(), position);
                 }
                 jobs.push(job);
                 touched = true;
@@ -5395,6 +5499,7 @@ fn upload_coverage(
             chrono::DateTime::parse_from_rfc3339(&job.updated_at)
                 .ok()
                 .map(|at| settings::SyncCursor {
+                    boundary_count: None,
                     time: at.timestamp(),
                     local_id: 0,
                 })
@@ -5463,11 +5568,11 @@ async fn wechat_upload_state(
                 continue;
             };
             let (state, new_messages) = match coverage.get(&username).copied() {
-                Some(position) if position.covers((time, local_id)) => ("synced", 0),
+                Some(position) if query::count_at_time(&cache, &username, time).ok().is_some_and(|count| position.covers_boundary((time, local_id), count)) => ("synced", 0),
                 Some(position) => (
                     "pending",
                     query::count_after(&cache, &username, position.time, position.local_id)
-                        .unwrap_or(0),
+                        .unwrap_or(0).max(1),
                 ),
                 None => ("local", 0),
             };
@@ -5524,6 +5629,7 @@ async fn wechat_messages(
     limit: Option<usize>,
     before: Option<i64>,
     before_id: Option<i64>,
+    before_shard: Option<String>,
 ) -> Result<Vec<MessageItem>, String> {
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     if !query::is_chat_session(&cache, &username) {
@@ -5536,7 +5642,7 @@ async fn wechat_messages(
     // Both halves of the cursor come from the last row already on screen; without the id
     // this degrades to the old timestamp-only paging, which cannot see past a shared second.
     let cursor = before.map(|time| match before_id {
-        Some(id) => query::MessageCursor::new(time, id),
+        Some(id) => query::MessageCursor { time, local_id: id, source_shard: before_shard.unwrap_or_default() },
         None => query::MessageCursor::before_time(time),
     });
     query::messages(&cache, &username, limit.unwrap_or(100), cursor)
@@ -6132,6 +6238,95 @@ mod key_flow_tests {
     use super::*;
 
     #[test]
+    fn upload_preview_distinguishes_same_local_id_across_shards() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("session")).unwrap();
+        std::fs::create_dir_all(dir.path().join("message")).unwrap();
+        let sessions = rusqlite::Connection::open(dir.path().join("session/session.db")).unwrap();
+        sessions.execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','test');").unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        for (shard, timestamp, body) in [(0, 100, "first"), (1, 200, "second")] {
+            let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,{timestamp},'{body}',1);")).unwrap();
+        }
+        let result = prepare_upload(dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new()).unwrap();
+        assert_eq!(result.preview.message_count, 2);
+        assert_ne!(result.messages[0]["message_key"], result.messages[1]["message_key"]);
+    }
+
+    #[test]
+    fn pagination_keeps_same_id_and_second_from_different_shards() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("message")).unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        for shard in [0, 1] {
+            let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, create_time INTEGER, message_content TEXT); INSERT INTO {table} VALUES (1,100,'test');")).unwrap();
+        }
+        let first = query::messages(dir.path(), "person", 1, None).unwrap();
+        let second = query::messages(dir.path(), "person", 1, Some(query::MessageCursor::from_message(&first[0]))).unwrap();
+        assert_eq!(second.len(), 1);
+        assert_ne!(first[0].source_shard, second[0].source_shard);
+    }
+
+    #[test]
+    fn legacy_key_is_reused_only_for_matching_message() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("session")).unwrap();
+        std::fs::create_dir_all(dir.path().join("message")).unwrap();
+        let sessions = rusqlite::Connection::open(dir.path().join("session/session.db")).unwrap();
+        sessions.execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','test');").unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        for (shard, timestamp, server_id) in [(0, 100, 101), (1, 200, 202)] {
+            let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,{server_id},{timestamp},'test',1);")).unwrap();
+        }
+        let mut history = LegacyUploadKeys::new();
+        history.insert("person".into(), ExistingUploadKeys { legacy: HashMap::from([(1, Some(200))]), stable: HashSet::new() });
+        let prepare = |since, until| prepare_upload_with_voice(dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], since, until, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history).unwrap();
+        let both = prepare(None, None);
+        let one = prepare(Some(100), Some(150));
+        assert_eq!(both.messages[0]["message_key"], "srv:101");
+        assert_eq!(both.messages[1]["message_key"], "src:1");
+        assert_eq!(one.messages[0]["message_key"], both.messages[0]["message_key"]);
+    }
+
+    #[test]
+    fn ambiguous_legacy_message_is_rejected_instead_of_misidentified() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("session")).unwrap();
+        std::fs::create_dir_all(dir.path().join("message")).unwrap();
+        let sessions = rusqlite::Connection::open(dir.path().join("session/session.db")).unwrap();
+        sessions.execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','test');").unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        for shard in [0, 1] {
+            let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,100,'test',1);")).unwrap();
+        }
+        let mut history = LegacyUploadKeys::new();
+        history.insert("person".into(), ExistingUploadKeys { legacy: HashMap::from([(1, Some(100))]), stable: HashSet::new() });
+        let result = prepare_upload_with_voice(dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history);
+        assert!(matches!(result, Err(error) if error.contains("旧消息与多个本地记录匹配")));
+    }
+
+    #[test]
+    fn colliding_media_remains_attached_to_its_own_message() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("session")).unwrap();
+        std::fs::create_dir_all(dir.path().join("message")).unwrap();
+        let sessions = rusqlite::Connection::open(dir.path().join("session/session.db")).unwrap();
+        sessions.execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','test');").unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        for (shard, timestamp, server_id) in [(0, 100, 101), (1, 200, 202)] {
+            let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,{server_id},{timestamp},'<msg><img /></msg>',3);")).unwrap();
+        }
+        let result = prepare_upload_with_voice(dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
+        let image_keys: HashSet<_> = result.parts.iter().filter(|p| p["kind"] == "image").filter_map(|p| p["message_key"].as_str()).collect();
+        assert_eq!(image_keys, HashSet::from(["srv:101", "srv:202"]));
+    }
+
+    #[test]
     fn upload_preview_reflects_real_data_and_detects_changes() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("session")).unwrap();
@@ -6159,6 +6354,7 @@ mod key_flow_tests {
         picks.insert(
             "person".into(),
             vec![settings::MessageRef {
+                source_shard: String::new(),
                 local_id: 2,
                 time: 200,
             }],
@@ -6180,6 +6376,7 @@ mod key_flow_tests {
         picks.insert(
             "person".into(),
             vec![settings::MessageRef {
+                source_shard: String::new(),
                 local_id: 3,
                 time: 300,
             }],
@@ -6341,6 +6538,7 @@ mod key_flow_tests {
                 upload_transcripts: true,
             },
             "images",
+            &LegacyUploadKeys::new(),
         )
         .unwrap();
 
@@ -6421,6 +6619,8 @@ mod key_flow_tests {
     #[test]
     fn individual_selection_is_exact_and_rejects_missing_or_ambiguous_messages() {
         let message = |local_id, time, text: &str| MessageItem {
+            server_id: 0,
+            source_shard: String::new(),
             local_id,
             time,
             text: text.into(),
@@ -6431,6 +6631,7 @@ mod key_flow_tests {
         };
         let all = vec![message(1, 100, "a"), message(2, 200, "b")];
         let refs = vec![settings::MessageRef {
+            source_shard: String::new(),
             local_id: 2,
             time: 200,
         }];
@@ -6440,6 +6641,7 @@ mod key_flow_tests {
         assert!(filter_upload_messages(
             all.clone(),
             Some(&[settings::MessageRef {
+                source_shard: String::new(),
                 local_id: 3,
                 time: 300
             }])
@@ -6448,6 +6650,7 @@ mod key_flow_tests {
         assert!(filter_upload_messages(
             vec![all[0].clone(), all[0].clone()],
             Some(&[settings::MessageRef {
+                source_shard: String::new(),
                 local_id: 1,
                 time: 100
             }])
@@ -6730,6 +6933,7 @@ mod upload_coverage_tests {
     #[test]
     fn only_completed_jobs_advance_coverage() {
         let position = SyncCursor {
+            boundary_count: None,
             time: 180,
             local_id: 9,
         };
@@ -6747,10 +6951,12 @@ mod upload_coverage_tests {
     #[test]
     fn keeps_the_newest_position_and_ignores_other_accounts() {
         let older = SyncCursor {
+            boundary_count: None,
             time: 100,
             local_id: 1,
         };
         let newer = SyncCursor {
+            boundary_count: None,
             time: 200,
             local_id: 2,
         };
@@ -6787,6 +6993,7 @@ mod upload_coverage_tests {
         let mut modern = job(
             "completed",
             SyncCursor {
+                boundary_count: None,
                 time: 200,
                 local_id: 2,
             },

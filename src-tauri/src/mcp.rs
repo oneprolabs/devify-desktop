@@ -53,6 +53,7 @@ struct MessagesArgs {
     before: Option<i64>,
     /// Local id of that same message, so pages never skip a shared timestamp.
     before_id: Option<i64>,
+    before_shard: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -192,7 +193,8 @@ fn tools() -> Value {
                         "username": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
                         "before": {"type": "integer", "description": "只返回这个时间戳之前的消息；与 before_id 一起使用时从上一页最后一条之后继续"},
-                        "before_id": {"type": "integer", "description": "上一页最后一条消息的 local_id，用于同一秒内多条消息的可靠分页；响应的 next_cursor 已给出这两个值"}
+                        "before_id": {"type": "integer", "description": "上一页最后一条消息的 local_id"},
+                        "before_shard": {"type": "string", "description": "上一页最后一条消息的来源分片；与 before 和 before_id 一起传入"}
                     }
                 }
             },
@@ -263,7 +265,7 @@ fn messages_json(app_data: &Path, args: MessagesArgs) -> Result<Value, String> {
     ensure_allowed(&context, &args.username)?;
     let limit = args.limit.unwrap_or(100).clamp(1, 500);
     let cursor = args.before.map(|time| match args.before_id {
-        Some(id) => query::MessageCursor::new(time, id),
+        Some(id) => query::MessageCursor { time, local_id: id, source_shard: args.before_shard.unwrap_or_default() },
         None => query::MessageCursor::before_time(time),
     });
     let messages = query::messages(&context.cache, &args.username, limit, cursor)?;
@@ -273,7 +275,7 @@ fn messages_json(app_data: &Path, args: MessagesArgs) -> Result<Value, String> {
         "username": args.username,
         "messages": messages,
         "has_more": has_more,
-        "next_cursor": messages.last().map(|m| json!({"before": m.time, "before_id": m.local_id}))
+        "next_cursor": messages.last().map(|m| json!({"before": m.time, "before_id": m.local_id, "before_shard": m.source_shard}))
     }))
 }
 
