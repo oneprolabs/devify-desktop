@@ -11,7 +11,8 @@ type GateSettings = {
 
 type Tab = 'login' | 'register';
 
-const DEFAULT_BASE_URL = 'http://192.168.31.137:8001';
+/** Example only: the app ships without a server, so this is never used as a value. */
+const SERVER_PLACEHOLDER = 'https://devify.example.com';
 
 export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; onAuthenticated: () => void }) {
   const [popup, setPopup] = useState(false);
@@ -22,9 +23,9 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [busy, setBusy] = useState<'' | 'password' | 'browser'>('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
+  const [baseUrl, setBaseUrl] = useState('');
   const [serverOpen, setServerOpen] = useState(false);
-  const [serverDraft, setServerDraft] = useState(DEFAULT_BASE_URL);
+  const [serverDraft, setServerDraft] = useState('');
   const [serverStatus, setServerStatus] = useState('');
   const completed = useRef(false);
 
@@ -64,9 +65,11 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   useEffect(() => {
     void invoke<GateSettings>('app_settings_get')
       .then(stored => {
-        const value = stored.devify?.base_url?.trim() || DEFAULT_BASE_URL;
+        const value = stored.devify?.base_url?.trim().replace(/\/+$/, '') || '';
         setBaseUrl(value);
         setServerDraft(value);
+        // A fresh install has no server, so the field is required instead of hidden.
+        if (!value) setServerOpen(true);
       })
       .catch(() => {});
   }, []);
@@ -97,10 +100,72 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     }
   };
 
-  const submitPassword = () => {
+  /** Reject anything that cannot be used as an http(s) request base. */
+  const serverError = (value: string): string | null => {
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        return '服务地址必须以 http:// 或 https:// 开头。';
+      }
+      if (!parsed.hostname) return '服务地址缺少主机名，请填写完整地址。';
+    } catch {
+      return '请输入完整的服务地址，例如 https://devify.example.com。';
+    }
+    return null;
+  };
+
+  const persistServer = async (value: string): Promise<boolean> => {
+    try {
+      const stored = await invoke<GateSettings>('app_settings_get');
+      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: value } };
+      await invoke('app_settings_save', { value: next });
+      setBaseUrl(value);
+      setServerDraft(value);
+      setError('');
+      return true;
+    } catch (reason) {
+      setServerStatus(String(reason));
+      return false;
+    }
+  };
+
+  /**
+   * Every action that talks to Devify needs a server first: login, browser login and
+   * the register/forgot-password links all validate and persist the address, then
+   * continue with the normalized value.
+   */
+  const ensureServer = async (): Promise<string | null> => {
+    const current = baseUrl.trim().replace(/\/+$/, '');
+    const candidate = serverDraft.trim().replace(/\/+$/, '') || current;
+    if (!candidate) {
+      setServerOpen(true);
+      setServerStatus('请先填写 Devify 服务地址，再继续登录。');
+      setError('请先填写 Devify 服务地址，再继续登录。');
+      return null;
+    }
+    const invalid = serverError(candidate);
+    if (invalid) {
+      setServerOpen(true);
+      setServerStatus(invalid);
+      setError(invalid);
+      return null;
+    }
+    if (candidate === current) return candidate;
+    if (!(await persistServer(candidate))) {
+      setServerOpen(true);
+      setError('服务地址保存失败，请检查后重试。');
+      return null;
+    }
+    setServerOpen(false);
+    setServerStatus('服务地址已保存。');
+    return candidate;
+  };
+
+  const submitPassword = async () => {
+    if (!(await ensureServer())) return;
     if (!idOk) { setError('请输入用户名（至少 3 位，可用字母、数字和 . _ -）'); return; }
     if (!password) { setError('请输入密码'); return; }
-    void submitLogin();
+    await submitLogin();
   };
 
   const cancelBrowserLogin = async () => {
@@ -110,8 +175,10 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   };
 
   const startBrowserLogin = async () => {
-    setBusy('browser');
     setError('');
+    setInfo('');
+    if (!(await ensureServer())) return;
+    setBusy('browser');
     setInfo('已在浏览器打开登录页，完成授权后会自动返回。');
     try {
       const settings = await invoke<GateSettings>('app_settings_get');
@@ -128,8 +195,10 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
 
   const openExternal = async (path: string) => {
     setError('');
+    const server = await ensureServer();
+    if (!server) return;
     try {
-      await invoke('devify_auth_open', { url: `${baseUrl.replace(/\/+$/, '')}${path}` });
+      await invoke('devify_auth_open', { url: `${server}${path}` });
     } catch (reason) {
       setError(String(reason));
     }
@@ -137,24 +206,18 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
 
   const saveServer = async () => {
     const value = serverDraft.trim().replace(/\/+$/, '');
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('invalid');
-    } catch {
-      setServerStatus('请输入完整的服务地址，例如 http://192.168.31.137:8001。');
+    if (!value) {
+      setServerStatus('请填写 Devify 服务地址。');
       return;
     }
-    try {
-      const stored = await invoke<GateSettings>('app_settings_get');
-      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: value } };
-      await invoke('app_settings_save', { value: next });
-      setBaseUrl(value);
-      setServerOpen(false);
-      setServerStatus('服务地址已保存。');
-      setError('');
-    } catch (reason) {
-      setServerStatus(String(reason));
+    const invalid = serverError(value);
+    if (invalid) {
+      setServerStatus(invalid);
+      return;
     }
+    if (!(await persistServer(value))) return;
+    setServerOpen(false);
+    setServerStatus('服务地址已保存。');
   };
 
   return <div className="auth-gate">
@@ -165,21 +228,36 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       {notice && <p className="auth-gate-error" role="alert">{notice}</p>}
       {busy === 'browser'
         ? <div className="auth-gate-waiting" role="status"><span className="auth-gate-pulse"/><span>正在等待浏览器完成授权…</span></div>
-        : <button type="button" className="auth-gate-primary" onClick={() => { setPopup(true); setError(''); setInfo(''); }}>登录…</button>}
+        : <button type="button" className="auth-gate-primary" onClick={() => {
+            if (!baseUrl.trim()) {
+              setServerOpen(true);
+              setServerStatus('请先填写 Devify 服务地址，再继续登录。');
+              return;
+            }
+            setPopup(true); setError(''); setInfo('');
+          }}>登录…</button>}
       {busy === 'browser' && <button type="button" className="auth-gate-secondary" onClick={() => void cancelBrowserLogin()}>取消</button>}
       {error && <p className="auth-gate-error" role="alert">{error}</p>}
       <div className="auth-gate-server">
-        {serverOpen
+        {serverOpen || !baseUrl
           ? <>
-              <label>Devify 服务地址
-                <input type="url" value={serverDraft} onChange={event => setServerDraft(event.target.value)} placeholder={DEFAULT_BASE_URL}/>
+              <label>{baseUrl ? 'Devify 服务地址' : 'Devify 服务地址（首次使用请填写）'}
+                <input
+                  type="url"
+                  value={serverDraft}
+                  autoFocus={!baseUrl}
+                  onChange={event => { setServerDraft(event.target.value); setServerStatus(''); }}
+                  onKeyDown={event => { if (event.key === 'Enter') void saveServer(); }}
+                  placeholder={SERVER_PLACEHOLDER}
+                />
               </label>
+              {!baseUrl && <p className="auth-gate-hint">服务端不随客户端分发，请填写你们部署的 Devify 地址。</p>}
               <div className="auth-gate-server-actions">
                 <button type="button" onClick={() => void saveServer()}>保存</button>
-                <button type="button" onClick={() => { setServerOpen(false); setServerDraft(baseUrl); }}>取消</button>
+                {baseUrl && <button type="button" onClick={() => { setServerOpen(false); setServerDraft(baseUrl); setServerStatus(''); }}>取消</button>}
               </div>
             </>
-          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); setServerDraft(baseUrl); }}>服务地址 · {baseUrl.replace(/^https?:\/\//, '')}</button>}
+          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); setServerDraft(baseUrl); setServerStatus(''); }}>服务地址 · {baseUrl.replace(/^https?:\/\//, '')}</button>}
       </div>
       {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
     </div>
@@ -220,7 +298,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
             {error && <p className="auth-error" role="alert">{error}</p>}
             {info && <p className="auth-info" role="status">{info}</p>}
             {busy === 'browser' && <div className="auth-waiting"><span className="auth-gate-pulse"/><span>正在等待浏览器完成授权…</span><button type="button" onClick={() => void cancelBrowserLogin()}>取消</button></div>}
-            <button type="button" className="auth-submit" disabled={busy !== ''} onClick={submitPassword}>{busy === 'password' ? '正在登录…' : '登录'}</button>
+            <button type="button" className="auth-submit" disabled={busy !== ''} onClick={() => void submitPassword()}>{busy === 'password' ? '正在登录…' : '登录'}</button>
             <p className="auth-switch">还没有账号？<button type="button" onClick={() => { setTab('register'); setError(''); setInfo(''); }}>注册</button></p>
           </>}
 

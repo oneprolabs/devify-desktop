@@ -55,3 +55,6 @@ Thumbs.db
 .impeccable/
 docs/
 mcp/
+
+# Local design reference (not part of the product)
+/protype.html

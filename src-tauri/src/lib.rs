@@ -107,12 +107,12 @@ struct DevifyAuthConfig {
     redirect_uri: String,
 }
 
-async fn devify_auth_config(base_url: &str) -> Result<DevifyAuthConfig, String> {
+async fn devify_auth_config(
+    settings: &settings::DevifySettings,
+) -> Result<DevifyAuthConfig, String> {
+    let base_url = settings.resolved_base_url()?;
     let response = reqwest::Client::new()
-        .get(format!(
-            "{}/api/v1/auth/desktop/config",
-            base_url.trim_end_matches('/')
-        ))
+        .get(format!("{}/api/v1/auth/desktop/config", base_url))
         .send()
         .await
         .map_err(|e| format!("读取 Devify 登录配置失败：{e}"))?;
@@ -144,7 +144,8 @@ fn access_token_claim(access: &str, claim: &str) -> Option<String> {
 }
 
 async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<String, String> {
-    let mut tokens = desktop_credentials::load(app_data, base_url)?;
+    let base_url = settings::normalize_base_url(base_url)?;
+    let mut tokens = desktop_credentials::load(app_data, &base_url)?;
     let access = tokens.access.as_str();
     let exp = access
         .split('.')
@@ -2378,7 +2379,7 @@ async fn devify_auth_start(
                 && value != "AIMyChats Desktop"
         })
         .unwrap_or_else(settings::device_default_label);
-    let auth_config = devify_auth_config(&settings.devify.base_url).await?;
+    let auth_config = devify_auth_config(&settings.devify).await?;
     let mut state_bytes = [0u8; 24];
     let mut verifier_bytes = [0u8; 48];
     getrandom::getrandom(&mut state_bytes).map_err(|e| e.to_string())?;
@@ -2516,7 +2517,7 @@ async fn devify_auth_callback(
         return Err("登录 state 校验失败。".into());
     }
     let mut settings = settings::load(&app_data(&app))?;
-    let auth_config = devify_auth_config(&settings.devify.base_url).await?;
+    let auth_config = devify_auth_config(&settings.devify).await?;
     let platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
     } else {
@@ -2741,7 +2742,7 @@ async fn devify_login_password(
     }
     let data = app_data(&app);
     let settings = settings::load(&data)?;
-    let base_url = settings.devify.base_url.trim_end_matches('/').to_string();
+    let base_url = settings.devify.resolved_base_url()?;
     let response = reqwest::Client::new()
         .post(format!("{base_url}/api/v1/auth/login"))
         .json(&serde_json::json!({ "username": username, "password": password }))

@@ -290,6 +290,24 @@ pub struct DevifySettings {
     pub subject: String,
 }
 
+/// Normalize a service address for request building.
+///
+/// A brand-new install has no server, so an empty value must fail with an
+/// actionable message instead of sending a request to a relative path.
+pub fn normalize_base_url(value: &str) -> Result<String, String> {
+    let value = value.trim().trim_end_matches('/');
+    if value.is_empty() {
+        return Err("请先在登录窗口填写 Devify 服务地址。".into());
+    }
+    Ok(value.to_string())
+}
+
+impl DevifySettings {
+    pub fn resolved_base_url(&self) -> Result<String, String> {
+        normalize_base_url(&self.base_url)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct AutomationSettings {
@@ -365,7 +383,8 @@ pub fn resolved_device_label(settings: &DevifySettings) -> String {
 impl Default for DevifySettings {
     fn default() -> Self {
         Self {
-            base_url: "http://192.168.31.137:8001".to_string(),
+            // No server is bundled with the app: the user types it on the login gate.
+            base_url: String::new(),
             device_label: device_default_label(),
             device_id: String::new(),
             platform: default_platform(),
@@ -621,8 +640,17 @@ mod tests {
     }
 
     #[test]
-    fn retry_retains_original_scope_despite_new_allowlist_entries() {
-        let (settings, job) = retry_fixture();
+    fn base_url_is_normalized_and_empty_is_rejected() {
+        assert!(normalize_base_url("").is_err());
+        assert!(normalize_base_url("  /  ").is_err());
+        assert_eq!(
+            normalize_base_url(" https://example.test/ ").unwrap(),
+            "https://example.test"
+        );
+    }
+
+    #[test]
+    fn retry_retains_original_scope_despite_new_allowlist_entries() {        let (settings, job) = retry_fixture();
         let scope = job.retry_scope(&settings).unwrap();
         assert_eq!(scope.usernames, vec!["one", "two"]);
         assert_eq!((scope.since, scope.until), (Some(100), Some(200)));
