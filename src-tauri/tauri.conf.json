@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run stage:wxq",
     "frontendDist": "../dist"
   },
   "app": {
@@ -51,8 +51,8 @@
       "app",
       "dmg"
     ],
-    "externalBin": [
-      "binaries/wxq"
+    "resources": [
+      "binaries/wxq-*"
     ],
     "icon": [
       "icons/32x32.png",

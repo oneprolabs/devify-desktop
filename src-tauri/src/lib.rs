@@ -2920,7 +2920,14 @@ async fn agent_build_wxq() -> Result<String, String> {
     let build_dir = dir.clone();
     let output = tauri::async_runtime::spawn_blocking(move || {
         std::process::Command::new("cargo")
-            .args(["build", "--release", "--bin", access::CLI_NAME])
+            .args([
+                "build",
+                "--release",
+                "--bin",
+                access::CLI_NAME,
+                "--features",
+                "aux-binaries",
+            ])
             .current_dir(&build_dir)
             .output()
     })

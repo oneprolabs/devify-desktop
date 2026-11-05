@@ -216,7 +216,7 @@ sudo lldb -p $(pgrep -x WeChat) -o "detach" -o "quit"
 
 # 2. Only if the probe attaches:
 cd src-tauri
-cargo build --bin wechat-key-scan
+cargo build --bin wechat-key-scan --features aux-binaries
 sudo ./target/debug/wechat-key-scan --out ~/wechat-keys.json
 ```
 
@@ -442,16 +442,14 @@ npm run tauri dev
 Build a desktop bundle:
 
 ```bash
-# Stage the read-only CLI as a sidecar so the packaged app can serve it from /agent/wxq.
-cargo build --release --bin wxq --manifest-path src-tauri/Cargo.toml
-mkdir -p src-tauri/binaries
-cp src-tauri/target/release/wxq "src-tauri/binaries/wxq-$(rustc -vV | sed -n 's/^host: //p')"
-
+# The CLI is data, not a sidecar executable: `beforeBuildCommand` runs
+# `npm run stage:wxq`, which builds it with the opt-in feature and copies it to
+# src-tauri/binaries/wxq-<host-triple> for `bundle.resources`.
 scripts/macos-build.sh            # builds + signs with the stable identity
 scripts/macos-build.sh --install  # ... and copies it to /Applications/AIMyChats.app
 ```
 
-Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.1_aarch64.dmg`).
+Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.1_aarch64.dmg`). On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
 
 ### macOS signing (why not ad-hoc)
 
@@ -512,7 +510,7 @@ cargo test
 
 `tests/pipeline.rs` generates encrypted fixtures with the independent `sqlcipher` CLI (page size 4096, SQLCipher 4) and asserts that decryption, session listing, contact-name resolution, message decoding, cache reuse, passphrase derivation, group prefix stripping, self detection, bounded search, and digest extraction all behave. Install it with `brew install sqlcipher` / `apt install sqlcipher`; the test prints a skip notice and passes when the CLI is absent.
 
-`cargo test --bin wxq` covers the CLI's flag/date parsing, URL encoding, chunked responses, and output formatting; it does not need a running app.
+`cargo test --bin wxq --features aux-binaries` covers the CLI's flag/date parsing, URL encoding, chunked responses, and output formatting; it does not need a running app.
 
 ### Developer helpers
 

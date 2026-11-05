@@ -215,12 +215,13 @@ pub fn expand_path(input: &str) -> Option<PathBuf> {
 }
 
 /// Linux/macOS binary in a GUI app: the sibling built next to the app wins, then the
-/// installed copy, then the usual build outputs.
+/// bundled resource, then the installed copy, then the usual build outputs.
 pub fn resolve_wxq(app_data: &Path) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(CLI_NAME));
+            candidates.extend(bundled_wxq(dir));
         }
     }
     candidates.push(app_data.join("bin").join(CLI_NAME));
@@ -234,6 +235,29 @@ pub fn resolve_wxq(app_data: &Path) -> Option<PathBuf> {
     candidates.push(manifest.join("target/release").join(CLI_NAME));
     candidates.push(manifest.join("target/debug").join(CLI_NAME));
     candidates.into_iter().find(|path| agent::is_executable(path))
+}
+
+/// The packaged CLI is a plain resource (`bundle.resources`), so it is not signed as
+/// an auxiliary executable of the app. macOS keeps resources under
+/// `Contents/Resources`; other platforms place them next to the binary.
+fn bundled_wxq(bin_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(contents) = bin_dir.parent() {
+        dirs.push(contents.join("Resources").join("binaries"));
+    }
+    dirs.push(bin_dir.join("resources").join("binaries"));
+    dirs.push(bin_dir.join("binaries"));
+    dirs.into_iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == CLI_NAME || name.starts_with("wxq-"))
+        })
+        .collect()
 }
 
 /// Where the app can rebuild `wxq` when the current install did not ship it.

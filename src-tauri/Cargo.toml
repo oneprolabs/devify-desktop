@@ -10,6 +10,28 @@ default-run = "wechat-devify-bridge"
 name = "wechat_devify_bridge_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# The app crate must expose only its own binary. Tauri bundles every bin target in
+# `src/bin` as an auxiliary executable inside the app bundle, so the read-only CLI
+# and the debug tools are opt-in here. They are built before bundling and shipped
+# as plain resources (see `bundle.resources` in tauri.conf.json).
+[features]
+aux-binaries = []
+
+[[bin]]
+name = "wxq"
+path = "src/bin/wxq.rs"
+required-features = ["aux-binaries"]
+
+[[bin]]
+name = "wechat-key-scan"
+path = "src/bin/wechat-key-scan.rs"
+required-features = ["aux-binaries"]
+
+[[bin]]
+name = "wechat-mcp-sse"
+path = "src/bin/wechat-mcp-sse.rs"
+required-features = ["aux-binaries"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 cc = "1"
