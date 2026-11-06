@@ -46,6 +46,7 @@ export type AppSettings = {
   active_account_id: string;
   chat: {
     allowed_usernames: Record<string, string[]>;
+    initial_ranges: Record<string, Record<string, { since: number | null; until: number | null }>>;
     sync_interval_seconds: number;
   };
   connectors: { waitlist: string[]; wechat_enabled: boolean };
@@ -57,6 +58,7 @@ export type AppSettings = {
   };
   sync: {
     enabled: boolean;
+    cursors?: Record<string, Record<string, unknown>>;
     last_run_at: string | null;
     last_status: string | null;
     last_error: string | null;
@@ -98,7 +100,7 @@ export type AppSettings = {
 export function defaultSettings(): AppSettings {
   return {
     active_account_id: '',
-    chat: { allowed_usernames: {}, sync_interval_seconds: 1800 },
+    chat: { allowed_usernames: {}, initial_ranges: {}, sync_interval_seconds: 1800 },
     connectors: { waitlist: [], wechat_enabled: true },
     devify: { base_url: '', device_label: 'AIMyChats', device_id: '', platform: '', active_space_id: null, recipient: '', subject: '微信工作日报' },
     voice: { auto_transcribe: true, upload_transcripts: true },
@@ -171,6 +173,27 @@ export function WhitelistSettings() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [dateDetails, setDateDetails] = useState<Record<string, Array<[string, number]>>>({});
+  const [dateLoading, setDateLoading] = useState('');
+
+  const dateText = (seconds: number | null | undefined, end = false) => {
+    if (seconds == null) return '';
+    const date = new Date(seconds * 1000);
+    if (end) date.setDate(date.getDate() - 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const setDate = (username: string, key: 'since' | 'until', text: string) => {
+    const date = text ? new Date(`${text}T00:00:00`) : null;
+    if (date && key === 'until') date.setDate(date.getDate() + 1);
+    const range = settings.chat.initial_ranges[accountId]?.[username] ?? { since: null, until: null };
+    setSettings(current => ({ ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges, [accountId]: { ...current.chat.initial_ranges[accountId], [username]: { ...range, [key]: date ? Math.floor(date.getTime() / 1000) : null } } } } }));
+  };
+  const loadDates = async (username: string) => {
+    setDateLoading(username); setError('');
+    try { const dates = await invoke<Array<[string, number]>>('wechat_catalog_dates', { accountId, username }); setDateDetails(current => ({ ...current, [username]: dates })); }
+    catch (reason) { setError(`读取有记录的日期失败：${String(reason)}`); }
+    finally { setDateLoading(''); }
+  };
 
   const allowed = useMemo(
     () => new Set(settings.chat.allowed_usernames[accountId] ?? []),
@@ -259,6 +282,7 @@ export function WhitelistSettings() {
     setError('');
     setNotice('');
     try {
+      if (Object.values(settings.chat.initial_ranges[accountId] ?? {}).some(range => range.since != null && range.until != null && range.since >= range.until)) throw new Error('历史记录结束日期不能早于开始日期。');
       const keep = catalog.length
         ? (settings.chat.allowed_usernames[accountId] ?? []).filter(username => catalogUsernames.has(username))
         : settings.chat.allowed_usernames[accountId];
@@ -339,10 +363,17 @@ export function WhitelistSettings() {
           </div>
 
           <div className="imports-list">
-            {visibleCatalog.map(session => <label key={session.username} className="imports-session">
-              <input type="checkbox" checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/>
-              <span><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></span>
-            </label>)}
+            {visibleCatalog.map(session => <div key={session.username}>
+              <label className="imports-session"><input type="checkbox" checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><span><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></span></label>
+              {allowed.has(session.username) && !!settings.sync.cursors?.[accountId]?.[session.username] && <p style={{ padding: '0 24px 12px' }}>此会话已有同步进度，首次历史范围不再生效。</p>}
+              {allowed.has(session.username) && !settings.sync.cursors?.[accountId]?.[session.username] && <div className="plan-row-control" style={{ padding: '0 24px 16px', flexWrap: 'wrap' }}>
+                <span>首次上传历史范围</span>
+                <label>开始 <input type="date" value={dateText(settings.chat.initial_ranges[accountId]?.[session.username]?.since)} onChange={e => setDate(session.username, 'since', e.target.value)}/></label>
+                <label>结束 <input type="date" value={dateText(settings.chat.initial_ranges[accountId]?.[session.username]?.until, true)} onChange={e => setDate(session.username, 'until', e.target.value)}/></label>
+                <button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(session.username)}>{dateLoading === session.username ? '正在读取…' : '查看有记录的日期'}</button>
+                {dateDetails[session.username] && <details><summary>{dateDetails[session.username].length} 天有记录</summary><p>{dateDetails[session.username].map(([day, count]) => `${day}（${count} 条）`).join('、') || '没有可用记录'}</p></details>}
+              </div>}
+            </div>)}
           </div>
         </>}
 
