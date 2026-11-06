@@ -185,6 +185,12 @@ pub fn decode_for_upload(
         let Ok(raw) = fs::read(&source) else {
             continue;
         };
+        if raw.starts_with(b"\xff\xd8\xff") {
+            return Ok((raw, "jpg".into()));
+        }
+        if raw.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Ok((raw, "png".into()));
+        }
         if keys.is_none() {
             keys = image_key::resolve(account_dir, &raw);
         }

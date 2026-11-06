@@ -1371,6 +1371,67 @@ fn verify_upload_preview(expected: Option<&str>, actual: &str) -> Result<(), Str
     Ok(())
 }
 
+fn validate_upload_batch_size(count: usize) -> Result<(), String> {
+    if count > SYNC_MESSAGES_PER_BATCH {
+        return Err(format!("单批最多上传 {SYNC_MESSAGES_PER_BATCH} 条消息，请缩小日期范围或等待自动分批。"));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct PlannedSyncBatch {
+    messages: Vec<settings::MessageRef>,
+    has_more: bool,
+}
+
+fn manual_batch_plan(selection: &BTreeMap<String, Vec<settings::MessageRef>>, limit: usize) -> Result<Vec<BTreeMap<String, Vec<settings::MessageRef>>>, String> {
+    if limit == 0 { return Err("每批消息数量必须大于零。".into()); }
+    let mut batches = Vec::new();
+    let mut current: BTreeMap<String, Vec<settings::MessageRef>> = BTreeMap::new();
+    let mut count = 0;
+    for (name, messages) in selection {
+        let mut unique = HashSet::new();
+        for message in messages {
+            if !unique.insert(message) { return Err("消息选择包含重复项。".into()); }
+            if count == limit { batches.push(std::mem::take(&mut current)); count = 0; }
+            current.entry(name.clone()).or_default().push(message.clone());
+            count += 1;
+        }
+    }
+    if count != 0 { batches.push(current); }
+    Ok(batches)
+}
+
+fn next_manual_batch(value: &settings::AppSettings) -> Option<String> {
+    value.upload_queue.iter().filter(|job| {
+        let Some(group) = job.manual_group.as_ref() else { return false; };
+        if job.account_id != value.active_account_id || value.devify.active_space_id != Some(job.space_id) { return false; }
+        if !matches!(job.status.as_str(), "queued" | "running") || job.batch_id.is_some() { return false; }
+        let previous: Vec<_> = value.upload_queue.iter().filter(|other| other.manual_group.as_ref() == Some(group) && other.manual_index < job.manual_index).collect();
+        previous.len() == job.manual_index && previous.iter().all(|other| other.status == "completed")
+    }).min_by_key(|job| (&job.created_at, job.manual_index)).map(|job| job.id.clone())
+}
+
+fn plan_sync_batch(messages: &[settings::MessageRef], cursor: Option<settings::SyncCursor>, limit: usize) -> Result<PlannedSyncBatch, String> {
+    if limit == 0 { return Err("每批消息数量必须大于零。".into()); }
+    let mut ordered = messages.to_vec();
+    ordered.sort_by(|a, b| (a.time, a.local_id, &a.source_shard).cmp(&(b.time, b.local_id, &b.source_shard)));
+    if ordered.windows(2).any(|p| p[0] == p[1]) { return Err("消息来源标识重复，无法安全分批。".into()); }
+    let mut selected = Vec::new();
+    let mut offset = 0;
+    while offset < ordered.len() {
+        let end = ordered[offset..].iter().position(|m| m.time != ordered[offset].time).map_or(ordered.len(), |n| offset + n);
+        let group = &ordered[offset..end];
+        let newest_id = group.iter().map(|m| m.local_id).max().unwrap_or_default();
+        if cursor.is_some_and(|c| c.covers_boundary((group[0].time, newest_id), group.len())) { offset = end; continue; }
+        if group.len() > limit { return Err("同一秒的消息数量超过单批上限，无法安全分批。".into()); }
+        if selected.len() + group.len() > limit { return Ok(PlannedSyncBatch { messages: selected, has_more: true }); }
+        selected.extend_from_slice(group);
+        offset = end;
+    }
+    Ok(PlannedSyncBatch { messages: selected, has_more: false })
+}
+
 fn sync_message_selection(messages: &[settings::MessageRef], cursor: Option<settings::SyncCursor>, pending: &[settings::VoiceRef]) -> Vec<settings::MessageRef> {
     messages.iter().filter(|m| cursor.map_or(true, |c| m.time >= c.time) || pending.iter().any(|v| v.local_id == m.local_id && v.time == m.time && (v.source_shard.is_empty() || v.source_shard == m.source_shard))).cloned().collect()
 }
@@ -1457,6 +1518,20 @@ fn raw_messages_for_upload(
     query::raw_messages_selected(cache, username, selected)
 }
 
+fn image_resource_hash(cache: &Path, item: &media::MediaItem) -> Option<String> {
+    if item.server_id == 0 { return None; }
+    let db = rusqlite::Connection::open_with_flags(
+        cache.join("message/message_resource.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ).ok()?;
+    let mut statement = db.prepare("SELECT packed_info FROM MessageResourceInfo WHERE message_svr_id = ?1 AND message_local_id = ?2 AND message_create_time = ?3 LIMIT 2").ok()?;
+    let mut rows = statement.query(rusqlite::params![item.server_id, item.local_id, item.time]).ok()?;
+    let bytes: Vec<u8> = rows.next().ok()??.get(0).ok()?;
+    if rows.next().ok()?.is_some() { return None; }
+    let matches: Vec<_> = bytes.split(|b| !b.is_ascii_hexdigit()).filter(|s| s.len() == 32).collect();
+    if matches.len() != 1 { return None; }
+    Some(String::from_utf8(matches[0].to_ascii_lowercase()).ok()?)
+}
+
 #[cfg(test)]
 fn prepare_upload(
     cache: &Path,
@@ -1470,6 +1545,7 @@ fn prepare_upload(
 ) -> Result<PreparedUpload, String> {
     let defaults = settings::VoiceUploadSettings::default();
     prepare_upload_with_voice(
+        cache,
         cache,
         cache,
         account_id,
@@ -1532,6 +1608,7 @@ fn attachment_extension(name: Option<&str>) -> String {
 fn prepare_upload_with_voice(
     app_data: &Path,
     cache: &Path,
+    media_root: &Path,
     account_id: &str,
     space_id: i64,
     base_url: &str,
@@ -1673,10 +1750,11 @@ fn prepare_upload_with_voice(
         // resolver picks the best available source (original, bubble, thumb)
         // and decodes encrypted `.dat` files before they enter the archive.
         let raw = raw_messages_for_upload(cache, &session.username, &selected_messages)?;
-        let keys = media::resolve_image_keys(cache, &query::md5_hex(&session.username));
-        let report = media::resolve(cache, &session.username, &raw, keys.as_ref());
+        let keys = media::resolve_image_keys(media_root, &query::md5_hex(&session.username));
+        let report = media::resolve(media_root, &session.username, &raw, keys.as_ref());
         if include_images {
         for item in report.items.iter().filter(|item| item.kind == "image") {
+            let resource_hash = ambiguous_local_ids.contains(&item.local_id).then(|| image_resource_hash(cache, item)).flatten();
             let sources = item
                 .sources
                 .iter()
@@ -1687,12 +1765,13 @@ fn prepare_upload_with_voice(
                     let exact_prefix = format!("{}_{}_", item.local_id, item.time);
                     if name.starts_with(&exact_prefix) { return true; }
                     let hash = name.split('_').next().unwrap_or_default().split('.').next().unwrap_or_default();
+                    if resource_hash.as_deref() == Some(hash) { return true; }
                     hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit()) && raw.content.to_lowercase().contains(hash)
                 })
-                .map(|path| cache.join(path))
+                .map(|path| media_root.join(path))
                 .collect::<Vec<_>>();
             let message_key = message_keys.get(&(item.source_shard.clone(), item.local_id, item.time)).ok_or("无法匹配图片所属消息。")?.clone();
-            let decoded = media::decode_for_upload(cache, &sources).ok();
+            let decoded = media::decode_for_upload(media_root, &sources).ok();
             if let Some((bytes, kind)) = decoded {
                 let digest = hex::encode(sha2::Sha256::digest(&bytes));
                 let extension = if kind == "png" { "png" } else { "jpg" };
@@ -1737,7 +1816,7 @@ fn prepare_upload_with_voice(
                     "ordinal": 1,
                     "kind": item.kind,
                 });
-                let attachment = if ambiguous_local_ids.contains(&item.local_id) { Attachment::Missing } else { read_attachment(cache, item) };
+                let attachment = if ambiguous_local_ids.contains(&item.local_id) { Attachment::Missing } else { read_attachment(media_root, item) };
                 match attachment {
                     Attachment::Bytes(bytes)
                         if media_budget + bytes.len() as u64
@@ -2043,6 +2122,7 @@ async fn devify_upload_preview(
     validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
     entitlements::require(&data, &settings.devify.base_url, capabilities::INGEST_UPLOAD)?;
     let cache = decrypt::cache_dir(&data, &account_id);
+    let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
     let base_url = settings.devify.base_url.clone();
     let voice_settings = settings.voice.clone();
     let attachments = settings.backup.attachments.clone();
@@ -2052,6 +2132,7 @@ async fn devify_upload_preview(
         prepare_upload_with_voice(
             &data,
             &cache,
+            &media_root,
             &account_id,
             space_id,
             &base_url,
@@ -2067,6 +2148,56 @@ async fn devify_upload_preview(
     })
     .await
     .map_err(|e| format!("读取上传预览失败：{e}"))?
+}
+
+fn mark_manual_batch_failed(app: &AppHandle, job_id: &str, error: &str) {
+    let data = app_data(app);
+    if let Ok(mut value) = settings::load(&data) {
+        if let Some(job) = value.upload_queue.iter_mut().find(|job| job.id == job_id) {
+            job.status = "failed".into();
+            job.message = error.into();
+            job.updated_at = chrono::Utc::now().to_rfc3339();
+            let _ = settings::save(&data, &value);
+        }
+    }
+}
+
+async fn submit_manual_batch(app: &AppHandle, job_id: &str) -> Result<DevifyUploadResult, String> {
+    let data = app_data(app);
+    let value = settings::load(&data)?;
+    let job = value.upload_queue.iter().find(|job| job.id == job_id).cloned().ok_or("找不到上传任务。")?;
+    let scope = job.scope.clone().ok_or("找不到上传范围。")?;
+    validate_upload_scope(&value, &job.account_id, job.space_id, &scope.usernames)?;
+    if scope.base_url.trim_end_matches('/') != value.devify.base_url.trim_end_matches('/') { return Err("服务地址已更改，无法继续原上传任务。".into()); }
+    let preview = devify_upload_preview(app.clone(), job.account_id.clone(), job.space_id, scope.usernames.clone(), scope.since, scope.until, Some(scope.message_selection.clone())).await?;
+    if job.manual_fingerprint.as_deref().is_some_and(|old| old != preview.fingerprint) {
+        return Err("本批消息或附件已变化，无法安全重试；请重新预览并创建任务。".into());
+    }
+    let mut value = settings::load(&data)?;
+    let current = value.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+    current.status = "running".into();
+    current.manual_fingerprint = Some(preview.fingerprint.clone());
+    current.message = format!("正在上传第 {}/{} 批", job.manual_index + 1, job.manual_total);
+    current.updated_at = chrono::Utc::now().to_rfc3339();
+    settings::save(&data, &value)?;
+    let result = devify_upload_wechat(app.clone(), job.space_id, job.account_id.clone(), scope.usernames, scope.since, scope.until, Some(scope.base_url), Some(preview.fingerprint), scope.message_selection).await;
+    let mut value = settings::load(&data)?;
+    if let Some(current) = value.upload_queue.iter_mut().find(|item| item.id == job_id) {
+        current.updated_at = chrono::Utc::now().to_rfc3339();
+        match &result {
+            Ok(upload) => {
+                current.batch_id = Some(upload.batch_id);
+                current.status = "processing".into();
+                current.covered = upload.covered.clone();
+                current.voice_processed = upload.voice_processed.clone();
+                current.voice_pending = upload.voice_pending.clone();
+                current.message = format!("第 {}/{} 批已提交服务端处理", job.manual_index + 1, job.manual_total);
+            }
+            Err(error) => { current.status = "failed".into(); current.message = error.clone(); }
+        }
+    }
+    settings::save(&data, &value)?;
+    result.map(|mut result| { result.job_id = job_id.into(); result })
 }
 
 #[tauri::command]
@@ -2106,6 +2237,39 @@ async fn devify_upload_selected(
             initial_baselines.insert(username.clone(), settings::SyncCursor { time, local_id, boundary_count: Some(boundary_count) });
         }
     }
+    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
+    let mut selected_refs = BTreeMap::new();
+    for username in &usernames {
+        let messages = collect_upload_messages(&cache, username, since, until, None)?;
+        let messages = filter_upload_messages(messages, message_selection.get(username).map(Vec::as_slice))?;
+        selected_refs.insert(username.clone(), messages.into_iter().map(|m| settings::MessageRef { local_id: m.local_id, time: m.time, source_shard: m.source_shard }).collect());
+    }
+    let batches = manual_batch_plan(&selected_refs, SYNC_MESSAGES_PER_BATCH)?;
+    if batches.len() > 1 {
+        let preview = devify_upload_preview(app.clone(), account_id.clone(), space_id, usernames.clone(), since, until, Some(message_selection.clone())).await?;
+        verify_upload_preview(Some(&fingerprint), &preview.fingerprint)?;
+        let group = format!("manual-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+        let total = batches.len();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut next = settings::load(&app_data(&app))?;
+        for (index, selection) in batches.into_iter().enumerate() {
+            let names = selection.keys().cloned().collect();
+            next.upload_queue.push(settings::UploadJob {
+                id: format!("{group}-{index}"), space_id, account_id: account_id.clone(),
+                status: "queued".into(), message: format!("等待上传第 {}/{} 批", index + 1, total),
+                created_at: now.clone(), updated_at: now.clone(),
+                scope: Some(settings::UploadScope { usernames: names, since, until, base_url: settings.devify.base_url.clone(), message_selection: selection }),
+                initial_baselines: if index + 1 == total { initial_baselines.clone() } else { BTreeMap::new() },
+                manual_group: Some(group.clone()), manual_index: index, manual_total: total,
+                ..Default::default()
+            });
+        }
+        settings::save(&app_data(&app), &next)?;
+        let first_id = format!("{group}-0");
+        let result = submit_manual_batch(&app, &first_id).await;
+        if let Err(error) = &result { mark_manual_batch_failed(&app, &first_id, error); }
+        return result;
+    }
     let scope = settings::UploadScope {
         usernames: usernames.clone(),
         since,
@@ -2127,7 +2291,14 @@ async fn devify_upload_selected(
         scope: Some(scope),
         covered: BTreeMap::new(),
         initial_baselines,
+        initial_chunks: BTreeMap::new(),
         sync_advance: false,
+        continue_sync: false,
+        continuation_manual: false,
+        manual_group: None,
+        manual_index: 0,
+        manual_total: 0,
+        manual_fingerprint: None,
         voice_processed: BTreeMap::new(),
         voice_pending: BTreeMap::new(),
     };
@@ -2194,11 +2365,13 @@ async fn devify_upload_retry_preview(
     let voice_settings = settings.voice.clone();
     let attachments = settings.backup.attachments.clone();
     let account_id = job.account_id.clone();
+    let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
     let legacy_keys = load_legacy_upload_keys(&app, job.space_id, &account_id, &scope.usernames).await?;
     tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
             &data,
             &cache,
+            &media_root,
             &account_id,
             job.space_id,
             &scope.base_url,
@@ -2237,6 +2410,16 @@ async fn devify_upload_retry(
         .ok_or_else(|| "找不到上传任务。".to_string())?;
     let _upload_guard = begin_account_upload(&state, &job.account_id)?;
     let scope = job.retry_scope(&settings)?.clone();
+    if job.manual_fingerprint.as_deref().is_some_and(|old| old != fingerprint) {
+        return Err("本批消息或附件已变化，无法安全重试；请重新创建采集任务。".into());
+    }
+    if job.manual_group.is_some() && job.manual_fingerprint.is_none() {
+        let mut next = settings::load(&data)?;
+        if let Some(item) = next.upload_queue.iter_mut().find(|item| item.id == job_id) {
+            item.manual_fingerprint = Some(fingerprint.clone());
+        }
+        settings::save(&data, &next)?;
+    }
     let retry_usernames = scope.usernames.clone();
     let retry_since = scope.since;
     let retry_until = scope.until;
@@ -2314,11 +2497,13 @@ async fn devify_upload_wechat(
     let selection_for_prepare = message_selection.clone();
     let data_for_prepare = data.clone();
     let cache_for_prepare = cache.clone();
+    let media_root_for_prepare = account_root(&account_id).unwrap_or_else(|_| cache.clone());
     let base_url_for_prepare = base_url.clone();
     let prepared = tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
             &data_for_prepare,
             &cache_for_prepare,
+            &media_root_for_prepare,
             &account_for_prepare,
             space_id,
             &base_url_for_prepare,
@@ -2333,6 +2518,7 @@ async fn devify_upload_wechat(
     })
     .await
     .map_err(|e| format!("准备上传失败：{e}"))??;
+    validate_upload_batch_size(prepared.preview.message_count)?;
     verify_upload_preview(
         expected_fingerprint.as_deref(),
         &prepared.preview.fingerprint,
@@ -3586,17 +3772,41 @@ async fn automation_tick(app: &AppHandle) {
 
 /// Scheduler tick for the backup plan saved in settings. Uploads only when the plan says a
 /// run is due (interval elapsed, scheduled time reached, and the window allows it).
+fn continuation_sessions(value: &settings::AppSettings, account_id: &str) -> Vec<String> {
+    let allowed = value.chat.allowed_usernames.get(account_id);
+    let mut names: Vec<_> = value.sync.continuation.get(account_id).into_iter().flat_map(|items| items.iter()).filter(|(name, scope)| (scope.manual || value.sync.enabled) && Some(scope.space_id) == value.devify.active_space_id && scope.base_url.trim_end_matches('/') == value.devify.base_url.trim_end_matches('/') && allowed.is_some_and(|list| list.contains(name))).map(|(name, _)| name.clone()).collect();
+    names.sort();
+    names
+}
+
+fn initial_progress_matches(chunk: &settings::InitialChunk, space_id: i64, base_url: &str) -> bool {
+    chunk.space_id == space_id && chunk.base_url.trim_end_matches('/') == base_url.trim_end_matches('/')
+}
+
 async fn backup_tick(app: &AppHandle) {
     let data = app_data(app);
-    let Ok(value) = settings::load(&data) else {
-        return;
-    };
     // Finished server batches must be recorded even when the automatic plan is off,
     // otherwise a manual upload keeps its "not uploaded yet" badge forever.
     reconcile_upload_jobs(app).await;
+    let Ok(value) = settings::load(&data) else { return; };
     // A disconnected WeChat still gets its finished batches recorded, but nothing new is
     // read from the local database or uploaded.
     if !value.connectors.wechat_enabled {
+        return;
+    }
+    if let Some(job_id) = next_manual_batch(&value) {
+        if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok() && network::allow_upload(value.backup.wifi_only) {
+            let upload = app.state::<UploadState>();
+            if let Ok(_guard) = begin_account_upload(&upload, &value.active_account_id) {
+                if let Err(error) = submit_manual_batch(app, &job_id).await { mark_manual_batch_failed(app, &job_id, &error); }
+            };
+        }
+        return;
+    }
+    if !continuation_sessions(&value, &value.active_account_id).is_empty() {
+        if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok() && network::allow_upload(value.backup.wifi_only) {
+            let _ = perform_chat_sync(app, true, true).await;
+        }
         return;
     }
     if !value.sync.enabled {
@@ -3685,6 +3895,28 @@ fn apply_completed_history_baselines(value: &mut settings::AppSettings) {
 fn apply_completed_uploads(value: &mut settings::AppSettings) {
     for job in &mut value.upload_queue {
         if job.status != "completed" { continue; }
+        if job.continue_sync {
+            if let Some(scope) = &job.scope {
+                let entries = value.sync.continuation.entry(job.account_id.clone()).or_default();
+                for username in &scope.usernames {
+                    entries.insert(username.clone(), settings::ContinuationScope { space_id: job.space_id, base_url: scope.base_url.clone(), manual: job.continuation_manual });
+                }
+            }
+            job.continue_sync = false;
+        }
+        for (username, chunk) in std::mem::take(&mut job.initial_chunks) {
+            if chunk.final_chunk {
+                let cursors = value.sync.cursors.entry(job.account_id.clone()).or_default();
+                let replace = cursors.get(&username).map_or(true, |old| (chunk.baseline.time, chunk.baseline.local_id) > (old.time, old.local_id));
+                if replace { cursors.insert(username.clone(), chunk.baseline); }
+                if let Some(progress) = value.sync.initial_progress.get_mut(&job.account_id) {
+                    progress.remove(&username);
+                    if progress.is_empty() { value.sync.initial_progress.remove(&job.account_id); }
+                }
+            } else {
+                value.sync.initial_progress.entry(job.account_id.clone()).or_default().insert(username, chunk);
+            }
+        }
         if job.sync_advance {
             let cursors = value.sync.cursors.entry(job.account_id.clone()).or_default();
             for (username, position) in &job.covered {
@@ -3837,7 +4069,14 @@ fn sync_job(
         }),
         covered: BTreeMap::new(),
         initial_baselines: BTreeMap::new(),
+        initial_chunks: BTreeMap::new(),
         sync_advance: false,
+        continue_sync: false,
+        continuation_manual: false,
+        manual_group: None,
+        manual_index: 0,
+        manual_total: 0,
+        manual_fingerprint: None,
         voice_processed: BTreeMap::new(),
         voice_pending: BTreeMap::new(),
     }
@@ -3861,10 +4100,11 @@ fn sync_status_is_stale(sync: &settings::SyncSettings) -> bool {
 /// Sessions uploaded per tick. Probing a conversation with nothing new is a single
 /// indexed query, so only actual uploads are capped.
 const SYNC_UPLOADS_PER_TICK: usize = 50;
+const SYNC_MESSAGES_PER_BATCH: usize = 1000;
 
 /// Decrypt the local cache, then upload every allowlisted conversation that has messages
 /// newer than its cursor. The first run of a conversation uploads its full local history.
-async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSummary, String> {
+async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: bool) -> Result<ChatSyncSummary, String> {
     let data = app_data(app);
     let mut value = settings::load(&data)?;
     ensure_wechat_connected(app)?;
@@ -3897,6 +4137,10 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
     }
     whitelist.sort();
     whitelist.dedup();
+    if continuation_only {
+        whitelist.retain(|name| continuation_sessions(&value, &account_id).contains(name));
+        if whitelist.is_empty() { return Err("没有可继续的上传任务。".into()); }
+    }
     let base_url = value.devify.base_url.clone();
     reconcile_upload_jobs(app).await;
     value = settings::load(&data)?;
@@ -3958,12 +4202,17 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
             failures.push(format!("{username}：已有上传任务正在处理，请在任务中查看状态"));
             continue;
         }
-        if value.upload_queue.iter().any(|job| job.account_id == account_id && job.initial_baselines.contains_key(username)) {
+        if value.upload_queue.iter().any(|job| job.account_id == account_id && (job.initial_baselines.contains_key(username) || job.initial_chunks.contains_key(username))) {
             skipped += 1;
             failures.push(format!("{username}：首次历史上传尚未完成，请在任务中查看状态"));
             continue;
         }
         let cursor = account_cursors.get(username).copied();
+        let progress = value.sync.initial_progress.get(&account_id).and_then(|items| items.get(username)).cloned();
+        if progress.as_ref().is_some_and(|p| !initial_progress_matches(p, space_id, &base_url)) {
+            failures.push(format!("{username}：首次历史上传属于其他空间，请切回原空间继续"));
+            continue;
+        }
         let initial_range = if cursor.is_none() { value.chat.initial_ranges.get(&account_id).and_then(|ranges| ranges.get(username)) } else { None };
         let voice_retry_due = value.voice.upload_transcripts
             && voice::view(&data).selected.is_some()
@@ -4007,11 +4256,10 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
         let since = match (cursor, pending_since) {
             (Some(current), Some(pending)) => Some(current.time.min(pending)),
             (Some(current), None) => Some(current.time),
-            (None, Some(_)) => initial_range.and_then(|range| range.since),
-            (None, None) => initial_range.and_then(|range| range.since),
+            (None, _) => progress.as_ref().and_then(|p| p.since).or_else(|| initial_range.and_then(|range| range.since)),
         };
-        let until = initial_range.and_then(|range| range.until);
-        let initial_baseline = if initial_range.is_some() {
+        let initial_baseline = if cursor.is_none() {
+            if let Some(p) = &progress { Some(p.baseline) } else {
             match query::latest_position(&cache, username) {
                 Ok(Some((time, local_id))) => match query::count_at_time(&cache, username, time) {
                     Ok(count) => Some(settings::SyncCursor { time, local_id, boundary_count: Some(count) }),
@@ -4019,21 +4267,41 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
                 },
                 Ok(None) => { skipped += 1; continue; },
                 Err(error) => { failures.push(format!("{username}：{error}")); continue; }
-            }
+            }}
+        } else { None };
+        let until = if let Some(p) = &progress { p.until } else if let Some(baseline) = initial_baseline {
+            let snapshot_end = baseline.time.saturating_add(1);
+            Some(initial_range.and_then(|range| range.until).map_or(snapshot_end, |end| end.min(snapshot_end)))
         } else { None };
         let mut selection = BTreeMap::new();
-        if cursor.is_some() && voice_retry_due {
-            let pending = value.sync.pending_voice.get(&account_id).and_then(|items| items.get(username)).cloned().unwrap_or_default();
-            match collect_upload_messages(&cache, username, since, None, None) {
-                Ok(messages) => {
-                    let refs: Vec<_> = messages.iter().map(|m| settings::MessageRef { local_id: m.local_id, time: m.time, source_shard: m.source_shard.clone() }).collect();
-                    let selected = sync_message_selection(&refs, cursor, &pending);
-                    if selected.is_empty() { skipped += 1; continue; }
-                    selection.insert(username.clone(), selected);
-                }
-                Err(error) => { failures.push(format!("{username}：{error}")); break; }
-            }
+        let messages = match collect_upload_messages(&cache, username, since, until, None) {
+            Ok(messages) => messages,
+            Err(error) => { failures.push(format!("{username}：{error}")); break; }
+        };
+        let refs: Vec<_> = messages.iter().map(|m| settings::MessageRef { local_id: m.local_id, time: m.time, source_shard: m.source_shard.clone() }).collect();
+        let pending = if cursor.is_some() && voice_retry_due { value.sync.pending_voice.get(&account_id).and_then(|items| items.get(username)).cloned().unwrap_or_default() } else { Vec::new() };
+        let mut pending_refs: Vec<_> = refs.iter().filter(|m| pending.iter().any(|v| v.local_id == m.local_id && v.time == m.time && (v.source_shard.is_empty() || v.source_shard == m.source_shard))).take(SYNC_MESSAGES_PER_BATCH / 2).cloned().collect();
+        let position = progress.as_ref().map(|p| p.position).or(cursor);
+        let mut plan = plan_sync_batch(&refs, position, SYNC_MESSAGES_PER_BATCH - pending_refs.len());
+        if plan.is_err() && !pending_refs.is_empty() {
+            // A single timestamp may need the whole batch; retry voice attachments later.
+            pending_refs.clear();
+            plan = plan_sync_batch(&refs, position, SYNC_MESSAGES_PER_BATCH);
         }
+        let planned = match plan {
+            Ok(planned) => planned,
+            Err(error) => { failures.push(format!("{username}：{error}")); continue; }
+        };
+        let has_new = !planned.messages.is_empty();
+        let mut selected = planned.messages;
+        let mut seen: HashSet<_> = selected.iter().cloned().collect();
+        selected.extend(pending_refs.drain(..).filter(|item| seen.insert(item.clone())));
+        if selected.is_empty() {
+            skipped += 1;
+            if cursor.is_none() { failures.push(format!("{username}：所选历史日期范围内没有可上传的消息，请在导入管理调整日期")); }
+            continue;
+        }
+        selection.insert(username.clone(), selected);
         let result = devify_upload_wechat(
             app.clone(),
             space_id,
@@ -4063,8 +4331,12 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
                 );
                 if let Some(scope) = job.scope.as_mut() { scope.message_selection = selection; }
                 if let Some(scope) = job.scope.as_mut() { scope.until = until; }
-                if let Some(position) = initial_baseline { job.initial_baselines.insert(username.clone(), position); }
-                job.sync_advance = true;
+                if let (Some(baseline), Some(position)) = (initial_baseline, result.covered.get(username).copied()) {
+                    job.initial_chunks.insert(username.clone(), settings::InitialChunk { since, until, baseline, position, final_chunk: !planned.has_more, space_id, base_url: base_url.clone() });
+                }
+                job.continue_sync = planned.has_more;
+                job.continuation_manual = if continuation_only { value.sync.continuation.get(&account_id).and_then(|entries| entries.get(username)).is_some_and(|scope| scope.manual) } else { manual };
+                job.sync_advance = cursor.is_some() && has_new;
                 job.voice_processed = result.voice_processed.clone();
                 job.voice_pending = result.voice_pending.clone();
                 if let Some(position) = result.covered.get(username).copied() {
@@ -4102,6 +4374,12 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
     // settings file on every idle tick.
     if touched || !failures.is_empty() || sync_status_is_stale(&value.sync) {
         let mut next = settings::load(&data)?;
+        if continuation_only {
+            if let Some(items) = next.sync.continuation.get_mut(&account_id) {
+                for username in &whitelist { items.remove(username); }
+                if items.is_empty() { next.sync.continuation.remove(&account_id); }
+            }
+        }
         if !jobs.is_empty() {
             next.upload_queue.splice(0..0, jobs);
         }
@@ -4148,7 +4426,7 @@ async fn chat_sync_tick(app: &AppHandle) {
     if !value.sync.enabled {
         return;
     }
-    let Err(error) = perform_chat_sync(app, false).await else {
+    let Err(error) = perform_chat_sync(app, false, false).await else {
         return;
     };
     // Only persist when the failure reason changed, otherwise every tick rewrites the file.
@@ -4164,7 +4442,7 @@ async fn chat_sync_tick(app: &AppHandle) {
 
 #[tauri::command]
 async fn devify_sync_now(app: AppHandle) -> Result<ChatSyncSummary, String> {
-    perform_chat_sync(&app, true).await
+    perform_chat_sync(&app, true, false).await
 }
 
 #[tauri::command]
@@ -4183,6 +4461,8 @@ fn app_settings_save(
     // Settings forms only toggle automatic sync; cursors and run history stay owned by the
     // sync loop.
     value.sync.cursors = stored.sync.cursors;
+    value.sync.initial_progress = stored.sync.initial_progress;
+    value.sync.continuation = stored.sync.continuation;
     value.sync.pending_voice = stored.sync.pending_voice;
     value.sync.last_run_at = stored.sync.last_run_at;
     value.sync.last_status = stored.sync.last_status;
@@ -6460,7 +6740,7 @@ mod key_flow_tests {
         }
         let mut history = LegacyUploadKeys::new();
         history.insert("person".into(), ExistingUploadKeys { legacy: HashMap::from([(1, Some(200))]), stable: HashSet::new() });
-        let prepare = |since, until| prepare_upload_with_voice(dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], since, until, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history).unwrap();
+        let prepare = |since, until| prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], since, until, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history).unwrap();
         let both = prepare(None, None);
         let one = prepare(Some(100), Some(150));
         assert_eq!(both.messages[0]["message_key"], "srv:101");
@@ -6482,7 +6762,7 @@ mod key_flow_tests {
         }
         let mut history = LegacyUploadKeys::new();
         history.insert("person".into(), ExistingUploadKeys { legacy: HashMap::from([(1, Some(100))]), stable: HashSet::new() });
-        let result = prepare_upload_with_voice(dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history);
+        let result = prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history);
         assert!(matches!(result, Err(error) if error.contains("旧消息与多个本地记录匹配")));
     }
 
@@ -6498,9 +6778,99 @@ mod key_flow_tests {
             let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
             db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,{server_id},{timestamp},'<msg><img /></msg>',3);")).unwrap();
         }
-        let result = prepare_upload_with_voice(dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
+        let result = prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
         let image_keys: HashSet<_> = result.parts.iter().filter(|p| p["kind"] == "image").filter_map(|p| p["message_key"].as_str()).collect();
         assert_eq!(image_keys, HashSet::from(["srv:101", "srv:202"]));
+    }
+
+    #[test]
+    fn upload_reads_image_from_account_not_database_cache() {
+        let cache = tempfile::tempdir().unwrap();
+        let account = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cache.path().join("session")).unwrap();
+        std::fs::create_dir_all(cache.path().join("message")).unwrap();
+        let sessions = rusqlite::Connection::open(cache.path().join("session/session.db")).unwrap();
+        sessions.execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','test');").unwrap();
+        let timestamp = 1_762_000_000i64;
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        let db = rusqlite::Connection::open(cache.path().join("message/message_0.db")).unwrap();
+        db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,101,{timestamp},'<msg><img /></msg>',3);")).unwrap();
+        let month = chrono::DateTime::from_timestamp(timestamp, 0).unwrap().with_timezone(&chrono::Local).format("%Y-%m").to_string();
+        let image_dir = account.path().join("cache").join(month).join("Message").join(hex::encode(md5::Md5::digest(b"person"))).join("Thumb");
+        std::fs::create_dir_all(&image_dir).unwrap();
+        let bytes = b"\xff\xd8\xfffixture";
+        std::fs::write(image_dir.join(format!("1_{timestamp}_thumb.jpg")), bytes).unwrap();
+        let result = prepare_upload_with_voice(cache.path(), cache.path(), account.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
+        let part = result.parts.iter().find(|p| p["kind"] == "image").unwrap();
+        let path = part["upload_item_path"].as_str().unwrap();
+        assert!(result.media_files.iter().any(|(name, content)| name == path && content == bytes));
+    }
+
+    #[test]
+    fn colliding_image_uses_wechat_resource_identity() {
+        let cache = tempfile::tempdir().unwrap();
+        let account = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cache.path().join("session")).unwrap();
+        std::fs::create_dir_all(cache.path().join("message")).unwrap();
+        let sessions = rusqlite::Connection::open(cache.path().join("session/session.db")).unwrap();
+        sessions.execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','test');").unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        for (shard, timestamp, server_id) in [(0, 100, 101), (1, 200, 202)] {
+            let db = rusqlite::Connection::open(cache.path().join(format!("message/message_{shard}.db"))).unwrap();
+            db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,{server_id},{timestamp},'<msg><img length=\"10\" /></msg>',3);")).unwrap();
+        }
+        let resource = rusqlite::Connection::open(cache.path().join("message/message_resource.db")).unwrap();
+        resource.execute_batch("CREATE TABLE MessageResourceInfo (message_svr_id INTEGER, message_local_id INTEGER, message_create_time INTEGER, packed_info BLOB);").unwrap();
+        resource.execute("INSERT INTO MessageResourceInfo VALUES (101, 1, 100, ?1)", [b"abc12345678901234567890123456789".as_slice()]).unwrap();
+        let month = chrono::DateTime::from_timestamp(100, 0).unwrap().with_timezone(&chrono::Local).format("%Y-%m").to_string();
+        let image_dir = account.path().join("msg/attach").join(hex::encode(md5::Md5::digest(b"person"))).join(month).join("Img");
+        std::fs::create_dir_all(&image_dir).unwrap();
+        let bytes = b"\xff\xd8\xfffixture";
+        std::fs::write(image_dir.join("abc12345678901234567890123456789.dat"), bytes).unwrap();
+        let result = prepare_upload_with_voice(cache.path(), cache.path(), account.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
+        let first = result.parts.iter().find(|p| p["kind"] == "image" && p["message_key"] == "srv:101").unwrap();
+        assert!(first["upload_item_path"].is_string());
+        let second = result.parts.iter().find(|p| p["kind"] == "image" && p["message_key"] == "srv:202").unwrap();
+        assert_eq!(second["binding_state"], "missing");
+    }
+
+    #[test]
+    fn manual_batch_plan_preserves_every_selected_message() {
+        let refs = (0..2301).map(|n| settings::MessageRef { local_id: n, time: n / 3, source_shard: format!("message_{}.db", n % 2) }).collect::<Vec<_>>();
+        let scope = BTreeMap::from([("chat".to_string(), refs.clone())]);
+        let batches = super::manual_batch_plan(&scope, 1000).unwrap();
+        assert_eq!(batches.iter().map(|batch| batch.values().map(Vec::len).sum::<usize>()).collect::<Vec<_>>(), vec![1000,1000,301]);
+        assert_eq!(batches.into_iter().flat_map(|batch| batch.into_values().flatten()).collect::<Vec<_>>(), refs);
+        let duplicate = BTreeMap::from([("chat".to_string(), vec![refs[0].clone(), refs[0].clone()])]);
+        assert!(super::manual_batch_plan(&duplicate, 1000).is_err());
+    }
+
+    #[test]
+    fn manual_batches_resume_in_order_and_stop_on_failure() {
+        let mut value = settings::AppSettings::default();
+        value.active_account_id = "account".into();
+        value.devify.active_space_id = Some(7);
+        value.upload_queue = (0..3).map(|index| settings::UploadJob {
+            id: format!("batch-{index}"), account_id: "account".into(), space_id: 7,
+            status: "queued".into(), manual_group: Some("group".into()), manual_index: index,
+            manual_total: 3, ..Default::default()
+        }).collect();
+        assert_eq!(super::next_manual_batch(&value).as_deref(), Some("batch-0"));
+        value.upload_queue[0].status = "running".into();
+        value.upload_queue[0].manual_fingerprint = Some("saved".into());
+        let mut value: settings::AppSettings = serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
+        assert_eq!(super::next_manual_batch(&value).as_deref(), Some("batch-0"));
+        value.upload_queue[0].status = "failed".into();
+        assert!(super::next_manual_batch(&value).is_none());
+        value.upload_queue[0].status = "completed".into();
+        assert_eq!(super::next_manual_batch(&value).as_deref(), Some("batch-1"));
+        value.upload_queue[1].status = "processing".into();
+        value.upload_queue[1].batch_id = Some(1);
+        assert!(super::next_manual_batch(&value).is_none());
+        value.upload_queue.push(settings::UploadJob { id: "old-stopped".into(), account_id: "account".into(), space_id: 7, status: "failed".into(), ..Default::default() });
+        assert!(super::next_manual_batch(&value).is_none());
+        value.devify.active_space_id = Some(8);
+        assert!(super::next_manual_batch(&value).is_none());
     }
 
     #[test]
@@ -6701,6 +7071,7 @@ mod key_flow_tests {
         .unwrap();
 
         let prepared = prepare_upload_with_voice(
+            dir.path(),
             dir.path(),
             dir.path(),
             "account",
@@ -7078,6 +7449,32 @@ mod upload_coverage_tests {
     use crate::settings::{self, SyncCursor, UploadJob, UploadScope};
     use std::collections::BTreeMap;
 
+    #[test]
+    fn batch_plan_preserves_same_second_and_shard_identity() {
+        use crate::settings::MessageRef;
+        let make = |time, local_id, source_shard: &str| MessageRef { time, local_id, source_shard: source_shard.into() };
+        let messages = vec![make(20, 2, "b"), make(10, 1, "b"), make(10, 1, "a"), make(20, 2, "a"), make(30, 3, "a")];
+        let first = super::plan_sync_batch(&messages, None, 3).unwrap();
+        assert_eq!(first.messages, vec![make(10, 1, "a"), make(10, 1, "b")]);
+        assert!(first.has_more);
+        let second = super::plan_sync_batch(&messages, Some(SyncCursor { time: 10, local_id: 1, boundary_count: Some(2) }), 3).unwrap();
+        assert_eq!(second.messages, vec![make(20, 2, "a"), make(20, 2, "b"), make(30, 3, "a")]);
+        assert!(!second.has_more);
+    }
+
+    #[test]
+    fn batch_plan_refuses_to_split_oversized_second() {
+        use crate::settings::MessageRef;
+        let messages: Vec<_> = (0..4).map(|id| MessageRef { time: 10, local_id: id, source_shard: "a".into() }).collect();
+        assert!(super::plan_sync_batch(&messages, None, 3).is_err());
+    }
+
+    #[test]
+    fn oversized_manual_upload_is_rejected_before_submission() {
+        assert!(super::validate_upload_batch_size(1000).is_ok());
+        assert!(super::validate_upload_batch_size(1001).is_err());
+    }
+
     fn job(status: &str, covered: SyncCursor, fallback_at: &str) -> UploadJob {
         let mut covered_map = BTreeMap::new();
         covered_map.insert("one".to_string(), covered);
@@ -7161,6 +7558,43 @@ mod upload_coverage_tests {
     }
 
     #[test]
+    fn continuation_is_requested_only_after_completed_batch() {
+        let position = SyncCursor { time: 100, local_id: 1, boundary_count: Some(1) };
+        let mut item = job("processing", position, "");
+        item.continue_sync = true;
+        let mut value = with_jobs(vec![item]);
+        super::apply_completed_uploads(&mut value);
+        assert!(value.sync.continuation.is_empty());
+        value.upload_queue[0].status = "failed".into();
+        super::apply_completed_uploads(&mut value);
+        assert!(value.sync.continuation.is_empty());
+        value.upload_queue[0].status = "completed".into();
+        super::apply_completed_uploads(&mut value);
+        assert_eq!(value.sync.continuation["acct"]["one"].space_id, 1);
+        assert!(!value.upload_queue[0].continue_sync);
+    }
+
+    #[test]
+    fn continuation_stays_with_original_space_and_allowed_chat() {
+        let mut value = with_jobs(vec![]);
+        value.devify.active_space_id = Some(1);
+        value.devify.base_url = "https://example.test".into();
+        value.chat.allowed_usernames.insert("acct".into(), vec!["one".into()]);
+        value.sync.continuation.entry("acct".into()).or_default().insert("one".into(), settings::ContinuationScope { space_id: 1, base_url: "https://example.test".into(), manual: true });
+        assert_eq!(super::continuation_sessions(&value, "acct"), vec!["one".to_string()]);
+        value.devify.active_space_id = Some(2);
+        assert!(super::continuation_sessions(&value, "acct").is_empty());
+        value.devify.active_space_id = Some(1);
+        value.chat.allowed_usernames.clear();
+        assert!(super::continuation_sessions(&value, "acct").is_empty());
+        value.chat.allowed_usernames.insert("acct".into(), vec!["one".into()]);
+        value.sync.continuation.get_mut("acct").unwrap().get_mut("one").unwrap().manual = false;
+        assert!(super::continuation_sessions(&value, "acct").is_empty());
+        value.sync.enabled = true;
+        assert_eq!(super::continuation_sessions(&value, "acct"), vec!["one".to_string()]);
+    }
+
+    #[test]
     fn voice_retry_is_kept_until_server_completes() {
         let voice = settings::VoiceRef { local_id: 1, time: 10, server_id: 2, source_shard: "message_0.db".into() };
         let mut item = job("processing", SyncCursor { time: 10, local_id: 1, boundary_count: Some(1) }, "");
@@ -7188,6 +7622,68 @@ mod upload_coverage_tests {
         value.upload_queue[0].status = "completed".into();
         super::apply_completed_history_baselines(&mut value);
         assert_eq!(value.sync.cursors["acct"]["one"].time, 300);
+    }
+
+    #[test]
+    fn initial_chunk_checkpoint_survives_failure_and_finishes_only_on_last_batch() {
+        let baseline = SyncCursor { time: 300, local_id: 3, boundary_count: Some(1) };
+        let first = SyncCursor { time: 100, local_id: 1, boundary_count: Some(1) };
+        let mut item = job("processing", first, "2026-11-06T00:00:00Z");
+        item.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(10), until: Some(200), baseline, position: first, final_chunk: false, space_id: 1, base_url: "https://example.test".into() });
+        let mut value = with_jobs(vec![item]);
+        super::apply_completed_uploads(&mut value);
+        assert!(value.sync.initial_progress.is_empty());
+        value.upload_queue[0].status = "failed".into();
+        super::apply_completed_uploads(&mut value);
+        assert!(value.sync.initial_progress.is_empty());
+        assert!(!value.upload_queue[0].initial_chunks.is_empty());
+        value.upload_queue[0].status = "completed".into();
+        super::apply_completed_uploads(&mut value);
+        assert_eq!(value.sync.initial_progress["acct"]["one"].position.time, 100);
+        assert!(value.sync.cursors.get("acct").is_none());
+        let mut last = job("completed", first, "2026-11-06T00:01:00Z");
+        last.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(10), until: Some(200), baseline, position: first, final_chunk: true, space_id: 1, base_url: "https://example.test".into() });
+        value.upload_queue.push(last);
+        super::apply_completed_uploads(&mut value);
+        assert!(!value.sync.initial_progress.contains_key("acct"));
+        assert_eq!(value.sync.cursors["acct"]["one"].time, 300);
+    }
+
+    #[test]
+    fn initial_batches_resume_after_restart_and_retry_without_skipping() {
+        use crate::settings::MessageRef;
+        let records: Vec<_> = (0..2300).map(|n| MessageRef { time: 100 + n / 2, local_id: n / 2, source_shard: format!("shard-{}", n % 2) }).collect();
+        let baseline = SyncCursor { time: 2000, local_id: 9999, boundary_count: Some(1) };
+        let mut value = with_jobs(vec![]);
+        let mut sent = std::collections::HashSet::new();
+        for expected in [1000, 1000, 300] {
+            let position = value.sync.initial_progress.get("acct").and_then(|v| v.get("one")).map(|p| p.position);
+            let batch = super::plan_sync_batch(&records, position, 1000).unwrap();
+            assert_eq!(batch.messages.len(), expected);
+            assert!(batch.messages.iter().all(|item| sent.insert(item.clone())));
+            let last = batch.messages.last().unwrap();
+            let boundary_count = batch.messages.iter().filter(|item| item.time == last.time).count();
+            let position = SyncCursor { time: last.time, local_id: last.local_id, boundary_count: Some(boundary_count) };
+            let mut item = job("failed", position, "");
+            item.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(100), until: Some(1250), baseline, position, final_chunk: !batch.has_more, space_id: 1, base_url: "https://example.test".into() });
+            value.upload_queue.push(item);
+            super::apply_completed_uploads(&mut value);
+            assert!(value.sync.cursors.get("acct").is_none());
+            value.upload_queue.last_mut().unwrap().status = "completed".into();
+            super::apply_completed_uploads(&mut value);
+            value = serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
+        }
+        assert_eq!(sent.len(), records.len());
+        assert!(value.sync.initial_progress.is_empty());
+        assert_eq!(value.sync.cursors["acct"]["one"].time, baseline.time);
+    }
+
+    #[test]
+    fn initial_progress_cannot_be_reused_for_another_space() {
+        let chunk = settings::InitialChunk { since: None, until: Some(100), baseline: SyncCursor::default(), position: SyncCursor::default(), final_chunk: false, space_id: 1, base_url: "https://example.test".into() };
+        assert!(super::initial_progress_matches(&chunk, 1, "https://example.test/"));
+        assert!(!super::initial_progress_matches(&chunk, 2, "https://example.test"));
+        assert!(!super::initial_progress_matches(&chunk, 1, "https://another.test"));
     }
 
     #[test]

@@ -137,6 +137,8 @@ pub struct SyncSettings {
     pub enabled: bool,
     /// account id → conversation username → upload position.
     pub cursors: HashMap<String, HashMap<String, SyncCursor>>,
+    pub initial_progress: HashMap<String, HashMap<String, InitialChunk>>,
+    pub continuation: HashMap<String, HashMap<String, ContinuationScope>>,
     pub last_run_at: Option<String>,
     /// idle | syncing | success | failed
     pub last_status: Option<String>,
@@ -161,6 +163,8 @@ impl Default for SyncSettings {
         Self {
             enabled: false,
             cursors: HashMap::new(),
+            initial_progress: HashMap::new(),
+            continuation: HashMap::new(),
             last_run_at: None,
             last_status: None,
             last_error: None,
@@ -191,9 +195,35 @@ pub struct UploadJob {
     /// sync keeps its own cursor and is never advanced from here.
     pub covered: BTreeMap<String, SyncCursor>,
     pub initial_baselines: BTreeMap<String, SyncCursor>,
+    pub initial_chunks: BTreeMap<String, InitialChunk>,
     pub sync_advance: bool,
+    pub continue_sync: bool,
+    pub continuation_manual: bool,
+    pub manual_group: Option<String>,
+    pub manual_index: usize,
+    pub manual_total: usize,
+    pub manual_fingerprint: Option<String>,
     pub voice_processed: BTreeMap<String, Vec<VoiceRef>>,
     pub voice_pending: BTreeMap<String, Vec<VoiceRef>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InitialChunk {
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    pub baseline: SyncCursor,
+    pub position: SyncCursor,
+    pub final_chunk: bool,
+    pub space_id: i64,
+    pub base_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ContinuationScope {
+    pub space_id: i64,
+    pub base_url: String,
+    #[serde(default)]
+    pub manual: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
@@ -260,7 +290,14 @@ impl Default for UploadJob {
             scope: None,
             covered: BTreeMap::new(),
             initial_baselines: BTreeMap::new(),
+            initial_chunks: BTreeMap::new(),
             sync_advance: false,
+            continue_sync: false,
+            continuation_manual: false,
+            manual_group: None,
+            manual_index: 0,
+            manual_total: 0,
+            manual_fingerprint: None,
             voice_processed: BTreeMap::new(),
             voice_pending: BTreeMap::new(),
         }
