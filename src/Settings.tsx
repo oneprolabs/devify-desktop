@@ -159,7 +159,7 @@ export function mergeSettings(stored: AppSettings): AppSettings {
   };
 }
 
-export function WhitelistSettings() {
+export function WhitelistSettings({ onChooseHistory }: { onChooseHistory?: () => void }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState('');
@@ -366,6 +366,7 @@ export function WhitelistSettings() {
     {error && <div className="error">{error}</div>}
     <div className="page-actions">
       <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存导入范围'}</button>
+      {onChooseHistory && <button type="button" onClick={onChooseHistory}>选择历史记录日期（请先保存）</button>}
     </div>
   </div>;
 }

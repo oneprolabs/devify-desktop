@@ -44,6 +44,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn message_dates_counts_records_across_shards() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("message")).unwrap();
+        let name = "wxid_test";
+        let table = format!("Msg_{}", md5_hex(name));
+        for n in 0..2 {
+            let conn = Connection::open(dir.path().join(format!("message/message_{n}.db"))).unwrap();
+            conn.execute_batch(&format!("CREATE TABLE \"{table}\" (create_time INTEGER); INSERT INTO \"{table}\" VALUES (1793923200); ")).unwrap();
+        }
+        let days = message_dates(dir.path(), name).unwrap();
+        assert_eq!(days.iter().map(|(_, count)| count).sum::<usize>(), 2);
+        assert_eq!(days.len(), 1);
+    }
+
+    #[test]
     fn group_prefix_is_stripped_only_when_username_shaped() {
         let (who, body) = split_sender_prefix("wxid_abc123:\n早上的会议改到下午".to_string());
         assert_eq!(who.as_deref(), Some("wxid_abc123"));
@@ -1077,6 +1092,25 @@ pub fn messages_between(
 /// vote.
 ///
 /// Automatic upload uses this to skip a conversation before packaging when nothing is new.
+pub fn message_dates(cache: &Path, username: &str) -> Result<Vec<(String, usize)>, String> {
+    let table = format!("Msg_{}", md5_hex(username));
+    let mut dates = std::collections::BTreeMap::<String, usize>::new();
+    let mut found = false;
+    for shard in message_shards(cache) {
+        let conn = open_readonly(&shard)?;
+        if !tables(&conn).iter().any(|t| t == &table) { continue; }
+        found = true;
+        let cols = columns(&conn, &table);
+        let time = pick(&cols, &["create_time", "createTime", "timestamp"]).ok_or("消息库缺少时间字段。")?;
+        let sql = format!("SELECT date({}, 'unixepoch', 'localtime'), COUNT(*) FROM {} WHERE {} > 0 GROUP BY 1", quote(time), quote(&table), quote(time));
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, usize>(1)?))).map_err(|e| e.to_string())?;
+        for row in rows { let (day, count) = row.map_err(|e| e.to_string())?; if let Some(day) = day { *dates.entry(day).or_default() += count; } }
+    }
+    if !found { return Err("没有找到会话消息库。".into()); }
+    Ok(dates.into_iter().collect())
+}
+
 pub fn latest_message(cache: &Path, username: &str) -> Result<Option<(i64, i64)>, String> {
     let messages = messages_inner(cache, username, 1, None, None, None, None)?;
     Ok(messages.first().map(|message| (message.time, message.local_id)))

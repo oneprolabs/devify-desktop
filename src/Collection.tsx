@@ -23,8 +23,11 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   const [sessions, setSessions] = useState<Session[]>([]);
   const [space, setSpace] = useState<Space | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [availableDates, setAvailableDates] = useState<Record<string, Array<[string, number]>>>({});
+  const [dateError, setDateError] = useState('');
   const [messageSelection, setMessageSelection] = useState<Record<string, MessageRef[]>>({});
   const [since, setSince] = useState('');
+  const [initialHistory, setInitialHistory] = useState(false);
   const [until, setUntil] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(isTauri());
@@ -65,6 +68,15 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   const switchAccount = (id: string) => {
     setSessionLoading(true); setSessions([]); setPreview(null); setSelected([]); setMessageSelection({}); setSearch(''); setSessionError(''); setAccountId(id);
   };
+  useEffect(() => {
+    if (!accountId || !selected.length || !isTauri()) { setAvailableDates({}); setDateError(''); return; }
+    let active = true;
+    setDateError('');
+    void invoke<Record<string, Array<[string, number]>>>('wechat_collection_dates', { accountId, usernames: selected })
+      .then(dates => { if (active) setAvailableDates(dates); })
+      .catch(reason => { if (active) { setAvailableDates({}); setDateError(String(reason)); } });
+    return () => { active = false; };
+  }, [accountId, selected]);
   const change = (id: string) => { setPreview(null); if (selected.includes(id)) setMessageSelection(current => { const next = { ...current }; delete next[id]; return next; }); setSelected(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]); };
   const setMode = (id: string, individual: boolean) => { setPreview(null); setMessageSelection(current => { const next = { ...current }; if (individual) next[id] = []; else delete next[id]; return next; }); };
   const resetMessageSelection = () => setMessageSelection(current => Object.fromEntries(Object.keys(current).map(key => [key, []])));
@@ -79,7 +91,7 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   const submit = async () => {
     if (!preview || busy) return;
     setBusy(true); setError('');
-    try { await invoke('devify_upload_selected', { ...payload(), fingerprint: preview.fingerprint }); onComplete(); }
+    try { await invoke('devify_upload_selected', { ...payload(), fingerprint: preview.fingerprint, initialHistory }); onComplete(); }
     catch (e) { setError(String(e)); setPreview(null); }
     finally { setBusy(false); }
   };
@@ -98,6 +110,10 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
       {sessionError && <p className="collection-error" role="alert">读取该账号会话失败：{sessionError}</p>}
       {sessionLoading && <p className="collection-notice">正在读取所选账号的会话…</p>}
       <div className="collection-filters"><label>搜索会话<input type="search" value={search} disabled={busy} onChange={e => setSearch(e.target.value)} placeholder="搜索会话" /></label><label>开始日期<input type="date" value={since} disabled={busy} onChange={e => { setSince(e.target.value); setPreview(null); resetMessageSelection(); }} /></label><label>结束日期<input type="date" value={until} disabled={busy} onChange={e => { setUntil(e.target.value); setPreview(null); resetMessageSelection(); }} /></label></div>
+      <label><input type="checkbox" checked={initialHistory} disabled={busy} onChange={e => { setInitialHistory(e.target.checked); setPreview(null); }} /> 作为首次历史上传（仅适用于尚未自动同步的会话）</label>
+      {initialHistory && <p>只上传所选日期的历史记录；任务完成后，从提交时的本机最新位置继续自动备份。未选的历史记录不会自动补传。</p>}
+      {dateError && <p className="collection-error" role="alert">无法读取有记录的日期：{dateError}</p>}
+      {selected.map(username => availableDates[username] && <details key={username}><summary>{sessions.find(s => s.username === username)?.display ?? username}：{availableDates[username].length} 天有记录</summary><p>{availableDates[username].map(([day, count]) => `${day}（${count} 条）`).join('、') || '没有可用记录'}</p></details>)}
       <div className="collection-list">{visible.map(session => <div key={session.username} className="collection-session">
         <div className="collection-row"><label className="collection-session-label"><input type="checkbox" checked={selected.includes(session.username)} disabled={busy} onChange={() => change(session.username)} /><span className="collection-source">微信</span><span className="collection-name">{session.display}</span></label><small>{session.is_group ? '群聊' : '单聊'}</small>{selected.includes(session.username) && <button type="button" className="collection-mode" disabled={busy} onClick={() => setMode(session.username, !Object.prototype.hasOwnProperty.call(messageSelection, session.username))}>{Object.prototype.hasOwnProperty.call(messageSelection, session.username) ? '改为整段' : '逐条选择'}</button>}</div>
         {selected.includes(session.username) && Object.prototype.hasOwnProperty.call(messageSelection, session.username) && settings && <CollectionMessages accountId={accountId} username={session.username} since={boundary(since, false)} until={boundary(until, true)} selected={messageSelection[session.username]} busy={busy} onChange={items => { setPreview(null); setMessageSelection(current => ({ ...current, [session.username]: items })); }} />}

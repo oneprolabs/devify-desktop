@@ -190,6 +190,10 @@ pub struct UploadJob {
     /// local history hold anything newer than what was already uploaded". The incremental
     /// sync keeps its own cursor and is never advanced from here.
     pub covered: BTreeMap<String, SyncCursor>,
+    pub initial_baselines: BTreeMap<String, SyncCursor>,
+    pub sync_advance: bool,
+    pub voice_processed: BTreeMap<String, Vec<VoiceRef>>,
+    pub voice_pending: BTreeMap<String, Vec<VoiceRef>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
@@ -255,6 +259,10 @@ impl Default for UploadJob {
             updated_at: String::new(),
             scope: None,
             covered: BTreeMap::new(),
+            initial_baselines: BTreeMap::new(),
+            sync_advance: false,
+            voice_processed: BTreeMap::new(),
+            voice_pending: BTreeMap::new(),
         }
     }
 }

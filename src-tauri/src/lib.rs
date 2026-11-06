@@ -59,6 +59,7 @@ struct SyncState {
 #[derive(Default)]
 struct UploadState {
     retrying: Mutex<HashSet<String>>,
+    syncing: Mutex<HashSet<String>>,
 }
 
 struct RetryGuard<'a> {
@@ -83,6 +84,12 @@ fn begin_retry<'a>(state: &'a UploadState, id: &str) -> Result<RetryGuard<'a>, S
         retrying: &state.retrying,
         id: id.to_string(),
     })
+}
+
+fn begin_account_upload<'a>(state: &'a UploadState, account: &str) -> Result<RetryGuard<'a>, String> {
+    let mut active = state.syncing.lock().map_err(|_| "无法检查同步状态。")?;
+    if !active.insert(account.to_string()) { return Err("该账号正在上传，请稍后重试。".into()); }
+    Ok(RetryGuard { retrying: &state.syncing, id: account.to_string() })
 }
 
 #[derive(Default)]
@@ -1356,6 +1363,10 @@ fn verify_upload_preview(expected: Option<&str>, actual: &str) -> Result<(), Str
     Ok(())
 }
 
+fn sync_message_selection(messages: &[settings::MessageRef], cursor: Option<settings::SyncCursor>, pending: &[settings::VoiceRef]) -> Vec<settings::MessageRef> {
+    messages.iter().filter(|m| cursor.map_or(true, |c| m.time >= c.time) || pending.iter().any(|v| v.local_id == m.local_id && v.time == m.time && (v.source_shard.is_empty() || v.source_shard == m.source_shard))).cloned().collect()
+}
+
 fn filter_upload_messages(
     messages: Vec<MessageItem>,
     selected: Option<&[settings::MessageRef]>,
@@ -1966,6 +1977,14 @@ fn validate_upload_scope(
 }
 
 #[tauri::command]
+async fn wechat_collection_dates(app: AppHandle, account_id: String, usernames: Vec<String>) -> Result<BTreeMap<String, Vec<(String, usize)>>, String> {
+    let allowed = allowed_usernames(&app, &account_id)?;
+    if usernames.iter().any(|name| !allowed.contains(name)) { return Err("会话不在已选范围中。".into()); }
+    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
+    tauri::async_runtime::spawn_blocking(move || usernames.into_iter().map(|name| query::message_dates(&cache, &name).map(|dates| (name, dates))).collect()).await.map_err(|e| format!("读取日期失败：{e}"))?
+}
+
+#[tauri::command]
 async fn wechat_collection_messages(
     app: AppHandle,
     account_id: String,
@@ -2041,13 +2060,32 @@ async fn devify_upload_selected(
     until: Option<i64>,
     message_selection: Option<BTreeMap<String, Vec<settings::MessageRef>>>,
     fingerprint: String,
+    initial_history: Option<bool>,
 ) -> Result<DevifyUploadResult, String> {
+    let upload_state = app.state::<UploadState>();
+    let _upload_guard = begin_account_upload(&upload_state, &account_id)?;
     let settings = settings::load(&app_data(&app))?;
     validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
     if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("请先预览并确认上传范围。".into());
     }
     let message_selection = message_selection.unwrap_or_default();
+    let mut initial_baselines = BTreeMap::new();
+    if initial_history.unwrap_or(false) {
+        if !message_selection.is_empty() { return Err("首次历史上传请选择整段记录。".into()); }
+        let cache = decrypt::cache_dir(&app_data(&app), &account_id);
+        for username in &usernames {
+            if settings.sync.cursors.get(&account_id).is_some_and(|items| items.contains_key(username)) {
+                return Err("所选会话已有自动同步记录，不能重新设置首次范围。".into());
+            }
+            if settings.upload_queue.iter().any(|job| job.account_id == account_id && job.initial_baselines.contains_key(username)) {
+                return Err("所选会话已有尚未完成的首次历史上传，请先处理该任务。".into());
+            }
+            let (time, local_id) = query::latest_position(&cache, username)?.ok_or("所选会话没有本地消息。")?;
+            let boundary_count = query::count_at_time(&cache, username, time)?;
+            initial_baselines.insert(username.clone(), settings::SyncCursor { time, local_id, boundary_count: Some(boundary_count) });
+        }
+    }
     let scope = settings::UploadScope {
         usernames: usernames.clone(),
         since,
@@ -2068,6 +2106,10 @@ async fn devify_upload_selected(
         updated_at: now,
         scope: Some(scope),
         covered: BTreeMap::new(),
+        initial_baselines,
+        sync_advance: false,
+        voice_processed: BTreeMap::new(),
+        voice_pending: BTreeMap::new(),
     };
     let mut next_settings = settings.clone();
     next_settings.upload_queue.push(job.clone());
@@ -2094,13 +2136,8 @@ async fn devify_upload_selected(
             job.status = "processing".into();
             job.message = "已提交服务端解析".into();
             job.updated_at = chrono::Utc::now().to_rfc3339();
-            update_pending_voice(
-                &mut next_settings.sync,
-                &account_id,
-                &usernames,
-                &result.voice_processed,
-                &result.voice_pending,
-            );
+            job.voice_processed = result.voice_processed.clone();
+            job.voice_pending = result.voice_pending.clone();
             next_settings.upload_queue.retain(|item| item.id != job.id);
             next_settings.upload_queue.insert(0, job);
             settings::save(&app_data(&app), &next_settings)?;
@@ -2178,6 +2215,7 @@ async fn devify_upload_retry(
         .find(|item| item.id == job_id)
         .cloned()
         .ok_or_else(|| "找不到上传任务。".to_string())?;
+    let _upload_guard = begin_account_upload(&state, &job.account_id)?;
     let scope = job.retry_scope(&settings)?.clone();
     let retry_usernames = scope.usernames.clone();
     let retry_since = scope.since;
@@ -2205,13 +2243,8 @@ async fn devify_upload_retry(
                 item.batch_id = Some(value.batch_id);
                 item.covered = value.covered.clone();
                 item.message = "已重新提交服务端解析".into();
-                update_pending_voice(
-                    &mut next.sync,
-                    &job.account_id,
-                    &scope.usernames,
-                    &value.voice_processed,
-                    &value.voice_pending,
-                );
+                item.voice_processed = value.voice_processed.clone();
+                item.voice_pending = value.voice_pending.clone();
             }
             Err(error) => {
                 item.status = "failed".into();
@@ -3578,6 +3611,35 @@ struct ChatSyncSummary {
 
 /// Bring queued upload jobs in line with the server before the next sync, so the local
 /// "not uploaded yet" marks clear once parsing finishes.
+fn apply_completed_history_baselines(value: &mut settings::AppSettings) {
+    for job in &mut value.upload_queue {
+        if job.status != "completed" { continue; }
+        let entries = std::mem::take(&mut job.initial_baselines);
+        if entries.is_empty() { continue; }
+        let cursors = value.sync.cursors.entry(job.account_id.clone()).or_default();
+        for (username, position) in entries { cursors.entry(username).or_insert(position); }
+    }
+}
+
+fn apply_completed_uploads(value: &mut settings::AppSettings) {
+    for job in &mut value.upload_queue {
+        if job.status != "completed" { continue; }
+        if job.sync_advance {
+            let cursors = value.sync.cursors.entry(job.account_id.clone()).or_default();
+            for (username, position) in &job.covered {
+                let replace = cursors.get(username).map_or(true, |old| (position.time, position.local_id) > (old.time, old.local_id) || ((position.time, position.local_id) == (old.time, old.local_id) && position.boundary_count > old.boundary_count));
+                if replace { cursors.insert(username.clone(), *position); }
+            }
+            job.sync_advance = false;
+        }
+        let processed = std::mem::take(&mut job.voice_processed);
+        let pending = std::mem::take(&mut job.voice_pending);
+        if let Some(scope) = &job.scope {
+            update_pending_voice(&mut value.sync, &job.account_id, &scope.usernames, &processed, &pending);
+        }
+    }
+}
+
 async fn reconcile_upload_jobs(app: &AppHandle) {
     let data = app_data(app);
     let Ok(value) = settings::load(&data) else {
@@ -3593,17 +3655,18 @@ async fn reconcile_upload_jobs(app: &AppHandle) {
                     "queued" | "running" | "processing" | "uploading"
                 )
         })
-        .take(25)
         .cloned()
         .collect();
     if pending.is_empty() {
         return;
     }
-    let mut updates = Vec::new();
+    let mut updates = std::collections::HashMap::new();
+    let mut checked = HashSet::new();
     for job in pending {
         let Some(batch_id) = job.batch_id else {
             continue;
         };
+        if !checked.insert(batch_id) { continue; }
         let Ok(status) = devify_upload_status(app.clone(), batch_id).await else {
             continue;
         };
@@ -3620,10 +3683,11 @@ async fn reconcile_upload_jobs(app: &AppHandle) {
                     status.error_message
                 },
             )),
+            "cancelled" => Some(("cancelled".to_string(), "服务端任务已取消".to_string())),
             _ => None,
         };
         if let Some((state, message)) = mapped {
-            updates.push((job.id, state, message));
+            updates.insert(batch_id, (state, message));
         }
     }
     if updates.is_empty() {
@@ -3632,13 +3696,15 @@ async fn reconcile_upload_jobs(app: &AppHandle) {
     let Ok(mut next) = settings::load(&data) else {
         return;
     };
-    for (id, state, message) in updates {
-        if let Some(item) = next.upload_queue.iter_mut().find(|item| item.id == id) {
-            item.status = state;
-            item.message = message;
+    for item in &mut next.upload_queue {
+        if let Some((state, message)) = item.batch_id.and_then(|id| updates.get(&id)) {
+            item.status = state.clone();
+            item.message = message.clone();
             item.updated_at = chrono::Utc::now().to_rfc3339();
         }
     }
+    apply_completed_history_baselines(&mut next);
+    apply_completed_uploads(&mut next);
     let _ = settings::save(&data, &next);
 }
 
@@ -3709,6 +3775,10 @@ fn sync_job(
             message_selection: BTreeMap::new(),
         }),
         covered: BTreeMap::new(),
+        initial_baselines: BTreeMap::new(),
+        sync_advance: false,
+        voice_processed: BTreeMap::new(),
+        voice_pending: BTreeMap::new(),
     }
 }
 
@@ -3735,7 +3805,7 @@ const SYNC_UPLOADS_PER_TICK: usize = 50;
 /// newer than its cursor. The first run of a conversation uploads its full local history.
 async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSummary, String> {
     let data = app_data(app);
-    let value = settings::load(&data)?;
+    let mut value = settings::load(&data)?;
     ensure_wechat_connected(app)?;
     if !manual && !value.sync.enabled {
         return Ok(ChatSyncSummary {
@@ -3750,6 +3820,8 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
     if account_id.is_empty() {
         return Err("尚未选择微信账号。".into());
     }
+    let upload_state = app.state::<UploadState>();
+    let _upload_guard = begin_account_upload(&upload_state, &account_id)?;
     let Some(space_id) = value.devify.active_space_id else {
         return Err("请先在 Devify 配置中选择要同步到的空间。".into());
     };
@@ -3766,6 +3838,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
     whitelist.dedup();
     let base_url = value.devify.base_url.clone();
     reconcile_upload_jobs(app).await;
+    value = settings::load(&data)?;
 
     let scan = discover::scan();
     let Some(account) = scan
@@ -3801,7 +3874,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
         return Err(format!("读取本机聊天记录失败（{}）：{reason}", failure.rel));
     }
 
-    let mut account_cursors = value
+    let account_cursors = value
         .sync
         .cursors
         .get(&account_id)
@@ -3813,16 +3886,21 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
     let mut message_count = 0usize;
     let mut failures: Vec<String> = Vec::new();
     let mut jobs: Vec<settings::UploadJob> = Vec::new();
-    let mut voice_updates: Vec<(
-        String,
-        BTreeMap<String, Vec<settings::VoiceRef>>,
-        BTreeMap<String, Vec<settings::VoiceRef>>,
-    )> = Vec::new();
     let mut touched = false;
 
     for (ordinal, username) in whitelist.iter().enumerate() {
-        if uploaded >= SYNC_UPLOADS_PER_TICK {
+        if !manual && uploaded >= SYNC_UPLOADS_PER_TICK {
             break;
+        }
+        if value.upload_queue.iter().any(|job| job.account_id == account_id && job.space_id == space_id && matches!(job.status.as_str(), "queued" | "running" | "processing" | "uploading") && job.scope.as_ref().is_some_and(|scope| scope.usernames.contains(username))) {
+            skipped += 1;
+            failures.push(format!("{username}：已有上传任务正在处理，请在任务中查看状态"));
+            continue;
+        }
+        if value.upload_queue.iter().any(|job| job.account_id == account_id && job.initial_baselines.contains_key(username)) {
+            skipped += 1;
+            failures.push(format!("{username}：首次历史上传尚未完成，请在任务中查看状态"));
+            continue;
         }
         let cursor = account_cursors.get(username).copied();
         let voice_retry_due = value.voice.upload_transcripts
@@ -3858,18 +3936,31 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
             skipped += 1;
             continue;
         }
-        let pending_since = value
+        let pending_since = voice_retry_due.then(|| value
             .sync
             .pending_voice
             .get(&account_id)
             .and_then(|items| items.get(username))
-            .and_then(|items| items.iter().map(|item| item.time).min());
+            .and_then(|items| items.iter().map(|item| item.time).min())).flatten();
         let since = match (cursor, pending_since) {
             (Some(current), Some(pending)) => Some(current.time.min(pending)),
             (Some(current), None) => Some(current.time),
-            (None, Some(pending)) => Some(pending),
+            (None, Some(_)) => None,
             (None, None) => None,
         };
+        let mut selection = BTreeMap::new();
+        if cursor.is_some() && voice_retry_due {
+            let pending = value.sync.pending_voice.get(&account_id).and_then(|items| items.get(username)).cloned().unwrap_or_default();
+            match collect_upload_messages(&cache, username, since, None, None) {
+                Ok(messages) => {
+                    let refs: Vec<_> = messages.iter().map(|m| settings::MessageRef { local_id: m.local_id, time: m.time, source_shard: m.source_shard.clone() }).collect();
+                    let selected = sync_message_selection(&refs, cursor, &pending);
+                    if selected.is_empty() { skipped += 1; continue; }
+                    selection.insert(username.clone(), selected);
+                }
+                Err(error) => { failures.push(format!("{username}：{error}")); break; }
+            }
+        }
         let result = devify_upload_wechat(
             app.clone(),
             space_id,
@@ -3879,18 +3970,13 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
             None,
             Some(base_url.clone()),
             None,
-            BTreeMap::new(),
+            selection.clone(),
         )
         .await;
         match result {
             Ok(result) => {
                 uploaded += 1;
                 message_count += result.message_count;
-                voice_updates.push((
-                    username.clone(),
-                    result.voice_processed.clone(),
-                    result.voice_pending.clone(),
-                ));
                 let mut job = sync_job(
                     &account_id,
                     space_id,
@@ -3902,9 +3988,12 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
                     "processing",
                     &format!("自动同步：已提交 {} 条消息", result.message_count),
                 );
+                if let Some(scope) = job.scope.as_mut() { scope.message_selection = selection; }
+                job.sync_advance = true;
+                job.voice_processed = result.voice_processed.clone();
+                job.voice_pending = result.voice_pending.clone();
                 if let Some(position) = result.covered.get(username).copied() {
                     job.covered.insert(username.clone(), position);
-                    account_cursors.insert(username.clone(), position);
                 }
                 jobs.push(job);
                 touched = true;
@@ -3934,29 +4023,6 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool) -> Result<ChatSyncSumm
     // settings file on every idle tick.
     if touched || !failures.is_empty() || sync_status_is_stale(&value.sync) {
         let mut next = settings::load(&data)?;
-        if touched {
-            next.sync
-                .cursors
-                .insert(account_id.clone(), account_cursors);
-        }
-        for (username, processed, pending) in voice_updates {
-            let names = vec![username];
-            let mut processed_by_conversation = BTreeMap::new();
-            let mut pending_by_conversation = BTreeMap::new();
-            if let Some(items) = processed.get(names[0].as_str()) {
-                processed_by_conversation.insert(names[0].clone(), items.clone());
-            }
-            if let Some(items) = pending.get(names[0].as_str()) {
-                pending_by_conversation.insert(names[0].clone(), items.clone());
-            }
-            update_pending_voice(
-                &mut next.sync,
-                &account_id,
-                &names,
-                &processed_by_conversation,
-                &pending_by_conversation,
-            );
-        }
         if !jobs.is_empty() {
             next.upload_queue.splice(0..0, jobs);
         }
@@ -5513,7 +5579,9 @@ fn upload_coverage(
                 continue;
             };
             let newer = coverage.get(username).map_or(true, |current| {
-                position.covers((current.time, current.local_id))
+                (position.time, position.local_id) > (current.time, current.local_id)
+                    || ((position.time, position.local_id) == (current.time, current.local_id)
+                        && position.boundary_count > current.boundary_count)
             });
             if newer {
                 coverage.insert(username.clone(), position);
@@ -5521,6 +5589,15 @@ fn upload_coverage(
         }
     }
     coverage
+}
+
+fn conversation_job_state<'a>(value: &'a settings::AppSettings, account_id: &str, username: &str) -> Option<&'a str> {
+    let matches = |job: &&settings::UploadJob| job.account_id == account_id && Some(job.space_id) == value.devify.active_space_id && job.scope.as_ref().is_some_and(|scope| scope.usernames.iter().any(|name| name == username));
+    if value.upload_queue.iter().filter(matches).any(|job| matches!(job.status.as_str(), "queued" | "running" | "uploading" | "processing")) { return Some("processing"); }
+    if value.upload_queue.iter().filter(matches).any(|job| job.status == "failed" && job.batch_id.is_some()) { return Some("failed"); }
+    value.upload_queue.iter().filter(matches)
+        .max_by(|a, b| a.created_at.cmp(&b.created_at))
+        .map(|job| match job.status.as_str() { "queued" | "running" | "uploading" | "processing" => "processing", "failed" | "cancelled" => "failed", "completed" => "synced", _ => "unknown" })
 }
 
 /// Per-conversation upload state for the chat list.
@@ -5535,6 +5612,7 @@ async fn wechat_upload_state(
     usernames: Vec<String>,
 ) -> Result<Vec<SessionUploadState>, String> {
     validate_account_id(&account_id)?;
+    reconcile_upload_jobs(&app).await;
     let data = app_data(&app);
     let value = settings::load(&data)?;
     if !value.connectors.wechat_enabled {
@@ -5576,6 +5654,7 @@ async fn wechat_upload_state(
                 ),
                 None => ("local", 0),
             };
+            let state = if state == "synced" { conversation_job_state(&value, &account_id, &username).unwrap_or("unknown") } else { state };
             states.push(SessionUploadState {
                 username,
                 state: state.to_string(),
@@ -5989,6 +6068,7 @@ pub fn run() {
             devify_note_detail,
             devify_space_takeover,
             wechat_collection_messages,
+            wechat_collection_dates,
             devify_upload_preview,
             devify_upload_selected,
             devify_upload_retry_preview,
@@ -6928,6 +7008,89 @@ mod upload_coverage_tests {
         let mut value = settings::AppSettings::default();
         value.upload_queue = jobs;
         value
+    }
+
+    #[test]
+    fn equal_position_preserves_precise_boundary_count() {
+        let mut value = with_jobs(vec![job("completed", SyncCursor { time: 100, local_id: 5, boundary_count: None }, "")]);
+        value.sync.cursors.entry("acct".into()).or_default().insert("one".into(), SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) });
+        assert_eq!(upload_coverage(&value, "acct")["one"].boundary_count, Some(1));
+    }
+
+    #[test]
+    fn voice_retry_selects_only_pending_and_incremental_messages() {
+        use crate::settings::{MessageRef, VoiceRef};
+        let r = |time, local_id| MessageRef { time, local_id, source_shard: "message_0.db".into() };
+        let messages = vec![r(10, 1), r(20, 2), r(30, 3), r(40, 4)];
+        let voice = vec![VoiceRef { time: 10, local_id: 1, server_id: 11, source_shard: "message_0.db".into() }];
+        assert_eq!(super::sync_message_selection(&messages, Some(SyncCursor { time: 30, local_id: 3, boundary_count: Some(1) }), &voice), vec![r(10, 1), r(30, 3), r(40, 4)]);
+    }
+
+    #[test]
+    fn submitted_job_is_not_reported_as_completed() {
+        let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
+        let mut value = with_jobs(vec![job("processing", position, "2026-11-06T00:00:00Z")]);
+        value.devify.active_space_id = Some(1);
+        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("processing"));
+    }
+
+    #[test]
+    fn older_processing_job_is_not_hidden_by_newer_completed_job() {
+        let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
+        let mut value = with_jobs(vec![job("completed", position, "2026-11-06T01:00:00Z"), job("processing", position, "2026-11-06T00:00:00Z")]);
+        value.devify.active_space_id = Some(1);
+        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("processing"));
+    }
+
+    #[test]
+    fn older_failed_job_is_not_hidden_by_newer_completed_job() {
+        let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
+        let mut value = with_jobs(vec![job("completed", position, "2026-11-06T01:00:00Z"), job("failed", position, "2026-11-06T00:00:00Z")]);
+        value.devify.active_space_id = Some(1);
+        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("failed"));
+    }
+
+    #[test]
+    fn automatic_cursor_advances_only_after_completion() {
+        let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
+        let mut item = job("processing", position, "2026-11-06T00:00:00Z");
+        item.sync_advance = true;
+        let mut value = with_jobs(vec![item]);
+        super::apply_completed_uploads(&mut value);
+        assert!(!value.sync.cursors.contains_key("acct"));
+        value.upload_queue[0].status = "completed".into();
+        super::apply_completed_uploads(&mut value);
+        assert_eq!(value.sync.cursors["acct"]["one"].time, 100);
+    }
+
+    #[test]
+    fn voice_retry_is_kept_until_server_completes() {
+        let voice = settings::VoiceRef { local_id: 1, time: 10, server_id: 2, source_shard: "message_0.db".into() };
+        let mut item = job("processing", SyncCursor { time: 10, local_id: 1, boundary_count: Some(1) }, "");
+        item.voice_processed.insert("one".into(), vec![voice.clone()]);
+        let mut value = with_jobs(vec![item]);
+        value.sync.pending_voice.entry("acct".into()).or_default().insert("one".into(), vec![voice]);
+        super::apply_completed_uploads(&mut value);
+        assert_eq!(value.sync.pending_voice["acct"]["one"].len(), 1);
+        value.upload_queue[0].status = "failed".into();
+        super::apply_completed_uploads(&mut value);
+        assert_eq!(value.sync.pending_voice["acct"]["one"].len(), 1);
+        value.upload_queue[0].status = "completed".into();
+        super::apply_completed_uploads(&mut value);
+        assert!(!value.sync.pending_voice.contains_key("acct"));
+    }
+
+    #[test]
+    fn initial_history_baseline_waits_for_completion() {
+        let cursor = SyncCursor { time: 300, local_id: 3, boundary_count: Some(1) };
+        let mut item = job("processing", cursor, "2026-11-06T00:00:00Z");
+        item.initial_baselines.insert("one".into(), cursor);
+        let mut value = with_jobs(vec![item]);
+        super::apply_completed_history_baselines(&mut value);
+        assert!(!value.sync.cursors.contains_key("acct"));
+        value.upload_queue[0].status = "completed".into();
+        super::apply_completed_history_baselines(&mut value);
+        assert_eq!(value.sync.cursors["acct"]["one"].time, 300);
     }
 
     #[test]
