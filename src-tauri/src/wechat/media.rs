@@ -33,6 +33,8 @@ const MAX_THUMB_BYTES: u64 = 96 * 1024;
 pub struct MediaItem {
     pub local_id: i64,
     pub server_id: i64,
+    pub source_shard: String,
+    pub time: i64,
     pub kind: String,
     pub name: Option<String>,
     pub rel_path: Option<String>,
@@ -589,6 +591,8 @@ pub fn resolve(
                 MediaItem {
                     local_id: message.local_id,
                     server_id: message.server_id,
+                    source_shard: message.source_shard.clone(),
+                    time: message.time,
                     kind: "image".to_string(),
                     name: None,
                     rel_path: raw_path.as_deref().and_then(|p| relative_to(account_dir, p)),
@@ -638,6 +642,8 @@ pub fn resolve(
                 MediaItem {
                     local_id: message.local_id,
                     server_id: message.server_id,
+                    source_shard: message.source_shard.clone(),
+                    time: message.time,
                     kind: "video".to_string(),
                     name: path
                         .as_deref()
@@ -670,6 +676,8 @@ pub fn resolve(
                     MediaItem {
                         local_id: message.local_id,
                         server_id: message.server_id,
+                        source_shard: message.source_shard.clone(),
+                        time: message.time,
                         kind: "file".to_string(),
                         name: title,
                         rel_path: path.as_deref().and_then(|p| relative_to(account_dir, p)),
@@ -697,6 +705,8 @@ pub fn resolve(
                 MediaItem {
                     local_id: message.local_id,
                     server_id: message.server_id,
+                    source_shard: message.source_shard.clone(),
+                    time: message.time,
                     kind: "voice".to_string(),
                     name: None,
                     rel_path: None,
@@ -1175,6 +1185,7 @@ mod tests {
 
         let messages = vec![
             RawMessage {
+                source_shard: String::new(),
                 local_id: 1,
                 server_id: 11,
                 time,
@@ -1182,6 +1193,7 @@ mod tests {
                 content: r#"<msg><img length="219493" cdnthumblength="17548" /></msg>"#.into(),
             },
             RawMessage {
+                source_shard: String::new(),
                 local_id: 2,
                 server_id: 12,
                 time,
@@ -1189,6 +1201,7 @@ mod tests {
                 content: r#"<msg><videomsg length="1564891" playlength="9" /></msg>"#.into(),
             },
             RawMessage {
+                source_shard: String::new(),
                 local_id: 3,
                 server_id: 13,
                 time,
@@ -1196,6 +1209,7 @@ mod tests {
                 content: "<msg><appmsg><title>预算.xlsx</title><type>6</type><totallen>5</totallen></appmsg></msg>".into(),
             },
             RawMessage {
+                source_shard: String::new(),
                 local_id: 42,
                 server_id: 14,
                 time,

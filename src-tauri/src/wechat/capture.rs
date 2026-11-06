@@ -11,11 +11,10 @@
 //!    crashed capture can always be restored without another authorization prompt;
 //! 3. keep a verified `ditto` ZIP of the original bundle, then clone it on the same volume
 //!    (`clonefile`) as the restore source;
-//! 4. probe first, then re-sign only the *clone* ad-hoc: Tencent's entitlement dictionary is kept
-//!    when an ad-hoc signature can start with it, otherwise the team-bound claims are stripped
-//!    (`EntitlementMode::Sanitized`) because macOS 15 kills such a process before `main`
-//!    (launchd 153). The sandbox must survive and the login helper must stay Tencent-signed, then
-//!    the clone is atomically exchanged into `/Applications/WeChat.app`;
+//! 4. probe first, then re-sign only the *clone* ad-hoc: Tencent's entitlements are kept when
+//!    accepted; otherwise the clone and nested components are signed without entitlements. The
+//!    latter runs without the original sandbox and may use a different data directory. The clone
+//!    is atomically exchanged into `/Applications/WeChat.app`;
 //! 5. the user opens WeChat themselves and logs in, so a macOS security prompt is never
 //!    bypassed on their behalf;
 //! 6. preflight the `CCKeyDerivationPBKDF` breakpoint, ask the user to log out, then attach
@@ -475,6 +474,7 @@ pub enum EntitlementMode {
     #[default]
     Preserved,
     Sanitized,
+    Deep,
 }
 
 impl EntitlementMode {
@@ -482,6 +482,7 @@ impl EntitlementMode {
         match self {
             EntitlementMode::Preserved => "preserved",
             EntitlementMode::Sanitized => "sanitized",
+            EntitlementMode::Deep => "deep",
         }
     }
 }
@@ -683,9 +684,7 @@ const PROBE_INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 /// Start a throwaway sandboxed bundle signed ad-hoc with exactly these entitlements.
 ///
-/// AMFI, launchd and the sandbox all decide from the code signature and the entitlement
-/// dictionary alone, so a copy of `/usr/bin/true` inside a minimal bundle reproduces the verdict
-/// WeChat would get — without launching WeChat, touching its container or asking for a password.
+/// This checks a minimal non-Apple executable, not whether the complete WeChat bundle will launch.
 fn amfi_probe(entitlements_plist: &str, scratch: &Scratch, name: &str) -> AmfiVerdict {
     let bundle = scratch.path().join(format!("{name}.app"));
     let macos = bundle.join("Contents").join("MacOS");
@@ -695,7 +694,7 @@ fn amfi_probe(entitlements_plist: &str, scratch: &Scratch, name: &str) -> AmfiVe
     let prepared = fs::create_dir_all(&macos).is_ok()
         && fs::write(&plist_path, entitlements_plist).is_ok()
         && fs::write(bundle.join("Contents").join("Info.plist"), PROBE_INFO_PLIST).is_ok()
-        && fs::copy("/usr/bin/true", &executable).is_ok();
+        && write_probe_executable(&executable).is_ok();
     if !prepared {
         return AmfiVerdict::Unknown;
     }
@@ -728,10 +727,24 @@ fn amfi_probe(entitlements_plist: &str, scratch: &Scratch, name: &str) -> AmfiVe
         let _ = fs::remove_dir_all(container);
     }
     match outcome {
-        // Killed by AMFI (SIGKILL) or refused at spawn (`Launchd job spawn failed`).
+        // SIGKILL suggests rejection; other failures do not establish the cause.
         Ok(status) if status.success() => AmfiVerdict::Accepted,
-        Ok(_) | Err(_) => AmfiVerdict::Rejected,
+        #[cfg(target_os = "macos")]
+        Ok(status) if std::os::unix::process::ExitStatusExt::signal(&status) == Some(9) => AmfiVerdict::Rejected,
+        Ok(_) | Err(_) => AmfiVerdict::Unknown,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn write_probe_executable(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, include_bytes!(concat!(env!("OUT_DIR"), "/amfi-probe")))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_probe_executable(_: &Path) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "macOS only"))
 }
 
 /// `Some(true)`/`Some(false)` only when the probe actually ran; `None` means "unknown".
@@ -748,9 +761,8 @@ fn amfi_accepts_entitlements(entitlements: &serde_json::Value) -> Option<bool> {
 fn amfi_rejected_error() -> CaptureError {
     CaptureError::new(
         "in_place_amfi_rejected",
-        "这台 Mac 不允许启动 ad-hoc 签名的微信：系统会在微信进程创建前就拒绝它（launchd 153），\
-         剔除腾讯团队的受限权限后仍然被拒。为避免留下无法启动的微信，本次没有重签，\
-         /Applications/WeChat.app 保持原样。请改用「导入密钥」，或换一台 macOS 14 及更早的 Mac。",
+        "签名权限探针在测试时被系统终止，无法确认临时微信是否能启动。\
+         为避免留下无法启动的微信，本次没有重签，/Applications/WeChat.app 保持原样。请改用「导入密钥」。",
     )
 }
 
@@ -789,16 +801,12 @@ fn plan_entitlements(app: &Path) -> CaptureResult<EntitlementPlan> {
         AmfiVerdict::Rejected => {}
     }
 
-    let (sanitized, dropped) = sanitize_entitlements(&entitlements);
-    if dropped.is_empty() {
-        // Nothing to strip, so a rejection cannot be worked around here.
-        return Err(amfi_rejected_error());
-    }
-    let plist = plist_from_json(&sanitized, &scratch, "sanitized")?;
+    let dropped = entitlements.as_object().map(|v| v.keys().cloned().collect()).unwrap_or_default();
+    let plist = plist_from_json(&serde_json::json!({}), &scratch, "deep")?;
     match amfi_probe(&plist, &scratch, "sanitized") {
         AmfiVerdict::Accepted => Ok(EntitlementPlan {
-            mode: EntitlementMode::Sanitized,
-            plist: Some(plist),
+            mode: EntitlementMode::Deep,
+            plist: None,
             dropped,
         }),
         AmfiVerdict::Rejected => Err(amfi_rejected_error()),
@@ -824,10 +832,20 @@ fn entitlements_text_is_compatible(text: &str, mode: EntitlementMode) -> bool {
             !RESTRICTED_ENTITLEMENTS.iter().any(|key| has(key))
                 && !text.contains(&format!("<key>{RESTRICTED_ENTITLEMENT_PREFIX}"))
         }
+        EntitlementMode::Deep => false,
     }
 }
 
 pub fn in_place_signature_is_compatible(app: &Path, mode: EntitlementMode) -> bool {
+    if mode == EntitlementMode::Deep {
+        let helper = app.join(LOGIN_HELPER);
+        let no_entitlements = run(&["/usr/bin/codesign", "-d", "--entitlements", ":-", "--xml", &app.to_string_lossy()])
+            .map(|(ok, stdout, stderr)| ok && !stdout.contains("<plist") && !stderr.contains("<plist"))
+            .unwrap_or(false);
+        return inspect_signature(app, true).map(|s| s.is_debuggable_ad_hoc()).unwrap_or(false)
+            && no_entitlements
+            && inspect_signature(&helper, false).map(|s| s.is_debuggable_ad_hoc() && s.identifier == LOGIN_HELPER_IDENTIFIER).unwrap_or(false);
+    }
     let (_, stdout, stderr) = run(&[
         "/usr/bin/codesign",
         "-d",
@@ -1524,9 +1542,11 @@ fn resumable_result(root: &Path, state: &CaptureState) -> Option<serde_json::Val
 }
 
 fn lldb_available() -> bool {
-    ["/usr/bin/lldb", "/usr/local/bin/lldb", "/opt/homebrew/bin/lldb"]
-        .iter()
-        .any(|path| Path::new(path).is_file())
+    Command::new("/usr/bin/lldb")
+        .args(["--batch", "-o", "script import lldb; print('WEDATA_PYTHON_READY')"])
+        .output()
+        .map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).lines().any(|line| line.trim() == "WEDATA_PYTHON_READY"))
+        .unwrap_or(false)
 }
 
 pub fn status(app: &Path, root: &Path, backup_root: &Path) -> CaptureStatus {
@@ -1572,9 +1592,11 @@ pub fn status(app: &Path, root: &Path, backup_root: &Path) -> CaptureStatus {
         status.entitlement_mode = Some(state.entitlement_mode.as_str().to_string());
         status.capture_phase = state.capture_phase.clone();
         if state.stage == "capturing" && resumable_result(root, &state).is_some() {
-            // Nothing is monitoring any more; the result is waiting to be validated and imported.
-            status.resume_available = true;
-            status.capture_phase = Some("captured".to_string());
+            // Only a stopped owner needs the recovery button; a live capture completes itself.
+            status.resume_available = !process_alive(state.owner_pid);
+            if !matches!(state.capture_phase.as_deref(), Some("validating" | "restoring")) {
+                status.capture_phase = Some("captured".to_string());
+            }
         }
         status.monitor_ready = read_json(&ready_path(root))
             .and_then(|value| value.get("status").and_then(|v| v.as_str()).map(str::to_string))
@@ -1597,7 +1619,7 @@ pub fn status(app: &Path, root: &Path, backup_root: &Path) -> CaptureStatus {
         "capturing" => match status.capture_phase.as_deref() {
             Some("waiting_authorization") => "等待管理员授权，请在弹出的系统对话框中输入密码。".to_string(),
             Some("monitoring") => "监测已就绪：请重新登录要获取的账号。".to_string(),
-            Some("captured") => "已捕获密钥，正在恢复腾讯原版微信。".to_string(),
+            Some("captured") => "已捕获密钥，正在结束调试会话，随后校验并恢复腾讯原版微信。".to_string(),
             Some("validating") => "正在逐库校验捕获结果。".to_string(),
             Some("restoring") => "正在恢复腾讯原版微信。".to_string(),
             _ => "捕获进行中。".to_string(),
@@ -1609,7 +1631,7 @@ pub fn status(app: &Path, root: &Path, backup_root: &Path) -> CaptureStatus {
         "invalid" => "捕获状态异常，请先恢复微信。".to_string(),
         _ if status.pending => "存在未完成的捕获，请先恢复腾讯原版微信。".to_string(),
         _ if !platform_supported => "应用内捕获目前仅支持 Apple Silicon Mac。".to_string(),
-        _ if !status.lldb_available => "没有找到 LLDB，请先安装 Xcode Command Line Tools。".to_string(),
+        _ if !status.lldb_available => "LLDB 或其 Python 运行环境无法启动，请修复 Xcode Command Line Tools 后重试。".to_string(),
         _ if !status.wechat_present => "没有在「应用程序」中找到微信。".to_string(),
         _ if !status.wechat_official => {
             "当前微信不是腾讯原签名版本，已停止应用内捕获（可用备份手动恢复）。".to_string()
@@ -1944,10 +1966,7 @@ fn python_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-/// The reference's LLDB wrapper: feed the command file through a FIFO while keeping a
-/// keepalive producer, and reap LLDB, the producer and the watchdog as soon as LLDB exits.
-/// `do shell script` only returns stdout after the privileged command exits, so without this
-/// wrapper a successful capture would look stuck until the timeout.
+/// LLDB paths containing spaces need quoting when used inside its command files.
 /// LLDB splits `command script import` on whitespace and the capture directory lives under
 /// `…/Application Support/…`, so the callback path must be quoted or the import silently fails and
 /// the script never defines its command (which looks like "no usable breakpoints").
@@ -1959,21 +1978,28 @@ fn lldb_quote(path: &Path) -> String {
     format!("\"{value}\"")
 }
 
+#[cfg(test)]
 fn lldb_command(script_path: &Path, keepalive_secs: u64) -> String {
+    lldb_command_with_executable(script_path, keepalive_secs, Path::new("/usr/bin/lldb"))
+}
+
+#[cfg(test)]
+fn lldb_command_with_executable(script_path: &Path, keepalive_secs: u64, executable: &Path) -> String {
+    lldb_command_inner(script_path, keepalive_secs, executable, None)
+}
+
+fn lldb_command_inner(script_path: &Path, keepalive_secs: u64, executable: &Path, captured: Option<(&Path, &str, i64)>) -> String {
     let script_arg = shell_quote(script_path);
     let keepalive = keepalive_secs.max(1);
+    let (ready_path, transaction, target_pid) = captured.unwrap_or((Path::new(""), "", 0));
     let shell = format!(
         r#"capture_dir=$(/usr/bin/mktemp -d /tmp/wedata-lldb.XXXXXX)
-capture_fifo="$capture_dir/stdin"
-producer_pid=""
 lldb_pid=""
 watchdog_pid=""
 cleanup() {{
   trap '' HUP INT TERM
-  if [ -n "$producer_pid" ]; then /bin/kill "$producer_pid" 2>/dev/null || true; fi
   if [ -n "$watchdog_pid" ]; then /bin/kill "$watchdog_pid" 2>/dev/null || true; fi
   if [ -n "$lldb_pid" ]; then /bin/kill "$lldb_pid" 2>/dev/null || true; fi
-  if [ -n "$producer_pid" ]; then wait "$producer_pid" 2>/dev/null || true; fi
   if [ -n "$watchdog_pid" ]; then wait "$watchdog_pid" 2>/dev/null || true; fi
   if [ -n "$lldb_pid" ]; then wait "$lldb_pid" 2>/dev/null || true; fi
   /bin/rm -rf "$capture_dir"
@@ -1982,31 +2008,23 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-/usr/bin/mkfifo "$capture_fifo"
-( /bin/cat {script}; exec /bin/sleep {keepalive} ) > "$capture_fifo" &
-producer_pid=$!
-/usr/bin/env TERM=dumb /usr/bin/lldb < "$capture_fifo" 2>&1 &
+/usr/bin/env TERM=dumb {executable} --batch --source {script} < /dev/null > "$capture_dir/output" 2>&1 &
 lldb_pid=$!
-(
-  watchdog_sleep_pid=""
-  watchdog_cancelled=""
-  trap 'watchdog_cancelled=1' HUP INT TERM
-  cleanup_watchdog() {{
-    trap '' HUP INT TERM
-    if [ -n "$watchdog_sleep_pid" ]; then
-      /bin/kill "$watchdog_sleep_pid" 2>/dev/null || true
-      wait "$watchdog_sleep_pid" 2>/dev/null || true
-    fi
+/usr/bin/env LC_ALL=C LANG=C /usr/bin/perl -MJSON::PP -e '
+  my ($timeout, $debugger, $ready, $transaction, $target) = @ARGV;
+  my $deadline = time + $timeout;
+  while (time < $deadline) {{
+    if ($target && open(my $file, "<", $ready)) {{
+      local $/; my $data = eval {{ decode_json(<$file>) }}; close($file);
+      if (ref($data) eq "HASH" && ($data->{{status}} // "") eq "captured" &&
+          ($data->{{transaction_id}} // "") eq $transaction && !kill(0, $target)) {{
+        kill "TERM", $debugger; exit 0;
+      }}
+    }}
+    select(undef, undef, undef, 0.2);
   }}
-  trap cleanup_watchdog EXIT
-  /bin/sleep {keepalive} &
-  watchdog_sleep_pid=$!
-  trap 'exit 0' HUP INT TERM
-  if [ -n "$watchdog_cancelled" ]; then exit 0; fi
-  wait "$watchdog_sleep_pid"
-  watchdog_sleep_pid=""
-  /bin/kill -TERM "$lldb_pid" 2>/dev/null || true
-) &
+  kill "TERM", $debugger;
+' {keepalive} "$lldb_pid" {ready} {transaction} {target} </dev/null >/dev/null 2>&1 &
 watchdog_pid=$!
 wait "$lldb_pid"
 lldb_status=$?
@@ -2014,26 +2032,32 @@ lldb_pid=""
 /bin/kill "$watchdog_pid" 2>/dev/null || true
 wait "$watchdog_pid" 2>/dev/null || true
 watchdog_pid=""
-/bin/kill "$producer_pid" 2>/dev/null || true
-wait "$producer_pid" 2>/dev/null || true
-producer_pid=""
+/bin/cat "$capture_dir/output"
 echo "WEDATA_LLDB_EXIT=$lldb_status"
 exit 0
 "#,
         script = script_arg,
-        keepalive = keepalive
+        executable = shell_quote(executable),
+        keepalive = keepalive,
+        ready = shell_quote(ready_path),
+        transaction = shell_quote_text(transaction),
+        target = target_pid,
     );
     format!("/bin/bash -c {}", shell_quote_text(&shell))
 }
 
 fn run_lldb(script_body: &Path, timeout_secs: u64) -> CaptureResult<String> {
+    run_lldb_with_capture(script_body, timeout_secs, None)
+}
+
+fn run_lldb_with_capture(script_body: &Path, timeout_secs: u64, captured: Option<(&Path, &str, i64)>) -> CaptureResult<String> {
     if !lldb_available() {
         return Err(CaptureError::new(
             "lldb_missing",
-            "系统里没有 LLDB。请先安装 Xcode Command Line Tools（xcode-select --install）后再试。",
+            "LLDB 或其 Python 运行环境无法启动，请修复 Xcode Command Line Tools 后再试。",
         ));
     }
-    let command = lldb_command(script_body, timeout_secs);
+    let command = lldb_command_inner(script_body, timeout_secs, Path::new("/usr/bin/lldb"), captured);
     run_as_administrator(&command, Duration::from_secs(timeout_secs + 45))
 }
 
@@ -2077,7 +2101,9 @@ fn sign_debug_clone(staged: &Path, plan: &EntitlementPlan) -> CaptureResult<Sign
     let scratch = Scratch::new("in-place-sign")?;
     let target = staged.to_string_lossy().to_string();
     let mut owned_args: Vec<String> = vec!["/usr/bin/codesign".to_string(), "--force".to_string()];
-    match plan.plist.as_deref() {
+    if plan.mode == EntitlementMode::Deep {
+        owned_args.push("--deep".to_string());
+    } else { match plan.plist.as_deref() {
         Some(plist) => {
             let path = scratch.path().join("debug-entitlements.plist");
             fs::write(&path, plist).map_err(|error| {
@@ -2091,7 +2117,7 @@ fn sign_debug_clone(staged: &Path, plan: &EntitlementPlan) -> CaptureResult<Sign
         }
         // macOS 14 and earlier: keep Tencent's entitlement dictionary verbatim.
         None => owned_args.push("--preserve-metadata=entitlements".to_string()),
-    }
+    }}
     owned_args.push("--sign".to_string());
     owned_args.push("-".to_string());
     owned_args.push(target.clone());
@@ -2131,6 +2157,7 @@ fn sign_debug_clone(staged: &Path, plan: &EntitlementPlan) -> CaptureResult<Sign
                 EntitlementMode::Sanitized => {
                     "临时签名没有保留沙箱与网络权限，或仍带有腾讯团队的受限权限，已停止。"
                 }
+                EntitlementMode::Deep => "临时副本的深度签名或权限校验失败，已停止。",
             },
         )
         .modified());
@@ -2266,15 +2293,20 @@ pub fn prepare(
         }
         // The signature that actually landed must pass the same probe. If it does not, hand the
         // official bundle back instead of a WeChat that the system will refuse to start.
-        if let Ok(installed_entitlements) = read_entitlements(&app) {
-            if amfi_accepts_entitlements(&installed_entitlements) == Some(false) {
+        {
+            let verdict = if plan.mode == EntitlementMode::Deep {
+                amfi_accepts_entitlements(&serde_json::json!({}))
+            } else {
+                read_entitlements(&app).ok().and_then(|entitlements| amfi_accepts_entitlements(&entitlements))
+            };
+            if verdict != Some(true) {
                 if debug_identity_matches(&app, Some(&debug_identity)) {
                     let _ = atomic_swap(&app, &staged);
                 }
                 return Err(CaptureError::new(
                     "in_place_amfi_rejected",
-                    "安装后的临时副本被这台 Mac 的签名校验拒绝（AMFI），已换回腾讯原版微信。\
-                     请改用「导入密钥」，或换一台 macOS 14 及更早的 Mac 获取密钥。",
+                    "无法确认安装后的临时副本的签名权限可用，已尝试换回腾讯原版微信。\
+                     请检查恢复状态，或改用「导入密钥」。",
                 )
                 .modified());
             }
@@ -2468,13 +2500,23 @@ pub fn preflight(app: &Path, root: &Path) -> CaptureResult<PreflightResult> {
     let _ = fs::remove_file(&command_file);
 
     let compact = output.to_lowercase();
+    if compact.contains("library not loaded") || compact.contains("wedata_lldb_exit=134") {
+        let _ = write_script(root, "last-preflight.log", &output);
+        return Err(CaptureError::new(
+            "lldb_runtime_unavailable",
+            "LLDB 无法启动：缺少运行库。请修复 Xcode Command Line Tools 的 Python 运行环境；监测未启动，请不要退出账号。",
+        ));
+    }
     if compact.contains("attach failed") || compact.contains("not allowed to attach") {
         return Err(CaptureError::new(
             "lldb_attach_failed",
             "LLDB 无法附加临时调试微信，请确认管理员授权已完成。",
         ));
     }
-    let payload = read_json(&preflight_path(root)).unwrap_or(serde_json::Value::Null);
+    let payload = read_json(&preflight_path(root)).ok_or_else(|| {
+        let _ = write_script(root, "last-preflight.log", &output);
+        CaptureError::new("lldb_preflight_failed", "断点检查没有返回结果，请检查 LLDB 日志；监测未启动，请不要退出账号。")
+    })?;
     let locations = payload
         .get("pbkdf_locations")
         .and_then(|value| value.as_i64())
@@ -2641,8 +2683,10 @@ pub fn capture(app: &Path, root: &Path, probes: &[Probe], timeout_secs: u64) -> 
     let command_timeout = timeout_secs;
     {
         let command_file = command_file.clone();
+        let capture_ready = ready_path(root);
+        let transaction = state.transaction_id.clone();
         thread::spawn(move || {
-            let _ = tx.send(run_lldb(&command_file, command_timeout));
+            let _ = tx.send(run_lldb_with_capture(&command_file, command_timeout, Some((&capture_ready, &transaction, pid))));
         });
     }
 
@@ -3395,6 +3439,15 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[ignore = "requires the separately prepared WeChat trial bundle"]
+    fn deep_signed_trial_is_compatible() {
+        let path = std::env::var_os("WECHAT_TRIAL_APP").expect("set WECHAT_TRIAL_APP");
+        let app = Path::new(&path);
+        assert!(in_place_signature_is_compatible(app, EntitlementMode::Deep));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn amfi_probe_bundle_uses_the_identifier_that_gets_cleaned_up() {
         assert!(PROBE_INFO_PLIST.contains(&format!("<string>{PROBE_BUNDLE_ID}</string>")));
     }
@@ -3452,10 +3505,105 @@ mod tests {
     fn lldb_command_quotes_the_script_and_keeps_a_watchdog() {
         let command = lldb_command(Path::new("/tmp/with space/capture.lldb"), 240);
         assert!(command.starts_with("/bin/bash -c "));
-        assert!(command.contains("/bin/sleep 240"));
+        assert!(command.contains("--batch --source"));
+        assert!(command.contains(" 240 "));
         assert!(command.contains("capture.lldb"));
         // The script path is single-quoted inside the shell body.
         assert!(command.contains("'/tmp/with space/capture.lldb'"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lldb_wrapper_executes_command_file_in_batch() {
+        if !lldb_available() { return; }
+        let scratch = Scratch::new("lldb-batch-test").unwrap();
+        let script = scratch.path().join("commands with spaces.lldb");
+        fs::write(&script, "script print('WEDATA_BATCH_TEST_OK')\n").unwrap();
+        let output = Command::new("/bin/bash").arg("-c")
+            .arg(lldb_command(&script, 10)).output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.lines().any(|line| line.trim() == "WEDATA_BATCH_TEST_OK"), "{text}");
+        assert!(text.contains("WEDATA_LLDB_EXIT=0"), "{text}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lldb_wrapper_finishes_promptly_after_debugger_exits() {
+        if !lldb_available() { return; }
+        let scratch = Scratch::new("lldb-exit-test").unwrap();
+        let script = scratch.path().join("commands.lldb");
+        fs::write(&script, "script import os; os._exit(0)\n").unwrap();
+        let command = lldb_command(&script, 6);
+        let started = Instant::now();
+        let output = Command::new("/bin/bash").arg("-c").arg(command).output().unwrap();
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(4), "debugger wrapper waited for watchdog: {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn lldb_wrapper_does_not_wait_for_inherited_output_from_a_child() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("lldb-inherited-output-test").unwrap();
+        let script = scratch.path().join("commands.lldb");
+        let executable = scratch.path().join("fake-lldb");
+        fs::write(&script, "\n").unwrap();
+        fs::write(&executable, "#!/bin/sh\n/bin/sleep 6 &\nexit 0\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let command = lldb_command_with_executable(&script, 8, &executable);
+        let started = Instant::now();
+        let output = Command::new("/bin/bash").arg("-c").arg(command).output().unwrap();
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(4), "inherited output kept wrapper open: {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn lldb_wrapper_still_stops_a_stuck_debugger() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("lldb-timeout-test").unwrap();
+        let script = scratch.path().join("commands.lldb");
+        let executable = scratch.path().join("fake-lldb");
+        fs::write(&script, "\n").unwrap();
+        fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 15\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let started = Instant::now();
+        let output = Command::new("/bin/bash").arg("-c")
+            .arg(lldb_command_with_executable(&script, 2, &executable)).output().unwrap();
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(8), "watchdog did not stop debugger");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("WEDATA_LLDB_EXIT=0"));
+    }
+
+    #[test]
+    fn captured_result_stops_debugger_only_after_matching_target_exits() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("lldb-captured-test").unwrap();
+        let script = scratch.path().join("commands.lldb");
+        let executable = scratch.path().join("fake-lldb");
+        let ready = scratch.path().join("ready.json");
+        fs::write(&script, "\n").unwrap();
+        fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 30\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut target = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let command = lldb_command_inner(&script, 12, &executable, Some((&ready, "expected", target.id() as i64)));
+        let mut wrapper = Command::new("/bin/bash").arg("-c").arg(command).stdout(Stdio::null()).spawn().unwrap();
+        fs::write(&ready, r#"{"status":"captured","transaction_id":"expected"}"#).unwrap();
+        thread::sleep(Duration::from_millis(700));
+        let alive_before_exit = wrapper.try_wait().unwrap().is_none();
+        fs::write(&ready, r#"{"status":"captured","transaction_id":"other"}"#).unwrap();
+        target.kill().unwrap();
+        target.wait().unwrap();
+        thread::sleep(Duration::from_millis(700));
+        let alive_for_wrong_transaction = wrapper.try_wait().unwrap().is_none();
+        fs::write(&ready, r#"{"status":"captured","transaction_id":"expected"}"#).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while wrapper.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+        }
+        let stopped = wrapper.try_wait().unwrap().is_some();
+        if !stopped { let _ = wrapper.kill(); let _ = wrapper.wait(); }
+        assert!(alive_before_exit, "debugger stopped while target was still alive");
+        assert!(alive_for_wrong_transaction, "debugger stopped for another transaction");
+        assert!(stopped, "debugger did not stop after target exited");
     }
 
     #[test]

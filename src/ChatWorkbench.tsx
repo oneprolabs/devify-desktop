@@ -10,7 +10,8 @@ type Session = { username: string; display: string; is_group: boolean; last_time
 type Settings = { active_account_id?: string; chat?: { sync_interval_seconds?: number }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
 type Scan = { accounts?: Array<{ id: string; modified_at?: number | null }> };
 type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
-type Page<T> = { list?: T[]; pagination?: { total?: number } };
+type Page<T> = { list?: T[]; pagination?: { total?: number; next?: unknown } };
+type CloudConversation = { id: number; platform: string; source_namespace: string; source_conversation_id: string };
 type Avatar = { username: string; data_url: string };
 // Rust decides this from the newest local message and the newest uploaded position, so a
 // failed upload or new local records cannot be hidden behind a queue status.
@@ -54,6 +55,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [eventsScope, setEventsScope] = useState('');
   const [summaries, setSummaries] = useState<SummaryRecord[]>([]);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -62,6 +64,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState>>({});
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventRefresh, setEventRefresh] = useState(0);
   const [error, setError] = useState('');
   const [eventsError, setEventsError] = useState('');
   const [openSummaryRequest, setOpenSummaryRequest] = useState(false);
@@ -90,19 +93,49 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
           .then(items => setAvatars(Object.fromEntries((items ?? []).map(item => [item.username, item.data_url]))))
           .catch(() => setAvatars({}));
       }
-      if (stored.devify?.active_space_id) {
-        setEventsLoading(true);
-        try {
-          const result = await invoke<Page<EventItem>>('devify_analysis_list', { kind: 'events', spaceId: stored.devify.active_space_id, page: 1 });
-          setEvents(result.list ?? []); setEventsError('');
-        } catch (reason) { setEvents([]); setEventsError(String(reason)); }
-        finally { setEventsLoading(false); }
-      }
+      setEventRefresh(value => value + 1);
       try { setSummaries(await invoke<SummaryRecord[]>('summary_history_list')); } catch { setSummaries([]); }
     } catch (reason) { setError(String(reason)); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const spaceId = settings?.devify?.active_space_id;
+    const username = selectedSession?.username;
+    const requestScope = JSON.stringify([spaceId, accountId, username]);
+    setEvents([]);
+    setEventsError('');
+    if (!isTauri() || !spaceId || !username || !accountId) {
+      setEventsLoading(false);
+      return () => { cancelled = true; };
+    }
+    setEventsLoading(true);
+    void (async () => {
+      try {
+        let conversation: CloudConversation | undefined;
+        for (let page = 1; page <= 100; page += 1) {
+          const result = await invoke<Page<CloudConversation>>('devify_conversations', { spaceId, search: username, page, pageSize: 100 });
+          if (cancelled) return;
+          if (!Array.isArray(result.list) || result.pagination?.next === undefined) throw new Error('无法完整读取云端会话，请重试。');
+          const matches = result.list.filter(item => item.platform === 'wechat' && item.source_namespace === accountId && item.source_conversation_id === username);
+          if (matches.length > 1) throw new Error('云端存在多个相同来源的会话，无法安全筛选事件。');
+          conversation = matches[0];
+          if (conversation || !result.pagination?.next) break;
+          if (page === 100) throw new Error('云端会话过多，无法完整筛选事件。');
+        }
+        if (!conversation) return;
+        const result = await invoke<Page<EventItem>>('devify_analysis_list', { kind: 'events', spaceId, page: 1, conversationId: conversation.id });
+        if (!cancelled) { setEventsScope(requestScope); setEvents(result.list ?? []); }
+      } catch (reason) {
+        if (!cancelled) setEventsError(String(reason));
+      } finally {
+        if (!cancelled) setEventsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [settings?.devify?.active_space_id, accountId, selectedSession?.username, eventRefresh]);
 
   const reloadSummaries = useCallback(async () => {
     try { setSummaries(await invoke<SummaryRecord[]>('summary_history_list')); } catch { /* keep the last list */ }
@@ -148,10 +181,11 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     const keyword = view === 'raw' ? '' : query.trim().toLowerCase();
     return sessions.filter(session => (!keyword || `${session.display} ${session.username}`.toLowerCase().includes(keyword)) && (filter === 'all' || (filter === 'pending' ? uploadState.pending.has(session.username) : uploadState.local.has(session.username))));
   }, [sessions, query, filter, uploadState, view]);
+  const scopedEvents = eventsScope === JSON.stringify([settings?.devify?.active_space_id, accountId, selectedSession?.username]) ? events : [];
   const visibleEvents = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    return events.filter(event => (!keyword || `${event.title} ${event.content ?? ''}`.toLowerCase().includes(keyword)) && (filter !== 'pending' || event.status !== 'done'));
-  }, [events, query, filter]);
+    return scopedEvents.filter(event => (!keyword || `${event.title} ${event.content ?? ''}`.toLowerCase().includes(keyword)) && (filter !== 'pending' || event.status !== 'done'));
+  }, [scopedEvents, query, filter]);
   const eventGroups = useMemo(() => {
     const groups = new Map<string, EventItem[]>();
     [...visibleEvents]
@@ -235,7 +269,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
         <div className="chat-workbench-head-right">
           <div className="chat-workbench-tabs" role="tablist" aria-label="聊天视图">
             <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>原始记录</button>
-            <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>事件 <small>{events.length}</small></button>
+            <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>事件 <small>{scopedEvents.length}</small></button>
             <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
               聊天总结
               {summaryBusy
@@ -254,7 +288,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
 
       <div className={`chat-workbench-pane${view === 'events' ? '' : ' is-hidden'}`}>
         <div className="chat-workbench-subline">
-          <span>{eventsLoading ? '正在同步事件…' : `${events.length} 条事件`} · {sessions.length} 个会话 · 云端整理，可人工修改</span>
+          <span>{eventsLoading ? '正在同步事件…' : `${scopedEvents.length} 条事件`} · {sessions.length} 个会话 · 云端整理，可人工修改</span>
           <span>{pendingCount ? `${pendingCount} 个会话有本机新增` : '暂无未上传新增'}</span>
         </div>
         {pendingCount > 0 && <div className="chat-workbench-banner">
@@ -267,8 +301,8 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
         <div className="chat-workbench-feed">
           {(error || eventsError) && <p className="chat-workbench-error">{error || eventsError}</p>}
           {!eventsLoading && !visibleEvents.length && <div className="chat-workbench-empty-panel">
-            <h2>还没有整理出事件</h2>
-            <p>上传聊天记录并等待服务端分析后，事件会出现在这里。</p>
+            <h2>当前会话暂无事件</h2>
+            <p>上传当前会话并等待服务端分析后，相关事件会出现在这里。</p>
             <button type="button" onClick={onNewUpload}>开始第一次上传</button>
           </div>}
           {eventGroups.map(([day, list]) => <section className="chat-event-day" key={day}>

@@ -1,6 +1,19 @@
 fn main() {
+    build_amfi_probe();
     build_silk();
     tauri_build::build()
+}
+
+fn build_amfi_probe() {
+    println!("cargo:rerun-if-changed=src/wechat/amfi_probe.c");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("amfi-probe");
+    let status = cc::Build::new().get_compiler().to_command()
+        .arg("src/wechat/amfi_probe.c").arg("-o").arg(output)
+        .status().expect("failed to run AMFI probe compiler");
+    assert!(status.success(), "failed to build AMFI probe");
 }
 
 /// Compile the vendored Skype SILK v3 reference decoder used for WeChat voice messages.

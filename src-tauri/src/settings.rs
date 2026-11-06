@@ -98,12 +98,17 @@ impl Default for BackupSettings {
 pub struct SyncCursor {
     pub time: i64,
     pub local_id: i64,
+    pub boundary_count: Option<usize>,
 }
 
 impl SyncCursor {
     /// True when ``newest`` is not newer than what was already uploaded.
     pub fn covers(&self, newest: (i64, i64)) -> bool {
         newest.0 < self.time || (newest.0 == self.time && newest.1 <= self.local_id)
+    }
+
+    pub fn covers_boundary(&self, newest: (i64, i64), count: usize) -> bool {
+        newest.0 < self.time || (newest.0 == self.time && self.covers(newest) && self.boundary_count.is_some_and(|saved| count <= saved))
     }
 }
 
@@ -147,6 +152,8 @@ pub struct VoiceRef {
     pub local_id: i64,
     pub time: i64,
     pub server_id: i64,
+    #[serde(default)]
+    pub source_shard: String,
 }
 
 impl Default for SyncSettings {
@@ -189,6 +196,8 @@ pub struct UploadJob {
 pub struct MessageRef {
     pub local_id: i64,
     pub time: i64,
+    #[serde(default)]
+    pub source_shard: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -685,6 +694,7 @@ mod tests {
         job.scope.as_mut().unwrap().message_selection.insert(
             "one".into(),
             vec![MessageRef {
+                source_shard: String::new(),
                 local_id: 42,
                 time: 123,
             }],
@@ -698,6 +708,7 @@ mod tests {
         assert_eq!(
             restored.retry_scope(&settings).unwrap().message_selection["one"],
             vec![MessageRef {
+                source_shard: String::new(),
                 local_id: 42,
                 time: 123
             }]
@@ -765,6 +776,7 @@ mod tests {
             HashMap::from([(
                 "group".to_string(),
                 SyncCursor {
+                    boundary_count: None,
                     time: 1_700_000_000,
                     local_id: 42,
                 },
@@ -775,6 +787,7 @@ mod tests {
         settings.sync.cursors.get_mut("account").unwrap().insert(
                 "bad".into(),
                 SyncCursor {
+                    boundary_count: None,
                     time: -1,
                     local_id: 0,
                 },
@@ -785,6 +798,7 @@ mod tests {
     #[test]
     fn sync_cursor_covers_messages_at_or_before_its_position() {
         let cursor = SyncCursor {
+            boundary_count: None,
             time: 100,
             local_id: 7,
         };
@@ -792,6 +806,10 @@ mod tests {
         assert!(cursor.covers((100, 7)));
         assert!(!cursor.covers((100, 8)));
         assert!(!cursor.covers((101, 1)));
+        assert!(!cursor.covers_boundary((100, 7), 1));
+        let cursor = SyncCursor { boundary_count: Some(2), ..cursor };
+        assert!(cursor.covers_boundary((100, 7), 2));
+        assert!(!cursor.covers_boundary((100, 7), 3));
     }
 
     #[test]
