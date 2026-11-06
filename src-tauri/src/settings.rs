@@ -190,6 +190,10 @@ pub struct UploadJob {
     /// local history hold anything newer than what was already uploaded". The incremental
     /// sync keeps its own cursor and is never advanced from here.
     pub covered: BTreeMap<String, SyncCursor>,
+    pub initial_baselines: BTreeMap<String, SyncCursor>,
+    pub sync_advance: bool,
+    pub voice_processed: BTreeMap<String, Vec<VoiceRef>>,
+    pub voice_pending: BTreeMap<String, Vec<VoiceRef>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
@@ -255,6 +259,10 @@ impl Default for UploadJob {
             updated_at: String::new(),
             scope: None,
             covered: BTreeMap::new(),
+            initial_baselines: BTreeMap::new(),
+            sync_advance: false,
+            voice_processed: BTreeMap::new(),
+            voice_pending: BTreeMap::new(),
         }
     }
 }
@@ -284,7 +292,15 @@ impl Default for ConnectorSettings {
 #[serde(default)]
 pub struct ChatPolicy {
     pub allowed_usernames: HashMap<String, Vec<String>>,
+    pub initial_ranges: HashMap<String, HashMap<String, InitialRange>>,
     pub sync_interval_seconds: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct InitialRange {
+    pub since: Option<i64>,
+    pub until: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -365,6 +381,7 @@ impl Default for ChatPolicy {
     fn default() -> Self {
         Self {
             allowed_usernames: HashMap::new(),
+            initial_ranges: HashMap::new(),
             sync_interval_seconds: 1800,
         }
     }
@@ -551,6 +568,9 @@ pub fn validate(settings: &AppSettings) -> Result<(), String> {
     if settings.chat.allowed_usernames.len() > 20 {
         return Err("最多支持 20 个微信账号的白名单配置。".into());
     }
+    if settings.chat.initial_ranges.len() > 20 || settings.chat.initial_ranges.values().any(|ranges| ranges.len() > 1000 || ranges.iter().any(|(name, range)| name.is_empty() || name.len() > 512 || range.since.zip(range.until).is_some_and(|(start, end)| start >= end))) {
+        return Err("首次上传日期范围无效。".into());
+    }
     for usernames in settings.chat.allowed_usernames.values() {
         if usernames.len() > 1000
             || usernames
@@ -624,6 +644,16 @@ fn is_valid_time(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_history_ranges_round_trip_and_reject_reversed_dates() {
+        let mut settings = AppSettings::default();
+        settings.chat.initial_ranges.entry("acct".into()).or_default().insert("chat".into(), InitialRange { since: Some(100), until: Some(200) });
+        let restored: AppSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.chat.initial_ranges["acct"]["chat"].since, Some(100));
+        settings.chat.initial_ranges.get_mut("acct").unwrap().get_mut("chat").unwrap().until = Some(100);
+        assert!(validate(&settings).is_err());
+    }
 
     fn retry_fixture() -> (AppSettings, UploadJob) {
         let mut settings = AppSettings::default();
