@@ -229,6 +229,12 @@ function cardContent(record: SummaryRecord) {
 
 /* ── component ────────────────────────────────────────────────────────────── */
 
+/** Empty-state copy that names the scope that produced no records. */
+function summaryScopeEmpty(scopedToSession: boolean, total: number): string {
+  if (scopedToSession && total > 0) return '这个会话还没有保存过总结，切到「全部会话」能看到其他聊天的记录。';
+  return '还没有保存过总结记录。';
+}
+
 export function ChatSummary({
   accountId,
   sessions,
@@ -260,6 +266,10 @@ export function ChatSummary({
   const [notice, setNotice] = useState('');
   const [confirmAi, setConfirmAi] = useState(false);
   const [reader, setReader] = useState<SummaryRecord | null>(null);
+  // The tab opens on the selected conversation, but records saved for other chats
+  // (daily reports, summaries made before switching away) must stay reachable now
+  // that the standalone archive page is gone.
+  const [scope, setScope] = useState<'session' | 'all'>('session');
   const pageRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -272,14 +282,22 @@ export function ChatSummary({
     if (session) setExtras(current => current.filter(username => username !== session.username));
   }, [session?.username]);
 
+  // Never show an empty tab while the local archive still has records: a chat with
+  // no summaries of its own opens on the whole archive instead.
+  useEffect(() => {
+    if (!session) return;
+    const hasOwn = summaries.some(record => record.sessions.some(item => item.username === session.username));
+    if (!hasOwn && summaries.length) setScope('all');
+  }, [session?.username, summaries]);
+
   useEffect(() => {
     onBusyChange?.(busy);
   }, [busy, onBusyChange]);
 
-  // The tab lists the selected conversation's records; without a selection it
-  // falls back to the whole local archive.
+  // The tab lists the selected conversation's records by default; the scope switch
+  // (and the absence of a selection) falls back to the whole local archive.
   const scoped = useMemo(() => {
-    const bySession = session
+    const bySession = session && scope === 'session'
       ? summaries.filter(record => record.sessions.some(item => item.username === session.username))
       : summaries;
     const keyword = query.trim().toLowerCase();
@@ -290,7 +308,7 @@ export function ChatSummary({
         .toLowerCase();
       return text.includes(keyword);
     });
-  }, [summaries, session, query]);
+  }, [summaries, session, scope, query]);
 
   const bounds = rangeBounds(range);
   const chatUsernames = useMemo(() => {
@@ -521,6 +539,22 @@ export function ChatSummary({
         </button>
       </div>
 
+      {summaries.length > 0 && (session || scope === 'all') && <div className="chat-summary-scope">
+        <div className="chat-summary-pills">
+          {session && <button
+            type="button"
+            className={scope === 'session' ? 'on' : ''}
+            onClick={() => setScope('session')}
+          >当前会话</button>}
+          <button
+            type="button"
+            className={!session || scope === 'all' ? 'on' : ''}
+            onClick={() => setScope('all')}
+          >全部会话 · {summaries.length}</button>
+        </div>
+        <span className="chat-summary-hint">共 {summaries.length} 条本机记录，最近 50 条保留</span>
+      </div>}
+
       {open && <section className="chat-summary-panel" aria-label="生成聊天总结">
         <div className="chat-summary-row">
           <span className="chat-summary-label">时间</span>
@@ -672,7 +706,9 @@ export function ChatSummary({
       })}
 
       {!busy && !scoped.length && <div className="chat-summary-empty">
-        还没有为这个会话生成过总结。<br/>
+        {query.trim()
+          ? `没有匹配「${query.trim()}」的总结记录。`
+          : summaryScopeEmpty(Boolean(session) && scope === 'session', summaries.length)}<br/>
         选好范围后在本机生成，结果只保存在本机。
       </div>}
     </div>

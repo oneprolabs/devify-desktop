@@ -763,6 +763,7 @@
 .chat-summary-intro p { flex: 1; min-width: 0; color: #4f4f4a; font-size: 12.5px; line-height: 1.5; }
 .chat-summary-cta { flex: none; padding: 7px 14px; border: 0; border-radius: 8px; background: #a3279a; color: #fff; font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
 .chat-summary-cta:hover { background: #8f1f87; }
+.chat-summary-scope { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -4px 0 12px; }
 
 .chat-summary-panel { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px; border-radius: 12px; background: #fff; box-shadow: 0 0 0 1px #e4e4e7; }
 .chat-summary-row { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 12px; align-items: start; }

@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
 import { AgentHub } from './AgentHub';
 import { About } from './About';
+import { HistoryPage } from './History';
 import { DevifySettings, WhitelistSettings } from './Settings';
 import { BackupSchedule } from './BackupSchedule';
 import { AnalysisSettings } from './AnalysisSettings';
@@ -22,7 +23,7 @@ import './prototype-shell.css';
 import appIcon from './assets/app-icon.png';
 
 type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
-type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'agent' | 'about';
+type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'about';
 
 const sections: { id: Section; label: string; icon: ReactNode }[] = [
   { id: 'chat', label: '聊天', icon: RailIcons.chat },
@@ -40,6 +41,9 @@ const settingsPages: { id: SettingsPage; label: string; group?: 'main' | 'local'
   { id: 'analysis', label: '智能分析', group: 'main' },
   { id: 'language', label: '语言', group: 'main' },
   { id: 'account', label: '账户', group: 'main' },
+  // Local summaries are saved on this machine only; the prototype has no page for
+  // them, but without this entry the records are unreachable from settings.
+  { id: 'history', label: '总结记录', group: 'local' },
   { id: 'agent', label: 'Agent 集成', group: 'local' },
   { id: 'about', label: '关于', group: 'local' },
 ];
@@ -177,6 +181,7 @@ export default function PrototypeShell() {
           {settingsPage === 'analysis' && <AnalysisSettings />}
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings />}
+          {settingsPage === 'history' && <HistoryPage />}
           {settingsPage === 'agent' && <AgentHub />}
           {settingsPage === 'about' && <About />}
         </div>
