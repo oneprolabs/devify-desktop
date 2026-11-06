@@ -135,6 +135,11 @@ fn context(app_data: &Path, account_id: Option<String>) -> Result<Context, Strin
     if !settings.connectors.wechat_enabled {
         return Err("微信连接已断开，重新连接后才能通过 MCP 读取聊天。".into());
     }
+    crate::entitlements::require(
+        app_data,
+        &settings.devify.base_url,
+        crate::capabilities::BRIDGE_MCP,
+    )?;
     let account_id = account_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| settings.active_account_id.clone());

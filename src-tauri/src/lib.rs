@@ -27,7 +27,9 @@ extern crate self as wechat_devify_bridge_lib;
 pub mod access;
 pub mod agent;
 pub mod backup;
+pub mod capabilities;
 mod desktop_credentials;
+pub mod entitlements;
 pub mod history;
 pub mod perm;
 pub mod settings;
@@ -398,6 +400,11 @@ async fn devify_report_create(
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
     validate_devify_space(&settings, space_id)?;
+    entitlements::require(
+        &app_data(&app),
+        &settings.devify.base_url,
+        capabilities::CLOUD_REPORTS_GENERATE,
+    )?;
     let title = title.trim();
     if title.is_empty() {
         return Err("报告标题不能为空。".into());
@@ -1243,6 +1250,7 @@ async fn devify_question_ask(
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
     validate_devify_space(&settings, space_id)?;
+    entitlements::require(&app_data(&app), &settings.devify.base_url, capabilities::CLOUD_ASK)?;
     let question = question.trim();
     if question.is_empty() {
         return Err("请输入问题。".into());
@@ -2004,6 +2012,7 @@ async fn devify_upload_preview(
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
+    entitlements::require(&data, &settings.devify.base_url, capabilities::INGEST_UPLOAD)?;
     let cache = decrypt::cache_dir(&data, &account_id);
     let base_url = settings.devify.base_url.clone();
     let voice_settings = settings.voice.clone();
@@ -2044,6 +2053,7 @@ async fn devify_upload_selected(
 ) -> Result<DevifyUploadResult, String> {
     let settings = settings::load(&app_data(&app))?;
     validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
+    entitlements::require(&app_data(&app), &settings.devify.base_url, capabilities::INGEST_UPLOAD)?;
     if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("请先预览并确认上传范围。".into());
     }
@@ -2726,6 +2736,33 @@ struct DevifyAuthStatus {
 /// refresh endpoint only checks the token signature), so ask the server once for
 /// an authenticated resource. Only an explicit 401 invalidates the session;
 /// network errors keep it so an offline user is not sent back to the login gate.
+/// Every capability the client knows how to gate, with its Chinese label and whether it is
+/// part of the free baseline. Used by settings to explain a plan and by the UI to render
+/// "not included" states without hard-coding keys.
+#[tauri::command]
+fn capabilities_list() -> Vec<capabilities::Capability> {
+    capabilities::CAPABILITIES.to_vec()
+}
+
+/// The cached entitlement view for the configured server. Never contacts the network, so it
+/// is safe to call while rendering settings.
+#[tauri::command]
+fn entitlements_get(app: AppHandle) -> Result<entitlements::View, String> {
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    Ok(entitlements::view(&data, &settings.devify.base_url))
+}
+
+/// Ask the server for the current plan. A missing endpoint resolves to `source = "unsupported"`
+/// and leaves every feature enabled, matching the behaviour before entitlements existed.
+#[tauri::command]
+async fn entitlements_refresh(app: AppHandle) -> Result<entitlements::View, String> {
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    let token = devify_access_token_async(&data, &settings.devify.base_url).await?;
+    entitlements::refresh(&data, &settings.devify.base_url, &token).await
+}
+
 #[tauri::command]
 async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> {
     let data = app_data(&app);
@@ -2985,6 +3022,9 @@ fn agent_access_prompt(
     bin_dir: String,
     skills_dir: String,
 ) -> Result<access::PromptOut, String> {
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_AGENT_CLI)?;
     let service = access_state(&state)?;
     let targets = access::targets();
     let target = access::target_by_id(&targets, &tool).unwrap_or_else(|| {
@@ -3016,7 +3056,10 @@ fn agent_access_prompt(
 /// Rebuild `wxq` from the source checkout so the download endpoint has something to serve.
 /// Packaged installs without source get a clear error instead of a silent failure.
 #[tauri::command]
-async fn agent_build_wxq() -> Result<String, String> {
+async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_AGENT_CLI)?;
     let Some(dir) = access::source_dir() else {
         return Err("当前安装没有附带源码，无法在应用内构建 wxq。".into());
     };
@@ -3267,6 +3310,9 @@ async fn automation_tick(app: &AppHandle) {
     };
     let now = Local::now();
     let day = now.format("%Y-%m-%d").to_string();
+    if entitlements::require(&data, &value.devify.base_url, capabilities::AI_DAILY_REPORT).is_err() {
+        return;
+    }
     let Some((hour, minute)) = value
         .automation
         .daily_time
@@ -3511,6 +3557,11 @@ async fn backup_tick(app: &AppHandle) {
         return;
     }
     if !value.sync.enabled {
+        return;
+    }
+    // Automatic upload costs server storage and parsing, so it follows the plan. A lapsed
+    // entitlement pauses the schedule; it never deletes anything already uploaded.
+    if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_AUTO).is_err() {
         return;
     }
     let last_run = value
@@ -5307,6 +5358,9 @@ async fn wechat_export_bundle(
     since: i64,
     until: i64,
 ) -> Result<media::ExportReport, String> {
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_EXPORT)?;
     require_visible_session(&app, &account_id, &username)?;
     let root = account_root(&account_id)?;
     media::export_bundle(
@@ -5359,6 +5413,12 @@ async fn wechat_voice_transcribe(
     }
     let ids: Vec<i64> = items.iter().map(|item| item.server_id).collect();
     let data_dir = app_data(&app);
+    let settings = settings::load(&data_dir)?;
+    entitlements::require(
+        &data_dir,
+        &settings.devify.base_url,
+        capabilities::LOCAL_VOICE_TRANSCRIBE,
+    )?;
     let cache = decrypt::cache_dir(&data_dir, &account_id);
     let blobs = voice::read_voice_blobs(&cache, &ids)?;
     let view = voice::view(&data_dir);
@@ -5837,6 +5897,11 @@ async fn agent_summarize(
 ) -> Result<AgentSummary, String> {
     let data = app_data(&app);
     let value = settings::load(&data)?;
+    entitlements::require(
+        &data,
+        &value.devify.base_url,
+        capabilities::AI_AGENT_SUMMARY,
+    )?;
     if value.agent.provider_id.trim().is_empty() {
         return Err("尚未在「Agent 总结」页面选择本地 Agent。".into());
     }
@@ -5957,6 +6022,9 @@ pub fn run() {
             devify_auth_callback,
             devify_auth_cancel,
             devify_auth_status,
+            capabilities_list,
+            entitlements_get,
+            entitlements_refresh,
             devify_device_register,
             devify_login_password,
             devify_logout,

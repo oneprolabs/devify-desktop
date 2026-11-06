@@ -19,6 +19,7 @@ import { ChatEntry } from './ChatLanding';
 import { ChatWorkbench } from './ChatWorkbench';
 import { LoginGate } from './LoginGate';
 import { registerDevifyDevice } from './devifyDevice';
+import { refreshEntitlements } from './entitlements';
 import './prototype-shell.css';
 import appIcon from './assets/app-icon.png';
 
@@ -98,6 +99,12 @@ export default function PrototypeShell() {
     };
   }, []);
   const openNewUpload = () => { setStartTaskCreate(true); setSection('tasks'); };
+  // Entitlements are per account and per server, so every successful sign-in refreshes them
+  // once. A server without the endpoint answers 404 and the app keeps its legacy behaviour.
+  useEffect(() => {
+    if (authState !== 'authed') return;
+    void refreshEntitlements();
+  }, [authState]);
   const handleChatReady = useCallback(() => setChatReady(true), []);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('connectors');
   const [wechatGuide, setWechatGuide] = useState(false);
