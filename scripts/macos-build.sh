@@ -10,7 +10,8 @@
 # finds the private key in its own keychain when it is passed `--keychain`; the bundler
 # does not pass it, which fails with errSecInternalComponent.
 #
-# Usage: scripts/macos-build.sh [--install]
+# Installing into /Applications is the default: every build is meant to replace the
+# running copy. Pass --no-install to only produce the bundle.
 set -euo pipefail
 
 IDENTITY="AIMyChats Local Signing"
@@ -50,7 +51,7 @@ echo
 codesign -dvvv "$APP" 2>&1 | grep -E "Authority|Identifier=|CDHash=" || true
 codesign -d -r- "$APP" 2>&1 | tail -1
 
-if [ "${1:-}" = "--install" ]; then
+if [ "${1:-}" != "--no-install" ]; then
   osascript -e 'quit app "AIMyChats"' >/dev/null 2>&1 || true
   sleep 2
   # Replace instead of merging: ditto over an existing bundle can leave stale files.

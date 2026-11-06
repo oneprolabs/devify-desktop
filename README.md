@@ -443,8 +443,8 @@ Build a desktop bundle:
 # The CLI is data, not a sidecar executable: `beforeBuildCommand` runs
 # `npm run stage:wxq`, which builds it with the opt-in feature and copies it to
 # src-tauri/binaries/wxq-<host-triple> for `bundle.resources`.
-scripts/macos-build.sh            # builds + signs with the stable identity
-scripts/macos-build.sh --install  # ... and copies it to /Applications/AIMyChats.app
+scripts/macos-build.sh              # builds, signs, and replaces /Applications/AIMyChats.app
+scripts/macos-build.sh --no-install # builds + signs only, leaves /Applications untouched
 ```
 
 Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.1_aarch64.dmg`). On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
@@ -481,8 +481,9 @@ security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db s
 printf 'aimychats' > ~/.config/aimychats-signing/keychain.pass && chmod 600 ~/.config/aimychats-signing/keychain.pass
 ```
 
-`scripts/macos-build.sh` signs the app itself (nested binaries first, then the bundle) and rebuilds
-the DMG from the signed app, because `codesign` only finds the private key in that keychain when it
+`scripts/macos-build.sh` signs the app itself (nested binaries first, then the bundle), rebuilds
+the DMG from the signed app, and replaces `/Applications/AIMyChats.app` (pass `--no-install` to
+stay inside the repo), because `codesign` only finds the private key in that keychain when it
 is passed `--keychain`, which the Tauri bundler does not do. `spctl` still rejects the result since
 it is not notarized by Apple — expected for a self-signed build, and only matters for downloads that
 carry the quarantine attribute.
