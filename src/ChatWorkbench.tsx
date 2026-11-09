@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import WeChatLocal from './WeChatLocal';
 import { ChatSummary } from './ChatSummary';
@@ -43,6 +44,16 @@ const dayLabel = (value?: string | null) => {
   return day;
 };
 const statusLabel = (value?: string | null) => ({ open: '待我处理', in_progress: '推进中', done: '已完成' } as Record<string, string>)[value || ''] || '未标记';
+
+function handleWindowDrag(event: MouseEvent<HTMLElement>) {
+  if (!isTauri() || event.button !== 0 || (event.target as Element).closest('button, input, a, select, textarea, [role="tab"]')) return;
+  if (event.detail === 2) {
+    event.preventDefault();
+    void getCurrentWindow().toggleMaximize();
+  } else if (event.detail === 1) {
+    void getCurrentWindow().startDragging();
+  }
+}
 
 function StateDot({ done }: { done: boolean }) {
   return <svg className="chat-event-dot" viewBox="0 0 16 16" aria-hidden="true">
@@ -261,7 +272,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
 
   return <div className="chat-workbench">
     <aside className="chat-workbench-sidebar">
-      <header className="chat-workbench-sidebar-head" data-tauri-drag-region="deep">
+      <header className="chat-workbench-sidebar-head" onMouseDown={handleWindowDrag}>
         <h1>聊天</h1>
         <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)} aria-label="添加会话" title="添加会话"><span aria-hidden="true">＋</span></button></div>
         <p>{sessions.length} 个会话 · {pendingCount} 个有新增待上传</p>
@@ -294,7 +305,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     </aside>
 
     <main className="chat-workbench-main">
-      <header className="chat-workbench-head" data-tauri-drag-region>
+      <header className="chat-workbench-head" onMouseDown={handleWindowDrag}>
         <div className="chat-workbench-title">
           {selectedSession && <span className="chat-workbench-title-avatar" aria-hidden="true">{avatars[selectedSession.username] ? <img src={avatars[selectedSession.username]} alt=""/> : selectedSession.display.slice(0, 1)}</span>}
           <div className="chat-workbench-title-text"><h2>{conversation}</h2>{selectedSession && <p>微信{selectedSession.is_group ? '群聊' : '单聊'}{selectedSession.is_group && selectedSession.member_count != null ? ` · ${selectedSession.member_count} 人` : ''}</p>}</div>
