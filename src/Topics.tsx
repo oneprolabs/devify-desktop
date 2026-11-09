@@ -1,3 +1,4 @@
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
@@ -147,6 +148,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
         </section>)}
         {!groups.length && <p className="topic-side-empty">{query.trim() ? '没有匹配的主题。' : '还没有主题订阅。'}</p>}
       </div>
+      <SidebarResizeHandle/>
     </aside>
 
     <main className="topic-main">

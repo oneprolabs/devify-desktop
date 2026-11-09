@@ -1,3 +1,4 @@
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
@@ -540,6 +541,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
         })}
         {!filteredItems.length && <p className="analysis-list-empty">没有符合筛选条件的{copy.title}</p>}
       </div>
+      {kind === 'events' && <SidebarResizeHandle/>}
     </aside>
 
     <main className="analysis-main">
