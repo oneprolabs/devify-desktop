@@ -141,9 +141,7 @@ export default function PrototypeShell() {
   ><span>{item.icon}</span><small>{item.label}</small></button>;
 
   return <main className="prototype-shell">
-    <header className="prototype-titlebar" data-tauri-drag-region>
-      <div className="prototype-titlebar-brand"><span>{section === 'chat' ? '聊天记录' : sections.find(item => item.id === section)?.label || (section === 'tasks' ? '任务' : '设置')}</span></div>
-    </header>
+    <div className="prototype-titlebar" data-tauri-drag-region aria-hidden="true" />
     <aside className="prototype-rail" aria-label="主导航">
       {authState === 'authed' && <div className="prototype-account-wrap"><button type="button" className="prototype-account" onClick={() => setAccountMenu(open => !open)} aria-expanded={accountMenu}><span className="prototype-account-avatar">{(currentUser || '账').slice(0, 1)}</span><span className="prototype-account-text"><strong>{currentUser || '账号信息暂不可用'}</strong><small>AIMyChats 账号</small></span><span aria-hidden="true">⌄</span></button>{accountMenu && <div className="prototype-account-menu"><button type="button" onClick={() => { setAccountMenu(false); openSettings('account'); }}>账号设置</button><button type="button" onClick={() => { setAccountMenu(false); void invoke('devify_logout').then(() => { setCurrentUser(''); setAuthState('anonymous'); setChatReady(false); }); }}>退出登录</button></div>}</div>}
       <nav className="prototype-nav">{sections.map(navButton)}</nav>

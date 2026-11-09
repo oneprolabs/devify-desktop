@@ -263,7 +263,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     <aside className="chat-workbench-sidebar">
       <header className="chat-workbench-sidebar-head">
         <h1>聊天</h1>
-        <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)}><span aria-hidden="true">＋</span> 添加会话</button><button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label="刷新会话" title="刷新会话">↻</button></div>
+        <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)} aria-label="添加会话" title="添加会话"><span aria-hidden="true">＋</span></button></div>
         <p>{sessions.length} 个会话 · {pendingCount} 个有新增待上传</p>
       </header>
       <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话与聊天记录"/>
@@ -272,7 +272,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
         <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>待上传 <small>{pendingCount}</small></button>
         <button type="button" className={filter === 'local' ? 'active' : ''} onClick={() => setFilter('local')}>仅本机 <small>{localCount}</small></button>
       </div>
-      <div className="chat-workbench-session-label">会话 · {visibleSessions.length} <span>· 按最后更新</span></div>
+      <div className="chat-workbench-session-label"><span>会话 · {visibleSessions.length}</span><span className="chat-workbench-list-tools">按最后更新 <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label="刷新会话" title="刷新会话">↻</button></span></div>
       <div className="chat-workbench-sessions">
         {visibleSessions.map(session => {
           const meta = sessionMeta(session);
