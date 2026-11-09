@@ -1186,3 +1186,10 @@
 }
 .app-toast.on { opacity: 1; transform: translate(-50%, 0); }
 @media (prefers-reduced-motion: reduce) { .app-toast { transition: none; } }
+.task-group-summary { margin-top: 36px; color: #575751; font-size: 13px; }
+.task-group-summary > p { margin: 8px 0; }
+.task-group-summary details { margin-top: 20px; border: 1px solid #e7e5e2; border-radius: 10px; }
+.task-group-summary summary { cursor: pointer; padding: 14px 16px; font-weight: 600; }
+.task-batch { padding: 12px 16px; border-top: 1px solid #eeedeb; }
+.task-batch p { margin: 6px 0; }
+.task-batch button { margin-top: 6px; }
