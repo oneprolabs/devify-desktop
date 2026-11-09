@@ -468,9 +468,9 @@
 .imports-date-list button:focus-visible { outline:2px solid #a3279a; outline-offset:2px; }
 
 /* Resizable list divider */
-.chat-workbench { grid-template-columns: var(--sidebar-width, 310px) minmax(0, 1fr); }
-.topic-page, .ask-page { grid-template-columns: var(--sidebar-width, 300px) minmax(0, 1fr); }
-.event-workspace .analysis-side { width: var(--sidebar-width, 300px); }
+.chat-workbench { grid-template-columns: min(var(--sidebar-width, 310px), max(280px, 100% - 350px)) minmax(0, 1fr); }
+.topic-page, .ask-page { grid-template-columns: min(var(--sidebar-width, 300px), max(280px, 100% - 350px)) minmax(0, 1fr); }
+.event-workspace .analysis-side { width: min(var(--sidebar-width, 300px), max(280px, 100% - 350px)); }
 .chat-workbench-sidebar, .event-workspace .analysis-side, .topic-side, .ask-side { position: relative; }
 .sidebar-resize-handle { position: absolute; z-index: 2; top: 0; bottom: 0; right: -4px; width: 8px; cursor: col-resize; touch-action: none; }
 .sidebar-resize-handle:focus-visible { outline: 2px solid #74746e; outline-offset: -2px; }
