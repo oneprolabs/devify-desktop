@@ -261,7 +261,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
 
   return <div className="chat-workbench">
     <aside className="chat-workbench-sidebar">
-      <header className="chat-workbench-sidebar-head">
+      <header className="chat-workbench-sidebar-head" data-tauri-drag-region="deep">
         <h1>聊天</h1>
         <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)} aria-label="添加会话" title="添加会话"><span aria-hidden="true">＋</span></button></div>
         <p>{sessions.length} 个会话 · {pendingCount} 个有新增待上传</p>
@@ -294,7 +294,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     </aside>
 
     <main className="chat-workbench-main">
-      <header className="chat-workbench-head">
+      <header className="chat-workbench-head" data-tauri-drag-region>
         <div className="chat-workbench-title">
           {selectedSession && <span className="chat-workbench-title-avatar" aria-hidden="true">{avatars[selectedSession.username] ? <img src={avatars[selectedSession.username]} alt=""/> : selectedSession.display.slice(0, 1)}</span>}
           <div className="chat-workbench-title-text"><h2>{conversation}</h2>{selectedSession && <p>微信{selectedSession.is_group ? '群聊' : '单聊'}{selectedSession.is_group && selectedSession.member_count != null ? ` · ${selectedSession.member_count} 人` : ''}</p>}</div>

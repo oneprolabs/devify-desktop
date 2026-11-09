@@ -354,8 +354,7 @@ pub struct DevifySettings {
 
 /// Normalize a service address for request building.
 ///
-/// A brand-new install has no server, so an empty value must fail with an
-/// actionable message instead of sending a request to a relative path.
+/// Reject an empty address instead of sending a request to a relative path.
 pub fn normalize_base_url(value: &str) -> Result<String, String> {
     let value = value.trim().trim_end_matches('/');
     if value.is_empty() {
@@ -446,8 +445,7 @@ pub fn resolved_device_label(settings: &DevifySettings) -> String {
 impl Default for DevifySettings {
     fn default() -> Self {
         Self {
-            // No server is bundled with the app: the user types it on the login gate.
-            base_url: String::new(),
+            base_url: "https://aimychats.com/".to_string(),
             device_label: device_default_label(),
             device_id: String::new(),
             platform: default_platform(),
@@ -713,6 +711,13 @@ mod tests {
             ..UploadJob::default()
         };
         (settings, job)
+    }
+
+    #[test]
+    fn default_server_preserves_saved_server() {
+        assert_eq!(DevifySettings::default().base_url, "https://aimychats.com/");
+        let saved: DevifySettings = serde_json::from_str(r#"{"base_url":"https://custom.example"}"#).unwrap();
+        assert_eq!(saved.base_url, "https://custom.example");
     }
 
     #[test]

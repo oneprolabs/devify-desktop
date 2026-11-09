@@ -123,7 +123,7 @@ export function defaultSettings(): AppSettings {
     active_account_id: '',
     chat: { allowed_usernames: {}, initial_ranges: {}, sync_interval_seconds: 1800 },
     connectors: { waitlist: [], wechat_enabled: true },
-    devify: { base_url: '', device_label: 'AIMyChats', device_id: '', platform: '', active_space_id: null, recipient: '', subject: '微信工作日报' },
+    devify: { base_url: 'https://aimychats.com/', device_label: 'AIMyChats', device_id: '', platform: '', active_space_id: null, recipient: '', subject: '微信工作日报' },
     voice: { auto_transcribe: true, upload_transcripts: true },
     sync: { enabled: false, last_run_at: null, last_status: null, last_error: null, last_message_count: 0 },
     language: { ui: '中文', summary: '跟随界面', ask: '跟随提问' },
