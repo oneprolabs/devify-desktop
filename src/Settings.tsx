@@ -197,6 +197,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   const [dateDetails, setDateDetails] = useState<Record<string, Array<[string, number]>>>({});
   const [dateLoading, setDateLoading] = useState('');
   const [focusedSession, setFocusedSession] = useState('');
+  const [customRanges, setCustomRanges] = useState<Record<string, boolean>>({});
 
   const dateText = (seconds: number | null | undefined, end = false) => {
     if (seconds == null) return '';
@@ -289,7 +290,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   const toggleUsername = (username: string) => {
     const next = new Set(allowed);
     if (next.has(username)) next.delete(username);
-    else next.add(username);
+    else { next.add(username); setFocusedSession(username); }
     setSettings(current => ({
       ...current,
       chat: {
@@ -304,6 +305,11 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
     setError('');
     setNotice('');
     try {
+      const missingRange = (settings.chat.allowed_usernames[accountId] ?? []).some(username => {
+        const range = settings.chat.initial_ranges[accountId]?.[username];
+        return customRanges[`${accountId}\0${username}`] === true && range?.since == null && range?.until == null && !settings.sync.cursors?.[accountId]?.[username];
+      });
+      if (missingRange) throw new Error('请选择自定义历史范围的开始或结束日期，或勾选上传全部历史记录。');
       if (Object.values(settings.chat.initial_ranges[accountId] ?? {}).some(range => range.since != null && range.until != null && range.since >= range.until)) throw new Error('历史记录结束日期不能早于开始日期。');
       const keep = catalog.length
         ? (settings.chat.allowed_usernames[accountId] ?? []).filter(username => catalogUsernames.has(username))
@@ -331,6 +337,13 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   const focused = visibleCatalog.find(session => session.username === focusedSession) ?? visibleCatalog[0];
   const focusedRange = focused ? settings.chat.initial_ranges[accountId]?.[focused.username] : undefined;
   const alreadySynced = focused && !!settings.sync.cursors?.[accountId]?.[focused.username];
+  const customRangeKey = focused ? `${accountId}\0${focused.username}` : '';
+  const isCustomRange = customRanges[customRangeKey] ?? (focusedRange?.since != null || focusedRange?.until != null);
+  const setUploadAllHistory = (uploadAll: boolean) => {
+    if (!focused) return;
+    setCustomRanges(current => ({ ...current, [customRangeKey]: !uploadAll }));
+    if (uploadAll) setSettings(current => ({ ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges, [accountId]: { ...current.chat.initial_ranges[accountId], [focused.username]: { since: null, until: null } } } } }));
+  };
 
   return <div className="settings-page imports-page">
     <header className="page-head"><h2>导入管理</h2><p className="help">选择要导入的微信会话，并为每个会话设置首次上传的历史日期范围。</p></header>
@@ -347,7 +360,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
         <div className="imports-list">{visibleCatalog.map(session => <div key={session.username} className={`imports-choice${focused?.username === session.username ? ' selected' : ''}`}><input type="checkbox" aria-label={`导入 ${session.display}`} checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><button type="button" onClick={() => setFocusedSession(session.username)}><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></button></div>)}
         {!accountId && <p className="plan-empty">未发现微信账号，请先完成连接。</p>}{accountId && catalogLoading && <p className="plan-empty">正在加载会话…</p>}{accountId && !catalogLoading && !visibleCatalog.length && <p className="plan-empty">没有符合条件的会话。</p>}</div>
       </div>
-      <section className="imports-detail">{focused ? <><header><h3>{focused.display}</h3><p>{focused.is_group ? '群聊' : '单聊'} · {focused.username}</p></header>{!allowed.has(focused.username) ? <p className="help">勾选此会话后，可以设置首次上传的历史范围。</p> : alreadySynced ? <p className="help">此会话已有同步进度，首次历史范围不再生效。</p> : <><h3>首次上传历史范围</h3><p className="help">只上传所选日期内的历史消息；留空表示不限制。</p><div className="imports-dates"><label>开始日期<input type="date" value={dateText(focusedRange?.since)} onChange={e => setDate(focused.username, 'since', e.target.value)}/></label><span>至</span><label>结束日期<input type="date" value={dateText(focusedRange?.until, true)} onChange={e => setDate(focused.username, 'until', e.target.value)}/></label></div><div className="imports-available"><strong>有记录的日期</strong><button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(focused.username)}>{dateLoading === focused.username ? '正在读取…' : '查看日期'}</button>{dateDetails[focused.username] && <p>{dateDetails[focused.username].map(([day, count]) => `${day}（${count} 条）`).join('、') || '没有可用记录'}</p>}</div></>}</> : <p className="help">选择一个会话，查看并设置首次上传的日期范围。</p>}</section>
+      <section className="imports-detail">{focused ? <><header><h3>{focused.display}</h3><p>{focused.is_group ? '群聊' : '单聊'} · {focused.username}</p></header>{!allowed.has(focused.username) ? <p className="help">勾选此会话后，可以设置首次上传的历史范围。</p> : alreadySynced ? <p className="help">此会话已有同步进度，首次历史范围不再生效。</p> : <><h3>首次上传范围</h3><label className="imports-all-history"><input type="checkbox" checked={!isCustomRange} onChange={e => setUploadAllHistory(e.target.checked)}/><span><strong>上传全部历史记录</strong><small>首次上传该会话的全部本机历史记录。</small></span></label>{isCustomRange && <><p className="help">选择首次上传的历史日期范围；可只填写开始日期或结束日期。</p><div className="imports-dates"><label>开始日期<input type="date" value={dateText(focusedRange?.since)} onChange={e => setDate(focused.username, 'since', e.target.value)}/></label><span>至</span><label>结束日期<input type="date" value={dateText(focusedRange?.until, true)} onChange={e => setDate(focused.username, 'until', e.target.value)}/></label></div><div className="imports-available"><strong>有记录的日期</strong><button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(focused.username)}>{dateLoading === focused.username ? '正在读取…' : '查看日期'}</button>{dateDetails[focused.username] && (dateDetails[focused.username].length ? <><p className="imports-date-hint">选择日期作为开始日期，结束日期保持不变。</p><div className="imports-date-list" aria-label="选择有记录的开始日期">{dateDetails[focused.username].map(([day]) => <button type="button" key={day} className={dateText(focusedRange?.since) === day ? 'selected' : ''} aria-pressed={dateText(focusedRange?.since) === day} onClick={() => setDate(focused.username, 'since', day)}>{day}</button>)}</div></> : <p>没有可用记录</p>)}</div></>}</>}</> : <p className="help">选择一个会话，查看并设置首次上传的日期范围。</p>}</section>
     </div>
     {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
     <div className="page-actions"><button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存所选会话'}</button><span>已选 {allowedCount} 个会话</span></div>
