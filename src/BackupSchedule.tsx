@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
+import wechatIcon from './assets/connectors/wechat.svg';
+import { ConnectorIcon } from './Connectors';
 
 type ScanResult = { accounts: Array<{ id: string }> };
 
@@ -218,20 +220,21 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
   return <div className="settings-page backup-page">
     <header className="page-head">
       <h2>备份周期</h2>
-      <p className="help">每个平台单独设置，也可以单独开关。只上传已导入会话的新增消息，端到端加密，本机原始数据不会被修改。</p>
+      <p className="help">选择聊天记录自动备份的时间与范围，只上传已导入会话的新增消息。</p>
     </header>
 
     <div className="backup-list">
       {connected && <section className={`plan-plat${open ? ' open' : ''}`}>
-        <div className="plan-plat-head">
-          <span className="plan-mark">微</span>
+        <div className="backup-section backup-master"><h3>自动备份</h3><div className="plan-plat-head">
+          <span className="plan-mark"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
           <button type="button" className="plan-plat-title" aria-expanded={open} onClick={() => setOpen(!open)}>
-            <strong>微信</strong>
+            <strong>微信自动备份</strong>
             <small><span>{summary}</span><i>{open ? '收起' : '编辑'}</i></small>
           </button>
           <Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label="微信自动备份"/>
-        </div>
+        </div></div>
         {open && <div className={`plan-rows${settings.sync.enabled ? '' : ' off'}`}>
+          <div className="backup-section"><h3>备份频率</h3>
           <Row label="备份方式">
             <Pills label="备份方式" value={plan.mode} options={MODES} onChange={mode => setPlan({ mode })}/>
           </Row>
@@ -273,6 +276,11 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
               >添加</button>
             </div>
           </Row>}
+          </div><div className="backup-section"><h3>上传内容</h3>
+          <Row label="上传内容" desc="选择备份时包含的消息和附件">
+            <Pills label="上传内容" value={plan.attachments} options={ATTACHMENTS} onChange={attachments => setPlan({ attachments })}/>
+          </Row>
+          </div><div className="backup-section"><h3>网络与时间限制</h3>
           <Row label="限制上传时间" desc="只在允许的时间段上传，或避开某个时间段">
             <Switch checked={plan.window_enabled} onChange={window_enabled => setPlan({ window_enabled })} label="限制上传时间"/>
           </Row>
@@ -311,24 +319,22 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
           <Row label="仅在 Wi-Fi 下上传">
             <Switch checked={plan.wifi_only} onChange={wifi_only => setPlan({ wifi_only })} label="仅在 Wi-Fi 下上传"/>
           </Row>
-          <Row label="附件">
-            <Pills label="附件" value={plan.attachments} options={ATTACHMENTS} onChange={attachments => setPlan({ attachments })}/>
-          </Row>
           {settings.sync.enabled && plan.mode === 'interval' && <Row label="下次备份">
             <span className="plan-kv">{nextRunLabel(plan, intervalSeconds, lastRun)}</span>
           </Row>}
+          </div>
         </div>}
         {open && syncState.last_error && <div className="backup-error">{syncState.last_error}</div>}
       </section>}
 
       <div className="plan-off-head">未连接</div>
       {!connected && <div className="plan-off">
-        <span className="plan-mark dim">微</span>
+        <span className="plan-mark dim"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
         <div><strong>微信</strong><small>连接后可单独设置备份周期</small></div>
         <button type="button" onClick={onOpenConnectors}>打开连接向导</button>
       </div>}
-      {[{ mark: 'W', name: 'WhatsApp', hint: '尚未接入' }, { mark: '@', name: '邮件', hint: '尚未接入' }].map(item => <div className="plan-off" key={item.name}>
-        <span className="plan-mark dim alt">{item.mark}</span>
+      {[{ name: 'WhatsApp', hint: '尚未接入' }, { name: '邮件', hint: '尚未接入' }].map(item => <div className="plan-off" key={item.name}>
+        <ConnectorIcon name={item.name} />
         <div><strong>{item.name}</strong><small>连接后可单独设置备份周期</small></div>
         <button type="button" className="ghost" onClick={onOpenConnectors}>{item.hint}</button>
       </div>)}

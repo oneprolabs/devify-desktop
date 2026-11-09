@@ -24,7 +24,7 @@ export function AgentHub() {
         <code>SKILL.md</code> 安装到你正在使用的 Agent。两处配置互不影响，随时可以切换。
       </p>
     </div>
-    <div className="tabs" role="tablist" aria-label="Agent 集成分区">
+    <div className="agent-hub-choices" role="tablist" aria-label="Agent 集成分区">
       {SECTIONS.map(item => <button
         key={item.id}
         type="button"
@@ -36,7 +36,7 @@ export function AgentHub() {
         title={item.hint}
         onClick={() => setSection(item.id)}
       >
-        {item.label}
+        <strong>{item.label}</strong><small>{item.hint}</small>
       </button>)}
     </div>
     <div id="agent-hub-panel" role="tabpanel" aria-labelledby={`agent-hub-tab-${section}`}>

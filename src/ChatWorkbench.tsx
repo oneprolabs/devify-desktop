@@ -5,8 +5,10 @@ import WeChatLocal from './WeChatLocal';
 import { ChatSummary } from './ChatSummary';
 import type { SummaryRecord } from './summary';
 import { exportNotSupported } from './toast';
+import { WhitelistSettings } from './Settings';
+import wechatIcon from './assets/connectors/wechat.svg';
 
-type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null };
+type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null };
 type Settings = { active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
 type SyncResult = { uploaded: number; message_count: number; error?: string | null };
 type Scan = { accounts?: Array<{ id: string; modified_at?: number | null }> };
@@ -50,7 +52,9 @@ function StateDot({ done }: { done: boolean }) {
 }
 
 export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSchedule, onOpenAccount, onOpenEvent }: { onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
-  const [view, setView] = useState<View>('events');
+  const [view, setView] = useState<View>('raw');
+  const [addingSession, setAddingSession] = useState(false);
+  const [sessionRevision, setSessionRevision] = useState(0);
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -65,6 +69,9 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState>>({});
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
+  const [syncNoticeError, setSyncNoticeError] = useState(false);
+  const [syncNoticePending, setSyncNoticePending] = useState(false);
+  const [syncToastVisible, setSyncToastVisible] = useState(false);
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventRefresh, setEventRefresh] = useState(0);
@@ -89,7 +96,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
       const accounts = scan.accounts ?? [];
       const account = accounts.find(item => item.id === stored.active_account_id) ?? [...accounts].sort((a, b) => (b.modified_at ?? 0) - (a.modified_at ?? 0))[0];
       const list = account ? await invoke<Session[]>('wechat_sessions', { accountId: account.id }) : [];
-      setSettings(stored); setAccountId(account?.id ?? null); setSessions(list ?? []); setSelectedSession(current => current && list.some(item => item.username === current.username) ? current : list[0] ?? null);
+      setSettings(stored); setAccountId(account?.id ?? null); setSessions(list ?? []); setSelectedSession(current => list.find(item => item.username === current?.username) ?? list[0] ?? null);
       if (account && list?.length) {
         // Real WeChat profile pictures; a missing avatar falls back to the first character.
         void invoke<Avatar[]>('wechat_avatars', { accountId: account.id, usernames: list.slice(0, 200).map(session => session.username) })
@@ -182,16 +189,18 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
 
   const syncNow = async () => {
     if (syncing) return;
-    setSyncing(true); setSyncNotice('');
+    setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticePending(false); setSyncToastVisible(true);
     try {
       const result = await invoke<SyncResult>('devify_sync_now');
+      setSyncNoticeError(Boolean(result.error));
+      setSyncNoticePending(!result.error && result.message_count > 0);
       setSyncNotice(result.error
         ? `已提交 ${result.message_count} 条记录；部分同步未完成：${result.error}`
         : result.message_count
           ? `已提交 ${result.message_count} 条记录，等待服务端处理。`
           : '没有需要提交的新记录。');
       await refreshUploadState();
-    } catch (reason) { setSyncNotice(`同步未完成：${String(reason)}`); }
+    } catch (reason) { setSyncNoticeError(true); setSyncNotice(`同步未完成：${String(reason)}`); }
     finally { setSyncing(false); }
   };
 
@@ -253,8 +262,9 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
   return <div className="chat-workbench">
     <aside className="chat-workbench-sidebar">
       <header className="chat-workbench-sidebar-head">
-        <div><h1>聊天</h1><p>{sessions.length} 个会话 · {pendingCount} 个有本机新增未上传</p></div>
-        <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label="刷新">↻</button>
+        <h1>聊天</h1>
+        <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)}><span aria-hidden="true">＋</span> 添加会话</button><button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label="刷新会话" title="刷新会话">↻</button></div>
+        <p>{sessions.length} 个会话 · {pendingCount} 个有新增待上传</p>
       </header>
       <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话与聊天记录"/>
       <div className="chat-workbench-filters">
@@ -270,7 +280,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
           return <button type="button" key={session.username} className={selectedSession?.username === session.username ? 'selected' : ''} onClick={() => setSelectedSession(session)}>
             <span className="chat-workbench-avatar">
               {avatar ? <img src={avatar} alt=""/> : session.display.slice(0, 1)}
-              <i className="chat-workbench-avatar-badge">微</i>
+              <i className="chat-workbench-avatar-badge" aria-hidden="true"><img src={wechatIcon} alt="" /></i>
             </span>
             <span className="chat-workbench-session-body">
               <span className="chat-workbench-session-line"><strong>{session.display}</strong><time>{timeLabel(session.last_time)}</time></span>
@@ -286,8 +296,8 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     <main className="chat-workbench-main">
       <header className="chat-workbench-head">
         <div className="chat-workbench-title">
-          <span className="chat-workbench-chip">微信</span>
-          <h2>{conversation}</h2>
+          {selectedSession && <span className="chat-workbench-title-avatar" aria-hidden="true">{avatars[selectedSession.username] ? <img src={avatars[selectedSession.username]} alt=""/> : selectedSession.display.slice(0, 1)}</span>}
+          <div className="chat-workbench-title-text"><h2>{conversation}</h2>{selectedSession && <p>微信{selectedSession.is_group ? '群聊' : '单聊'}{selectedSession.is_group && selectedSession.member_count != null ? ` · ${selectedSession.member_count} 人` : ''}</p>}</div>
         </div>
         <div className="chat-workbench-head-right">
           <div className="chat-workbench-tabs" role="tablist" aria-label="聊天视图">
@@ -300,28 +310,19 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
                 : scopedSummaries.length > 0 && <small>{scopedSummaries.length}</small>}
             </button>
           </div>
-          <input className="chat-workbench-head-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'}/>
+          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'} value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'}/>
           {chatState.active && <div className="chat-workbench-head-actions">
             {chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>已选 {chatState.selected} 条</button>}
             {chatState.agentReady && <button type="button" disabled={!chatState.messages} onClick={openWorkPanel}>整理工作内容</button>}
             <button type="button" onClick={exportNotSupported}>导出</button>
-          </div>}
+          </div>}</div>
         </div>
       </header>
 
       <div className={`chat-workbench-pane${view === 'events' ? '' : ' is-hidden'}`}>
         <div className="chat-workbench-subline">
           <span>{eventsLoading ? '正在同步事件…' : `${scopedEvents.length} 条事件`} · {sessions.length} 个会话 · 云端整理，可人工修改</span>
-          <span>{pendingCount ? `${pendingCount} 个会话有本机新增` : '暂无未上传新增'}</span>
         </div>
-        {selectedPending.length > 0 && <div className="chat-workbench-banner">
-          <span><i/>已选择的聊天中有 {selectedPending.length} 个会话{selectedPendingMessages ? `、${selectedPendingMessages} 条` : ''}新增记录待上传，将在下次自动备份时同步。</span>
-          <div>
-            <button type="button" disabled={syncing} onClick={() => void syncNow()}>{syncing ? '正在提交…' : '立即上传'}</button>
-            <button type="button" className="primary" onClick={onSchedule}>备份周期</button>
-          </div>
-        </div>}
-        {syncNotice && <p role="status">{syncNotice}</p>}
         <div className="chat-workbench-feed">
           {(error || eventsError) && <p className="chat-workbench-error">{error || eventsError}</p>}
           {!eventsLoading && !visibleEvents.length && <div className="chat-workbench-empty-panel">
@@ -355,7 +356,21 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
       </div>
 
       {rawMounted && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
+        {selectedPending.length > 0 && <div className="chat-workbench-banner">
+          <span><i/>已选择的聊天中有 {selectedPending.length} 个会话{selectedPendingMessages ? `、${selectedPendingMessages} 条` : ''}新增记录待上传，将在下次自动备份时同步。</span>
+          <div>
+            <button type="button" disabled={syncing} onClick={() => void syncNow()}>{syncing ? '正在提交…' : '立即上传'}</button>
+            <button type="button" className="primary" onClick={onSchedule}>备份周期</button>
+          </div>
+        </div>}
+        {syncNotice && <p className={`sync-inline-notice${syncNoticeError ? ' is-error' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>{syncNotice}</p>}
+        {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
+          <span className={`sync-feedback-icon${syncing || syncNoticePending ? ' is-loading' : ''}`} aria-hidden="true">{syncing || syncNoticePending ? '' : syncNoticeError ? '!' : '✓'}</span>
+          <span className="sync-feedback-text">{syncing ? '正在提交记录…' : syncNotice}</span>
+          <button type="button" onClick={() => setSyncToastVisible(false)} aria-label="关闭提示">×</button>
+        </div>}
         <WeChatLocal
+          sessionRevision={sessionRevision}
           openSummary={openSummaryRequest}
           onSummaryRequestHandled={() => setOpenSummaryRequest(false)}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
@@ -383,6 +398,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
       </div>
     </main>
 
+    {addingSession && <div className="chat-add-overlay" role="presentation"><section className="chat-add-dialog" role="dialog" aria-modal="true" aria-label="添加会话"><button type="button" className="chat-add-close" onClick={() => setAddingSession(false)} aria-label="关闭">×</button><WhitelistSettings onSaved={() => { setAddingSession(false); setSessionRevision(value => value + 1); void load(); }}/></section></div>}
     {evidence && <EvidenceDrawer
       spaceId={settings?.devify?.active_space_id ?? null}
       target={evidence}

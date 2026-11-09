@@ -16,6 +16,27 @@ type SessionItem = {
 
 type Account = { id: string; modified_at?: number | null };
 type ScanResult = { accounts: Account[] };
+type WechatProfile = { nickname: string | null; alias: string | null; avatar: string | null };
+
+function useWechatProfiles(accounts: Account[]) {
+  const [profiles, setProfiles] = useState<Record<string, WechatProfile>>({});
+  useEffect(() => {
+    let active = true;
+    setProfiles({});
+    void Promise.all(accounts.map(async account => {
+      const profile = await invoke<WechatProfile | null>('wechat_account_profile', { accountId: account.id }).catch(() => null);
+      return [account.id, profile] as const;
+    })).then(results => {
+      if (active) setProfiles(Object.fromEntries(results.filter((item): item is readonly [string, WechatProfile] => item[1] !== null)));
+    });
+    return () => { active = false; };
+  }, [accounts]);
+  return profiles;
+}
+
+function WechatIdentity({ account, profile }: { account: Account; profile?: WechatProfile }) {
+  return <><span className="wechat-account-avatar">{profile?.avatar ? <img src={profile.avatar} alt="" /> : '微'}</span><span className="wechat-account-details"><strong>{profile?.nickname || '微信账号'}</strong><small>{profile?.alias ? `微信号：${profile.alias}` : '微信号暂不可用'}</small><small>本机标识：{account.id}</small></span></>;
+}
 type DevifySpace = { id: number; name: string; kind: string; status: string; role?: string; is_global_admin: boolean; admin_takeover_active: boolean };
 
 /** The scheduler stores a status code, not a sentence; the page shows the sentence. */
@@ -161,20 +182,21 @@ export function mergeSettings(stored: AppSettings): AppSettings {
   };
 }
 
-export function WhitelistSettings() {
+export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const profiles = useWechatProfiles(accounts);
   const [accountId, setAccountId] = useState('');
   const [catalog, setCatalog] = useState<SessionItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [kind, setKind] = useState<'all' | 'group' | 'direct'>('all');
-  const [open, setOpen] = useState(true);
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [dateDetails, setDateDetails] = useState<Record<string, Array<[string, number]>>>({});
   const [dateLoading, setDateLoading] = useState('');
+  const [focusedSession, setFocusedSession] = useState('');
 
   const dateText = (seconds: number | null | undefined, end = false) => {
     if (seconds == null) return '';
@@ -298,6 +320,7 @@ export function WhitelistSettings() {
       });
       setSettings(saved);
       setNotice('微信导入范围已保存，重新打开聊天记录页面后立即生效。');
+      onSaved?.();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -305,99 +328,29 @@ export function WhitelistSettings() {
     }
   };
 
+  const focused = visibleCatalog.find(session => session.username === focusedSession) ?? visibleCatalog[0];
+  const focusedRange = focused ? settings.chat.initial_ranges[accountId]?.[focused.username] : undefined;
+  const alreadySynced = focused && !!settings.sync.cursors?.[accountId]?.[focused.username];
+
   return <div className="settings-page imports-page">
-    <header className="page-head">
-      <h2>导入管理</h2>
-      <p className="help">每个平台单独选择要备份的群和会话。会话很多时，用筛选和批量操作，不必逐个点。连接向导里也可以设置。</p>
-    </header>
-
-    <section className={`plan-plat${open ? ' open' : ''}`}>
-      <div className="plan-plat-head">
-        <span className="plan-mark">微</span>
-        <button type="button" className="plan-plat-title" aria-expanded={open} onClick={() => setOpen(!open)}>
-          <strong>微信</strong>
-          <small>{accountId ? `已选 ${allowedCount} 个会话 · 本机数据库 · 只读` : '尚未检测到账号'}<i>{open ? '收起' : '编辑'} →</i></small>
-        </button>
-      </div>
-      {open && <div className="plan-rows">
-        <div className="plan-row">
-          <div className="plan-row-label">
-            <span>当前账号</span>
-            <small>{accounts.length > 1 ? '检测到多个微信账号，选择要导入的那个' : '自动使用本机微信正在登录的账号'}</small>
-          </div>
-          <div className="plan-row-control">
-            {accounts.length > 1
-              ? <select className="plan-select" value={accountId} aria-label="微信账号" onChange={event => setAccountId(event.target.value)}>
-                {accounts.map(account => <option key={account.id} value={account.id}>{accountLabel(account)}</option>)}
-              </select>
-              : <span className="plan-kv mono">{accountId || '未检测到微信账号'}</span>}
-          </div>
+    <header className="page-head"><h2>导入管理</h2><p className="help">选择要导入的微信会话，并为每个会话设置首次上传的历史日期范围。</p></header>
+    <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} /> : <><span className="wechat-account-avatar">微</span><span className="wechat-account-details"><strong>微信账号</strong><small>未检测到微信账号</small></span></>}{accounts.length > 1 && <select aria-label="微信账号" value={accountId} onChange={event => { setAccountId(event.target.value); setFocusedSession(''); }}>{accounts.map(account => <option key={account.id} value={account.id}>{profiles[account.id]?.nickname || accountLabel(account)}</option>)}</select>}</section>
+    <p className="imports-hint">首次历史日期范围仅用于第一次上传；后续自动备份会继续同步新增消息。</p>
+    <div className="imports-workspace">
+      <div className="imports-choices"><input className="plan-input imports-search" type="search" value={search} placeholder="搜索会话名或 wxid" aria-label="搜索会话" onChange={event => setSearch(event.target.value)}/>
+        <div className="plan-pills" role="group" aria-label="按会话类型筛选">
+          <button type="button" aria-pressed={kind === 'all'} className={kind === 'all' ? 'on' : ''} onClick={() => setKind('all')}>全部 {matchedCatalog.length}</button>
+          <button type="button" aria-pressed={kind === 'group'} className={kind === 'group' ? 'on' : ''} onClick={() => setKind('group')}>群聊 {groupCount}</button>
+          <button type="button" aria-pressed={kind === 'direct'} className={kind === 'direct' ? 'on' : ''} onClick={() => setKind('direct')}>单聊 {matchedCatalog.length - groupCount}</button>
         </div>
-
-        {catalog.length > 0 && <>
-          <div className="plan-row">
-            <div className="plan-row-label">
-              <span>筛选会话</span>
-              <small>群聊和单聊可以混合选择；未勾选任何会话时，聊天页不会兜底展示全部会话</small>
-            </div>
-            <div className="plan-row-control">
-              <div className="plan-pills" role="group" aria-label="按会话类型筛选">
-                <button type="button" aria-pressed={kind === 'all'} className={kind === 'all' ? 'on' : ''} onClick={() => setKind('all')}>全部 {matchedCatalog.length}</button>
-                <button type="button" aria-pressed={kind === 'group'} className={kind === 'group' ? 'on' : ''} onClick={() => setKind('group')}>群聊 {groupCount}</button>
-                <button type="button" aria-pressed={kind === 'direct'} className={kind === 'direct' ? 'on' : ''} onClick={() => setKind('direct')}>单聊 {matchedCatalog.length - groupCount}</button>
-              </div>
-              <input className="plan-input" type="text" value={search} spellCheck={false} placeholder="搜索会话名或 wxid" aria-label="搜索会话" onChange={event => setSearch(event.target.value)}/>
-              {search && <button type="button" className="plan-button" onClick={() => setSearch('')}>清空</button>}
-            </div>
-          </div>
-
-          <div className="plan-row">
-            <div className="plan-row-label">
-              <span>批量设置</span>
-              <small>只作用于当前筛选结果，共 {visibleCatalog.length} 个会话</small>
-            </div>
-            <div className="plan-row-control">
-              <button type="button" className="plan-button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(true)}>全部导入</button>
-              <button type="button" className="plan-button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(false)}>全部忽略</button>
-            </div>
-          </div>
-
-          <div className="imports-list">
-            {visibleCatalog.map(session => <div key={session.username}>
-              <label className="imports-session"><input type="checkbox" checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><span><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></span></label>
-              {allowed.has(session.username) && !!settings.sync.cursors?.[accountId]?.[session.username] && <p style={{ padding: '0 24px 12px' }}>此会话已有同步进度，首次历史范围不再生效。</p>}
-              {allowed.has(session.username) && !settings.sync.cursors?.[accountId]?.[session.username] && <div className="plan-row-control" style={{ padding: '0 24px 16px', flexWrap: 'wrap' }}>
-                <span>首次上传历史范围</span>
-                <label>开始 <input type="date" value={dateText(settings.chat.initial_ranges[accountId]?.[session.username]?.since)} onChange={e => setDate(session.username, 'since', e.target.value)}/></label>
-                <label>结束 <input type="date" value={dateText(settings.chat.initial_ranges[accountId]?.[session.username]?.until, true)} onChange={e => setDate(session.username, 'until', e.target.value)}/></label>
-                <button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(session.username)}>{dateLoading === session.username ? '正在读取…' : '查看有记录的日期'}</button>
-                {dateDetails[session.username] && <details><summary>{dateDetails[session.username].length} 天有记录</summary><p>{dateDetails[session.username].map(([day, count]) => `${day}（${count} 条）`).join('、') || '没有可用记录'}</p></details>}
-              </div>}
-            </div>)}
-          </div>
-        </>}
-
-        {!accountId && <p className="plan-empty">未发现微信账号。请先在「连接器」完成扫描并解密。</p>}
-        {accountId && catalogLoading && <p className="plan-empty">正在加载会话候选…</p>}
-        {accountId && !catalogLoading && !catalog.length && <p className="plan-empty">没有可配置的会话。请先完成该账号的解密。</p>}
-        {catalog.length > 0 && search.trim() && !matchedCatalog.length && <p className="plan-empty">没有匹配「{search.trim()}」的会话。</p>}
-        {matchedCatalog.length > 0 && !visibleCatalog.length && <p className="plan-empty">{kind === 'group' ? '没有匹配的群聊。' : '没有匹配的单聊。'}</p>}
-      </div>}
-    </section>
-
-    <div className="plan-off-list">
-      {[{ mark: 'W', name: 'WhatsApp' }, { mark: '@', name: '邮件' }].map(item => <div className="plan-off" key={item.name}>
-        <span className="plan-mark dim alt">{item.mark}</span>
-        <div><strong>{item.name}</strong><small>连接后可单独设置导入范围</small></div>
-        <button type="button" className="ghost" disabled>尚未接入</button>
-      </div>)}
+        <div className="imports-bulk"><button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(true)}>全部导入</button><button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(false)}>全部忽略</button></div>
+        <div className="imports-list">{visibleCatalog.map(session => <div key={session.username} className={`imports-choice${focused?.username === session.username ? ' selected' : ''}`}><input type="checkbox" aria-label={`导入 ${session.display}`} checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><button type="button" onClick={() => setFocusedSession(session.username)}><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></button></div>)}
+        {!accountId && <p className="plan-empty">未发现微信账号，请先完成连接。</p>}{accountId && catalogLoading && <p className="plan-empty">正在加载会话…</p>}{accountId && !catalogLoading && !visibleCatalog.length && <p className="plan-empty">没有符合条件的会话。</p>}</div>
+      </div>
+      <section className="imports-detail">{focused ? <><header><h3>{focused.display}</h3><p>{focused.is_group ? '群聊' : '单聊'} · {focused.username}</p></header>{!allowed.has(focused.username) ? <p className="help">勾选此会话后，可以设置首次上传的历史范围。</p> : alreadySynced ? <p className="help">此会话已有同步进度，首次历史范围不再生效。</p> : <><h3>首次上传历史范围</h3><p className="help">只上传所选日期内的历史消息；留空表示不限制。</p><div className="imports-dates"><label>开始日期<input type="date" value={dateText(focusedRange?.since)} onChange={e => setDate(focused.username, 'since', e.target.value)}/></label><span>至</span><label>结束日期<input type="date" value={dateText(focusedRange?.until, true)} onChange={e => setDate(focused.username, 'until', e.target.value)}/></label></div><div className="imports-available"><strong>有记录的日期</strong><button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(focused.username)}>{dateLoading === focused.username ? '正在读取…' : '查看日期'}</button>{dateDetails[focused.username] && <p>{dateDetails[focused.username].map(([day, count]) => `${day}（${count} 条）`).join('、') || '没有可用记录'}</p>}</div></>}</> : <p className="help">选择一个会话，查看并设置首次上传的日期范围。</p>}</section>
     </div>
-
-    {notice && <div className="notice">{notice}</div>}
-    {error && <div className="error">{error}</div>}
-    <div className="page-actions">
-      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存导入范围'}</button>
-    </div>
+    {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
+    <div className="page-actions"><button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存所选会话'}</button><span>已选 {allowedCount} 个会话</span></div>
   </div>;
 }
 
@@ -459,6 +412,10 @@ export function StrategySettings({ title = '本地自动化', description = '每
 
 export function DevifySettings() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [profile, setProfile] = useState<{ display_name?: string; username?: string } | null>(null);
+  const [wechatStatus, setWechatStatus] = useState('正在检查…');
+  const [wechatAccounts, setWechatAccounts] = useState<Account[]>([]);
+  const wechatProfiles = useWechatProfiles(wechatAccounts);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -467,6 +424,21 @@ export function DevifySettings() {
   const [spaces, setSpaces] = useState<DevifySpace[]>([]);
   const [takeoverReason, setTakeoverReason] = useState('');
   const [spacesStatus, setSpacesStatus] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    void invoke<ScanResult>('wechat_scan').then(scan => {
+      if (active) { setWechatAccounts(scan.accounts); setWechatStatus(scan.accounts.length ? `本机发现 ${scan.accounts.length} 个微信账号` : '未发现微信账号'); }
+    }).catch(() => { if (active) setWechatStatus('无法检查微信账号'); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (authenticated) void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(value => { if (active) setProfile(value); }).catch(() => { if (active) setProfile(null); });
+    else setProfile(null);
+    return () => { active = false; };
+  }, [authenticated]);
 
   useEffect(() => {
     void invoke<AppSettings>('app_settings_get')
@@ -578,6 +550,7 @@ export function DevifySettings() {
 
   const selectedSpace = spaces.find(space => space.id === settings.devify.active_space_id);
   const activeSpace = selectedSpace;
+  const platformName = ({ macos: 'macOS', windows: 'Windows', linux: 'Linux' } as Record<string, string>)[settings.devify.platform] || settings.devify.platform || '自动识别';
   const needsTakeover = Boolean(selectedSpace?.is_global_admin && !selectedSpace.admin_takeover_active);
   const takeoverSpace = async () => {
     if (!selectedSpace || !takeoverReason.trim()) return;
@@ -600,26 +573,20 @@ export function DevifySettings() {
   return <div className="settings-page account-settings">
     <header className="page-head">
       <h2>账户</h2>
-      <p className="help">管理当前登录的 AIMyChats 账号。登录后默认使用个人空间，聊天记录与报告都写入这里。</p>
+      <p className="help">管理 AIMyChats 账号、服务连接和微信数据来源。</p>
     </header>
 
-    <div className="plan-items">
+    <section className="account-profile-card account-identity"><h3>AIMyChats 账户</h3><div className="account-profile-content">
+      <span className="account-profile-avatar">{(profile?.display_name || profile?.username || '账').slice(0, 1)}</span>
+      <span className="account-profile-info"><strong>{authenticated ? (profile?.display_name || profile?.username || '账号信息暂不可用') : '未登录'}</strong><small>{profile?.username ? `@${profile.username}` : 'AIMyChats 账号'}</small></span>
+      <span className={`account-login-status${authenticated ? ' is-active' : ''}`}><i/>{authenticated ? '已登录' : '未登录'}</span>
+      {authenticated ? <button type="button" className="plan-button account-auth-action" onClick={() => void logoutDevify()}>退出登录</button> : <button type="button" className="plan-button primary account-auth-action" onClick={() => void loginDevify()}>登录</button>}
+    </div>{authStatus && <p className="account-auth-notice" role="status">{authStatus}</p>}</section>
+    <section className="account-service-card"><h3>服务与空间</h3><div className="plan-items">
       <div className="plan-row">
         <div className="plan-row-label">
-          <span>当前账号</span>
-          <small>{authenticated ? (authStatus || 'Devify 已登录，设备身份由服务端签发') : '未登录 Devify，上传与报告同步都不可用'}</small>
-        </div>
-        <div className="plan-row-control">
-          {authenticated
-            ? <button type="button" className="plan-button" onClick={() => void logoutDevify()}>退出登录</button>
-            : <button type="button" className="plan-button primary" onClick={() => void loginDevify()}>登录 Devify</button>}
-        </div>
-      </div>
-
-      <div className="plan-row">
-        <div className="plan-row-label">
-          <span>Devify 服务地址</span>
-          <small>自托管实例的根地址，上传与同步都发往这里</small>
+          <span>服务地址</span>
+          <small>AIMyChats 服务的访问地址</small>
         </div>
         <div className="plan-row-control">
           <input
@@ -636,29 +603,27 @@ export function DevifySettings() {
 
       <div className="plan-row">
         <div className="plan-row-label">
-          <span>当前设备</span>
-          <small>平台与设备标识会随上传发送到服务端，并显示在网页的「设备与设置」</small>
+          <span>当前空间</span>
+          <small>{activeSpace ? '聊天记录、事件与报告所属的空间' : (spacesStatus || '登录后自动选择个人空间')}</small>
         </div>
         <div className="plan-row-control">
-          <span className="plan-kv">
-            {settings.devify.device_label || '未命名设备'} · {settings.devify.platform || '自动识别'}
-            {settings.devify.device_id ? ` · ${settings.devify.device_id.slice(0, 8)}` : ' · 未登记'}
-          </span>
+          <span className="plan-kv">{activeSpace ? `${activeSpace.name} · ${activeSpace.role || activeSpace.kind}` : (authenticated ? (spacesStatus || '正在读取空间…') : '未登录')}</span>
         </div>
       </div>
 
       <div className="plan-row">
         <div className="plan-row-label">
-          <span>当前空间</span>
-          <small>{activeSpace ? '登录后自动使用个人空间，聊天记录、事件与报告都写入这里' : (spacesStatus || '登录后自动选择个人空间')}</small>
+          <span>当前设备</span>
+          <small>正在使用的设备</small>
         </div>
         <div className="plan-row-control">
-          <span className="plan-kv">{activeSpace ? `${activeSpace.name} · ${activeSpace.role || activeSpace.kind}` : (authenticated ? '正在读取空间…' : '未登录')}</span>
+          <span className="plan-kv">{settings.devify.device_label || '未命名设备'} · {platformName}{settings.devify.device_id ? ` · ${settings.devify.device_id.slice(0, 8)}` : ' · 未登记'}</span>
         </div>
       </div>
 
-    </div>
+    </div></section>
 
+    <section className="account-profile-card account-wechat"><h3>微信数据来源</h3>{wechatAccounts.length ? wechatAccounts.map(account => <div key={account.id} className="wechat-source-account"><WechatIdentity account={account} profile={wechatProfiles[account.id]} /></div>) : <div><span className="wechat-account-avatar">微</span><span><strong>{wechatStatus}</strong><small>微信账号与 AIMyChats 账号相互独立，用于读取本机聊天记录。</small></span></div>}</section>
     {needsTakeover && <section className="account-takeover">
       <strong>当前账号是全局管理员</strong>
       <p>访问空间业务数据前需要先接管空间并记录原因。</p>

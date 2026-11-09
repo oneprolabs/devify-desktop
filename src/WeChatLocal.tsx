@@ -573,6 +573,7 @@ export default function WeChatLocal({
   searchKeyword = '',
   onClearSearch,
   workRequest = 0,
+  sessionRevision = 0,
   onChatState,
 }: {
   mode?: 'chat' | 'settings';
@@ -592,6 +593,7 @@ export default function WeChatLocal({
   onClearSearch?: () => void;
   /** Counters from the embedding page header's 整理工作内容 button. */
   workRequest?: number;
+  sessionRevision?: number;
   /** Reports whether the page-level 整理/导出 actions may be shown at all. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
 } = {}) {
@@ -789,6 +791,10 @@ export default function WeChatLocal({
     },
     [],
   );
+
+  useEffect(() => {
+    if (sessionRevision > 0 && accountId) void loadSessions(accountId);
+  }, [sessionRevision, accountId, loadSessions]);
 
   const syncLatest = useCallback(async () => {
     if (!account || syncLock.current || clearingRef.current) return;
@@ -3086,7 +3092,7 @@ const checkMark = (value: boolean | undefined) =>
         return (
           <div key={`${message.local_id}-${message.time}`}>
             {divider && <div className="wxv-divider">{divider}</div>}
-            {stamp && <div className="wxv-divider">{stamp}</div>}
+            {stamp && <div className="wxv-divider wxv-stamp">{stamp}</div>}
             <div
               className={`wxv-msg ${message.is_self ? 'self' : ''} ${placeholder ? 'sticker' : ''} ${selected ? 'selected' : ''}`}
               data-hit={hit ? 'true' : 'false'}
@@ -3112,7 +3118,8 @@ const checkMark = (value: boolean | undefined) =>
                 if (event.key === 'Enter' || event.key === ' ') selectMessage(event.shiftKey);
               }}
             >
-              {!message.is_self && (
+              {onChatState && <time className="wxv-timeline-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}
+              {(!message.is_self || onChatState) && (
                 <span className="wxv-avatar sm" style={{ background: avatarColor(message.sender ?? message.text) }}>
                   {message.sender && avatars[message.sender] ? (
                     <img
@@ -3122,13 +3129,13 @@ const checkMark = (value: boolean | undefined) =>
                       draggable={false}
                     />
                   ) : (
-                    initial(message.sender_name || message.sender || '?')
+                    initial(message.sender_name || message.sender || (message.is_self ? '我' : '?'))
                   )}
                 </span>
               )}
               <div className="wxv-msg-body">
-                {active?.is_group && !message.is_self && (
-                  <span className="wxv-sender">{message.sender_name || message.sender || '未知成员'}</span>
+                {(onChatState || (active?.is_group && !message.is_self)) && (
+                  <span className="wxv-sender">{message.is_self ? '我' : (message.sender_name || message.sender || '未知成员')}</span>
                 )}
                 <div className={`wxv-bubble ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
                   {placeholder ? (

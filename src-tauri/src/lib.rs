@@ -644,6 +644,34 @@ async fn devify_json_request(
 }
 
 #[tauri::command]
+async fn devify_current_user(app: AppHandle) -> Result<serde_json::Value, String> {
+    let user = devify_json_request(&app, reqwest::Method::GET, "/api/v1/auth/user".into(), None).await?;
+    Ok(serde_json::json!({ "display_name": user.get("display_name"), "username": user.get("username") }))
+}
+
+#[tauri::command]
+async fn devify_analysis_preferences_get(app: AppHandle, space_id: i64) -> Result<serde_json::Value, String> {
+    validate_devify_space(&settings::load(&app_data(&app))?, space_id)?;
+    let data = devify_json_request(&app, reqwest::Method::GET, format!("/api/v1/spaces/{space_id}/workflow-config"), None).await?;
+    data.get("chat_analysis_preferences").cloned().ok_or_else(|| "服务端尚不支持分析偏好设置，请更新服务端。".to_string())
+}
+
+#[tauri::command]
+async fn devify_analysis_preferences_save(app: AppHandle, space_id: i64, preferences: serde_json::Value) -> Result<serde_json::Value, String> {
+    validate_devify_space(&settings::load(&app_data(&app))?, space_id)?;
+    let body = serde_json::json!({"chat_analysis_preferences": preferences});
+    let data = devify_json_request(&app, reqwest::Method::PATCH, format!("/api/v1/spaces/{space_id}/workflow-config"), Some(body)).await?;
+    data.get("chat_analysis_preferences").cloned().ok_or_else(|| "服务端未确认分析偏好，请更新服务端。".to_string())
+}
+
+#[tauri::command]
+async fn devify_analysis_manual_start(app: AppHandle, space_id: i64, conversation_id: i64) -> Result<serde_json::Value, String> {
+    validate_devify_space(&settings::load(&app_data(&app))?, space_id)?;
+    if conversation_id <= 0 { return Err("会话标识无效。".into()); }
+    devify_json_request(&app, reqwest::Method::POST, format!("/api/v1/spaces/{space_id}/analysis-jobs/manual"), Some(serde_json::json!({"conversation_id": conversation_id}))).await
+}
+
+#[tauri::command]
 async fn devify_analysis_detail(
     app: AppHandle,
     kind: String,
@@ -6041,6 +6069,21 @@ struct AvatarItem {
     data_url: String,
 }
 
+#[derive(Serialize)]
+struct WechatAccountProfile {
+    nickname: Option<String>,
+    alias: Option<String>,
+    avatar: Option<String>,
+}
+
+#[tauri::command]
+async fn wechat_account_profile(app: AppHandle, account_id: String) -> Option<WechatAccountProfile> {
+    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
+    let profile = query::account_profile(&cache, &account_id)?;
+    let avatar = wechat::avatar::avatars(&cache, &[profile.username]).into_iter().next().map(|item| item.data_url);
+    Some(WechatAccountProfile { nickname: profile.nickname, alias: profile.alias, avatar })
+}
+
 /// Avatars for the given usernames, as `data:` URLs. Missing names are simply absent, so the
 /// caller keeps its letter avatars; nothing here is an error worth interrupting a chat for.
 #[tauri::command]
@@ -6409,6 +6452,10 @@ pub fn run() {
             devify_auth_callback,
             devify_auth_cancel,
             devify_auth_status,
+            devify_current_user,
+            devify_analysis_preferences_get,
+            devify_analysis_preferences_save,
+            devify_analysis_manual_start,
             capabilities_list,
             entitlements_get,
             entitlements_refresh,
@@ -6480,6 +6527,7 @@ pub fn run() {
             wechat_sessions,
             wechat_upload_state,
             wechat_avatars,
+            wechat_account_profile,
             wechat_session_catalog,
             wechat_messages,
             wechat_message_media,

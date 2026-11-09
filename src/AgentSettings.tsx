@@ -197,23 +197,13 @@ export function AgentSettings() {
           <span>{scanning ? '正在扫描…' : `检测到 ${agents.filter(item => item.available).length} 个可用 Agent`}</span>
         </div>
         <div className="agent-picker">
-          <label className="agent-select">使用哪个 Agent
-            <select
-              value={agent.provider_id}
-              onChange={event => patchAgent({ provider_id: event.target.value })}
-              disabled={scanning || !agents.length}
-            >
-              <option value="">{scanning ? '正在扫描…' : '请选择一个 Agent'}</option>
-              {agents.map(item => (
-                <option key={item.id} value={item.id} disabled={!item.available}>
-                  {item.name} · {item.available ? '可用' : '未检测到'}
-                </option>
-              ))}
-              {!scanning && agent.provider_id && !selected && (
-                <option value={agent.provider_id} disabled>{agent.provider_id} · 不在扫描结果中</option>
-              )}
-            </select>
-          </label>
+          <fieldset className="agent-options">
+            <legend>选择本地 Agent</legend>
+            {agents.map(item => <label key={item.id} className={`agent-option${agent.provider_id === item.id ? ' selected' : ''}${item.available ? '' : ' unavailable'}`}>
+              <input type="radio" name="local-agent" value={item.id} checked={agent.provider_id === item.id} disabled={scanning || !item.available} onChange={() => patchAgent({ provider_id: item.id })}/>
+              <span><strong>{item.name}</strong><small>{item.available ? '已检测到' : '未检测到'}{item.version ? ` · ${item.version}` : ''}</small></span>
+            </label>)}
+          </fieldset>
           {selected && (
             <div className="agent-detail">
               <span className={`agent-state ${selected.available ? 'ok' : 'warn'}`}>

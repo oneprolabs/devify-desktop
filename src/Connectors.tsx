@@ -1,22 +1,43 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type AppSettings, mergeSettings } from './Settings';
+import wechatIcon from './assets/connectors/wechat.svg';
+import whatsappIcon from './assets/connectors/whatsapp.svg';
+import telegramIcon from './assets/connectors/telegram.svg';
+import slackIcon from './assets/connectors/slack.svg';
+import feishuIcon from './assets/connectors/feishu.svg';
+import dingtalkIcon from './assets/connectors/dingtalk.svg';
+import wecomIcon from './assets/connectors/wecom.svg';
+import discordIcon from './assets/connectors/discord.svg';
+import lineIcon from './assets/connectors/line.svg';
+
+const connectorIcons: Record<string, string> = {
+  微信: wechatIcon, WhatsApp: whatsappIcon, Telegram: telegramIcon, Slack: slackIcon,
+  飞书: feishuIcon, 钉钉: dingtalkIcon, 企业微信: wecomIcon, Discord: discordIcon, LINE: lineIcon,
+};
+
+export function ConnectorIcon({ name }: { name: string }) {
+  const icon = connectorIcons[name];
+  return <span className="connector-mark connector-brand" aria-hidden="true">{icon
+    ? <img src={icon} alt="" />
+    : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></svg>}</span>;
+}
 
 type Scan = { accounts: Array<{ id: string }> };
 type KeyStatus = { keys: Array<{ account: string }> };
 type Probe = { accounts: number; verifiedAccounts: number };
 
-type Connector = { name: string; mark: string; tone: string; description: string; capabilities: string };
+type Connector = { name: string; description: string; capabilities: string };
 const futureConnectors: Connector[] = [
-  { name: 'WhatsApp', mark: 'W', tone: 'teal', description: '读取桌面版本地数据', capabilities: '历史记录 · 群聊 · 增量同步' },
-  { name: '邮件', mark: '@', tone: 'blue', description: '连接邮箱，整理邮件对话', capabilities: '历史记录 · 邮件夹' },
-  { name: 'Telegram', mark: 'T', tone: 'sky', description: '读取群组与私聊', capabilities: '' },
-  { name: 'Slack', mark: 'S', tone: 'purple', description: '读取工作区频道与私信', capabilities: '' },
-  { name: '飞书', mark: '飞', tone: 'sky', description: '读取群聊与话题', capabilities: '' },
-  { name: '钉钉', mark: '钉', tone: 'orange', description: '读取群消息', capabilities: '' },
-  { name: '企业微信', mark: '企', tone: 'teal', description: '读取客户群与内部群', capabilities: '' },
-  { name: 'Discord', mark: 'D', tone: 'blue', description: '读取服务器频道', capabilities: '' },
-  { name: 'LINE', mark: 'L', tone: 'green', description: '导入聊天文本', capabilities: '' },
+  { name: 'WhatsApp', description: '读取桌面版本地数据', capabilities: '历史记录 · 群聊 · 增量同步' },
+  { name: '邮件', description: '连接邮箱，整理邮件对话', capabilities: '历史记录 · 邮件夹' },
+  { name: 'Telegram', description: '读取群组与私聊', capabilities: '' },
+  { name: 'Slack', description: '读取工作区频道与私信', capabilities: '' },
+  { name: '飞书', description: '读取群聊与话题', capabilities: '' },
+  { name: '钉钉', description: '读取群消息', capabilities: '' },
+  { name: '企业微信', description: '读取客户群与内部群', capabilities: '' },
+  { name: 'Discord', description: '读取服务器频道', capabilities: '' },
+  { name: 'LINE', description: '导入聊天文本', capabilities: '' },
 ];
 
 export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolean) => void }) {
@@ -96,15 +117,15 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
 
   return <div className="connector-page">
     <header className="connector-hero">
-      <div><p>CONNECTORS</p><h1>你所有的对话，汇到一处</h1><span>连接聊天来源，选择要导入的会话，再按需要整理与上传。</span></div>
-      <div className="connector-hero-marks" aria-hidden="true"><i className="green">微</i><i className="teal">W</i><i className="blue">@</i><i className="sky">T</i><i className="purple">S</i><i className="sky">飞</i></div>
+      <div><p>CONNECTORS</p><h1>连接器</h1><span>连接并管理聊天平台，选择要导入的会话。</span></div>
+      <div className="connector-hero-marks" aria-hidden="true">{['微信', 'WhatsApp', '邮件', 'Telegram', 'Slack', '飞书'].map(name => <ConnectorIcon key={name} name={name} />)}</div>
     </header>
     <section aria-labelledby="connector-available">
-      <h2 id="connector-available">已开放</h2>
+      <h2 id="connector-available">微信</h2>
       <div className="connector-grid">
         <article className={`connector-card${enabled ? '' : ' off'}`}>
           <div className="connector-card-head">
-            <span className="connector-mark green">微</span>
+            <ConnectorIcon name="微信" />
             <div>
               <h3>微信</h3>
               <p className="connector-state">
@@ -146,9 +167,10 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
       {error && <p className="connector-error" role="alert">{error}</p>}
     </section>
     <section aria-labelledby="connector-upcoming">
-      <div className="connector-section-head"><h2 id="connector-upcoming">其他来源</h2><span>尚未接入</span></div>
+      <div className="connector-section-head"><h2 id="connector-upcoming">其他来源</h2></div>
+      <p className="connector-section-description">未来可连接更多平台，统一管理你的聊天记录。</p>
       <div className="connector-grid">{futureConnectors.map(connector => <article key={connector.name} className="connector-card future">
-        <div className="connector-card-head"><span className={`connector-mark ${connector.tone}`}>{connector.mark}</span><div><h3>{connector.name}</h3><p className="connector-state">尚未接入</p></div></div>
+        <div className="connector-card-head"><ConnectorIcon name={connector.name} /><div><h3>{connector.name}</h3><p className="connector-state">尚未接入</p></div></div>
         <p className="connector-description">{connector.description}</p>
         {connector.capabilities && <p className="connector-capabilities">{connector.capabilities}</p>}
         <div className="connector-actions"><button

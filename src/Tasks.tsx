@@ -7,8 +7,17 @@ type UploadJob = { id: string; account_id: string; space_id: number; batch_id: n
 type RetryPreview = { fingerprint: string; message_count: number; sessions: Array<{ username: string; display: string; message_count: number }> };
 type UploadStatus = { status: string; message_count: number; duplicate_count: number; error_message: string };
 type SettingsWithJobs = { upload_queue?: UploadJob[] };
-const statusLabels: Record<string, string> = { queued: '等待中', running: '上传中', processing: '处理中', completed: '已完成', failed: '失败', cancelled: '已取消' };
+const statusLabels: Record<string, string> = { queued: '等待中', running: '上传中', uploading: '上传中', processing: '处理中', completed: '已完成', submitted: '已提交', failed: '失败', cancelled: '已取消' };
 function statusLabel(status: string): string { return statusLabels[status] ?? status; }
+function TaskIcon({ manual }: { manual: boolean }) {
+  return <span className="task-kind-icon" aria-hidden="true">{manual
+    ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M7 18H6a4 4 0 0 1-.3-8 6.5 6.5 0 0 1 12.5 1A3.5 3.5 0 0 1 18 18h-1"/><path d="M12 20V10m-3 3 3-3 3 3"/></svg>
+    : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5 9a7 7 0 0 1 12-2l3 5M19 15a7 7 0 0 1-12 2l-3-5"/></svg>}</span>;
+}
+function TaskStatus({ value, label }: { value: string; label?: string }) {
+  const tone = value === 'completed' ? 'done' : value === 'failed' ? 'failed' : value === 'cancelled' ? 'muted' : 'pending';
+  return <span className={`task-status ${tone}`}><i aria-hidden="true">{tone === 'done' ? '✓' : tone === 'failed' ? '×' : '·'}</i>{label || statusLabel(value)}</span>;
+}
 function timeLabel(value: string | number): string {
   const time = new Date(value);
   return Number.isNaN(time.getTime()) ? '时间未知' : time.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -80,6 +89,10 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
   }, [jobs, load]);
   const countsComplete = batches.filter(job => job.status === 'completed').every(job => job.batch_id != null && groupRemote[job.batch_id]);
   const totals = Object.values(groupRemote).reduce((sum, item) => ({ added: sum.added + item.message_count, duplicate: sum.duplicate + item.duplicate_count }), { added: 0, duplicate: 0 });
+  const cloudResults = Object.values(groupRemote);
+  const cloudCompleted = cloudResults.filter(item => item.status === 'completed').length;
+  const cloudFailed = cloudResults.filter(item => item.status === 'failed').length;
+  const cloudAllDone = groupStatus === 'completed' && !groupLoading && !groupRemoteError && countsComplete && cloudResults.length === batches.length && cloudCompleted === batches.length;
   useEffect(() => { setConfirmRetry(false); setRetryError(''); setRetryPreview(null); setRetryJobId(''); }, [selectedKey]);
   useEffect(() => {
     setRemote(null); setRemoteError('');
@@ -91,7 +104,9 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
     return () => { active = false; };
   }, [selected?.id, selected?.batch_id, refreshKey]);
   const refresh = () => { void load(); setRefreshKey(value => value + 1); };
-  const currentStatus = selected?.manual_group ? groupStatus : (remote?.status || selected?.status || '');
+  const currentStatus = selected?.manual_group
+    ? (cloudFailed ? 'failed' : groupStatus === 'completed' && !cloudAllDone ? (groupRemoteError ? '云端状态暂不可用' : 'processing') : groupStatus)
+    : (remote?.status || (selected?.status === 'completed' ? (remoteError ? '云端状态暂不可用' : 'submitted') : selected?.status) || '');
   const retryScope = jobs.find(job => job.id === retryJobId)?.scope ?? selected?.scope;
   const prepareRetry = async (target = selected?.id) => {
     if (!target || retrying) return;
@@ -115,24 +130,42 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
 
   return <div className="task-page">
     <aside className="task-list">
-      <header className="task-list-head"><h1>任务</h1><p>查看上传与处理记录</p></header>
-      <div className="task-list-tools"><button type="button" className="task-new" onClick={() => setCreating(true)}>＋ 新建采集</button><button type="button" className="task-refresh" onClick={refresh} disabled={loading || !isTauri()}>刷新</button></div>
+      <header className="task-list-head"><div><h1>任务</h1><p>查看上传与处理记录</p></div><button type="button" className="task-refresh" onClick={refresh} disabled={loading || !isTauri()}>↻ 刷新</button></header>
       <p className="task-list-label">全部任务 · {groups.length}</p>
       {loading && <p className="task-list-empty">正在读取任务…</p>}
       {!isTauri() && <p className="task-list-empty">请在桌面应用中查看任务。</p>}
       {error && <p className="task-list-empty task-error" role="alert">{error}</p>}
       {!loading && isTauri() && !error && !jobs.length && <p className="task-list-empty">还没有上传任务。</p>}
-      <div className="task-items">{groups.map(job => <button key={job.manual_group || job.id} type="button" className={selectedKey === (job.manual_group || job.id) ? 'task-item active' : 'task-item'} onClick={() => { setCreating(false); setSelectedId(job.manual_group || job.id); }} aria-pressed={selectedKey === (job.manual_group || job.id)}>
-        <span className="task-item-title">{job.manual_group ? `手动上传 · ${[...new Set(jobs.filter(item => item.manual_group === job.manual_group).flatMap(item => item.scope?.usernames ?? []))].map(name => sessionNames[name] || name).join('、')}` : `同步任务 ${job.batch_id ? `#${job.batch_id}` : ''}`}</span><time>{timeLabel(job.updated_at)}</time><small>{job.manual_group ? (() => { const parts = jobs.filter(item => item.manual_group === job.manual_group); const done = parts.filter(item => item.status === 'completed').length; const state = parts.some(item => item.status === 'failed') ? '失败' : parts.some(item => item.status === 'cancelled') ? '已取消' : done === parts.length && parts.length === (job.manual_total || parts.length) ? '已完成' : '进行中'; return `${state} · ${done}/${parts.length} 批`; })() : `${statusLabel(selected?.id === job.id && remote ? remote.status : job.status)} · ${job.message || '等待处理'}`}</small>
-      </button>)}</div>
+      <div className="task-items">{groups.map(job => {
+        const parts = job.manual_group ? jobs.filter(item => item.manual_group === job.manual_group) : [];
+        const done = parts.filter(item => item.status === 'completed').length;
+        const localStatus = !job.manual_group ? (job.status === 'completed' ? 'submitted' : job.status) : parts.some(item => item.status === 'failed') ? 'failed' : parts.some(item => item.status === 'cancelled') ? 'cancelled' : done === parts.length && parts.length === (job.manual_total || parts.length) ? 'submitted' : 'processing';
+        const displayStatus = selectedKey === (job.manual_group || job.id) ? currentStatus : localStatus;
+        const names = [...new Set(parts.flatMap(item => item.scope?.usernames ?? []))].map(name => sessionNames[name] || name).join('、');
+        return <button key={job.manual_group || job.id} type="button" className={selectedKey === (job.manual_group || job.id) ? 'task-item active' : 'task-item'} onClick={() => { setCreating(false); setSelectedId(job.manual_group || job.id); }} aria-pressed={selectedKey === (job.manual_group || job.id)}>
+          <TaskIcon manual={Boolean(job.manual_group)}/><span className="task-item-body"><strong className="task-item-title">{job.manual_group ? `手动上传${names ? ` · ${names}` : ''}` : `同步任务${job.batch_id ? ` #${job.batch_id}` : ''}`}</strong><time>{timeLabel(job.updated_at)}</time></span><TaskStatus value={displayStatus}/>
+        </button>;
+      })}</div>
     </aside>
     {creating ? <Collection onSettings={onNewUpload} onComplete={() => { setCreating(false); void load(); }} /> : <section className="task-detail">
       <header className="task-detail-bar">任务 <span>/</span> {selected ? (selected.manual_group ? '手动上传' : `同步任务${selected.batch_id ? ` #${selected.batch_id}` : ''}`) : '全部任务'}</header>
       {selected ? <div className="task-detail-body">
-        <p className="task-kicker">手动上传 · {statusLabel(currentStatus)}</p>
-        <h2>{selected.manual_group ? '手动上传' : <>同步任务 {selected.batch_id ? <span>#{selected.batch_id}</span> : null}</>}</h2>
-        <p className="task-meta">{timeLabel(selected.created_at || selected.updated_at)} · 微信账号 {selected.account_id || '未知'} · 空间 {selected.space_id}</p>
-        {selected.manual_group && <div className="task-group-summary"><p>会话：{groupNames.map(name => sessionNames[name] || name).join('、')}</p><p>已处理 {groupDone} / {groupTotal} 条 · {batches.filter(job => job.status === 'completed').length} / {selected.manual_total || batches.length} 批{batches.some(job => job.status === 'failed') ? ` · ${batches.filter(job => job.status === 'failed').length} 批失败` : ''}</p>{batches.length !== (selected.manual_total || batches.length) && <p className="task-error">部分批次记录缺失，无法确认总进度。</p>}{countsComplete && !groupRemoteError ? <p>新增 {totals.added} 条 · 已存在 {totals.duplicate} 条</p> : <p>{groupLoading ? '正在读取云端统计…' : '云端统计暂未全部获取，请刷新查看。'}</p>}<details><summary>查看各批状态</summary>{batches.map(job => <div className="task-batch" key={job.id}><span>第 {(job.manual_index ?? 0) + 1} / {job.manual_total || batches.length} 批 · {statusLabel(job.status)} · {Object.values(job.scope?.message_selection ?? {}).reduce((n, items) => n + items.length, 0)} 条{job.batch_id ? ` · #${job.batch_id}` : ''}</span>{job.status === 'failed' && <><p className="task-error">{job.message}</p><button type="button" onClick={() => void prepareRetry(job.id)} disabled={retrying}>重试该批</button></>}</div>)}</details>{retryError && !confirmRetry && <p className="task-error" role="alert">{retryError}</p>}</div>}
+        <header className="task-overview"><TaskIcon manual={Boolean(selected.manual_group)}/><div><h2>{selected.manual_group ? '手动上传' : <>同步任务 {selected.batch_id ? <span>#{selected.batch_id}</span> : null}</>}</h2><p className="task-meta">{timeLabel(selected.created_at || selected.updated_at)} · 微信账号 {selected.account_id || '未知'} · 空间 {selected.space_id}</p><p className="task-overview-status">执行状态：<TaskStatus value={currentStatus}/></p></div></header>
+        {selected.manual_group && <div className="task-stages"><h3>执行流程</h3>
+          <div className="task-stage"><span className="task-stage-dot" aria-hidden="true">{groupStatus === 'completed' ? '✓' : '·'}</span><div><strong>打包与上传</strong><p>{batches.filter(job => job.status === 'completed').length} / {selected.manual_total || batches.length} 批已提交</p></div></div>
+          <div className="task-stage"><span className="task-stage-dot" aria-hidden="true">{cloudAllDone ? '✓' : '·'}</span><div><strong>云端处理</strong><p>{groupLoading ? '正在读取云端状态…' : groupRemoteError ? '部分云端状态暂不可用，请刷新查看。' : cloudResults.length ? `已完成 ${cloudCompleted} / ${cloudResults.length} 批${cloudFailed ? ` · ${cloudFailed} 批失败` : ''}` : '暂无云端状态'}</p></div></div>
+        </div>}
+        {selected.manual_group && <div className="task-group-summary"><h3>执行概况</h3><p>会话：{groupNames.map(name => sessionNames[name] || name).join('、')}</p><p>已提交 {groupDone} / {groupTotal} 条 · {batches.filter(job => job.status === 'completed').length} / {selected.manual_total || batches.length} 批{batches.some(job => job.status === 'failed') ? ` · ${batches.filter(job => job.status === 'failed').length} 批失败` : ''}</p>{batches.length !== (selected.manual_total || batches.length) && <p className="task-error">部分批次记录缺失，无法确认总进度。</p>}{countsComplete && cloudResults.length > 0 && !groupLoading && !groupRemoteError ? <p>新增 {totals.added} 条 · 已存在 {totals.duplicate} 条</p> : <p>{groupLoading ? '正在读取云端统计…' : cloudResults.length === 0 && !groupRemoteError ? '暂无云端统计。' : '云端统计暂未全部获取，请刷新查看。'}</p>}<details open><summary>批次处理结果</summary>{batches.map(job => {
+            const cloud = job.batch_id ? groupRemote[job.batch_id] : undefined;
+            const label = job.status === 'completed' ? (cloud ? `云端${statusLabel(cloud.status)}` : '已提交') : statusLabel(job.status);
+            const tone = job.status === 'completed' ? (cloud?.status || 'submitted') : job.status;
+            const count = Object.values(job.scope?.message_selection ?? {}).reduce((n, items) => n + items.length, 0);
+            return <div className="task-batch" key={job.id}>
+              <span className="task-batch-number">第 {(job.manual_index ?? 0) + 1} 批</span><span className="task-batch-count">{count} 条{job.batch_id ? ` · #${job.batch_id}` : ''}</span><TaskStatus value={tone} label={label}/>
+              {job.status === 'failed' && <button type="button" onClick={() => void prepareRetry(job.id)} disabled={retrying}>重试该批</button>}
+              {(job.status === 'failed' && job.message || cloud?.error_message) && <p className="task-error">{job.status === 'failed' ? job.message : cloud?.error_message}</p>}
+            </div>;
+          })}</details>{retryError && !confirmRetry && <p className="task-error" role="alert">{retryError}</p>}</div>}
         {(selected.manual_group ? !!retryJobId && confirmRetry : selected.status === 'failed') && (retryScope ? <div className="task-retry">
           {!confirmRetry ? <button type="button" onClick={() => void prepareRetry()} disabled={retrying}>{retrying ? '正在读取…' : '重试上传'}</button> : <div role="alertdialog" aria-label="确认重试上传">
             <strong>确认重试原任务</strong>
@@ -145,7 +178,7 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
           </div>}
           {retryError && <p className="task-error" role="alert">{retryError}</p>}
         </div> : <p className="task-meta">此旧任务没有保存原始上传范围，请重新创建采集任务。</p>)}
-        {!selected.manual_group && <div className="task-stages">
+        {!selected.manual_group && <div className="task-stages"><h3>执行流程</h3>
           <div className="task-stage"><span className="task-stage-dot">{selected.batch_id ? '✓' : '·'}</span><div><strong>打包与上传</strong><p>{selected.batch_id ? '已提交至云端' : selected.message || statusLabel(selected.status)}</p></div></div>
           {selected.batch_id && <div className="task-stage"><span className="task-stage-dot">{remote?.status === 'completed' ? '✓' : '·'}</span><div><strong>云端处理</strong><p>{remote ? statusLabel(remote.status) : remoteError ? '状态暂不可用' : '正在读取状态…'}</p>{remote && <p>新增 {remote.message_count} 条 · 已存在 {remote.duplicate_count} 条</p>}{remote?.error_message && <p className="task-error">{remote.error_message}</p>}{remoteError && <p className="task-error" role="alert">{remoteError}</p>}</div></div>}
         </div>}

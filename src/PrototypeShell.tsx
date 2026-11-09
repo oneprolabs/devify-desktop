@@ -21,6 +21,7 @@ import { LoginGate } from './LoginGate';
 import { registerDevifyDevice } from './devifyDevice';
 import { refreshEntitlements } from './entitlements';
 import './prototype-shell.css';
+import './reference-theme.css';
 import appIcon from './assets/app-icon.png';
 
 type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
@@ -56,6 +57,11 @@ const wizardSettingsPages: Array<{ id: SettingsPage; label: string; group?: 'mai
   { id: 'language', label: '语言' },
   { id: 'account', label: '账户' },
 ];
+const settingsIcons: Record<SettingsPage, ReactNode> = {
+  connectors: Icons.key, imports: Icons.download, backup: Icons.clock,
+  analysis: Icons.agent, language: Icons.list, account: Icons.allow,
+  history: Icons.history, agent: Icons.agent, about: Icons.info,
+};
 
 export default function PrototypeShell() {
   const [section, setSection] = useState<Section>('chat');
@@ -64,6 +70,14 @@ export default function PrototypeShell() {
   const [startTaskCreate, setStartTaskCreate] = useState(false);
   const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous'>('checking');
   const [authNotice, setAuthNotice] = useState('');
+  const [currentUser, setCurrentUser] = useState('');
+  const [accountMenu, setAccountMenu] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setCurrentUser('');
+    if (authState === 'authed') void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(user => { if (active) setCurrentUser(user.display_name || user.username || ''); }).catch(() => { if (active) setCurrentUser(''); });
+    return () => { active = false; };
+  }, [authState]);
   const handleAuthenticated = useCallback(() => { setAuthState('authed'); setAuthNotice(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
   useEffect(() => {
     let active = true;
@@ -128,18 +142,17 @@ export default function PrototypeShell() {
 
   return <main className="prototype-shell">
     <header className="prototype-titlebar" data-tauri-drag-region>
-      <div className="prototype-titlebar-brand">
-        <img src={appIcon} alt="" />
-        <span>AIMyChats</span>
-      </div>
+      <div className="prototype-titlebar-brand"><span>{section === 'chat' ? '聊天记录' : sections.find(item => item.id === section)?.label || (section === 'tasks' ? '任务' : '设置')}</span></div>
     </header>
     <aside className="prototype-rail" aria-label="主导航">
+      {authState === 'authed' && <div className="prototype-account-wrap"><button type="button" className="prototype-account" onClick={() => setAccountMenu(open => !open)} aria-expanded={accountMenu}><span className="prototype-account-avatar">{(currentUser || '账').slice(0, 1)}</span><span className="prototype-account-text"><strong>{currentUser || '账号信息暂不可用'}</strong><small>AIMyChats 账号</small></span><span aria-hidden="true">⌄</span></button>{accountMenu && <div className="prototype-account-menu"><button type="button" onClick={() => { setAccountMenu(false); openSettings('account'); }}>账号设置</button><button type="button" onClick={() => { setAccountMenu(false); void invoke('devify_logout').then(() => { setCurrentUser(''); setAuthState('anonymous'); setChatReady(false); }); }}>退出登录</button></div>}</div>}
       <nav className="prototype-nav">{sections.map(navButton)}</nav>
       <div className="prototype-spacer" />
       <nav className="prototype-nav">
         {navButton({ id: 'tasks', label: '任务', icon: RailIcons.tasks })}
         {navButton({ id: 'settings', label: '设置', icon: RailIcons.settings })}
       </nav>
+      <div className="prototype-rail-brand"><img src={appIcon} alt=""/><strong>AIMyChats</strong></div>
     </aside>
     <section className="prototype-content">
       {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
@@ -166,7 +179,7 @@ export default function PrototypeShell() {
             const divider = !wechatGuide && item.group === 'local' && list[index - 1]?.group === 'main';
             return <Fragment key={item.id}>
               {divider && <div className="prototype-settings-divider" aria-hidden="true"/>}
-              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { setSettingsPage(item.id); setWechatGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}>{item.label}</button>
+              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { setSettingsPage(item.id); setWechatGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}><span className="settings-nav-icon">{settingsIcons[item.id]}</span>{item.label}</button>
             </Fragment>;
           })}
         </aside>

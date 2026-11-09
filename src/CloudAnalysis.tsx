@@ -492,7 +492,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
   if (error) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>同步失败</h2><p>{error}</p></div></div>;
   if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{copy.empty}</h2><p>完成聊天采集并等待服务端处理后，结果会出现在这里。</p></div></div>;
 
-  return <div className="analysis-page">
+  return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
     <aside className="analysis-side" aria-label={`${copy.title}列表`}>
       <h1>{copy.title}</h1>
       <p className="analysis-side-count">{kind === 'events' ? `${counts.open} 个未完成 · 跨全部会话` : `${items.length} 份报告`}</p>
@@ -530,9 +530,10 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
           >
             {kind === 'reports'
               ? <span className="report-mini-badge">{reportBadge(item as ReportItem)}</span>
-              : <DoneDot done={isDone(status)}/>}
+              : <span className="event-list-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span>}
             <span>
               <strong>{item.title || `${copy.title} #${item.id}`}</strong>
+              {kind === 'events' && <small className="event-list-preview">{(item as EventItem).content || '暂无事件概述'}</small>}
               <small>{kind === 'reports' ? reportType(item as ReportItem) : statusLabel(status)}{when ? ` · ${shortDate(when)}` : ''}</small>
             </span>
           </button>;
@@ -615,17 +616,29 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
               <button type="button" className="primary" disabled={actionBusy === 'save'} onClick={() => void saveEventEdit()}>{actionBusy === 'save' ? '保存中…' : '保存'}</button>
             </div>
           </div> : <header className="analysis-head">
-            <div className="analysis-status">
+            <div className="event-heading"><span className="event-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><h1>{event.title}</h1>
+            <div className="event-heading-meta"><span>事件</span><div className="analysis-status">
               <DoneDot done={isDone(event.status)}/>
               <span>{statusLabel(event.status)}</span>
-            </div>
-            <h1>{event.title}</h1>
-            <div className="analysis-meta">{[eventNotes.length ? `${eventNotes.length} 条进展` : '', eventPeople ? `${eventPeople} 人` : '', eventTags.length ? `主题 ${eventTags.join(' · ')}` : '', event.last_activity_at ? `最近活动 ${shortDate(event.last_activity_at)}` : ''].filter(Boolean).join(' · ')}</div>
-            <p className="analysis-summary">{event.content || '服务端尚未返回事件内容。'}</p>
+            </div><span className="analysis-meta">{[eventNotes.length ? `${eventNotes.length} 条进展` : '', eventPeople ? `${eventPeople} 人` : '', event.last_activity_at ? `最近活动 ${shortDate(event.last_activity_at)}` : ''].filter(Boolean).join(' · ')}</span></div></div></div>
+            <nav className="event-section-nav" aria-label="事件详情"><button type="button" onClick={() => document.getElementById('event-overview')?.scrollIntoView({ block: 'nearest' })}>概览</button><button type="button" onClick={() => document.getElementById('event-timeline')?.scrollIntoView({ block: 'start' })}>进展与原文</button></nav>
+            <section className="analysis-current-state" aria-labelledby="analysis-current-title">
+              <h2 id="analysis-current-title">事件概述</h2>
+              <p className="analysis-summary">{event.content || '服务端尚未返回事件内容。'}</p>
+            </section>
+            <section className="event-overview" id="event-overview" aria-label="事件关键信息">
+              <div><span className="event-stat-icon" aria-hidden="true">◉</span><div><span>当前状态</span><strong>{statusLabel(event.status)}</strong></div></div>
+              <div><span className="event-stat-icon" aria-hidden="true">≡</span><div><span>事件进展</span><strong>{eventNotes.length} 条</strong></div></div>
+              <div><span className="event-stat-icon" aria-hidden="true">↗</span><div><span>关联事件</span><strong>{relatedEvents.length} 个</strong></div></div>
+            </section>
+            {eventTags.length > 0 && <section className="event-topics" aria-label="关联主题" key={event.id}>
+              <h2>关联主题</h2><div className="event-topic-tags">{eventTags.slice(0, 8).map((tag, index) => <span className="event-topic-tag" key={`${index}-${tag}`}>{tag}</span>)}</div>
+              {eventTags.length > 8 && <details className="event-topic-more"><summary>查看全部 {eventTags.length} 个</summary><div className="event-topic-tags">{eventTags.slice(8).map((tag, index) => <span className="event-topic-tag" key={`${index}-${tag}`}>{tag}</span>)}</div></details>}
+            </section>}
           </header>}
           {actionError && !editing && <p className="analysis-action-error" role="alert">{actionError}</p>}
 
-          <section className="analysis-timeline">
+          <section className="analysis-timeline" id="event-timeline">
             <div className="analysis-block-head"><span>时间线</span><span>原始记录按需展开</span></div>
             {timelineRows.length === 0 && <p className="analysis-list-empty">服务端还没有为这个事件记录进展。</p>}
             {timelineRows.map((row, index) => {

@@ -24,6 +24,7 @@ export function HistoryPage() {
   const [error, setError] = useState('');
   const [kind, setKind] = useState<KindFilter>('all');
   const [account, setAccount] = useState('');
+  const [query, setQuery] = useState('');
   const [activeId, setActiveId] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -56,8 +57,8 @@ export function HistoryPage() {
   }), [records]);
 
   const filtered = useMemo(
-    () => records.filter(record => (kind === 'all' || record.kind === kind) && (!account || record.account_id === account)),
-    [records, kind, account],
+    () => records.filter(record => (kind === 'all' || record.kind === kind) && (!account || record.account_id === account) && (!query.trim() || `${record.sessions.map(session => session.display).join(' ')} ${record.range_label ?? ''} ${record.output ?? ''} ${record.note ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))),
+    [records, kind, account, query],
   );
 
   const active = filtered.find(record => record.id === activeId) ?? filtered[0] ?? null;
@@ -86,8 +87,7 @@ export function HistoryPage() {
     <header className="page-head">
       <h2>总结记录</h2>
       <p className="help">
-        本机保存的 AI 总结、本地整理和自动日报，最多保留最近 {HISTORY_LIMIT} 条。
-        每条记录都标出整理时包含的聊天会话，点开可以查看当时的完整内容。
+        查看保存在本机的聊天总结和整理结果，最多保留最近 {HISTORY_LIMIT} 条。
       </p>
     </header>
     <section className="panel">
@@ -108,6 +108,7 @@ export function HistoryPage() {
             ))}
           </div>
           <div className="history-tools">
+            <input type="search" className="history-search" aria-label="搜索总结记录" placeholder="搜索总结记录" value={query} onChange={event => setQuery(event.target.value)}/>
             {accounts.length > 1 && (
               <label className="history-account">
                 微信账号
@@ -144,14 +145,9 @@ export function HistoryPage() {
                   className={`history-item ${active?.id === record.id ? 'on' : ''}`}
                   onClick={() => setActiveId(record.id)}
                 >
-                  <span className="history-item-top">
-                    <span className={`history-kind ${record.kind}`}>
-                      {HISTORY_KIND_LABEL[record.kind] ?? record.kind}
-                    </span>
-                    <span className="history-item-time">{record.created_at}</span>
-                  </span>
-                  <strong className="history-item-title">{summarySourceTitle(record)}</strong>
+                  <span className="history-item-top"><strong className="history-item-title">{summarySourceTitle(record)}</strong><span className="history-item-time">{record.created_at}</span></span>
                   <span className="history-item-meta">
+                    <span className={`history-kind ${record.kind}`}>{HISTORY_KIND_LABEL[record.kind] ?? record.kind}</span>{' '}
                     {record.range_label}
                     {record.messages ? ` · ${record.messages} 条消息` : ''}
                     {record.sessions.length > 1 ? ` · ${record.sessions.length} 个会话` : ''}
