@@ -1,3 +1,4 @@
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
@@ -193,6 +194,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
         </button>)}
         {!visibleQuestions.length && <p className="ask-threads-empty">{range === '全部' ? '还没有提问记录。' : '这个时间范围内没有提问。'}</p>}
       </div>
+      <SidebarResizeHandle/>
     </aside>
 
     <main className="ask-main">

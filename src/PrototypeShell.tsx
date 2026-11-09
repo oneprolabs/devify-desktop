@@ -1,5 +1,6 @@
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { Fragment, useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
 import { AgentHub } from './AgentHub';
@@ -26,6 +27,19 @@ import appIcon from './assets/app-icon.png';
 
 type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'about';
+
+function handleWindowDrag(event: MouseEvent<HTMLElement>) {
+  if (!isTauri() || event.button !== 0 || event.clientY - event.currentTarget.getBoundingClientRect().top >= 72) return;
+  if ((event.target as Element).closest('button, input, a, select, textarea, [contenteditable], [role="tab"], [role="separator"], [role="dialog"], [role="menuitem"]')) return;
+  if (event.currentTarget.querySelector('[aria-modal="true"]')) return;
+  if (event.detail === 2) {
+    event.preventDefault();
+    void getCurrentWindow().toggleMaximize();
+  } else if (event.detail === 1) {
+    event.preventDefault();
+    void getCurrentWindow().startDragging();
+  }
+}
 
 const sections: { id: Section; label: string; icon: ReactNode }[] = [
   { id: 'chat', label: '聊天', icon: RailIcons.chat },
@@ -140,8 +154,8 @@ export default function PrototypeShell() {
     onClick={() => { if (item.id !== 'events') setEventFocusId(null); if (item.id === 'chat') setChatReady(false); setStartTaskCreate(false); setSection(item.id); }}
   ><span>{item.icon}</span><small>{item.label}</small></button>;
 
-  return <main className="prototype-shell">
-    <div className="prototype-titlebar" data-tauri-drag-region aria-hidden="true" />
+  return <main className="prototype-shell" onMouseDown={handleWindowDrag}>
+    <div className="prototype-titlebar" aria-hidden="true" />
     <aside className="prototype-rail" aria-label="主导航">
       {authState === 'authed' && <div className="prototype-account-wrap"><button type="button" className="prototype-account" onClick={() => setAccountMenu(open => !open)} aria-expanded={accountMenu}><span className="prototype-account-avatar">{(currentUser || '账').slice(0, 1)}</span><span className="prototype-account-text"><strong>{currentUser || '账号信息暂不可用'}</strong><small>AIMyChats 账号</small></span><span aria-hidden="true">⌄</span></button>{accountMenu && <div className="prototype-account-menu"><button type="button" onClick={() => { setAccountMenu(false); openSettings('account'); }}>账号设置</button><button type="button" onClick={() => { setAccountMenu(false); void invoke('devify_logout').then(() => { setCurrentUser(''); setAuthState('anonymous'); setChatReady(false); }); }}>退出登录</button></div>}</div>}
       <nav className="prototype-nav">{sections.map(navButton)}</nav>
@@ -169,7 +183,7 @@ export default function PrototypeShell() {
       </>}
       {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
       {section === 'settings' && <div className="prototype-settings-layout">
-        <header className="prototype-settings-breadcrumb" data-tauri-drag-region>设置 <span>/</span> {(wechatGuide ? wizardSettingsPages : settingsPages).find(item => item.id === settingsPage)?.label ?? ''}</header>
+        <header className="prototype-settings-breadcrumb">设置 <span>/</span> {(wechatGuide ? wizardSettingsPages : settingsPages).find(item => item.id === settingsPage)?.label ?? ''}</header>
         <div className="prototype-settings">
         <aside className="prototype-settings-nav">
           <h1>设置</h1>
