@@ -63,16 +63,11 @@ export function LanguageSettings() {
       <p className="help">界面语言和 AI 输出语言分开设置。聊天原文不会被翻译或改动。</p>
     </header>
 
+    <p className="language-explanation">设置应用菜单、按钮和提示的显示语言。聊天原文不会被翻译。</p>
+    <h3 className="language-heading">界面语言</h3>
+    <div className="language-cards" role="group" aria-label="界面语言">{UI_OPTIONS.map(option => <button type="button" key={option.label} className={settings.language.ui === option.label ? 'selected' : ''} aria-pressed={settings.language.ui === option.label} disabled={option.disabled} onClick={() => setLanguage({ ui: option.label })}><span className="language-mark">{option.label === '中文' ? '简' : 'EN'}</span><span><strong>{option.label === '中文' ? '简体中文' : option.label}</strong><small>{option.hint || '界面以简体中文显示'}</small></span><span className="language-check">{settings.language.ui === option.label ? '✓' : '○'}</span></button>)}</div>
+    <h3 className="language-heading">内容语言</h3>
     <div className="plan-items">
-      <div className="plan-row">
-        <div className="plan-row-label">
-          <span>界面语言</span>
-          <small>菜单、按钮和提示的显示语言</small>
-        </div>
-        <div className="plan-row-control">
-          <Pills label="界面语言" options={UI_OPTIONS} value={settings.language.ui} onChange={ui => setLanguage({ ui })}/>
-        </div>
-      </div>
 
       <div className="plan-row">
         <div className="plan-row-label">

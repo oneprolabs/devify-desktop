@@ -44,6 +44,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn account_profile_matches_exact_and_suffixed_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("contact")).unwrap();
+        let conn = Connection::open(dir.path().join("contact/contact.db")).unwrap();
+        conn.execute_batch("CREATE TABLE contact (username TEXT, nick_name TEXT, alias TEXT); INSERT INTO contact VALUES ('wxid_person', 'Name', 'custom-id'), ('wxid_person_abcd', 'Exact', NULL);").unwrap();
+        assert_eq!(account_profile(dir.path(), "wxid_person_abcd").unwrap().nickname.as_deref(), Some("Exact"));
+        let profile = account_profile(dir.path(), "wxid_person_12af").unwrap();
+        assert_eq!(profile.alias.as_deref(), Some("custom-id"));
+        assert!(account_profile(dir.path(), "wxid_person_other").is_none());
+        assert!(account_profile(dir.path(), "wxid_missing_12af").is_none());
+    }
+
+    #[test]
     fn message_dates_counts_records_across_shards() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("message")).unwrap();
@@ -372,6 +385,34 @@ fn value_to_bytes(value: rusqlite::types::ValueRef<'_>) -> Option<Vec<u8>> {
 
 pub fn is_group_username(username: &str) -> bool {
     username.ends_with("@chatroom")
+}
+
+#[derive(Serialize)]
+pub struct AccountProfile {
+    pub username: String,
+    pub nickname: Option<String>,
+    pub alias: Option<String>,
+}
+
+/// The local folder may append four hexadecimal characters to the WeChat username.
+pub fn account_profile(cache: &Path, account: &str) -> Option<AccountProfile> {
+    let conn = open_readonly(&cache.join("contact").join("contact.db")).ok()?;
+    let table = table_like(&tables(&conn), "contact")?;
+    let cols = columns(&conn, &table);
+    let username = pick(&cols, &["username", "user_name"])?;
+    let nickname = pick(&cols, &["nick_name", "nickname"]);
+    let alias = pick(&cols, &["alias"]);
+    let sql = format!("SELECT {}, {}, {} FROM {} WHERE {} = ?1 LIMIT 1",
+        quote(username), nickname.map(quote).unwrap_or_else(|| "NULL".into()),
+        alias.map(quote).unwrap_or_else(|| "NULL".into()), quote(&table), quote(username));
+    let lookup = |candidate: &str| conn.query_row(&sql, [candidate], |row| {
+        Ok(AccountProfile { username: row.get(0)?, nickname: row.get(1)?, alias: row.get(2)? })
+    }).ok();
+    lookup(account).or_else(|| {
+        let (name, suffix) = account.rsplit_once('_')?;
+        if !name.starts_with("wxid_") || suffix.len() != 4 || !suffix.bytes().all(|c| c.is_ascii_hexdigit()) { return None; }
+        lookup(name)
+    })
 }
 
 /// Load `username -> display name` from contact.db when it is available.
