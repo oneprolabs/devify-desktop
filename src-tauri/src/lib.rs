@@ -3910,6 +3910,7 @@ struct ChatSyncSummary {
     uploaded: usize,
     skipped: usize,
     message_count: usize,
+    batch_ids: Vec<i64>,
     error: Option<String>,
 }
 
@@ -4147,6 +4148,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
             uploaded: 0,
             skipped: 0,
             message_count: 0,
+            batch_ids: Vec::new(),
             error: None,
         });
     }
@@ -4403,6 +4405,8 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
         }
     }
 
+    let batch_ids: Vec<i64> = jobs.iter().filter_map(|job| job.batch_id).collect();
+
     // A run with nothing to do is still a run: refresh the status, but do not rewrite the
     // settings file on every idle tick.
     if touched || !failures.is_empty() || sync_status_is_stale(&value.sync) {
@@ -4443,6 +4447,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
         uploaded,
         skipped,
         message_count,
+        batch_ids,
         error: if failures.is_empty() {
             None
         } else {
@@ -5995,10 +6000,11 @@ fn upload_coverage(
 fn conversation_job_state<'a>(value: &'a settings::AppSettings, account_id: &str, username: &str) -> Option<&'a str> {
     let matches = |job: &&settings::UploadJob| job.account_id == account_id && Some(job.space_id) == value.devify.active_space_id && job.scope.as_ref().is_some_and(|scope| scope.usernames.iter().any(|name| name == username));
     if value.upload_queue.iter().filter(matches).any(|job| matches!(job.status.as_str(), "queued" | "running" | "uploading" | "processing")) { return Some("processing"); }
-    if value.upload_queue.iter().filter(matches).any(|job| job.status == "failed" && job.batch_id.is_some()) { return Some("failed"); }
-    value.upload_queue.iter().filter(matches)
-        .max_by(|a, b| a.created_at.cmp(&b.created_at))
-        .map(|job| match job.status.as_str() { "queued" | "running" | "uploading" | "processing" => "processing", "failed" | "cancelled" => "failed", "completed" => "synced", _ => "unknown" })
+    let latest = value.upload_queue.iter().filter(matches).max_by(|a, b| a.created_at.cmp(&b.created_at));
+    if value.upload_queue.iter().filter(matches).any(|job| job.status == "failed" && job.batch_id.is_some()) {
+        return Some(if latest.is_some_and(|job| job.status == "completed") { "history_failed" } else { "failed" });
+    }
+    latest.map(|job| match job.status.as_str() { "queued" | "running" | "uploading" | "processing" => "processing", "failed" | "cancelled" => "failed", "completed" => "synced", _ => "unknown" })
 }
 
 /// Per-conversation upload state for the chat list.
@@ -7597,6 +7603,14 @@ mod upload_coverage_tests {
     fn older_failed_job_is_not_hidden_by_newer_completed_job() {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("completed", position, "2026-11-06T01:00:00Z"), job("failed", position, "2026-11-06T00:00:00Z")]);
+        value.devify.active_space_id = Some(1);
+        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("history_failed"));
+    }
+
+    #[test]
+    fn newer_failed_job_remains_failure() {
+        let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
+        let mut value = with_jobs(vec![job("completed", position, "2026-11-06T00:00:00Z"), job("failed", position, "2026-11-06T01:00:00Z")]);
         value.devify.active_space_id = Some(1);
         assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("failed"));
     }

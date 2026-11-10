@@ -11,7 +11,6 @@ const DAILY_STATUS_LABEL: Record<string, string> = {
 
 type Row = { label: string; desc?: string; control?: ReactNode; value?: string };
 type AnalysisPreferences = { event_granularity: 'fine' | 'balanced' | 'coarse'; summary_length: 'short' | 'standard' | 'detailed'; summary_style: 'concise' | 'narrative' | 'actions'; conversation_types: Array<'direct' | 'group'>; lookback_days: 0 | 30 | 90; auto_analyze: boolean };
-type CloudConversation = { id: number; title?: string; source_conversation_id?: string };
 
 type Task = {
   id: string;
@@ -41,11 +40,6 @@ export function AnalysisSettings() {
   const [preferencesError, setPreferencesError] = useState('');
   const [preferencesNotice, setPreferencesNotice] = useState('');
   const [preferencesSaving, setPreferencesSaving] = useState(false);
-  const [savedPreferences, setSavedPreferences] = useState('');
-  const [conversations, setConversations] = useState<CloudConversation[]>([]);
-  const [manualSelection, setManualSelection] = useState('');
-  const [manualLoading, setManualLoading] = useState(false);
-  const [manualMessage, setManualMessage] = useState('');
   const chain = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -58,7 +52,6 @@ export function AnalysisSettings() {
     let active = true;
     const spaceId = settings.devify.active_space_id;
     setPreferences(null);
-    setSavedPreferences(''); setConversations([]); setManualSelection(''); setManualMessage('');
     setPreferencesNotice('');
     if (!spaceId) { setPreferencesError('请先在账户中选择可用空间。'); return; }
     setPreferencesError('');
@@ -69,10 +62,20 @@ export function AnalysisSettings() {
         return;
       }
       setPreferences(value);
-      setSavedPreferences(JSON.stringify(value));
     }).catch(reason => { if (active) setPreferencesError(String(reason)); });
     return () => { active = false; };
   }, [settings.devify.active_space_id]);
+
+  useEffect(() => {
+    if (!preferencesNotice) return;
+    const timer = window.setTimeout(() => setPreferencesNotice(''), 4000);
+    return () => window.clearTimeout(timer);
+  }, [preferencesNotice]);
+
+  const changePreferences = (next: AnalysisPreferences) => {
+    setPreferencesNotice('');
+    setPreferences(next);
+  };
 
   const savePreferences = async () => {
     const spaceId = settings.devify.active_space_id;
@@ -80,43 +83,10 @@ export function AnalysisSettings() {
     setPreferencesSaving(true); setPreferencesError(''); setPreferencesNotice('');
     try {
       const saved = await invoke<AnalysisPreferences>('devify_analysis_preferences_save', { spaceId, preferences });
-      setPreferences(saved); setSavedPreferences(JSON.stringify(saved));
-      setPreferencesNotice('分析偏好已保存，将用于之后执行的分析任务。');
+      setPreferences(saved);
+      setPreferencesNotice('已保存');
     } catch (reason) { setPreferencesError(String(reason)); }
     finally { setPreferencesSaving(false); }
-  };
-
-  const loadConversations = async () => {
-    const spaceId = settings.devify.active_space_id;
-    if (!spaceId) return;
-    setManualLoading(true); setManualMessage('');
-    try {
-      const items: CloudConversation[] = [];
-      for (let page = 1; page <= 100; page += 1) {
-        const result = await invoke<{ list?: CloudConversation[]; pagination?: { next?: unknown } }>('devify_conversations', { spaceId, page, pageSize: 100 });
-        if (!Array.isArray(result.list) || result.pagination?.next === undefined) throw new Error('无法完整读取云端会话，请重试。');
-        items.push(...result.list);
-        if (!result.pagination.next) break;
-        if (page === 100) throw new Error('云端会话过多，请在服务端选择会话。');
-      }
-      setConversations(items); setManualSelection('');
-      if (!items.length) setManualMessage('当前空间没有可分析的云端会话。');
-    } catch (reason) { setConversations([]); setManualMessage(String(reason)); }
-    finally { setManualLoading(false); }
-  };
-
-  const startManualAnalysis = async () => {
-    const spaceId = settings.devify.active_space_id;
-    const conversationId = Number(manualSelection);
-    if (!spaceId || !conversationId) return;
-    setManualLoading(true); setManualMessage('');
-    try {
-      const job = await invoke<{ state: string; id: number; reused?: boolean }>('devify_analysis_manual_start', { spaceId, conversationId });
-      const status: Record<string, string> = { queued: '已排队', running: '正在处理', ready: '已完成', partial: '部分完成', failed: '已失败', cancelled: '已取消，不会自动重启' };
-      const reuseNotice = job.reused ? (['queued', 'running'].includes(job.state) ? ' 当前会话已有任务，将沿用该任务创建时的范围；如需新的范围，请在任务结束后再次发起。' : ' 已复用已有任务，没有重新启动或重复创建。') : '';
-      setManualMessage(`分析任务 #${job.id}：${status[job.state] ?? job.state}。${reuseNotice}`);
-    } catch (reason) { setManualMessage(String(reason)); }
-    finally { setManualLoading(false); }
   };
 
   /** Same rule as 备份周期: each control saves straight away, no separate "保存" step. */
@@ -245,6 +215,7 @@ export function AnalysisSettings() {
     <header className="page-head">
       <h2>智能分析</h2>
       <p className="help">设置当前空间的服务端分析偏好，并查看聊天总结和报告的处理方式。</p>
+      <p className="help" role="status">分析范围和行为用于之后创建的任务；事件粒度和摘要要求由模型参考，结果可能有所不同。</p>
     </header>
 
     <section className="analysis-service">
@@ -255,28 +226,31 @@ export function AnalysisSettings() {
     <section className="analysis-group analysis-preferences">
       <h3>分析触发</h3>
       <div className="analysis-task">
-        <div className="analysis-row"><span>触发方式</span><div className="analysis-options" role="radiogroup" aria-label="分析触发方式">{([{ value: true, label: '上传后自动分析' }, { value: false, label: '手动分析' }] as const).map(option => <label key={String(option.value)}><input type="radio" name="analysis-trigger" checked={preferences?.auto_analyze === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && setPreferences({ ...preferences, auto_analyze: option.value })}/>{option.label}</label>)}</div></div>
-        <p className="help">上传解析完成时按当前模式决定是否创建分析任务；已排队或正在执行的任务不受影响。切回自动模式不会主动补分析过去的记录，但解析任务重试时会按当时的模式处理。</p>
-        {preferences && !preferences.auto_analyze && <div className="analysis-manual"><p>保存设置后，可选择一个云端会话手动分析。将处理当前范围内尚未完成分析的云端消息，可能包含历史记录；不会重启已取消的任务。</p><button type="button" className="secondary" disabled={manualLoading || JSON.stringify(preferences) !== savedPreferences} onClick={() => void loadConversations()}>读取云端会话</button>{conversations.length > 0 && <><select aria-label="选择手动分析会话" value={manualSelection} onChange={event => setManualSelection(event.target.value)}><option value="">选择一个会话</option>{conversations.map(item => <option key={item.id} value={item.id}>{item.title || item.source_conversation_id || `会话 ${item.id}`}</option>)}</select><button type="button" className="primary" disabled={!manualSelection || manualLoading || JSON.stringify(preferences) !== savedPreferences} onClick={() => void startManualAnalysis()}>{manualLoading ? '正在处理…' : '开始分析所选会话'}</button></>}{manualMessage && <p role="status">{manualMessage}</p>}</div>}
+        <div className="analysis-row"><span>触发方式</span><div>上传后自动分析</div></div>
+        <p className="help">上传的聊天记录解析完成后，由服务端自动创建分析任务。</p>
       </div>
     </section>
     <section className="analysis-group analysis-preferences">
       <h3>分析范围</h3>
       <div className="analysis-task">
-        <div className="analysis-row"><span>聊天记录</span><div className="analysis-options" role="group" aria-label="聊天记录类型">{([{ value: 'direct', label: '个人聊天' }, { value: 'group', label: '群聊' }] as const).map(option => <label key={option.value}><input type="checkbox" checked={preferences?.conversation_types?.includes(option.value) ?? false} disabled={!preferences || preferencesSaving || (preferences.conversation_types.length === 1 && preferences.conversation_types.includes(option.value))} onChange={() => preferences && setPreferences({ ...preferences, conversation_types: preferences.conversation_types.includes(option.value) ? preferences.conversation_types.filter(value => value !== option.value) : [...preferences.conversation_types, option.value] })}/>{option.label}</label>)}</div></div>
-        <label className="analysis-row"><span>时间范围</span><select value={preferences?.lookback_days ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && setPreferences({ ...preferences, lookback_days: Number(event.target.value) as AnalysisPreferences['lookback_days'] })}><option value="" disabled>等待服务端配置</option><option value={0}>全部记录</option><option value={30}>最近 30 天</option><option value={90}>最近 90 天</option></select></label>
-        <p className="help">范围在任务创建时固定；限时范围不包含没有时间的消息。调整范围不会自动重新分析历史记录。</p>
+        <div className="analysis-row"><span>聊天记录</span><div className="analysis-options" role="group" aria-label="聊天记录类型">{([{ value: 'direct', label: '个人聊天' }, { value: 'group', label: '群聊' }] as const).map(option => <label key={option.value}><input type="checkbox" checked={preferences?.conversation_types?.includes(option.value) ?? false} disabled={!preferences || preferencesSaving || (preferences.conversation_types.length === 1 && preferences.conversation_types.includes(option.value))} onChange={() => preferences && changePreferences({ ...preferences, conversation_types: preferences.conversation_types.includes(option.value) ? preferences.conversation_types.filter(value => value !== option.value) : [...preferences.conversation_types, option.value] })}/>{option.label}</label>)}</div></div>
+        <label className="analysis-row"><span>时间范围</span><select value={preferences?.lookback_days ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && changePreferences({ ...preferences, lookback_days: Number(event.target.value) as AnalysisPreferences['lookback_days'] })}><option value="" disabled>等待服务端配置</option><option value={0}>全部记录</option><option value={30}>最近 30 天</option><option value={90}>最近 90 天</option></select></label>
+        <p className="help">范围在任务创建时固定；有限时间范围不包含没有时间的消息。调整后不会自动重新分析历史记录。</p>
       </div>
     </section>
     <section className="analysis-group analysis-preferences">
       <h3>分析行为</h3>
       <div className="analysis-task">
-        <div className="analysis-row"><span>事件划分粒度</span><div className="analysis-options" role="radiogroup" aria-label="事件划分粒度">{([{ value: 'fine', label: '更细（更多事件）' }, { value: 'balanced', label: '平衡' }, { value: 'coarse', label: '更粗（更少事件）' }] as const).map(option => <label key={option.value}><input type="radio" name="event-granularity" value={option.value} checked={preferences?.event_granularity === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && setPreferences({ ...preferences, event_granularity: option.value })}/>{option.label}</label>)}</div></div>
-        <label className="analysis-row"><span>摘要风格</span><select value={preferences?.summary_style ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && setPreferences({ ...preferences, summary_style: event.target.value as AnalysisPreferences['summary_style'] })}><option value="" disabled>等待服务端配置</option><option value="concise">简洁概述</option><option value="narrative">背景与经过</option><option value="actions">行动与后续</option></select></label>
-        <div className="analysis-row"><span>摘要详略</span><div className="analysis-options" role="radiogroup" aria-label="摘要详略">{([{ value: 'short', label: '简短' }, { value: 'standard', label: '标准' }, { value: 'detailed', label: '详细' }] as const).map(option => <label key={option.value}><input type="radio" name="summary-length" value={option.value} checked={preferences?.summary_length === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && setPreferences({ ...preferences, summary_length: option.value })}/>{option.label}</label>)}</div></div>
-        <p className="help">这些偏好仅用于当前空间的服务端事件提取和笔记摘要；模型结果可能有所不同。本机 Agent 总结不受影响，历史记录不会自动重算。</p>
-        <button type="button" className="primary" disabled={!preferences || preferencesSaving} onClick={() => void savePreferences()}>{preferencesSaving ? '正在保存…' : '保存分析设置'}</button>
-        {preferencesNotice && <p role="status">{preferencesNotice}</p>}{preferencesError && <p className="error" role="alert">{preferencesError}</p>}
+        <div className="analysis-row"><span>事件划分粒度</span><div className="analysis-options" role="radiogroup" aria-label="事件划分粒度">{([{ value: 'fine', label: '更细（更多事件）' }, { value: 'balanced', label: '平衡' }, { value: 'coarse', label: '更粗（更少事件）' }] as const).map(option => <label key={option.value}><input type="radio" name="event-granularity" value={option.value} checked={preferences?.event_granularity === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && changePreferences({ ...preferences, event_granularity: option.value })}/>{option.label}</label>)}</div></div>
+        <label className="analysis-row"><span>摘要风格</span><select value={preferences?.summary_style ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && changePreferences({ ...preferences, summary_style: event.target.value as AnalysisPreferences['summary_style'] })}><option value="" disabled>等待服务端配置</option><option value="concise">简洁概述</option><option value="narrative">背景与经过</option><option value="actions">行动与后续</option></select></label>
+        <div className="analysis-row"><span>摘要详略</span><div className="analysis-options" role="radiogroup" aria-label="摘要详略">{([{ value: 'short', label: '简短' }, { value: 'standard', label: '标准' }, { value: 'detailed', label: '详细' }] as const).map(option => <label key={option.value}><input type="radio" name="summary-length" value={option.value} checked={preferences?.summary_length === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && changePreferences({ ...preferences, summary_length: option.value })}/>{option.label}</label>)}</div></div>
+        <p className="help">这些偏好用于当前空间之后创建的服务端分析任务；本机 Agent 总结不受影响。粒度和摘要要求由模型参考，结果可能有所不同。</p>
+        <div className="analysis-save-row">
+          <button type="button" className="primary" disabled={!preferences || preferencesSaving} onClick={() => void savePreferences()}>{preferencesSaving ? '正在保存…' : '保存分析设置'}</button>
+          <span className="analysis-save-status" role="status" aria-live="polite">{preferencesNotice && <><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor"/><path d="m5 8 2 2 4-4" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"/></svg>{preferencesNotice}</>}</span>
+        </div>
+        <p className="analysis-save-hint">设置用于之后创建的分析任务，历史记录不会自动重新分析。</p>
+        {preferencesError && <p className="error" role="alert">{preferencesError}</p>}
       </div>
     </section>
 
