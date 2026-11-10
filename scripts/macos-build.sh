@@ -19,7 +19,10 @@ KEYCHAIN="$HOME/Library/Keychains/signing.keychain-db"
 PASS_FILE="$HOME/.config/aimychats-signing/keychain.pass"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/src-tauri/target/release/bundle/macos/AIMyChats.app"
-DMG="$ROOT/src-tauri/target/release/bundle/dmg/AIMyChats_0.0.1_aarch64.dmg"
+VERSION="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$ROOT/src-tauri/tauri.conf.json")"
+ARCH="$(uname -m)"
+if [ "$ARCH" = "arm64" ]; then ARCH="aarch64"; fi
+DMG="$ROOT/src-tauri/target/release/bundle/dmg/AIMyChats_${VERSION}_${ARCH}.dmg"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 cd "$ROOT"

@@ -1,0 +1,47 @@
+/* Keep the collection flow aligned with the desktop workspace. */
+.prototype-shell .collection {
+  --accent-magenta: #a3279a;
+  --accent-magenta-deep: #8e2187;
+  --accent-magenta-tint: #f8e9f5;
+  --accent-magenta-tint-strong: #f1d3ed;
+}
+.prototype-shell .collection-body { max-width: 980px; padding: 42px 34px 32px; }
+.prototype-shell .collection-body h1 { margin: 0; font-size: 23px; line-height: 1.35; }
+.prototype-shell .collection-intro { margin: 8px 0 25px; color: #74746e; }
+.prototype-shell .collection-account { gap: 12px; margin-bottom: 18px; }
+.prototype-shell .collection-account label, .prototype-shell .collection-filters label { gap: 6px; color: #74746e; font-size: 12px; }
+.prototype-shell .collection-account select, .prototype-shell .collection-filters input { height: 36px; border: 1px solid #dcdcd8; border-radius: 7px; background-color: #fff; font: inherit; font-size: 13px; }
+.prototype-shell .collection-filters { gap: 12px; margin-bottom: 17px; }
+.prototype-shell .collection-filters label:first-child { width: 210px; max-width: 100%; }
+.prototype-shell .collection-filters input[type="date"] { width: 160px; max-width: 100%; }
+.prototype-shell .collection input[type="checkbox"] { accent-color: #a3279a; }
+.prototype-shell .collection-list { border: 1px solid #e4e4e1; border-radius: 9px; background: #fff; }
+.prototype-shell .collection-session { border-color: #eeeeeb; }
+.prototype-shell .collection-row { min-height: 46px; padding: 9px 14px; }
+.prototype-shell .collection-session.selected > .collection-row { background: #faf1f9; }
+.prototype-shell .collection-session-label { gap: 12px; }
+.prototype-shell .collection-source-icon { display: block; width: 18px; height: 18px; flex: none; object-fit: contain; }
+.prototype-shell .collection-name { color: #1a1a19; font-size: 13px; }
+.prototype-shell .collection-row small { color: #92928d; font-size: 12px; white-space: nowrap; }
+.prototype-shell .collection-footer { padding: 16px 30px; background: #fff; border-color: #e9e9e6; }
+.prototype-shell .collection-primary { background: #a3279a; border-radius: 7px; color: #fff; font: inherit; font-size: 12px; }
+.prototype-shell .collection-primary:disabled { opacity: 1; background: #ead4e8; color: #6f596e; }
+.prototype-shell .collection :focus-visible { outline-color: #a3279a; }
+.prototype-shell .collection-range { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -5px 0 14px; color: #74746e; font-size: 12px; }
+.prototype-shell .collection-range button { padding: 4px 10px; border: 1px solid #e3e3df; border-radius: 14px; background: white; color: #555; cursor: pointer; }
+.prototype-shell .collection-range button:hover { border-color: #a3279a; color: #a3279a; }
+.prototype-shell .collection-local-hint { margin: 0 0 12px; color: #858580; font-size: 12px; }
+.prototype-shell .collection-message-picker { margin: 0 14px 14px 44px; padding: 10px; border-radius: 8px; background: #f6f6f4; }
+.prototype-shell .collection-message-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+.prototype-shell .collection-message-head input { min-width: 0; height: 32px; padding: 4px 8px; border: 1px solid #dededb; border-radius: 6px; background: white; font: inherit; }
+.prototype-shell .collection-message-head input[type="search"] { flex: 1 1 150px; }
+.prototype-shell .collection-jump { display: flex; align-items: center; gap: 5px; color: #74746e; }
+.prototype-shell .collection-message-head button { border: 0; background: transparent; color: #a3279a; cursor: pointer; }
+.prototype-shell .collection-message-head button:disabled { color: #aaa; cursor: default; }
+.prototype-shell .collection-message-list { position: relative; max-height: 270px; overflow-y: auto; }
+.prototype-shell .collection-session.selected > .collection-row { background: #fff; }
+.prototype-shell .collection-session-options { margin: 0 14px 12px 44px; }
+.prototype-shell .collection-session-options .collection-range { margin: 0; }
+.prototype-shell .collection-range button.active { background: #a3279a; border-color: #a3279a; color: #fff; }
+.prototype-shell .collection-custom-dates { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: #74746e; font-size: 12px; }
+.prototype-shell .collection-custom-dates input { height: 32px; border: 1px solid #dededb; border-radius: 6px; background: white; color: #333; }

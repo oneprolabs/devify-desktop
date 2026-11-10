@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
 import { AgentHub } from './AgentHub';
 import { About } from './About';
+import { checkForUpdates, useUpdater } from './updater';
 import { HistoryPage } from './History';
 import { DevifySettings, WhitelistSettings } from './Settings';
 import { BackupSchedule } from './BackupSchedule';
@@ -23,7 +24,9 @@ import { registerDevifyDevice } from './devifyDevice';
 import { refreshEntitlements } from './entitlements';
 import './prototype-shell.css';
 import './reference-theme.css';
+import './desktop-visual-refresh.css';
 import appIcon from './assets/app-icon.png';
+import wechatLogo from './assets/connectors/wechat.svg';
 
 type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'about';
@@ -79,6 +82,8 @@ const settingsIcons: Record<SettingsPage, ReactNode> = {
 
 export default function PrototypeShell() {
   const [section, setSection] = useState<Section>('chat');
+  const update = useUpdater();
+  useEffect(() => { void checkForUpdates(true); }, []);
   const [eventFocusId, setEventFocusId] = useState<number | null>(null);
   const [chatReady, setChatReady] = useState(false);
   const [startTaskCreate, setStartTaskCreate] = useState(false);
@@ -167,6 +172,7 @@ export default function PrototypeShell() {
       <div className="prototype-rail-brand"><img src={appIcon} alt=""/><strong>AIMyChats</strong></div>
     </aside>
     <section className="prototype-content">
+      {update.status === 'available' && <button type="button" className="update-available-notice" onClick={() => { setSettingsPage('about'); setWechatGuide(false); setSection('settings'); }}>发现新版本 {update.version}，查看更新</button>}
       {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
       {authState === 'anonymous' && <LoginGate notice={authNotice} onAuthenticated={handleAuthenticated}/>}
       {authState === 'authed' && <>
@@ -198,12 +204,12 @@ export default function PrototypeShell() {
         <div className="prototype-settings-content">
           {settingsPage === 'connectors' && (wechatGuide ? <div className="wechat-wizard">
             <button type="button" className="connector-back" onClick={() => setWechatGuide(false)}>← 返回连接器</button>
-            <header className="wizard-connector-head"><span className="connector-mark green">微</span><div><strong>{wechatGuideEdit ? '重新配置' : '连接向导'}</strong><h2>微信</h2><p>读取本机数据库，只读，不改动微信</p></div></header>
+            <header className="wizard-connector-head"><span className="connector-mark green"><img src={wechatLogo} alt="" /></span><div><strong>{wechatGuideEdit ? '重新配置' : '连接向导'}</strong><h2>微信</h2><p>读取本机数据库，只读，不改动微信</p></div></header>
             <nav className="wizard-stepper" aria-label="微信连接向导">{[
               ['wizard-method','接入方式'], ['wizard-permission','系统授权'], ['wizard-account','账号扫描'], ['wizard-key','获取密钥'], ['wizard-import','导入校验'], ['wx-connect-decrypt','解密记录'], ['wizard-done','完成'],
             ].map(([id,label], index) => { const current = wizardOrder.indexOf(wizardStep); const complete = index < current; return <button key={id} type="button" className={`${wizardStep === id ? 'active ' : ''}${complete ? 'complete' : ''}`} aria-current={wizardStep === id ? 'step' : undefined} onClick={() => setWizard(id)} disabled={index > current}><span>{complete ? Icons.check : index + 1}</span>{label}</button>; })}</nav>
             {wizardStep === 'wizard-method' && (
-            <section id="wizard-method" className="wizard-method"><div><h2>选择接入方式</h2><p>微信的数据库是加密的。两种方式都只读，不会改动微信，也不需要你的微信密码。</p></div><div className="wizard-method-options"><button type="button" className="wizard-method-option selected" onClick={() => setWizard('wizard-permission')}><strong>自动读取本机数据库 <em>推荐</em></strong><span>持续读取本机数据库；只需完成系统授权，再按原有引导获取并校验密钥。整个流程不需要修改系统完整性保护。</span></button><button type="button" className="wizard-method-option" onClick={() => setWizard('wizard-key')}><strong>导入可信密钥文件 <em>无需改系统设置</em></strong><span>不动系统设置、不捕获微信进程；选择可信密钥文件后逐库校验，再解密聊天记录。</span></button></div><div className="wizard-method-footer"><button type="button" className="wizard-next" onClick={() => setWizard('wizard-permission')}>下一步</button></div></section>
+            <section id="wizard-method" className="wizard-method"><div><h2>选择接入方式</h2><p>微信的数据库是加密的。两种方式都只读，不会改动微信，也不需要你的微信密码。</p></div><div className="wizard-method-options"><button type="button" className="wizard-method-option selected" onClick={() => setWizard('wizard-permission')}><strong>自动读取本机数据库 <em>推荐</em></strong><span>持续读取本机数据库；只需完成系统授权，再按原有引导获取并校验密钥。整个流程不需要修改系统完整性保护。</span></button><button type="button" className="wizard-method-option" onClick={() => setWizard('wizard-key')}><strong>导入可信密钥文件 <em>无需改系统设置</em></strong><span>不动系统设置、不捕获微信进程；选择可信密钥文件后逐库校验，再解密聊天记录。</span></button></div><p className="wizard-method-note">仅用于读取与校验，不会修改微信数据库。</p><div className="wizard-method-footer"><span className="wizard-next-hint">接下来：系统授权</span><button type="button" className="wizard-next" onClick={() => setWizard('wizard-permission')}>下一步</button></div></section>
             )}
             <div id="wizard-permission" className="wizard-anchor" /><div id="wizard-account" className="wizard-anchor" /><div id="wizard-key" className="wizard-anchor" /><div id="wizard-import" className="wizard-anchor" /><div id="wizard-done" className="wizard-anchor" />
             {wizardStep === 'wizard-done' ? <section className="wizard-complete"><div className="wizard-complete-mark">✓</div><h2>连接向导完成</h2><p>账号、密钥和解密记录完成后，聊天内容会在「聊天」页面显示。</p><button type="button" className="wizard-next" onClick={() => setSection('chat')}>打开聊天</button></section> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
