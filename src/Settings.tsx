@@ -41,6 +41,8 @@ type DevifySpace = { id: number; name: string; kind: string; status: string; rol
 
 /** The scheduler stores a status code, not a sentence; the page shows the sentence. */
 const DAILY_STATUS_LABEL: Record<string, string> = {
+  scheduled: '服务端已计划',
+  disabled: '已关闭',
   sent: '已投递',
   no_messages: '当天无新消息',
   busy: '账号正忙，本次跳过',
@@ -107,6 +109,11 @@ export type AppSettings = {
     last_daily_run: string | null;
     last_daily_status: string | null;
     last_daily_error: string | null;
+    daily_topic_id?: number | null;
+    daily_topic_space_id?: number | null;
+    last_schedule_sync_at?: string | null;
+    last_schedule_signature?: string | null;
+    last_schedule_error?: string | null;
   };
   agent: {
     provider_id: string;
@@ -145,6 +152,11 @@ export function defaultSettings(): AppSettings {
       last_daily_run: null,
       last_daily_status: null,
       last_daily_error: null,
+      daily_topic_id: null,
+      daily_topic_space_id: null,
+      last_schedule_sync_at: null,
+      last_schedule_signature: null,
+      last_schedule_error: null,
     },
     agent: {
       provider_id: '',
@@ -385,7 +397,12 @@ export function StrategySettings({ title = '本地自动化', description = '每
     setNotice('');
     try {
       await invoke('app_settings_save', { value: settings });
-      setNotice('本地自动化设置已保存。');
+      try {
+        const status = await invoke<{ message?: string }>('devify_daily_schedule_sync');
+        setNotice(status?.message || '日报计划已同步到服务端。');
+      } catch (syncError) {
+        setError(`设置已保存，但日报计划同步失败：${String(syncError)}`);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -411,14 +428,15 @@ export function StrategySettings({ title = '本地自动化', description = '每
           </select>
         </label>
       </div>
-      <p className="help">在「Agent 集成」页面选择本地 Agent 并允许用于日报后，每日日报会改用该 Agent 生成；失败时自动回退规则整理，原因记录在最近执行状态里。应用关闭时不会执行后台任务，托盘和开机启动将在下一步接入。</p>
+      <p className="help">日报计划保存在 Devify 服务端，到点后由服务端基于已上传的聊天记录生成；应用关闭也会执行。请先在「账户」登录并选择空间，并确保需要的内容已经上传。</p>
       {settings.automation.last_daily_run && <p className="muted">最近执行：{settings.automation.last_daily_run} · {DAILY_STATUS_LABEL[settings.automation.last_daily_status ?? ''] ?? '未知'}</p>}
       {settings.automation.last_daily_error && <div className="config warn">{settings.automation.last_daily_error}</div>}
+      {settings.automation.last_schedule_error && <div className="config warn">计划同步失败：{settings.automation.last_schedule_error}</div>}
     </section>
     {notice && <div className="notice">{notice}</div>}
     {error && <div className="error">{error}</div>}
     <div className="page-actions">
-      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存本地自动化'}</button>
+      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存并同步日报计划'}</button>
     </div>
   </div>;
 }

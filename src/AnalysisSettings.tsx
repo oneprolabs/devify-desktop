@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
 
 const DAILY_STATUS_LABEL: Record<string, string> = {
+  scheduled: '服务端已计划',
+  disabled: '已关闭',
   sent: '已投递',
   no_messages: '当天无新消息',
   busy: '账号正忙，本次跳过',
@@ -96,9 +98,15 @@ export function AnalysisSettings() {
       chain.current = chain.current.then(async () => {
         try {
           await invoke<AppSettings>('app_settings_save', { value: next });
-          setError('');
         } catch (e) {
           setError(`保存失败：${String(e)}`);
+          return;
+        }
+        try {
+          await invoke('devify_daily_schedule_sync');
+          setError('');
+        } catch (e) {
+          setError(`设置已保存，但日报计划同步失败：${String(e)}`);
         }
       });
       return next;
@@ -107,7 +115,6 @@ export function AnalysisSettings() {
 
   const automation = settings.automation;
   const agent = settings.agent;
-  const recipient = settings.devify.recipient.trim();
 
   const dailyOn = automation.enabled && automation.daily_summary_enabled;
   const agentLabel = agent.provider_id.trim()
@@ -155,8 +162,8 @@ export function AnalysisSettings() {
         {
           id: 'daily',
           name: '日报',
-          desc: '每天把已上传的记录汇总后投递到 Devify',
-          summary: dailyOn ? `每天 ${automation.daily_time} · 投递到 Devify` : '已关闭',
+          desc: '每天由 Devify 服务端汇总已上传记录',
+          summary: dailyOn ? `每天 ${automation.daily_time} · 服务端生成` : '已关闭',
           control: {
             label: '每日日报',
             checked: dailyOn,
@@ -166,7 +173,7 @@ export function AnalysisSettings() {
             })),
           },
           rows: [
-            { label: '触发方式', value: '每天定点（应用运行时检查）' },
+            { label: '触发方式', value: '每天定点（服务端任务，应用关闭也执行）' },
             {
               label: '时间',
               control: <input
@@ -179,9 +186,8 @@ export function AnalysisSettings() {
                 }}
               />,
             },
-            { label: '投递到', desc: '在「账户」页面配置 Devify 接收地址', value: recipient || '未配置接收地址' },
-            { label: '统计范围', value: '当天已上传的记录；没有新消息时跳过' },
-            { label: '生成方式', value: agent.use_for_daily && agent.provider_id.trim() ? agentLabel : '规则整理' },
+            { label: '统计范围', value: '已上传的记录；未上传的本机记录不参与' },
+            { label: '查看位置', value: '报告页面 · 日报' },
             { label: '最近执行', value: lastDaily },
           ],
         },

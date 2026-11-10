@@ -378,6 +378,15 @@ pub struct AutomationSettings {
     pub last_daily_run: Option<String>,
     pub last_daily_status: Option<String>,
     pub last_daily_error: Option<String>,
+    /// Server-side TopicSubscription that owns the daily report schedule.
+    pub daily_topic_id: Option<i64>,
+    /// Space that owns `daily_topic_id`; switching spaces disables the old topic.
+    pub daily_topic_space_id: Option<i64>,
+    /// Last successful (or attempted) sync of the schedule to Devify.
+    pub last_schedule_sync_at: Option<String>,
+    /// Signature of the schedule that was last synced, used to avoid polling.
+    pub last_schedule_signature: Option<String>,
+    pub last_schedule_error: Option<String>,
 }
 
 /// Which local agent CLI performs summaries. Credentials and model selection stay in the
@@ -475,6 +484,11 @@ impl Default for AutomationSettings {
             last_daily_run: None,
             last_daily_status: None,
             last_daily_error: None,
+            daily_topic_id: None,
+            daily_topic_space_id: None,
+            last_schedule_sync_at: None,
+            last_schedule_signature: None,
+            last_schedule_error: None,
         }
     }
 }
@@ -666,7 +680,7 @@ fn validate_agent(agent: &AgentSettings) -> Result<(), String> {
     Ok(())
 }
 
-fn is_valid_time(value: &str) -> bool {
+pub fn is_valid_time(value: &str) -> bool {
     let Some((hour, minute)) = value.split_once(':') else {
         return false;
     };

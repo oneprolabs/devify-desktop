@@ -280,14 +280,6 @@ export function AgentSettings() {
             刷新模型
           </button>
         </div>
-        <label className="confirm agent-daily">
-          <input
-            type="checkbox"
-            checked={agent.use_for_daily}
-            onChange={event => patchAgent({ use_for_daily: event.target.checked })}
-          />
-          <span>每日自动日报也使用该 Agent（失败时自动回退规则整理）</span>
-        </label>
         <label className="agent-instructions">总结补充要求（可选）
           <textarea
             rows={3}

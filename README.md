@@ -1,17 +1,17 @@
 # AIMyChats (Tauri 2)
 
-A local-first Windows/macOS desktop app for reading selected WeChat conversations locally, organizing work content, and delivering scheduled summaries to a self-hosted Devify inbox.
+A local-first Windows/macOS desktop app for reading selected WeChat conversations locally, organizing work content, and uploading the records to a self-hosted Devify server for scheduled reports.
 
 Main areas:
 
 1. **聊天记录** — on explicit user action, locates the local WeChat 4.x data directory, decrypts a copy of the SQLCipher databases with keys you supply, and opens a WeChat-style three-pane viewer: conversation list (single chats and group chats, with member counts and unread badges), message history with day/time separators, and keyword search across conversations. Messages can be clicked into a cross-conversation selection that survives switching chats. The work-content picker can select a time range, one or more conversations, or all conversations located by a keyword, then expands the selected conversations together for review.
 2. **聊天白名单** — independently selects which group chats and one-to-one chats are visible for each WeChat account.
-3. **自动化策略** — configures local sync interval, incremental upload of allowlisted conversations to Devify, daily rule-based summary, and scheduled Devify delivery.
-4. **Devify 配置** — configures the delivery recipient and default subject, and shows SMTP readiness.
-5. **Agent 集成** — one settings tab with two sections. **本地总结** picks a local CLI agent, model, timeout, and extra instructions for chat summaries (also usable for the daily report). **工具接入** generates one prompt that installs the read-only `wxq` CLI and the three `SKILL.md` documents from the app's in-process download service into directories you choose, then verifies them with `wxq health` / `wxq policy`. No MCP configuration is involved.
+3. **自动化策略** — configures local sync interval, incremental upload of allowlisted conversations to Devify, and the daily report time that is synced to a Devify topic subscription.
+4. **Devify 配置** — selects the server, space, and device. The daily report schedule is stored on the server.
+5. **Agent 集成** — one settings tab with two sections. **本地总结** picks a local CLI agent, model, timeout, and extra instructions for manual chat summaries. **工具接入** generates one prompt that installs the read-only `wxq` CLI and the three `SKILL.md` documents from the app's in-process download service into directories you choose, then verifies them with `wxq health` / `wxq policy`. No MCP configuration is involved.
 6. **关于** — shows the current build (`Alpha 0.0.1`), the runtime platform, and the app identifier. The version is read from the Rust build (`Cargo.toml`), which is kept in sync with `package.json` and `tauri.conf.json`.
 
-聊天记录是默认入口；原始消息可以在本地导出，自动化策略负责按白名单生成并投递日报。
+聊天记录是默认入口；原始消息可以在本地导出，自动化策略负责按白名单上传记录，日报由 Devify 服务端按计划生成。
 
 The app never modifies, deletes, or writes to WeChat's own database files. It does not hook WeChat, inject code, bypass login, or talk to WeChat servers. Decrypted copies live only in the app's data directory on this machine.
 
@@ -36,8 +36,8 @@ The app never modifies, deletes, or writes to WeChat's own database files. It do
 - **Local agent summarisation**: the `Agent 总结` page scans this machine for supported agent CLIs (`claude`, `codex`, `opencode`, `gemini`, `qwen`, `cursor-agent`), falling back to the login shell when a Finder-launched app has a minimal `PATH`. Pick one, optionally pin an executable path, model and timeout, add extra instructions, and run a real connectivity test. The app never stores model credentials: it runs the chosen CLI non-interactively (`claude -p`, `codex exec`, `opencode run`, …) in the app data directory, with read-only sandboxing where the CLI supports it. Output is plain text; failures, timeouts, and Claude's `is_error` JSON are surfaced as errors instead of being presented as a summary.
 - **Message-level selection and exploration**: click individual messages to build a persistent selection across conversations. “总结 / 探索” produces a local, rule-based first pass with project focus items (to-dos, decisions, risks, questions and data), a date-grouped timeline, and related conversations discovered by extracted terms. Related sessions can be added to the selection for another review pass. This is navigation and evidence organization, not an LLM conclusion.
 - **Centralized strategy**: the `聊天白名单` page persists the allowed group and one-to-one conversations per account. The Rust layer always enforces this allowlist for the session list, message reads, search, exploration, digest, and scheduled delivery; an empty allowlist exposes no chat history.
-- **Separate Devify settings**: the `Devify 配置` page stores the recipient and default subject in the local app settings file and shows SMTP status. SMTP secrets remain environment variables during this increment; automatic daily delivery is opt-in and requires a non-empty whitelist.
-- **Daily delivery**: while the Tauri app is running, a backend scheduler checks the local time, syncs the encrypted database/WAL, creates the daily digest for the current day, and sends it once to Devify. When an agent is configured and “每日自动日报也使用该 Agent” is on, the digest body is written by that agent; generation failures fall back to the rule-based digest and are recorded in the automation status instead of skipping the send. Tray/background execution after the app exits is not implemented yet.
+- **Server-side daily report**: enabling the daily report creates or updates a `TopicSubscription` on Devify with the selected local time and IANA timezone. Devify runs the schedule even when the desktop app is closed, then generates the report from the uploaded notes and events. The app only keeps the topic id and the last known run status.
+- **No SMTP delivery in this path**: the daily report no longer reads the local database or sends email from the desktop. Chat records reach Devify through the existing incremental upload, and delivery/notification is a server concern.
 - **Read-only service and agent kit**: the desktop app starts an in-process listener at `127.0.0.1:18765` and stops it with the app. Chat data is exposed as whitelist-checked REST (`/api/policy`, `/api/sessions`, `/api/messages`, `/api/search`, `/api/digest`, plus `/health`). The same listener distributes the agent kit: `/agent/manifest`, `/agent/wxq` (the read-only CLI binary), `/agent/skills`, `/agent/skills/<name>` and `/agent/install.sh`. The **Agent 集成 → 工具接入** page turns this into one prompt: the user picks a host and two directories, copies the prompt, and the receiving agent downloads both artifacts and verifies the connection. The CLI speaks the REST side, so any agent with shell access can read chats. `WECHAT_AGENT_BIND` moves the listener and `WECHAT_AGENT_TOKEN` is mandatory for any non-loopback bind (the older `WECHAT_MCP_*` names still work as aliases). Every request re-reads `app-settings.json` and re-checks the whitelist, so policy changes take effect without a restart. Nothing can decrypt, write, or send mail. MCP over SSE remains available for existing GUI clients but is not part of the page or the prompt; the standalone `wechat-mcp-sse` binary is only a debugging entry point (see `mcp/README.md`).
 - **Per-conversation browsing**: newest-first messages, page size 100 with "load older", day dividers, and time stamps only when messages are more than five minutes apart.
 - **Incremental upload to Devify**: while automatic sync is on, every interval decrypts the local cache and uploads only the allowlisted conversations that have messages newer than their saved cursor. The first run of a conversation sends its full local history. Batches are idempotent by content, and the client never invents messages the local database does not contain. See [Sync chat records to a Devify space](#sync-chat-records-to-a-devify-space).
@@ -50,47 +50,13 @@ The app never modifies, deletes, or writes to WeChat's own database files. It do
 - Rust stable toolchain
 - Tauri 2 platform prerequisites: <https://v2.tauri.app/start/prerequisites/>
 - For local chat records: WeChat 4.x desktop on the same machine, already logged in with local history.
-- An SMTP submission account that can send email to the Devify server's assigned inbound address (typically STARTTLS on port 587).
+- A running Devify server with the chat-analysis periodic task enabled. The desktop app needs no SMTP configuration.
 
-## Configure SMTP
+## Daily report schedule
 
-Set these variables **in the environment that launches `npm run tauri dev` or the packaged app**:
+The daily report is a server-side `TopicSubscription`. When you save the daily time in **自动化策略**, the app creates or updates a topic titled `微信工作日报` with `period=day`, the selected `time_local`, and the machine's IANA timezone. Devify's scheduler runs it even when the app is closed, using the chat records that have already been uploaded.
 
-| Variable | Required | Meaning |
-|---|---|---|
-| `DEVIFY_SMTP_HOST` | yes | SMTP submission server hostname (this is the sender's SMTP server, not necessarily the Devify host) |
-| `DEVIFY_SMTP_PORT` | no | SMTP port; defaults to `587` |
-| `DEVIFY_SMTP_USERNAME` | yes | SMTP login username |
-| `DEVIFY_SMTP_PASSWORD` | yes | SMTP password or provider app password |
-| `DEVIFY_MAIL_FROM` | yes | Sender email address, e.g. `sender@example.org` |
-
-The app intentionally does not save SMTP secrets to disk. For production packaging, use an OS credential store/keychain and a more robust configuration UX rather than embedding credentials in a file.
-
-### macOS / Linux (launch from the same terminal)
-
-```bash
-export DEVIFY_SMTP_HOST='smtp.example.org'
-export DEVIFY_SMTP_PORT='587'
-export DEVIFY_SMTP_USERNAME='sender@example.org'
-export DEVIFY_SMTP_PASSWORD='use-a-provider-app-password'
-export DEVIFY_MAIL_FROM='sender@example.org'
-npm install
-npm run tauri dev
-```
-
-### Windows PowerShell
-
-```powershell
-$env:DEVIFY_SMTP_HOST = 'smtp.example.org'
-$env:DEVIFY_SMTP_PORT = '587'
-$env:DEVIFY_SMTP_USERNAME = 'sender@example.org'
-$env:DEVIFY_SMTP_PASSWORD = 'use-a-provider-app-password'
-$env:DEVIFY_MAIL_FROM = 'sender@example.org'
-npm install
-npm run tauri dev
-```
-
-Do not commit real secrets to `.env`, source control, or screenshots. These example values are placeholders.
+The desktop no longer generates the daily digest locally and no longer sends it by SMTP. If you need email or push delivery, configure it on the Devify side.
 
 ## Read local chat records (optional)
 
@@ -267,19 +233,19 @@ Not guaranteed:
 - **Schema stability across versions.** The query layer adapts to columns via introspection, but if a future version renames the semantic fields, the app will report an unsupported schema rather than invent data.
 - **Rich content.** Images, voice, video, files, and stickers are represented by placeholders; no media is extracted or forwarded. Compressed text (`WCDB_CT_message_content = 4`) is decompressed with zstd, and failures are labelled.
 
-## Configure Devify inbound email
+## Configure the Devify server
 
 1. Deploy and start your self-hosted Devify instance using its official instructions: <https://github.com/oneprolabs/devify>.
-2. Configure `AUTO_ASSIGN_EMAIL_DOMAIN` and the corresponding Haraka host configuration and DNS MX record as described in Devify's README / self-hosting docs.
-3. In Devify, obtain the actual inbound address assigned to your user. Do not guess it; paste that exact address into the app's recipient field.
-4. Ensure the sender's SMTP server can deliver to that domain. A local-only SMTP hostname generally cannot receive internet mail unless your network/DNS is deliberately configured for it.
-5. Verify the end-to-end workflow using non-sensitive test text before sending real chat content.
+2. Sign in from the desktop app and select the space that should receive the chat records.
+3. Keep **自动同步** enabled so the records needed by the daily report are uploaded and analysed.
+4. Save the daily report time in **自动化策略**. The app creates or updates the server-side topic; Devify's scheduler runs it even when the app is closed.
+5. Verify the workflow with non-sensitive test text before relying on the report.
 
-The application sends a plain-text scheduled summary email and can also upload chat archives to the Devify HTTP API when automatic sync is enabled. SMTP acceptance means the sender's SMTP server accepted the message; it does **not** guarantee Devify processed it. Inbound processing depends on Devify's email-domain, Haraka, worker, and Threadline configuration.
+The desktop uploads chat archives through Devify's HTTP API; it does not send the daily report by SMTP. Report generation and any notification delivery happen on the server.
 
 ## Sync chat records to a Devify space
 
-Settings → 备份周期 owns the upload plan: one card per connected platform with its own switch, schedule (every N minutes, at fixed times, or manual only), optional upload window (allow or deny, with the weekday list) and a **立即备份一次** action. Settings → 本地自动化 keeps the daily report. Both require a configured Devify account and a selected space; the whitelist still decides what is sent.
+Settings → 备份周期 owns the upload plan: one card per connected platform with its own switch, schedule (every N minutes, at fixed times, or manual only), optional upload window (allow or deny, with the weekday list) and a **立即备份一次** action. Settings → 本地自动化 syncs the daily report time to a Devify topic. Both require a configured Devify account and a selected space; the whitelist still decides what is sent.
 
 - **Scope**: one package per conversation, containing only that conversation's allowlisted messages. The first sync of a conversation uploads its full local history, later runs start at the saved cursor. The cursor is inclusive on purpose (several messages can share a second); the server deduplicates by `message_key`.
 - **Package**: `wechat.v1` archive with `manifest.json` (`schema_version`, `platform`, `source_namespace`, `counts`, `scope.conversation_ids`, `whitelist_snapshot`, `client`), `conversations.jsonl` (`conversation_id`, `title`, `kind`, `self_sender_key`), `messages.jsonl` (`message_key`, `source_message_id`, `sender_key`, `sender_name`, `direction`, `occurred_at`, `source_order`, `record_kind`, `source_fields`) and `message_parts.jsonl` (`part_key`, `ordinal`, `kind`, `text`).
@@ -377,7 +343,7 @@ The app does not ship model credentials. It reuses an agent CLI that is already 
 
 Input bounds are enforced in Rust, not only in the UI: at most 400 messages per conversation, 1,500 characters per message, and ~45,000 characters per prompt. Truncation is reported in the prompt and in the returned stats.
 
-> **Privacy**: the selected agent processes the chat text with whatever provider and model it is configured to use, which may be a cloud service. Nothing is sent until you confirm the scope in the drawer, and the daily automation only runs when you enable it.
+> **Privacy**: the selected agent processes the chat text with whatever provider and model it is configured to use, which may be a cloud service. Nothing is sent until you confirm the scope in the drawer. The server-side daily report only uses records that were already uploaded with your confirmation.
 
 ### Saved summaries
 
@@ -385,9 +351,9 @@ Every generated result is also written to `summary-history.json` in the app data
 
 - **本地快速整理** keeps the extracted highlights, timeline, related conversations, and search terms as structured data.
 - **AI 总结** keeps the Markdown output plus the agent, model, duration, and truncation flag.
-- **每日自动日报** stores the exact body that was mailed, but only after the send succeeded; an agent failure is kept in the record's note.
+- **每日自动日报** is generated on Devify and does not create a local history record.
 
-The file is written atomically with owner-only (`0600`) permissions, capped at the **newest 50 records** (older ones are dropped automatically), and never uploaded. In the drawer, **最近整理** lists the records saved for the current account; open one to re-read it and close it to return to the live preview, or delete it individually. Deleting only affects this local file — it cannot touch the original WeChat database or a report that was already mailed.
+The file is written atomically with owner-only (`0600`) permissions, capped at the **newest 50 records** (older ones are dropped automatically), and never uploaded. In the drawer, **最近整理** lists the records saved for the current account; open one to re-read it and close it to return to the live preview, or delete it individually. Deleting only affects this local file — it cannot touch the original WeChat database or a report that was already generated on Devify.
 
 ## Image decryption (offline)
 
@@ -531,10 +497,8 @@ WX_PASS='<64 hex>' cargo run --quiet --example probe -- 会议 200
 - The work digest is deterministic keyword extraction. It can miss context and can classify small talk as a to-do; treat it as a draft, not an answer. The optional agent summary is real generation, but it can still misread ambiguous chat: every output keeps the original transcript in the drawer for comparison.
 - Agent summaries leave the machine through the selected CLI. Its provider, model, retention policy and quota apply; the app cannot audit or redact what that agent sends upstream.
 - The viewer has no media previews or voice transcription: non-text messages appear as labelled placeholders. Avatars come from WeChat's own `head_image.db` (decrypted alongside the chat databases) and are only requested for the names on screen; a contact without a stored image falls back to a letter avatar.
-- The current implementation uses environment variables for SMTP credentials. On desktop launch, the app may not inherit shell environment variables; launch it from the configured terminal during development. A production build should use macOS Keychain / Windows Credential Manager and a dedicated settings UI.
-- The current scheduler runs only while the Tauri application process is alive. It does not yet install a tray resident process, launch-at-login entry, or operating-system task.
-- Email content is transmitted to the configured SMTP server and Devify recipient. Confirm your organization's policies and consent before sending.
-- `lettre` SMTP relay uses TLS/STARTTLS configuration. Use a compatible submission service; do not send credentials over plaintext SMTP.
+- The daily report schedule is stored on Devify and runs on the server, so it no longer depends on the Tauri process staying alive. The app still needs to upload new chat records for the report to include them.
+- The report uses the server's configured LLM. If the server has no LLM configuration, the report keeps the rule-based snapshot and is marked `partial`.
 - **Reading local databases breaks the earlier "no database access at all" claim in this project's history.** The local-reading feature is opt-in, requires your explicit key import and decrypt action, and is limited to data you already have on this machine.
 - Decrypting a local database may conflict with WeChat's Terms of Service or your organization's device policy. You are responsible for having the right to access that data and for the consent of the people in the conversations.
 
@@ -547,7 +511,7 @@ WX_PASS='<64 hex>' cargo run --quiet --example probe -- 会议 200
 - `src/AgentSettings.tsx`: local agent scan, selection, generation parameters, and connectivity test.
 - `src/AgentAccess.tsx`: one-prompt agent installation — host and directory selection, generated prompt, download endpoints, and install status.
 - `src/About.tsx`: 关于 page — build stage/version from the `app_info` command, runtime platform, and app identifier.
-- `src-tauri/src/lib.rs`: Tauri commands, scheduled sync, rule-based digest, agent summarisation, SMTP delivery, and service startup wiring.
+- `src-tauri/src/lib.rs`: Tauri commands, scheduled sync, rule-based digest, agent summarisation, server-side daily schedule sync, and service startup wiring.
 - `src-tauri/src/agent.rs`: agent detection (PATH/search dirs/login shell), bounded non-interactive runs, timeout/kill handling, output and error normalisation.
 - `src-tauri/src/access.rs`: embedded skill documents, host → skills-directory mapping, `wxq` resolution, prompt and install-script generation.
 - `src-tauri/src/wechat/query.rs`: schema-discovered reads, whitelist filtering, and the bounded transcript builder shared by interactive and automated summaries.

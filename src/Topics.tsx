@@ -10,6 +10,8 @@ type Topic = {
   title: string;
   instruction: string;
   period: 'day' | 'week' | 'month' | string;
+  time_local?: string | null;
+  timezone?: string;
   enabled: boolean;
   include_open: boolean;
   last_run_at?: string | null;
@@ -45,6 +47,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
   const [title, setTitle] = useState('');
   const [instruction, setInstruction] = useState('');
   const [period, setPeriod] = useState('day');
+  const [time, setTime] = useState('08:30');
   const [loading, setLoading] = useState(isTauri());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -95,12 +98,12 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
     { label: '已暂停', items: visibleTopics.filter(topic => !topic.enabled) },
   ].filter(group => group.items.length), [visibleTopics]);
 
-  const resetForm = () => { setTitle(''); setInstruction(''); setPeriod('day'); setCreating(false); };
+  const resetForm = () => { setTitle(''); setInstruction(''); setPeriod('day'); setTime('08:30'); setCreating(false); };
   const create = async () => {
     if (!spaceId || !title.trim() || !instruction.trim() || saving) return;
     setSaving(true); setError('');
     try {
-      const topic = await invoke<Topic>('devify_topic_create', { spaceId, title: title.trim(), instruction: instruction.trim(), period });
+      const topic = await invoke<Topic>('devify_topic_create', { spaceId, title: title.trim(), instruction: instruction.trim(), period, timeLocal: time || null, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
       setTopics(current => [topic, ...current]); setTopicDetail(topic); setSelectedId(topic.id); resetForm();
     } catch (reason) { setError(String(reason)); }
     finally { setSaving(false); }
@@ -195,6 +198,10 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
                 onClick={() => setPeriod(item.value)}
               >{item.label}</button>)}
             </div>
+            <label className="topic-time">
+              执行时间
+              <input type="time" value={time} onChange={event => setTime(event.target.value)}/>
+            </label>
             <button type="button" className="topic-cancel" onClick={resetForm}>取消</button>
             <button type="button" className="topic-save" disabled={saving || !title.trim() || !instruction.trim()} onClick={() => void create()}>{saving ? '保存中…' : '保存并回溯'}</button>
           </div>
@@ -211,7 +218,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
         {detailLoading && <p className="topic-detail-loading">正在同步主题详情…</p>}
         <span className={`topic-state${detail.enabled ? ' on' : ''}`}>{detail.enabled ? '运行中' : '已暂停'}</span>
         <h1>{detail.title}</h1>
-        <div className="topic-meta">{periodLabel(detail.period)} · 上次执行 {dateLabel(detail.last_run_at)} · 服务端执行</div>
+        <div className="topic-meta">{periodLabel(detail.period)}{detail.time_local ? ` · ${detail.time_local.slice(0, 5)}` : ''} · 上次执行 {dateLabel(detail.last_run_at)} · 服务端执行</div>
         <div className="topic-instruction">{detail.instruction}</div>
         {detail.last_error && <p className="topic-error">上次执行失败：{detail.last_error}</p>}
 

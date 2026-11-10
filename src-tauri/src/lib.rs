@@ -1,7 +1,5 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::{Local, Timelike};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{message::header::ContentType, Message, SmtpTransport, Transport};
+use chrono::{Local, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1140,6 +1138,8 @@ async fn devify_topic_create(
     title: String,
     instruction: String,
     period: String,
+    time_local: Option<String>,
+    timezone: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
     validate_devify_space(&settings, space_id)?;
@@ -1151,11 +1151,25 @@ async fn devify_topic_create(
     if !matches!(period.as_str(), "day" | "week" | "month") {
         return Err("主题周期无效。".into());
     }
+    let mut body = serde_json::json!({
+        "title": title,
+        "instruction": instruction,
+        "period": period,
+    });
+    if let Some(time_local) = time_local.filter(|value| !value.trim().is_empty()) {
+        if !settings::is_valid_time(time_local.trim()) {
+            return Err("执行时间必须使用 HH:MM 格式。".into());
+        }
+        body["time_local"] = serde_json::json!(time_local.trim());
+    }
+    if let Some(timezone) = timezone.filter(|value| !value.trim().is_empty()) {
+        body["timezone"] = serde_json::json!(timezone.trim());
+    }
     devify_json_request(
         &app,
         reqwest::Method::POST,
         format!("/api/v1/spaces/{space_id}/topics"),
-        Some(serde_json::json!({"title": title, "instruction": instruction, "period": period})),
+        Some(body),
     )
     .await
 }
@@ -3376,101 +3390,6 @@ fn end_sync(state: &SyncState, account_id: &str) {
     }
 }
 
-#[derive(Serialize)]
-struct MailConfigStatus {
-    configured: bool,
-    host: Option<String>,
-    port: Option<u16>,
-    from: Option<String>,
-    missing: Vec<String>,
-}
-
-fn env_nonempty(key: &str) -> Option<String> {
-    env::var(key)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-#[tauri::command]
-fn mail_config_status() -> MailConfigStatus {
-    let mut missing = Vec::new();
-    for key in [
-        "DEVIFY_SMTP_HOST",
-        "DEVIFY_SMTP_USERNAME",
-        "DEVIFY_SMTP_PASSWORD",
-        "DEVIFY_MAIL_FROM",
-    ] {
-        if env_nonempty(key).is_none() {
-            missing.push(key.to_string());
-        }
-    }
-    let port = env_nonempty("DEVIFY_SMTP_PORT")
-        .and_then(|v| v.parse::<u16>().ok())
-        .or(Some(587));
-    MailConfigStatus {
-        configured: missing.is_empty(),
-        host: env_nonempty("DEVIFY_SMTP_HOST"),
-        port,
-        from: env_nonempty("DEVIFY_MAIL_FROM"),
-        missing,
-    }
-}
-
-fn send_mail(recipient: &str, subject: &str, body: String) -> Result<String, String> {
-    let recipient = recipient.trim();
-    if recipient.is_empty()
-        || !recipient.contains('@')
-        || recipient.contains('\n')
-        || recipient.contains('\r')
-    {
-        return Err("收件地址无效，请填写 Devify 为你的账号分配的接收邮箱。".into());
-    }
-    if subject.trim().is_empty() {
-        return Err("邮件主题不能为空。".into());
-    }
-    if body.trim().is_empty() {
-        return Err("邮件正文为空，没有发送任何内容。".into());
-    }
-    if body.len() > 1_000_000 {
-        return Err("邮件正文超过 1 MB 限制。".into());
-    }
-
-    let host = env_nonempty("DEVIFY_SMTP_HOST").ok_or("缺少环境变量 DEVIFY_SMTP_HOST")?;
-    let username =
-        env_nonempty("DEVIFY_SMTP_USERNAME").ok_or("缺少环境变量 DEVIFY_SMTP_USERNAME")?;
-    let password =
-        env_nonempty("DEVIFY_SMTP_PASSWORD").ok_or("缺少环境变量 DEVIFY_SMTP_PASSWORD")?;
-    let from = env_nonempty("DEVIFY_MAIL_FROM").ok_or("缺少环境变量 DEVIFY_MAIL_FROM")?;
-    let port = env_nonempty("DEVIFY_SMTP_PORT")
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(587);
-
-    let from_mailbox = from
-        .parse()
-        .map_err(|_| "DEVIFY_MAIL_FROM 不是有效邮箱地址")?;
-    let to_mailbox = recipient.parse().map_err(|_| "收件地址格式无效")?;
-    let email = Message::builder()
-        .from(from_mailbox)
-        .to(to_mailbox)
-        .subject(subject.trim())
-        .header(ContentType::TEXT_PLAIN)
-        .body(body)
-        .map_err(|e| format!("构建邮件失败：{e}"))?;
-
-    let creds = Credentials::new(username, password);
-    // Port 587 uses STARTTLS; lettre's relay() selects the standard submission transport.
-    let mailer = SmtpTransport::relay(&host)
-        .map_err(|e| format!("SMTP 配置错误：{e}"))?
-        .port(port)
-        .credentials(creds)
-        .build();
-    mailer
-        .send(&email)
-        .map_err(|e| format!("SMTP 发送失败：{e}"))?;
-    Ok("SMTP 已接受邮件发送请求。是否进入 Devify 的处理流程，还取决于 Devify 的邮箱域名、收件规则和后台工作进程配置。".into())
-}
-
 fn app_data(app: &AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
@@ -3549,258 +3468,236 @@ fn allowed_usernames(app: &AppHandle, account_id: &str) -> Result<HashSet<String
         .collect())
 }
 
-fn automation_result(
-    app: &AppHandle,
-    fallback: settings::AppSettings,
-    day: &str,
-    status: &str,
-    error: Option<String>,
-) {
-    let mut value = settings::load(&app_data(app)).unwrap_or(fallback);
-    if status == "sent" || status == "no_messages" {
-        value.automation.last_daily_run = Some(day.to_string());
-    }
-    value.automation.last_daily_status = Some(status.to_string());
-    value.automation.last_daily_error = error;
-    let _ = settings::save(&app_data(app), &value);
+const DAILY_TOPIC_TITLE: &str = "微信工作日报";
+const DAILY_TOPIC_INSTRUCTION: &str =
+    "根据已上传的微信聊天记录生成每日工作日报，汇总当天进展、待办和风险。";
+const DAILY_SCHEDULE_RETRY_SECONDS: i64 = 600;
+
+#[derive(Serialize)]
+struct DailyScheduleStatus {
+    topic_id: Option<i64>,
+    enabled: bool,
+    time_local: String,
+    timezone: String,
+    last_run_at: Option<String>,
+    last_error: Option<String>,
+    message: String,
 }
 
-async fn automation_tick(app: &AppHandle) {
-    let data = app_data(app);
-    let Ok(value) = settings::load(&data) else {
-        return;
-    };
-    let now = Local::now();
-    let day = now.format("%Y-%m-%d").to_string();
-    if entitlements::require(&data, &value.devify.base_url, capabilities::AI_DAILY_REPORT).is_err() {
-        return;
-    }
-    let Some((hour, minute)) = value
+fn local_timezone() -> String {
+    iana_time_zone::get_timezone().unwrap_or_else(|_| "Asia/Shanghai".to_string())
+}
+
+fn daily_schedule_signature(value: &settings::AppSettings) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        value.automation.enabled && value.automation.daily_summary_enabled,
+        value.automation.daily_time,
+        value.devify.active_space_id.unwrap_or(0),
+        local_timezone(),
+    )
+}
+
+fn schedule_attempt_is_recent(value: &settings::AppSettings) -> bool {
+    value
         .automation
-        .daily_time
-        .split_once(':')
-        .and_then(|(hour, minute)| Some((hour.parse::<u32>().ok()?, minute.parse::<u32>().ok()?)))
-    else {
-        return;
+        .last_schedule_sync_at
+        .as_deref()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .is_some_and(|at| {
+            Utc::now()
+                .signed_duration_since(at.with_timezone(&Utc))
+                .num_seconds()
+                < DAILY_SCHEDULE_RETRY_SECONDS
+        })
+}
+
+/// Create or update the server-side TopicSubscription that runs the daily report.
+///
+/// The schedule lives on Devify so it still runs when the desktop app is closed.
+/// The app only keeps the returned topic id and the last known run status.
+async fn sync_daily_schedule(
+    app: &AppHandle,
+    force: bool,
+) -> Result<DailyScheduleStatus, String> {
+    let value = settings::load(&app_data(app))?;
+    let space_id = value
+        .devify
+        .active_space_id
+        .ok_or("请先在「设置 / 账户」中登录并选择 Devify 空间。")?;
+    validate_devify_space(&value, space_id)?;
+    let enabled = value.automation.enabled && value.automation.daily_summary_enabled;
+    let time_local = value.automation.daily_time.trim().to_string();
+    if !settings::is_valid_time(&time_local) {
+        return Err("日报时间必须使用 HH:MM 格式。".into());
+    }
+    let timezone = local_timezone();
+    let signature = format!("{}|{}|{}|{}", enabled, time_local, space_id, timezone);
+    let topic_space_matches = value.automation.daily_topic_space_id == Some(space_id);
+    let current_topic_id = if topic_space_matches {
+        value.automation.daily_topic_id
+    } else {
+        None
     };
-    let scheduled = now.hour() > hour || (now.hour() == hour && now.minute() >= minute);
-    if !value.automation.enabled
-        || !value.automation.daily_summary_enabled
-        || !scheduled
-        || value.automation.last_daily_run.as_deref() == Some(day.as_str())
+    let stale_topic_id = if topic_space_matches {
+        None
+    } else {
+        value.automation.daily_topic_id
+    };
+    if !force
+        && value.automation.last_schedule_signature.as_deref() == Some(signature.as_str())
+        && schedule_attempt_is_recent(&value)
     {
-        return;
+        return Ok(DailyScheduleStatus {
+            topic_id: current_topic_id,
+            enabled,
+            time_local,
+            timezone,
+            last_run_at: value.automation.last_daily_run.clone(),
+            last_error: value.automation.last_schedule_error.clone(),
+            message: "日报计划已是服务端最新状态。".into(),
+        });
     }
 
-    let account_id = value.active_account_id.clone();
-    if account_id.is_empty() {
-        automation_result(
+    let attempt_at = Utc::now().to_rfc3339();
+    let result: Result<serde_json::Value, String> = async {
+        if let Some(stale_topic_id) = stale_topic_id {
+            // The active space changed. Stop the old topic so two spaces do
+            // not generate the same daily report.
+            let _ = devify_json_request(
+                app,
+                reqwest::Method::PATCH,
+                format!("/api/v1/topics/{stale_topic_id}"),
+                Some(serde_json::json!({"enabled": false})),
+            )
+            .await;
+        }
+        let topics = devify_json_request(
             app,
-            value,
-            &day,
-            "error",
-            Some("没有配置活动微信账号。".into()),
-        );
-        return;
+            reqwest::Method::GET,
+            format!("/api/v1/spaces/{space_id}/topics"),
+            None,
+        )
+        .await?;
+        let existing = topics.as_array().and_then(|items| {
+            items.iter().find(|topic| {
+                topic.get("id").and_then(|value| value.as_i64()) == current_topic_id
+                    || topic.get("title").and_then(|value| value.as_str())
+                        == Some(DAILY_TOPIC_TITLE)
+            })
+        });
+        if let Some(topic) = existing {
+            let topic_id = topic
+                .get("id")
+                .and_then(|value| value.as_i64())
+                .ok_or("服务端主题缺少标识。")?;
+            let body = serde_json::json!({
+                "period": "day",
+                "time_local": time_local.clone(),
+                "timezone": timezone.clone(),
+                "enabled": enabled,
+                "include_open": true,
+            });
+            devify_json_request(
+                app,
+                reqwest::Method::PATCH,
+                format!("/api/v1/topics/{topic_id}"),
+                Some(body),
+            )
+            .await
+        } else if enabled {
+            let body = serde_json::json!({
+                "title": DAILY_TOPIC_TITLE,
+                "instruction": DAILY_TOPIC_INSTRUCTION,
+                "period": "day",
+                "time_local": time_local.clone(),
+                "timezone": timezone.clone(),
+                "enabled": true,
+                "include_open": true,
+            });
+            devify_json_request(
+                app,
+                reqwest::Method::POST,
+                format!("/api/v1/spaces/{space_id}/topics"),
+                Some(body),
+            )
+            .await
+        } else {
+            Ok(serde_json::json!({}))
+        }
     }
-    let Some(allowed) = value.chat.allowed_usernames.get(&account_id).cloned() else {
-        automation_result(
-            app,
-            value,
-            &day,
-            "error",
-            Some("没有配置该账号的聊天白名单。".into()),
-        );
-        return;
-    };
-    if allowed.is_empty() {
-        automation_result(
-            app,
-            value,
-            &day,
-            "error",
-            Some("自动日报必须配置非空聊天白名单。".into()),
-        );
-        return;
-    }
-    if value.devify.recipient.trim().is_empty() {
-        automation_result(
-            app,
-            value,
-            &day,
-            "error",
-            Some("没有配置 Devify 接收邮箱。".into()),
-        );
-        return;
-    }
-
-    let scan = discover::scan();
-    let Some(account) = scan
-        .accounts
-        .iter()
-        .find(|account| account.id == account_id)
-        .cloned()
-    else {
-        automation_result(
-            app,
-            value,
-            &day,
-            "error",
-            Some("找不到策略配置中的微信账号。".into()),
-        );
-        return;
-    };
-    let store = keys::load(&keys::store_path(&data));
-    let sync_state = app.state::<SyncState>();
-    if !begin_sync(&sync_state, &account_id) {
-        automation_result(
-            app,
-            value,
-            &day,
-            "busy",
-            Some("该账号正在执行另一项同步任务。".into()),
-        );
-        return;
-    }
-    let data_for_sync = data.clone();
-    let joined = tauri::async_runtime::spawn_blocking(move || {
-        decrypt::decrypt_account(&data_for_sync, &account, &store, true, true)
-    })
     .await;
-    end_sync(&sync_state, &account_id);
-    let outcomes = match joined {
-        Ok(outcomes) => outcomes,
-        Err(error) => {
-            automation_result(
-                app,
-                value,
-                &day,
-                "error",
-                Some(format!("同步任务失败：{error}")),
-            );
-            return;
+
+    let mut stored = settings::load(&app_data(app))?;
+    stored.automation.last_schedule_sync_at = Some(attempt_at);
+    match result {
+        Ok(topic) => {
+            let topic_id = topic.get("id").and_then(|value| value.as_i64());
+            stored.automation.daily_topic_id = topic_id.or(current_topic_id);
+            stored.automation.daily_topic_space_id = Some(space_id);
+            stored.automation.last_schedule_signature = Some(signature);
+            stored.automation.last_schedule_error = None;
+            if let Some(run) = topic.get("last_run_at").and_then(|value| value.as_str()) {
+                stored.automation.last_daily_run = Some(run.to_string());
+            }
+            stored.automation.last_daily_error = topic
+                .get("last_error")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+            stored.automation.last_daily_status = Some(if enabled {
+                "scheduled".to_string()
+            } else {
+                "disabled".to_string()
+            });
+            settings::save(&app_data(app), &stored)?;
+            Ok(DailyScheduleStatus {
+                topic_id: stored.automation.daily_topic_id,
+                enabled,
+                time_local,
+                timezone,
+                last_run_at: stored.automation.last_daily_run.clone(),
+                last_error: stored.automation.last_daily_error.clone(),
+                message: if enabled {
+                    "日报计划已同步到服务端。".into()
+                } else {
+                    "日报已关闭。".into()
+                },
+            })
         }
+        Err(error) => {
+            stored.automation.last_schedule_error = Some(error.clone());
+            let _ = settings::save(&app_data(app), &stored);
+            Err(error)
+        }
+    }
+}
+
+async fn daily_schedule_tick(app: &AppHandle) {
+    let Ok(value) = settings::load(&app_data(app)) else {
+        return;
     };
-    if !outcomes
-        .iter()
-        .any(|outcome| outcome.status == "ok" || outcome.status == "cached")
+    if value.devify.base_url.trim().is_empty() || value.devify.active_space_id.is_none() {
+        return;
+    }
+    let enabled = value.automation.enabled && value.automation.daily_summary_enabled;
+    if !enabled && value.automation.daily_topic_id.is_none() {
+        return;
+    }
+    let signature = daily_schedule_signature(&value);
+    if value.automation.last_schedule_signature.as_deref() == Some(signature.as_str())
+        && schedule_attempt_is_recent(&value)
     {
-        automation_result(
-            app,
-            value,
-            &day,
-            "error",
-            Some("没有可用的解密缓存，日报未生成。".into()),
-        );
         return;
     }
+    let _ = sync_daily_schedule(app, false).await;
+}
 
-    let cache = decrypt::cache_dir(&data, &account_id);
-    let allowed_set: HashSet<String> = allowed.into_iter().collect();
-    let allowed_list: Vec<String> = allowed_set.iter().cloned().collect();
-    let start = now
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .and_then(|local| local.and_local_timezone(Local).single())
-        .map(|local| local.timestamp());
-    let digest = match query::digest_filtered(
-        &cache,
-        &allowed_list,
-        start,
-        Some(now.timestamp()),
-        Some(&allowed_set),
-    ) {
-        Ok(digest) => digest,
-        Err(error) => {
-            automation_result(
-                app,
-                value,
-                &day,
-                "error",
-                Some(format!("日报整理失败：{error}")),
-            );
-            return;
-        }
-    };
-    if digest.messages == 0 {
-        automation_result(app, value, &day, "no_messages", None);
-        return;
-    }
-
-    let mut body = digest.markdown.clone();
-    let mut summary_error = None;
-    if value.agent.use_for_daily && !value.agent.provider_id.trim().is_empty() {
-        let agent_settings = value.agent.clone();
-        let agent_data = data.clone();
-        let material = query::summary_input(
-            &cache,
-            &allowed_list,
-            start,
-            Some(now.timestamp()),
-            Some(&allowed_set),
-        );
-        match material {
-            Ok(input) => {
-                let sessions = input.sessions;
-                let messages = input.messages;
-                let truncated = input.truncated;
-                let language = value.language.summary.clone();
-                let joined = tauri::async_runtime::spawn_blocking(move || {
-                    agent::summarize(&agent_settings, &input, &language, &agent_data)
-                })
-                .await;
-                match joined {
-                    Ok(Ok(run)) => {
-                        body = format!(
-                            "{}\n\n---\n由 {} 生成 · {} 个会话 / {} 条消息{}",
-                            run.output,
-                            agent::agent_name(&value.agent.provider_id),
-                            sessions,
-                            messages,
-                            if truncated {
-                                "（已按上限截断）"
-                            } else {
-                                ""
-                            }
-                        );
-                    }
-                    Ok(Err(error)) => {
-                        summary_error = Some(format!("Agent 总结失败，已回退规则整理：{error}"));
-                    }
-                    Err(error) => {
-                        summary_error =
-                            Some(format!("Agent 总结任务失败，已回退规则整理：{error}"));
-                    }
-                }
-            }
-            Err(error) => {
-                summary_error = Some(format!("Agent 总结输入准备失败，已回退规则整理：{error}"))
-            }
-        }
-    }
-
-    // Keep a copy of what was actually mailed. The record is written only after the send
-    // succeeded, so history never claims a report that did not go out.
-    let record_body = body.clone();
-    let record_messages = digest.messages;
-    if let Err(error) = send_mail(&value.devify.recipient, &value.devify.subject, body) {
-        automation_result(app, value, &day, "error", Some(error));
-        return;
-    }
-    let record = history::NewRecord {
-        kind: "daily".into(),
-        account_id: account_id.clone(),
-        range_label: format!("自动日报 · {day}"),
-        messages: record_messages,
-        characters: record_body.chars().count(),
-        output: Some(record_body),
-        note: summary_error.clone(),
-        ..Default::default()
-    };
-    if let Err(error) = history::add(&data, record) {
-        eprintln!("保存自动日报记录失败：{error}");
-    }
-    automation_result(app, value, &day, "sent", summary_error);
+#[tauri::command]
+async fn devify_daily_schedule_sync(
+    app: AppHandle,
+) -> Result<DailyScheduleStatus, String> {
+    sync_daily_schedule(&app, true).await
 }
 
 /// Scheduler tick for the backup plan saved in settings. Uploads only when the plan says a
@@ -6444,7 +6341,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    automation_tick(&handle).await;
+                    daily_schedule_tick(&handle).await;
                     tokio::time::sleep(Duration::from_secs(30)).await;
                 }
             });
@@ -6513,7 +6410,7 @@ pub fn run() {
             devify_upload_retry_preview,
             devify_upload_retry,
             devify_upload_status,
-            mail_config_status,
+            devify_daily_schedule_sync,
             app_settings_get,
             app_settings_save,
             wechat_scan,
