@@ -481,3 +481,8 @@
 .about-update p { flex-basis:100%; margin:0; }
 .about-update-notes { white-space:pre-wrap; }
 .about-update button { padding:6px 10px; border:1px solid #d9d9d5; border-radius:6px; background:white; cursor:pointer; }
+
+.analysis-save-row { display:flex; align-items:center; gap:10px; }
+.analysis-save-status { display:inline-flex; align-items:center; gap:5px; color:#25844a; font-size:12px; line-height:1.5; }
+.analysis-save-status svg { width:15px; height:15px; flex:none; }
+.analysis-save-hint { margin:6px 0 0; color:#74746e; font-size:12px; line-height:1.5; }

@@ -8,10 +8,11 @@ import type { SummaryRecord } from './summary';
 import { exportNotSupported } from './toast';
 import { WhitelistSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
+import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null };
 type Settings = { active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
-type SyncResult = { uploaded: number; message_count: number; error?: string | null };
+type SyncResult = { uploaded: number; message_count: number; batch_ids?: number[]; error?: string | null };
 type Scan = { accounts?: Array<{ id: string; modified_at?: number | null }> };
 type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
 type Page<T> = { list?: T[]; pagination?: { total?: number; next?: unknown } };
@@ -19,7 +20,7 @@ type CloudConversation = { id: number; platform: string; source_namespace: strin
 type Avatar = { username: string; data_url: string };
 // Rust decides this from the newest local message and the newest uploaded position, so a
 // failed upload or new local records cannot be hidden behind a queue status.
-type UploadState = { username: string; state: 'pending' | 'local' | 'synced' | 'processing' | 'failed' | 'unknown'; new_messages: number };
+type UploadState = { username: string; state: 'pending' | 'local' | 'synced' | 'processing' | 'failed' | 'history_failed' | 'unknown'; new_messages: number };
 
 type View = 'events' | 'raw' | 'summary';
 type Filter = 'all' | 'pending' | 'local';
@@ -73,6 +74,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
   const [syncNoticeError, setSyncNoticeError] = useState(false);
   const [syncNoticePending, setSyncNoticePending] = useState(false);
   const [syncToastVisible, setSyncToastVisible] = useState(false);
+  const [syncBatchIds, setSyncBatchIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventRefresh, setEventRefresh] = useState(0);
@@ -184,26 +186,63 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     void refreshUploadState();
     // Upload badges are rebuilt from the local database, so refresh them on a fixed short
     // cadence: tying this to the (now 30-minute) backup interval would leave status stale.
-    const timer = window.setInterval(() => void refreshUploadState(), activeUploads.length ? 5000 : 60000);
+    const timer = window.setInterval(() => void refreshUploadState(), activeUploads.length || syncNoticePending ? 5000 : 60000);
     return () => window.clearInterval(timer);
-  }, [refreshUploadState, activeUploads.length]);
+  }, [refreshUploadState, activeUploads.length, syncNoticePending]);
 
   const syncNow = async () => {
     if (syncing) return;
-    setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticePending(false); setSyncToastVisible(true);
+    setSyncBatchIds([]); setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticePending(false); setSyncToastVisible(true);
     try {
       const result = await invoke<SyncResult>('devify_sync_now');
       setSyncNoticeError(Boolean(result.error));
-      setSyncNoticePending(!result.error && result.message_count > 0);
+      const ids = result.batch_ids ?? [];
+      setSyncBatchIds(result.error ? [] : ids);
+      setSyncNoticePending(!result.error && ids.length > 0);
       setSyncNotice(result.error
         ? `已提交 ${result.message_count} 条记录；部分同步未完成：${result.error}`
         : result.message_count
-          ? `已提交 ${result.message_count} 条记录，等待服务端处理。`
+          ? ids.length ? `已提交 ${result.message_count} 条记录，等待服务端处理。` : `已提交 ${result.message_count} 条记录，请在任务中查看状态。`
           : '没有需要提交的新记录。');
       await refreshUploadState();
     } catch (reason) { setSyncNoticeError(true); setSyncNotice(`同步未完成：${String(reason)}`); }
     finally { setSyncing(false); }
   };
+
+  useEffect(() => {
+    if (!syncBatchIds.length) return;
+    let active = true;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const batches = await Promise.all(syncBatchIds.map(batchId => invoke<SyncBatchStatus>('devify_upload_status', { batchId })));
+        if (!active) return;
+        const status = syncFeedback(batches);
+        if (status === 'processing') { timer = window.setTimeout(() => void poll(), 5000); return; }
+        setSyncBatchIds([]); setSyncNoticePending(false);
+        if (status === 'completed') {
+          setSyncNotice('服务端已完成处理。');
+          void refreshUploadState();
+        } else {
+          setSyncNoticeError(true);
+          const failed = batches.find(batch => ['failed', 'cancelled'].includes(batch.status));
+          setSyncNotice(status === 'unknown' ? '暂时无法确认服务端处理状态，请查看任务。' : failed?.error_message ? `服务端处理未完成：${failed.error_message}` : '服务端处理未完成，请查看任务。');
+        }
+      } catch {
+        if (!active) return;
+        setSyncBatchIds([]); setSyncNoticePending(false); setSyncNoticeError(true);
+        setSyncNotice('暂时无法确认服务端处理状态，请查看任务。');
+      }
+    };
+    void poll();
+    return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [syncBatchIds, refreshUploadState]);
+
+  useEffect(() => {
+    if (syncing || syncNoticePending || syncNoticeError || !syncNotice) return;
+    const timer = window.setTimeout(() => { setSyncToastVisible(false); setSyncNotice(''); }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [syncing, syncNoticePending, syncNoticeError, syncNotice]);
 
   const visibleSessions = useMemo(() => {
     // In the raw tab the header search targets message content, so the conversation list
@@ -256,6 +295,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     if (state?.state === 'local') return { text: '仅本机 · 未纳入上传', tone: 'local' };
     if (state?.state === 'processing') return { text: '已提交 · 等待服务端处理', tone: 'pending' };
     if (state?.state === 'failed') return { text: '上传失败 · 请检查任务', tone: 'pending' };
+    if (state?.state === 'history_failed') return { text: '历史任务未完成 · 请检查任务', tone: 'pending' };
     if (state?.state === 'synced') return { text: '已同步', tone: 'synced' };
     return { text: '同步状态待确认', tone: 'local' };
   };

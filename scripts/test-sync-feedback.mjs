@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { syncFeedback } from '../src/syncFeedback.ts';
+assert.equal(syncFeedback([{status:'completed'}, {status:'completed'}]), 'completed');
+assert.equal(syncFeedback([{status:'processing'}, {status:'completed'}]), 'processing');
+assert.equal(syncFeedback([{status:'failed', error_message:'错误'}, {status:'processing'}]), 'failed');
+assert.equal(syncFeedback([{status:'cancelled'}]), 'failed');
+assert.equal(syncFeedback([]), 'unknown');
+assert.equal(syncFeedback([{status:'unknown'}]), 'unknown');
+assert.equal(syncFeedback([{status:'created'}]), 'processing');
+console.log('sync feedback checks passed');
