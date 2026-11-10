@@ -43,6 +43,12 @@
           "devify"
         ]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCMzg3MjBGMUU1MUE1NTMKUldSVHBWRWVEM0k0cTVwY3FSdW5XeFhaY2JkdFBMeDVrWmpjN2lCRkx6R1ZjL1dkaU1IRmM3MVIK",
+      "endpoints": [
+        "https://github.com/oneprolabs/devify-desktop/releases/download/alpha/latest.json"
+      ]
     }
   },
   "bundle": {

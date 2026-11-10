@@ -560,3 +560,17 @@ WX_PASS='<64 hex>' cargo run --quiet --example probe -- 会议 200
 - `src-tauri/src/wechat/query.rs`: schema-introspecting session/message/contact queries, group member counts, bounded search, rule-based digest, text labelling.
 - `src-tauri/src/bin/wechat-key-scan.rs`: macOS root memory scanner that emits only verified keys.
 - `src-tauri/capabilities/default.json`: minimal Tauri core permissions; no filesystem-wide or shell permissions are granted.
+
+### Alpha updater releases
+
+The updater reads `latest.json` from the fixed `alpha` Release in this repository. While the repository is private, anonymous update checks will fail; users with repository access can download and install the DMG manually. The first updater-enabled version also requires manual installation.
+
+Keep the Tauri updater private key outside this repository and back it up securely. Do not commit it or embed it in the app. The Tauri updater signing key and the macOS app signing identity are separate. The existing local self-signed macOS identity is for local testing and may not be trusted on other Macs.
+
+1. Set the same new SemVer version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. Alpha prereleases must compare newer than the installed version: `0.0.1-alpha.1` is older than `0.0.1`.
+2. Set `TAURI_SIGNING_PRIVATE_KEY_PATH` to the private key file and optionally `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Set `AIMYCHATS_RELEASE_NOTES` to the release notes.
+3. Run `scripts/prepare-alpha-update.sh`. It verifies version consistency, builds and locally signs the app, then creates the updater archive and signs its final bytes. It does not install or publish.
+4. Verify the DMG, app, `.app.tar.gz`, `.sig`, and `latest.json`. Upload the archive and signature first to the fixed `alpha` prerelease, and upload `latest.json` last. Keep the archive filename and URL consistent with the manifest. Do not publish a manifest pointing to a missing or mismatched asset.
+5. Install an updater-enabled baseline manually. Test the next version's check, download, install, restart, preserved data and login, and macOS Full Disk Access before relying on updates. Test private GitHub release access separately after the repository is public.
+
+The generated manifest currently includes only the architecture built on this Mac; merge valid platform entries from separately built artifacts before releasing multiple architectures.

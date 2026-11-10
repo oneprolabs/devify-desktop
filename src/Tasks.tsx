@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { Collection } from './Collection';
+import { localTaskStatus } from './taskStatus';
 
 type UploadScope = { usernames: string[]; since: number | null; until: number | null; base_url: string; message_selection?: Record<string, unknown[]> };
 type UploadJob = { id: string; account_id: string; space_id: number; batch_id: number | null; status: string; message: string; created_at: string; updated_at: string; scope?: UploadScope | null; manual_group?: string | null; manual_index?: number; manual_total?: number };
@@ -23,6 +24,15 @@ function timeLabel(value: string | number): string {
   return Number.isNaN(time.getTime()) ? '时间未知' : time.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+function shortTimeLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+function shortDateLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+}
+
 export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () => void; startCreating?: boolean }) {
   const [creating, setCreating] = useState(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
@@ -42,9 +52,10 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
   const [groupLoading, setGroupLoading] = useState(false);
   const [sessionNames, setSessionNames] = useState<Record<string, string>>({});
   useEffect(() => { if (startCreating) setCreating(true); }, [startCreating]);
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     if (!isTauri()) return;
-    setLoading(true); setError('');
+    if (!silent) setLoading(true);
+    setError('');
     try {
       const result = await invoke<SettingsWithJobs>('app_settings_get');
       setJobs([...(result.upload_queue ?? [])].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')));
@@ -83,8 +94,8 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
     return () => { active = false; };
   }, [selectedKey, jobs, refreshKey]);
   useEffect(() => {
-    if (!jobs.some(job => job.manual_group && ['queued', 'running', 'processing'].includes(job.status))) return;
-    const timer = window.setInterval(() => { void load(); setRefreshKey(value => value + 1); }, 10000);
+    if (!jobs.some(job => ['queued', 'running', 'processing', 'uploading'].includes(job.status))) return;
+    const timer = window.setInterval(() => { void load(true); setRefreshKey(value => value + 1); }, 10000);
     return () => window.clearInterval(timer);
   }, [jobs, load]);
   const countsComplete = batches.filter(job => job.status === 'completed').every(job => job.batch_id != null && groupRemote[job.batch_id]);
@@ -130,30 +141,32 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
 
   return <div className="task-page">
     <aside className="task-list">
-      <header className="task-list-head"><div><h1>任务</h1><p>查看上传与处理记录</p></div><button type="button" className="task-refresh" onClick={refresh} disabled={loading || !isTauri()}>↻ 刷新</button></header>
-      <p className="task-list-label">全部任务 · {groups.length}</p>
+      <header className="task-list-head"><div><h1>任务</h1><p>查看上传与处理记录</p></div></header>
+      <div className="task-list-tools"><button type="button" className="task-new" onClick={() => setCreating(true)}><span aria-hidden="true">＋</span>新建采集</button></div>
+      <div className="task-list-label"><span>全部任务 · {groups.length}</span><button type="button" className="task-refresh" onClick={refresh} disabled={loading || !isTauri()} aria-label="刷新任务" title="刷新任务">↻</button></div>
       {loading && <p className="task-list-empty">正在读取任务…</p>}
       {!isTauri() && <p className="task-list-empty">请在桌面应用中查看任务。</p>}
       {error && <p className="task-list-empty task-error" role="alert">{error}</p>}
       {!loading && isTauri() && !error && !jobs.length && <p className="task-list-empty">还没有上传任务。</p>}
-      <div className="task-items">{groups.map(job => {
+      <div id="task-items" className="task-items" tabIndex={-1}>{groups.map(job => {
         const parts = job.manual_group ? jobs.filter(item => item.manual_group === job.manual_group) : [];
         const done = parts.filter(item => item.status === 'completed').length;
-        const localStatus = !job.manual_group ? (job.status === 'completed' ? 'submitted' : job.status) : parts.some(item => item.status === 'failed') ? 'failed' : parts.some(item => item.status === 'cancelled') ? 'cancelled' : done === parts.length && parts.length === (job.manual_total || parts.length) ? 'submitted' : 'processing';
+        const localStatus = localTaskStatus(job, parts);
         const displayStatus = selectedKey === (job.manual_group || job.id) ? currentStatus : localStatus;
         const names = [...new Set(parts.flatMap(item => item.scope?.usernames ?? []))].map(name => sessionNames[name] || name).join('、');
         return <button key={job.manual_group || job.id} type="button" className={selectedKey === (job.manual_group || job.id) ? 'task-item active' : 'task-item'} onClick={() => { setCreating(false); setSelectedId(job.manual_group || job.id); }} aria-pressed={selectedKey === (job.manual_group || job.id)}>
-          <TaskIcon manual={Boolean(job.manual_group)}/><span className="task-item-body"><strong className="task-item-title">{job.manual_group ? `手动上传${names ? ` · ${names}` : ''}` : `同步任务${job.batch_id ? ` #${job.batch_id}` : ''}`}</strong><time>{timeLabel(job.updated_at)}</time></span><TaskStatus value={displayStatus}/>
+          <span className="task-item-marker"><TaskStatus value={displayStatus}/></span><span className="task-item-body"><span className="task-item-heading"><strong className="task-item-title">{job.manual_group ? `手动上传${names ? ` · ${names}` : ''}` : `同步任务${job.batch_id ? ` #${job.batch_id}` : ''}`}</strong><time dateTime={job.updated_at} title={timeLabel(job.updated_at)}>{shortTimeLabel(job.updated_at)}</time></span><small className="task-item-description">{selectedKey === (job.manual_group || job.id) && !job.manual_group && remote?.status === 'completed' ? `新增 ${remote.message_count} 条 · 已完成` : displayStatus === 'submitted' ? '已提交至云端' : statusLabel(displayStatus)}</small></span>
         </button>;
       })}</div>
+      <footer className="task-list-footer"><span>已显示 {groups.length} 条</span>{groups[0] && <time dateTime={groups[0].updated_at}>{shortDateLabel(groups[0].updated_at)}</time>}</footer>
     </aside>
     {creating ? <Collection onSettings={onNewUpload} onComplete={() => { setCreating(false); void load(); }} /> : <section className="task-detail">
       <header className="task-detail-bar">任务 <span>/</span> {selected ? (selected.manual_group ? '手动上传' : `同步任务${selected.batch_id ? ` #${selected.batch_id}` : ''}`) : '全部任务'}</header>
       {selected ? <div className="task-detail-body">
-        <header className="task-overview"><TaskIcon manual={Boolean(selected.manual_group)}/><div><h2>{selected.manual_group ? '手动上传' : <>同步任务 {selected.batch_id ? <span>#{selected.batch_id}</span> : null}</>}</h2><p className="task-meta">{timeLabel(selected.created_at || selected.updated_at)} · 微信账号 {selected.account_id || '未知'} · 空间 {selected.space_id}</p><p className="task-overview-status">执行状态：<TaskStatus value={currentStatus}/></p></div></header>
+        <header className="task-overview"><div className="task-overview-copy"><p className="task-kicker">{selected.manual_group ? '手动上传' : '同步任务'}<span aria-hidden="true">·</span><TaskStatus value={currentStatus}/></p><h2>{selected.manual_group ? '手动上传' : <>同步任务 {selected.batch_id ? <span>#{selected.batch_id}</span> : null}</>}</h2><p className="task-meta"><time dateTime={selected.created_at || selected.updated_at}>{timeLabel(selected.created_at || selected.updated_at)}</time><span>空间 {selected.space_id}</span></p><p className="task-account">微信账号 <span>{selected.account_id || '未知'}</span></p></div><TaskStatus value={currentStatus}/></header>
         {selected.manual_group && <div className="task-stages"><h3>执行流程</h3>
-          <div className="task-stage"><span className="task-stage-dot" aria-hidden="true">{groupStatus === 'completed' ? '✓' : '·'}</span><div><strong>打包与上传</strong><p>{batches.filter(job => job.status === 'completed').length} / {selected.manual_total || batches.length} 批已提交</p></div></div>
-          <div className="task-stage"><span className="task-stage-dot" aria-hidden="true">{cloudAllDone ? '✓' : '·'}</span><div><strong>云端处理</strong><p>{groupLoading ? '正在读取云端状态…' : groupRemoteError ? '部分云端状态暂不可用，请刷新查看。' : cloudResults.length ? `已完成 ${cloudCompleted} / ${cloudResults.length} 批${cloudFailed ? ` · ${cloudFailed} 批失败` : ''}` : '暂无云端状态'}</p></div></div>
+          <div className={`task-stage ${groupStatus === 'completed' ? 'is-complete' : ''}`}><span className="task-stage-dot" aria-hidden="true">{groupStatus === 'completed' ? '✓' : '·'}</span><div><strong>打包与上传</strong><p>{batches.filter(job => job.status === 'completed').length} / {selected.manual_total || batches.length} 批已提交</p></div><TaskStatus value={groupStatus}/></div>
+          <div className={`task-stage ${cloudAllDone ? 'is-complete' : ''}`}><span className="task-stage-dot" aria-hidden="true">{cloudAllDone ? '✓' : '·'}</span><div><strong>云端处理</strong><p>{groupLoading ? '正在读取云端状态…' : groupRemoteError ? '部分云端状态暂不可用，请刷新查看。' : cloudResults.length ? `已完成 ${cloudCompleted} / ${cloudResults.length} 批${cloudFailed ? ` · ${cloudFailed} 批失败` : ''}` : '暂无云端状态'}</p></div><TaskStatus value={cloudAllDone ? 'completed' : currentStatus}/></div>
         </div>}
         {selected.manual_group && <div className="task-group-summary"><h3>执行概况</h3><p>会话：{groupNames.map(name => sessionNames[name] || name).join('、')}</p><p>已提交 {groupDone} / {groupTotal} 条 · {batches.filter(job => job.status === 'completed').length} / {selected.manual_total || batches.length} 批{batches.some(job => job.status === 'failed') ? ` · ${batches.filter(job => job.status === 'failed').length} 批失败` : ''}</p>{batches.length !== (selected.manual_total || batches.length) && <p className="task-error">部分批次记录缺失，无法确认总进度。</p>}{countsComplete && cloudResults.length > 0 && !groupLoading && !groupRemoteError ? <p>新增 {totals.added} 条 · 已存在 {totals.duplicate} 条</p> : <p>{groupLoading ? '正在读取云端统计…' : cloudResults.length === 0 && !groupRemoteError ? '暂无云端统计。' : '云端统计暂未全部获取，请刷新查看。'}</p>}<details open><summary>批次处理结果</summary>{batches.map(job => {
             const cloud = job.batch_id ? groupRemote[job.batch_id] : undefined;
@@ -179,9 +192,22 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
           {retryError && <p className="task-error" role="alert">{retryError}</p>}
         </div> : <p className="task-meta">此旧任务没有保存原始上传范围，请重新创建采集任务。</p>)}
         {!selected.manual_group && <div className="task-stages"><h3>执行流程</h3>
-          <div className="task-stage"><span className="task-stage-dot">{selected.batch_id ? '✓' : '·'}</span><div><strong>打包与上传</strong><p>{selected.batch_id ? '已提交至云端' : selected.message || statusLabel(selected.status)}</p></div></div>
-          {selected.batch_id && <div className="task-stage"><span className="task-stage-dot">{remote?.status === 'completed' ? '✓' : '·'}</span><div><strong>云端处理</strong><p>{remote ? statusLabel(remote.status) : remoteError ? '状态暂不可用' : '正在读取状态…'}</p>{remote && <p>新增 {remote.message_count} 条 · 已存在 {remote.duplicate_count} 条</p>}{remote?.error_message && <p className="task-error">{remote.error_message}</p>}{remoteError && <p className="task-error" role="alert">{remoteError}</p>}</div></div>}
+          <div className={`task-stage ${selected.batch_id ? 'is-complete' : ''}`}><span className="task-stage-dot" aria-hidden="true">{selected.batch_id ? '✓' : '·'}</span><div><strong>打包与上传</strong><p>{selected.batch_id ? '已提交至云端' : selected.message || statusLabel(selected.status)}</p></div><TaskStatus value={selected.batch_id ? 'completed' : selected.status}/></div>
+          {selected.batch_id && <div className={`task-stage ${remote?.status === 'completed' ? 'is-complete' : ''}`}><span className="task-stage-dot" aria-hidden="true">{remote?.status === 'completed' ? '✓' : '·'}</span><div><strong>云端处理</strong><p>{remote ? (remote.status === 'completed' ? '处理完成，数据已同步' : statusLabel(remote.status)) : remoteError ? '状态暂不可用' : '正在读取状态…'}</p>{remote?.error_message && <p className="task-error">{remote.error_message}</p>}{remoteError && <p className="task-error" role="alert">{remoteError}</p>}</div><TaskStatus value={remote?.status || currentStatus}/></div>}
+          {remote && <div className="task-result-summary"><span>新增 <strong>{remote.message_count}</strong> 条</span><span>已存在 <strong>{remote.duplicate_count}</strong> 条</span><small>{remote.status === 'completed' ? '同步结果已更新' : statusLabel(remote.status)}</small></div>}
         </div>}
+        <section className="task-history" aria-label="全部任务记录">
+          <header><h3>全部任务 <span>· 上传与处理记录</span></h3><small>共 {groups.length} 条</small></header>
+          <div className="task-history-scroll"><table><thead><tr><th>任务</th><th>提交时间</th><th>上传状态</th><th>处理结果</th><th>执行状态</th></tr></thead><tbody>{groups.slice(0, 6).map(job => {
+            const parts = job.manual_group ? jobs.filter(item => item.manual_group === job.manual_group) : [];
+            const done = parts.filter(item => item.status === 'completed').length;
+            const localStatus = localTaskStatus(job, parts);
+            const isSelected = selectedKey === (job.manual_group || job.id);
+            const displayStatus = isSelected ? currentStatus : localStatus;
+            return <tr key={job.manual_group || job.id} className={isSelected ? 'selected' : ''}><td><button type="button" onClick={() => { setCreating(false); setSelectedId(job.manual_group || job.id); }}>{job.manual_group ? '手动上传' : job.batch_id ? `#${job.batch_id}` : '同步任务'}</button></td><td><time dateTime={job.created_at || job.updated_at}>{timeLabel(job.created_at || job.updated_at)}</time></td><td>{job.manual_group ? `${done} / ${job.manual_total || parts.length} 批已提交` : job.status === 'completed' ? '已提交至云端' : statusLabel(job.status)}</td><td>{isSelected && !job.manual_group && remote ? `新增 ${remote.message_count} 条` : '—'}</td><td><TaskStatus value={displayStatus}/></td></tr>;
+          })}</tbody></table></div>
+          <footer><span>仅展示任务执行状态，数据详情可前往聊天查看</span><a href="#task-items">查看全部 →</a></footer>
+        </section>
       </div> : <div className="task-detail-empty"><h2>从左侧选择任务</h2><p>上传后，可以在这里查看任务状态。</p></div>}
     </section>}
   </div>;

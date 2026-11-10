@@ -37,6 +37,7 @@ pub mod wechat;
 
 pub mod mcp;
 mod network;
+mod update_gate;
 
 /// Single-file page shown in the browser after the loopback callback fires.
 /// It is inlined because the listener answers exactly one request.
@@ -61,7 +62,7 @@ struct SyncState {
 #[derive(Default)]
 struct UploadState {
     retrying: Mutex<HashSet<String>>,
-    syncing: Mutex<HashSet<String>>,
+    syncing: update_gate::UpdateGate,
 }
 
 struct RetryGuard<'a> {
@@ -88,11 +89,15 @@ fn begin_retry<'a>(state: &'a UploadState, id: &str) -> Result<RetryGuard<'a>, S
     })
 }
 
-fn begin_account_upload<'a>(state: &'a UploadState, account: &str) -> Result<RetryGuard<'a>, String> {
-    let mut active = state.syncing.lock().map_err(|_| "无法检查同步状态。")?;
-    if !active.insert(account.to_string()) { return Err("该账号正在上传，请稍后重试。".into()); }
-    Ok(RetryGuard { retrying: &state.syncing, id: account.to_string() })
+fn begin_account_upload<'a>(state: &'a UploadState, account: &str) -> Result<update_gate::UploadGuard<'a>, String> {
+    state.syncing.begin_upload(account)
 }
+
+#[tauri::command]
+fn update_begin_install(state: State<'_, UploadState>) -> Result<(), String> { state.syncing.begin_install() }
+
+#[tauri::command]
+fn update_cancel_install(state: State<'_, UploadState>) { state.syncing.cancel_install(); }
 
 #[derive(Default)]
 struct DevifyAuthState {
@@ -6386,6 +6391,8 @@ async fn agent_summarize(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(SyncState::default())
         .manage(UploadState::default())
         .manage(DevifyAuthState::default())
@@ -6447,6 +6454,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            update_begin_install,
+            update_cancel_install,
             devify_auth_start,
             devify_auth_open,
             devify_auth_callback,

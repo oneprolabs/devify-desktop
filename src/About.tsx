@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import appIcon from './assets/app-icon.png';
+import { checkForUpdates, downloadUpdate, installUpdate, RELEASE_URL, useUpdater } from './updater';
 
 type AppInfo = {
   name: string;
@@ -38,6 +39,7 @@ function platformLabel(platform: string, arch: string): string {
 }
 
 export function About() {
+  const update = useUpdater();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState('');
 
@@ -65,6 +67,15 @@ export function About() {
     <div className="about-details">
     <section className="panel">
       <h2>版本信息</h2>
+      <div className="about-update" aria-live="polite">
+        <p>{update.status === 'checking' ? '正在检查更新…' : update.status === 'latest' ? '当前已是最新版本' : update.status === 'available' ? `发现新版本 ${update.version}` : update.status === 'downloading' ? `正在下载${update.progress == null ? '…' : ` ${update.progress}%`}` : update.status === 'downloaded' ? `版本 ${update.version} 已下载` : update.status === 'installed' ? '更新已安装，请重启应用' : update.status === 'installing' ? '正在安装更新…' : update.status === 'error' ? '检查更新失败' : '检查软件更新'}</p>
+        {update.notes && <p className="about-update-notes">{update.notes}</p>}
+        {update.error && <p className="error" role="alert">{update.error}</p>}
+        {['idle', 'latest', 'error'].includes(update.status) && <button type="button" onClick={() => void checkForUpdates()}>检查更新</button>}
+        {update.status === 'available' && <button type="button" onClick={() => void downloadUpdate()}>下载更新</button>}
+        {['downloaded', 'installed'].includes(update.status) && <button type="button" onClick={() => void installUpdate()}>{update.status === 'installed' ? '重新启动' : '安装并重启'}</button>}
+        <button type="button" onClick={() => void invoke('devify_auth_open', { url: RELEASE_URL }).catch(value => setError(`打开下载页面失败：${String(value)}`))}>打开 GitHub 下载页</button>
+      </div>
       <dl className="about-meta">
         <div>
           <dt>版本</dt>
