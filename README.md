@@ -9,7 +9,7 @@ Main areas:
 3. **自动化策略** — configures local sync interval, incremental upload of allowlisted conversations to Devify, and the daily report time that is synced to a Devify topic subscription.
 4. **Devify 配置** — selects the server, space, and device. The daily report schedule is stored on the server.
 5. **Agent 集成** — one settings tab with two sections. **本地总结** picks a local CLI agent, model, timeout, and extra instructions for manual chat summaries. **工具接入** generates one prompt that installs the read-only `wxq` CLI and the three `SKILL.md` documents from the app's in-process download service into directories you choose, then verifies them with `wxq health` / `wxq policy`. No MCP configuration is involved.
-6. **关于** — shows the current build (`0.0.3`), the runtime platform, and the app identifier. The version is read from the Rust build (`Cargo.toml`), which is kept in sync with `package.json` and `tauri.conf.json`.
+6. **关于** — shows the current build (`0.0.4`), the runtime platform, and the app identifier. The version is read from the Rust build (`Cargo.toml`), which is kept in sync with `package.json` and `tauri.conf.json`.
 
 聊天记录是默认入口；原始消息可以在本地导出，自动化策略负责按白名单上传记录，日报由 Devify 服务端按计划生成。
 
@@ -413,7 +413,7 @@ scripts/macos-build.sh              # builds, signs, and replaces /Applications/
 scripts/macos-build.sh --no-install # builds + signs only, leaves /Applications untouched
 ```
 
-Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.3_aarch64.dmg`). The DMG mounts with `AIMyChats.app` next to an `Applications` symlink, so the app can be dragged straight into `/Applications`. On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
+Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.4_aarch64.dmg`). The DMG mounts with `AIMyChats.app` next to an `Applications` symlink, so the app can be dragged straight into `/Applications`. On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
 
 ### macOS signing (why not ad-hoc)
 
