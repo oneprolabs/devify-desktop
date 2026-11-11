@@ -1,0 +1,234 @@
+name: Release macOS
+
+# Builds the signed macOS app, the updater archive and latest.json, then publishes
+# them to oneprolabs/devify-desktop-releases.
+#
+# Required repository secrets:
+#   RELEASES_TOKEN                       PAT with "Contents: read and write" on the releases repo
+#   MACOS_SIGNING_P12                    base64 of the "AIMyChats Local Signing" identity .p12
+#   MACOS_SIGNING_P12_PASSWORD           password of that .p12
+#   MACOS_KEYCHAIN_PASSWORD              throwaway password for the ephemeral signing keychain
+#   TAURI_SIGNING_PRIVATE_KEY            base64 of the Tauri updater private key file
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD   password of the updater key (empty when none)
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag in oneprolabs/devify-desktop-releases
+        required: true
+        default: alpha
+      notes:
+        description: Release notes (Markdown)
+        required: false
+        default: ''
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        type: boolean
+        default: true
+      publish:
+        description: Publish to the releases repository (needs RELEASES_TOKEN)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-macos-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish macOS bundle
+    runs-on: macos-15 # arm64 (Apple Silicon) standard runner
+    timeout-minutes: 90
+    env:
+      RELEASES_REPO: oneprolabs/devify-desktop-releases
+      RELEASES_TAG: ${{ github.event.inputs.tag }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        # `@stable` has no per-version refs (the repo only tags `v1`), and the runner
+        # image already ships a current stable, so this is a fast no-op. The
+        # `targets:` input is gone because the runner is arm64: the host target is
+        # exactly aarch64-apple-darwin, so installing it again buys nothing.
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # One stable key: renaming the job must not invalidate ~1 GB of target/.
+          shared-key: macos-release
+          # A failed sign/publish step must not throw away ten minutes of compiling.
+          cache-on-failure: true
+
+      - name: Install npm dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Check required secrets
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          PUBLISH: ${{ inputs.publish }}
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          # RELEASES_TOKEN is only needed to publish; a build-only run verifies the
+          # cache, the signing identity and the updater archive without touching the
+          # releases repository.
+          if [ "$PUBLISH" = "true" ] && [ -z "${GH_TOKEN:-}" ]; then missing="$missing RELEASES_TOKEN"; fi
+          if [ -z "${MACOS_SIGNING_P12:-}" ]; then missing="$missing MACOS_SIGNING_P12"; fi
+          if [ -z "${MACOS_SIGNING_P12_PASSWORD:-}" ]; then missing="$missing MACOS_SIGNING_P12_PASSWORD"; fi
+          if [ -z "${MACOS_KEYCHAIN_PASSWORD:-}" ]; then missing="$missing MACOS_KEYCHAIN_PASSWORD"; fi
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then missing="$missing TAURI_SIGNING_PRIVATE_KEY"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing"
+            exit 1
+          fi
+
+      - name: Import macOS signing identity
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$HOME/Library/Keychains/signing.keychain-db"
+          mkdir -p "$HOME/Library/Keychains" "$HOME/.config/aimychats-signing"
+          P12="$RUNNER_TEMP/signing.p12"
+          printf '%s' "$MACOS_SIGNING_P12" | openssl base64 -d -A > "$P12"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$MACOS_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$KEYCHAIN"
+          rm -f "$P12"
+          printf '%s' "$MACOS_KEYCHAIN_PASSWORD" > "$HOME/.config/aimychats-signing/keychain.pass"
+          chmod 600 "$HOME/.config/aimychats-signing/keychain.pass"
+          security find-identity -p codesigning "$KEYCHAIN" | grep "AIMyChats Local Signing"
+
+      - name: Materialise Tauri updater key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/updater.key"
+          chmod 600 "$RUNNER_TEMP/updater.key"
+          test -s "$RUNNER_TEMP/updater.key"
+
+      - name: Build, sign, and create updater artifacts
+        env:
+          AIMYCHATS_RELEASE_NOTES: ${{ inputs.notes }}
+          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ runner.temp }}/updater.key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: scripts/prepare-alpha-update.sh
+
+      - name: Inspect artifacts
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          BUNDLE=src-tauri/target/release/bundle
+          DMG="$BUNDLE/dmg/AIMyChats_${VERSION}_aarch64.dmg"
+          ls -lh "$DMG" \
+                 "$BUNDLE/macos/AIMyChats_${VERSION}_aarch64.app.tar.gz" \
+                 "$BUNDLE/macos/AIMyChats_${VERSION}_aarch64.app.tar.gz.sig" \
+                 "$BUNDLE/macos/latest.json"
+          cat "$BUNDLE/macos/latest.json"
+
+          # The DMG must offer drag-to-install: app + /Applications symlink.
+          MOUNT="$RUNNER_TEMP/dmg"
+          mkdir -p "$MOUNT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG" >/dev/null
+          ls -la "$MOUNT"
+          test -d "$MOUNT/AIMyChats.app"
+          test -L "$MOUNT/Applications"
+          test "$(readlink "$MOUNT/Applications")" = "/Applications"
+          hdiutil detach "$MOUNT" >/dev/null
+
+          # The updater's Rust tar extractor fails on AppleDouble entries, and bsdtar
+          # hides them by default, so inspect the archive from Python instead of
+          # trusting `tar -tzf`.
+          python3 - "$BUNDLE/macos/AIMyChats_${VERSION}_aarch64.app.tar.gz" <<'PY'
+          import sys, tarfile
+          names = tarfile.open(sys.argv[1]).getnames()
+          bad = [n for n in names if n.startswith("._") or "/._" in n]
+          if bad:
+              sys.exit(f"AppleDouble entries in updater archive: {bad}")
+          print(f"updater archive: {len(names)} entries, no AppleDouble")
+          PY
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aimychats-macos-${{ inputs.tag }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/dmg/AIMyChats_*_aarch64.dmg
+            src-tauri/target/release/bundle/macos/AIMyChats_*_aarch64.app.tar.gz
+            src-tauri/target/release/bundle/macos/AIMyChats_*_aarch64.app.tar.gz.sig
+            src-tauri/target/release/bundle/macos/latest.json
+
+      - name: Publish to releases repository
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          NOTES: ${{ inputs.notes }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          BUNDLE=src-tauri/target/release/bundle
+          DMG="$BUNDLE/dmg/AIMyChats_${VERSION}_aarch64.dmg"
+          ARCHIVE="$BUNDLE/macos/AIMyChats_${VERSION}_aarch64.app.tar.gz"
+          SIG="$ARCHIVE.sig"
+          MANIFEST="$BUNDLE/macos/latest.json"
+          for file in "$DMG" "$ARCHIVE" "$SIG" "$MANIFEST"; do
+            test -s "$file"
+          done
+
+          TITLE="AIMyChats ${VERSION}"
+          BODY="${NOTES:-AIMyChats ${VERSION} (${GITHUB_SHA:0:7})}"
+          PRERELEASE_FLAG=""
+          if [ "$PRERELEASE" = "true" ]; then PRERELEASE_FLAG="--prerelease"; fi
+
+          if gh release view "$RELEASES_TAG" -R "$RELEASES_REPO" >/dev/null 2>&1; then
+            gh release edit "$RELEASES_TAG" -R "$RELEASES_REPO" --title "$TITLE" --notes "$BODY" $PRERELEASE_FLAG
+          else
+            gh release create "$RELEASES_TAG" -R "$RELEASES_REPO" --title "$TITLE" --notes "$BODY" $PRERELEASE_FLAG
+          fi
+
+          # Updater payload first, manifest last: never publish a manifest that
+          # points at an asset which has not landed yet.
+          gh release upload "$RELEASES_TAG" -R "$RELEASES_REPO" --clobber "$DMG" "$ARCHIVE" "$SIG"
+          gh release upload "$RELEASES_TAG" -R "$RELEASES_REPO" --clobber "$MANIFEST"
+
+      - name: Summarise publish
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          {
+            echo "### AIMyChats release"
+            echo ""
+            echo "- Repository: \`$RELEASES_REPO\`"
+            echo "- Tag: \`$RELEASES_TAG\`"
+            echo "- Version: \`$(node -p "require('./src-tauri/tauri.conf.json').version")\`"
+            if [ "$PUBLISH" = "true" ]; then
+              echo "- Release: https://github.com/$RELEASES_REPO/releases/tag/$RELEASES_TAG"
+            else
+              echo "- Publish: **skipped** (build-only run); artifacts are attached to this workflow run"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
