@@ -162,9 +162,9 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
   if (!isTauri()) return null;
   if (!spaceId) {
     return <div className="cloud-records cloud-records-blank">
-      <h2>还没有选择 Devify 空间</h2>
-      <p>云端记录来自已上传到 Devify 的聊天。登录并选择空间后，这里会显示服务端保存的会话和消息。</p>
-      {onOpenSettings && <button type="button" onClick={onOpenSettings}>打开 Devify 配置</button>}
+      <h2>还没有选择 空间</h2>
+      <p>云端记录来自已上传到服务端的聊天。登录并选择空间后，这里会显示服务端保存的会话和消息。</p>
+      {onOpenSettings && <button type="button" onClick={onOpenSettings}>打开服务端配置</button>}
     </div>;
   }
 
@@ -174,7 +174,7 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
   return <div className="cloud-records">
     <aside className="cloud-records-sidebar">
       <header>
-        <div><strong>云端记录</strong><small>{conversationTotal} 个会话 · Devify 服务端</small></div>
+        <div><strong>云端记录</strong><small>{conversationTotal} 个会话 · 服务端</small></div>
         <button type="button" className="cloud-icon" onClick={() => void loadConversations(conversationPage)} title="刷新" aria-label="刷新云端记录">↻</button>
       </header>
       <input className="cloud-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索服务端会话" />
@@ -239,7 +239,7 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
         </div>
       </> : <div className="cloud-empty cloud-empty-main">
         <h3>选择一个会话</h3>
-        <p>左侧列出 Devify 服务端保存的会话，选择后可以在这里查看已上传的消息。</p>
+        <p>左侧列出服务端保存的会话，选择后可以在这里查看已上传的消息。</p>
       </div>}
     </section>
   </div>;

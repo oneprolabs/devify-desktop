@@ -194,7 +194,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
         if (!active) return;
         const id = settings.devify?.active_space_id ?? null;
         setSpaceId(id);
-        if (!id) throw new Error('请先在「设置 / 账户」中登录 Devify 并选择空间。');
+        if (!id) throw new Error('请先在「设置 / 账户」中登录服务端并选择空间。');
         return invoke<Page<EventItem> | Page<ReportItem>>('devify_analysis_list', { kind, spaceId: id, page: 1 });
       })
       .then(result => {
@@ -489,7 +489,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     ? [['all', '全部', items.length], ['open', '未完成', counts.open], ['done', '已完成', counts.done]]
     : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportType(item as ReportItem) === value).length]);
 
-  if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>请在桌面应用中查看</h2><p>事件和报告由 Devify 服务端生成，桌面端只负责同步并展示。</p></div></div>;
+  if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>请在桌面应用中查看</h2><p>事件和报告由服务端生成，桌面端只负责同步并展示。</p></div></div>;
   if (loading) return <div className="analysis-page"><div className="analysis-empty"><h2>正在同步{copy.title}…</h2><p>正在从服务端读取当前空间的最新结果。</p></div></div>;
   if (error) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>同步失败</h2><p>{error}</p></div></div>;
   if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{copy.empty}</h2><p>完成聊天采集并等待服务端处理后，结果会出现在这里。</p></div></div>;

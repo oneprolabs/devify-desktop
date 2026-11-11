@@ -242,7 +242,7 @@ pub fn require(app_data: &Path, base_url: &str, key: &str) -> Result<(), String>
 pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<View, String> {
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
-        return Err("请先在登录窗口填写 Devify 服务地址。".into());
+        return Err("请先在登录窗口填写服务端地址。".into());
     }
     let response = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))

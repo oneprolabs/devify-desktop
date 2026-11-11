@@ -335,7 +335,7 @@ export function AgentSettings() {
               voice: { ...current.voice, upload_transcripts: event.target.checked },
             }))}
           />
-          <span>将语音转写文本上传到 Devify</span>
+          <span>将语音转写文本上传到服务端</span>
         </label>
         <p className="help">默认只上传转写文本，不上传原始语音文件。没有本地引擎或转写失败时，会保留待转写状态并在下次同步重试。</p>
         {voiceState ? (

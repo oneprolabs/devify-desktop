@@ -173,7 +173,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     </div>;
   };
 
-  if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>问答由 Devify 服务端基于已上传记录生成，请在桌面应用中使用。</p></div>;
+  if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>问答由服务端基于已上传记录生成，请在桌面应用中使用。</p></div>;
   if (loading) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>正在读取问答记录…</p></div>;
 
   return <div className="ask-page">
@@ -218,13 +218,13 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       </header>
 
       <div className="ask-scroll">
-        {!spaceId && <div className="ask-welcome"><h3>还没有选择 Devify 空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
+        {!spaceId && <div className="ask-welcome"><h3>还没有选择 空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
         {error && <p className="ask-error" role="alert">{error}</p>}
 
         {spaceId && !selected && !pending && <>
           <div className="ask-welcome">
             <h3>问问你的聊天记录</h3>
-            <p>跨已上传的聊天、事件和笔记提问，答案由 Devify 服务端生成，每条结论都附原文依据。</p>
+            <p>跨已上传的聊天、事件和笔记提问，答案由服务端生成，每条结论都附原文依据。</p>
           </div>
           <div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div>
         </>}

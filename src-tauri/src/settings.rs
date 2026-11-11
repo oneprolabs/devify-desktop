@@ -398,7 +398,7 @@ pub struct DevifySettings {
 pub fn normalize_base_url(value: &str) -> Result<String, String> {
     let value = value.trim().trim_end_matches('/');
     if value.is_empty() {
-        return Err("请先在登录窗口填写 Devify 服务地址。".into());
+        return Err("请先在登录窗口填写服务端地址。".into());
     }
     Ok(value.to_string())
 }
@@ -737,10 +737,10 @@ pub fn validate(settings: &AppSettings) -> Result<(), String> {
         return Err("日报时间必须使用 HH:MM 格式。".into());
     }
     if settings.devify.subject.trim().is_empty() {
-        return Err("Devify 默认主题不能为空。".into());
+        return Err("服务端默认主题不能为空。".into());
     }
     if settings.devify.subject.len() > 200 || settings.devify.recipient.len() > 320 {
-        return Err("Devify 配置过长。".into());
+        return Err("服务端配置过长。".into());
     }
     if settings.chat.allowed_usernames.len() > 20 {
         return Err("最多支持 20 个微信账号的白名单配置。".into());
