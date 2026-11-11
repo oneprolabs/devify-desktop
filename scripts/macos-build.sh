@@ -36,7 +36,9 @@ if ! security find-identity -p codesigning "$KEYCHAIN" | grep -q "$IDENTITY"; th
 fi
 
 # caffeinate: a sleeping Mac locks the signing keychain mid-build.
-CI=true caffeinate -i -m npm run tauri build
+# `--bundles app` skips the bundler's DMG: it is built from the ad-hoc app and is
+# replaced by the signed one below anyway, so building it twice is pure waste.
+CI=true caffeinate -i -m npm run tauri build -- --bundles app
 
 for binary in "$APP"/Contents/MacOS/*; do
   codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp=none "$binary"

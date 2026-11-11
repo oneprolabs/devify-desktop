@@ -53,17 +53,23 @@ jobs:
           cache: npm
 
       - name: Set up Rust
+        # `@stable` has no per-version refs (the repo only tags `v1`), and the runner
+        # image already ships a current stable, so this is a fast no-op. The
+        # `targets:` input is gone because the runner is arm64: the host target is
+        # exactly aarch64-apple-darwin, so installing it again buys nothing.
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # One stable key: renaming the job must not invalidate ~1 GB of target/.
+          shared-key: macos-release
+          # A failed sign/publish step must not throw away ten minutes of compiling.
+          cache-on-failure: true
 
       - name: Install npm dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Check required secrets
         env:
@@ -144,6 +150,18 @@ jobs:
           test -L "$MOUNT/Applications"
           test "$(readlink "$MOUNT/Applications")" = "/Applications"
           hdiutil detach "$MOUNT" >/dev/null
+
+          # The updater's Rust tar extractor fails on AppleDouble entries, and bsdtar
+          # hides them by default, so inspect the archive from Python instead of
+          # trusting `tar -tzf`.
+          python3 - "$BUNDLE/macos/AIMyChats_${VERSION}_aarch64.app.tar.gz" <<'PY'
+          import sys, tarfile
+          names = tarfile.open(sys.argv[1]).getnames()
+          bad = [n for n in names if n.startswith("._") or "/._" in n]
+          if bad:
+              sys.exit(f"AppleDouble entries in updater archive: {bad}")
+          print(f"updater archive: {len(names)} entries, no AppleDouble")
+          PY
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
