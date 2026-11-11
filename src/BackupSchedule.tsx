@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
 import { ConnectorIcon } from './Connectors';
+import { createSettingsSaveQueue, settingsUserRevision, type SettingsSaveQueue } from './settingsSaveQueue';
 
 type ScanResult = { accounts: Array<{ id: string }> };
 
@@ -112,22 +113,51 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
   const [unitPref, setUnitPref] = useState<'auto' | '分钟' | '小时'>('auto');
   const [newTime, setNewTime] = useState('12:00');
   const [error, setError] = useState('');
-  const chain = useRef<Promise<void>>(Promise.resolve());
+  const [ready, setReady] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [blocked, setBlocked] = useState(false);
+  const queue = useRef<SettingsSaveQueue<AppSettings> | null>(null);
+  const unsubscribe = useRef<(() => void) | null>(null);
+  const active = useRef(false);
+  const loadId = useRef(0);
+
+  const load = useCallback(async () => {
+    const request = ++loadId.current;
+    setLoading(true);
+    try {
+      const [stored, scan] = await Promise.all([
+        invoke<AppSettings>('app_settings_get'),
+        invoke<ScanResult>('wechat_scan').catch(() => ({ accounts: [] })),
+      ]);
+      settingsUserRevision(stored);
+      if (!active.current || request !== loadId.current) return;
+      const next = createSettingsSaveQueue({
+        initial: mergeSettings(stored),
+        save: value => invoke<AppSettings>('app_settings_save', { value }),
+      });
+      unsubscribe.current?.();
+      queue.current = next;
+      unsubscribe.current = next.subscribe(state => {
+        if (!active.current) return;
+        setSettings(state.draft);
+        setBlocked(state.blocked);
+        if (state.error) setError(`保存失败，修改尚未确认：${String(state.error)}`);
+      });
+      setConnected((scan.accounts ?? []).length > 0);
+      setError('');
+      setReady(true);
+    } catch (e) {
+      if (active.current && request === loadId.current) setError(`无法加载设置：${String(e)}`);
+    } finally {
+      if (active.current && request === loadId.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [stored, scan] = await Promise.all([
-          invoke<AppSettings>('app_settings_get'),
-          invoke<ScanResult>('wechat_scan').catch(() => ({ accounts: [] })),
-        ]);
-        setSettings(mergeSettings(stored));
-        setConnected((scan.accounts ?? []).length > 0);
-      } catch (e) {
-        setError(String(e));
-      }
-    })();
-  }, []);
+    active.current = true;
+    void load();
+    return () => { active.current = false; loadId.current += 1; unsubscribe.current?.(); };
+  }, [load]);
 
   const plan = settings.backup;
   const intervalSeconds = settings.chat.sync_interval_seconds;
@@ -160,20 +190,9 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
   const syncState = runStatus ?? settings.sync;
   const lastRun = syncState.last_run_at ? new Date(syncState.last_run_at) : null;
 
-  /** Every control saves straight away, so the page never needs a separate "保存" step. */
+  /** Every control saves its explicit change against the last confirmed revision. */
   const update = useCallback((change: (current: AppSettings) => AppSettings) => {
-    setSettings(current => {
-      const next = change(current);
-      chain.current = chain.current.then(async () => {
-        try {
-          await invoke<AppSettings>('app_settings_save', { value: next });
-          setError('');
-        } catch (e) {
-          setError(`保存失败：${String(e)}`);
-        }
-      });
-      return next;
-    });
+    queue.current?.enqueue(change);
   }, []);
 
   const setPlan = (patch: Partial<AppSettings['backup']>) => update(current => ({ ...current, backup: { ...current.backup, ...patch } }));
@@ -217,12 +236,15 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
     ? '，该时段暂停上传，结束后自动补传'
     : '，其余时间攒着，到点集中上传';
 
+  if (!ready) return <div className="settings-page backup-page"><h2>备份周期</h2><p>{loading ? '正在加载设置…' : '设置尚未加载，无法安全保存。'}</p>{error && <div className="error" role="alert">{error}</div>}{!loading && <button type="button" onClick={() => void load()}>重新加载</button>}</div>;
+
   return <div className="settings-page backup-page">
     <header className="page-head">
       <h2>备份周期</h2>
       <p className="help">选择聊天记录自动备份的时间与范围，只上传已导入会话的新增消息。</p>
     </header>
 
+    <fieldset disabled={blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
     <div className="backup-list">
       {connected && <section className={`plan-plat${open ? ' open' : ''}`}>
         <div className="backup-section backup-master"><h3>自动备份</h3><div className="plan-plat-head">
@@ -340,6 +362,8 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
       </div>)}
     </div>
 
-    {error && <div className="error">{error}</div>}
+    </fieldset>
+    {error && <div className="error" role="alert">{error}</div>}
+    {blocked && <div><p>当前修改未确认保存；重新加载会放弃这些修改。</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? '正在加载…' : '放弃未保存修改并重新加载'}</button></div>}
   </div>;
 }

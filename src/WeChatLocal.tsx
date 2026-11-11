@@ -16,6 +16,7 @@ import {
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
 import { exportNotSupported } from './toast';
+import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
 
 type DbFile = {
   rel: string;
@@ -601,6 +602,9 @@ export default function WeChatLocal({
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [accountId, setAccountId] = useState('');
+  const settingsRef = useRef<AppSettings | null>(null);
+  const accountSwitchLock = useRef(false);
+  const [accountSwitching, setAccountSwitching] = useState(false);
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
   const [savedKeySource, setSavedKeySource] = useState<SavedKeySource | null>(null);
   const [keyText, setKeyText] = useState('');
@@ -843,15 +847,22 @@ export default function WeChatLocal({
     return () => window.clearInterval(timer);
   }, [account, liveSync, ready, wechatEnabled, syncLatest, syncIntervalSeconds]);
 
-  /** Persist the account in use, so the whitelist page and background jobs never have to
-   *  ask which WeChat account this is. */
+  /** Do not present a different account until the backend has accepted the selection. */
   const rememberAccount = useCallback(async (id: string) => {
+    const stored = settingsRef.current;
+    if (!stored) throw new Error('设置尚未加载，无法切换账号；请重新打开页面。');
+    if (stored.active_account_id === id) return;
     try {
-      const stored = await invoke<{ active_account_id?: string }>('app_settings_get');
-      if (stored.active_account_id === id) return;
-      await invoke('app_settings_save', { value: { ...stored, active_account_id: id } });
-    } catch {
-      /* Remembering the account is a convenience; never block the page on it. */
+      const saved = requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: { ...stored, active_account_id: id } }));
+      if (saved.active_account_id !== id) {
+        settingsRef.current = null;
+        throw new Error('后端未确认所选微信账号，请重新打开页面。');
+      }
+      settingsRef.current = saved;
+    } catch (reason) {
+      // A stale snapshot cannot establish which account the backend now uses.
+      if (isSettingsConflict(reason)) settingsRef.current = null;
+      throw reason;
     }
   }, []);
 
@@ -883,22 +894,27 @@ export default function WeChatLocal({
   }, []);
 
   const doScan = useCallback(async (preferredId?: string) => {
+    if (accountSwitchLock.current) return;
+    accountSwitchLock.current = true;
+    setAccountSwitching(true);
     setBusy('scan');
     setError('');
     try {
       const result = await invoke<ScanResult>('wechat_scan');
       setScan(result);
-      const nextId = currentAccount(result.accounts, preferredId ?? '')?.id ?? '';
+      const nextId = currentAccount(result.accounts, preferredId ?? settingsRef.current?.active_account_id ?? '')?.id ?? '';
+      if (nextId) await rememberAccount(nextId);
       setAccountId(nextId);
-      if (nextId && nextId !== preferredId) void rememberAccount(nextId);
       await refreshKeys();
       if (!result.accounts.length) {
         setError('没有找到微信 4.x 数据目录。若微信已登录，请按下方的文字步骤授予「完全磁盘访问权限」后重新检测。');
       }
       if (nextId) await loadSessions(nextId);
     } catch (e) {
-      setError(String(e));
+      setError(`账号未切换：${settingsSaveError(e)}`);
     } finally {
+      accountSwitchLock.current = false;
+      setAccountSwitching(false);
       setBusy(null);
     }
   }, [loadSessions, refreshKeys, rememberAccount]);
@@ -913,8 +929,12 @@ export default function WeChatLocal({
       }
       // Read the remembered account before scanning: with more than one WeChat account on
       // this Mac the saved choice decides which one opens, instead of asking every time.
-      const stored = await invoke<{ active_account_id?: string }>('app_settings_get').catch(() => null);
-      await doScan(stored?.active_account_id || undefined);
+      try {
+        settingsRef.current = requireSettingsRevision(await invoke<AppSettings>('app_settings_get'));
+        await doScan(settingsRef.current.active_account_id || undefined);
+      } catch (reason) {
+        setError(`设置加载失败，无法选择微信账号：${String(reason)}。请重新打开页面。`);
+      }
     })();
     // Scan once on mount; account switching and manual rescans call doScan directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -945,24 +965,35 @@ export default function WeChatLocal({
   }, [showKeyGuide, noKeysYet, refreshSavedKeySource]);
 
   const switchAccount = useCallback(
-    (nextId: string) => {
-      setAccountId(nextId);
-      setSessions([]);
-      setSessionsLoaded(false);
-      setActive(null);
-      setMessages([]);
-      setOutcomes([]);
-      setSelectedMessages([]);
-      setSelectionAnchor(null);
-      setWorkGroups([]);
-      setWorkInsights(null);
-      setKeyImport(null);
-      avatarAsked.current.clear();
-      setAvatars({});
-      void rememberAccount(nextId);
-      void loadSessions(nextId);
+    async (nextId: string) => {
+      if (accountSwitchLock.current || nextId === accountId) return;
+      accountSwitchLock.current = true;
+      setAccountSwitching(true);
+      setError('');
+      try {
+        await rememberAccount(nextId);
+        setAccountId(nextId);
+        setSessions([]);
+        setSessionsLoaded(false);
+        setActive(null);
+        setMessages([]);
+        setOutcomes([]);
+        setSelectedMessages([]);
+        setSelectionAnchor(null);
+        setWorkGroups([]);
+        setWorkInsights(null);
+        setKeyImport(null);
+        avatarAsked.current.clear();
+        setAvatars({});
+        await loadSessions(nextId);
+      } catch (reason) {
+        setError(`账号未切换：${settingsSaveError(reason)}`);
+      } finally {
+        accountSwitchLock.current = false;
+        setAccountSwitching(false);
+      }
     },
-    [loadSessions, rememberAccount],
+    [accountId, loadSessions, rememberAccount],
   );
 
   const applyImportResult = async (result: KeyImportResult) => {
@@ -2344,7 +2375,8 @@ const checkMark = (value: boolean | undefined) =>
                         type="radio"
                         name="wx-account"
                         checked={item.id === accountId}
-                        onChange={() => switchAccount(item.id)}
+                        disabled={accountSwitching}
+                        onChange={() => void switchAccount(item.id)}
                       />
                       <span>
                         <strong>{item.id}</strong>
@@ -2357,7 +2389,7 @@ const checkMark = (value: boolean | undefined) =>
                 </div>
               ) : (
                 <p className="wxv-muted">
-                  已自动使用本机微信账号 <span className="mono">{accountId}</span>。
+                  {accountId ? <>已自动使用本机微信账号 <span className="mono">{accountId}</span>。</> : '尚未确认本机微信账号。'}
                   {account
                     ? ` ${account.db_count} 个库 · ${formatSize(account.total_bytes)} · 加密 ${account.encrypted_count}`
                     : ''}
@@ -2867,7 +2899,8 @@ const checkMark = (value: boolean | undefined) =>
                         <button
                           type="button"
                           className="wxv-link"
-                          onClick={() => switchAccount(importedForOther.account)}
+                          disabled={accountSwitching}
+                          onClick={() => void switchAccount(importedForOther.account)}
                         >
                           切换到 {importedForOther.account}
                         </button>

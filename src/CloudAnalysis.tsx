@@ -2,6 +2,7 @@ import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
+import { reportPresentation } from './reportPresentation';
 import { exportNotSupported } from './toast';
 
 type Kind = 'events' | 'reports';
@@ -315,7 +316,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
   ], [eventNotes, relatedEvents]);
   const allRawOpen = eventNotes.length > 0 && eventNotes.every(note => openNotes[note.id]);
   const toggleAllRaw = () => setOpenNotes(allRawOpen ? {} : Object.fromEntries(eventNotes.map(note => [note.id, true])));
-  const reportContent = report?.body || (typeof report?.content === 'string' ? report.content : report?.content ? JSON.stringify(report.content, null, 2) : '服务端尚未返回正文。');
+  const reportView = reportPresentation(report ?? {});
   const applyEventUpdate = (updated: EventItem) => {
     setDetail(current => (current && 'content' in current && (current as EventItem).id === updated.id
       ? { ...(current as EventDetail), ...updated }
@@ -489,7 +490,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportType(item as ReportItem) === value).length]);
 
   if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>请在桌面应用中查看</h2><p>事件和报告由 Devify 服务端生成，桌面端只负责同步并展示。</p></div></div>;
-  if (loading) return <div className="analysis-page"><div className="analysis-empty"><h2>正在同步{copy.title}…</h2><p>正在从当前 Devify 空间读取最新结果。</p></div></div>;
+  if (loading) return <div className="analysis-page"><div className="analysis-empty"><h2>正在同步{copy.title}…</h2><p>正在从服务端读取当前空间的最新结果。</p></div></div>;
   if (error) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>同步失败</h2><p>{error}</p></div></div>;
   if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{copy.empty}</h2><p>完成聊天采集并等待服务端处理后，结果会出现在这里。</p></div></div>;
 
@@ -731,9 +732,8 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
               {(report.period_start || report.period_end) && <span>周期 {date(report.period_start)} – {date(report.period_end)}</span>}
               <span>{report.sections?.length ?? 0} 个分类 · {sectionItems(report).length} 项</span>
             </div>
-            <p>{['queued', 'processing', 'partial'].includes(report.status || '')
-              ? '服务端正在生成这份报告，稍后刷新即可看到内容。'
-              : reportContent}</p>
+            {reportView.notice && <p role={report.status === 'failed' ? 'alert' : 'status'}>{reportView.notice}</p>}
+            {reportView.content ? <p>{reportView.content}</p> : !reportView.notice && <p>服务端尚未返回正文。</p>}
           </div>
 
           {(report.sections ?? []).map(section => <section className="report-section" key={section.id}>
