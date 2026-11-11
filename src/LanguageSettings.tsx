@@ -112,7 +112,7 @@ export function LanguageSettings() {
           <small>问答的回复语言</small>
         </div>
         <div className="plan-row-control">
-          <span className="plan-kv">由 Devify 服务端生成，桌面端不单独设置</span>
+          <span className="plan-kv">由服务端生成，桌面端不单独设置</span>
         </div>
       </div>
     </div>

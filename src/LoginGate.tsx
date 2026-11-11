@@ -103,7 +103,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       void invoke('devify_auth_cancel').catch(() => {});
       setBusy('');
       setInfo('');
-      setError('等待浏览器授权超时，请确认 Devify 服务端可访问后重试。');
+      setError('等待浏览器授权超时，请确认服务端可访问后重试。');
     }, 120_000);
     return () => window.clearTimeout(timer);
   }, [busy]);
@@ -181,8 +181,8 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     const candidate = serverDraft.trim().replace(/\/+$/, '') || current;
     if (!candidate) {
       setServerOpen(true);
-      setServerStatus('请先填写 Devify 服务地址，再继续登录。');
-      setError('请先填写 Devify 服务地址，再继续登录。');
+      setServerStatus('请先填写服务端地址，再继续登录。');
+      setError('请先填写服务端地址，再继续登录。');
       return null;
     }
     const invalid = serverError(candidate);
@@ -250,7 +250,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     if (conflict.current) { setServerStatus('设置已变化，请重新打开页面并确认账号和服务地址。'); return; }
     const value = serverDraft.trim().replace(/\/+$/, '');
     if (!value) {
-      setServerStatus('请填写 Devify 服务地址。');
+      setServerStatus('请填写服务端地址。');
       return;
     }
     const invalid = serverError(value);
@@ -275,7 +275,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
             if (!settingsLoaded) return;
             if (!baseUrl.trim()) {
               setServerOpen(true);
-              setServerStatus('请先填写 Devify 服务地址，再继续登录。');
+              setServerStatus('请先填写服务端地址，再继续登录。');
               return;
             }
             setPopup(true); setError(''); setInfo('');
@@ -285,7 +285,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       <div className="auth-gate-server">
         {serverOpen || !baseUrl
           ? <>
-              <label>{baseUrl ? 'Devify 服务地址' : 'Devify 服务地址（首次使用请填写）'}
+              <label>{baseUrl ? '服务端地址' : '服务端地址（首次使用请填写）'}
                 <input
                   type="url"
                   disabled={!settingsLoaded}
@@ -296,7 +296,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
                   placeholder={SERVER_PLACEHOLDER}
                 />
               </label>
-              {!baseUrl && <p className="auth-gate-hint">服务端不随客户端分发，请填写你们部署的 Devify 地址。</p>}
+              {!baseUrl && <p className="auth-gate-hint">服务端不随客户端分发，请填写你们部署的服务端地址。</p>}
               <div className="auth-gate-server-actions">
                 <button type="button" disabled={!settingsLoaded || serverSaving} onClick={() => void saveServer()}>保存</button>
                 {baseUrl && <button type="button" onClick={() => { setServerOpen(false); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>取消</button>}
@@ -323,7 +323,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
 
           {tab === 'login' && <>
             <button type="button" className="auth-alt" disabled={busy !== ''} onClick={() => void startBrowserLogin()}>
-              <span className="auth-alt-mark">↗</span>通过浏览器登录 Devify
+              <span className="auth-alt-mark">↗</span>通过浏览器登录服务端
             </button>
             <p className="auth-alt-help">沿用服务端授权回调：浏览器完成登录后会自动回到客户端，无需在本地输入密码。</p>
             <div className="auth-divider"><span>或使用 AI 邮箱账号</span></div>

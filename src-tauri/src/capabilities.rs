@@ -94,7 +94,7 @@ pub const CAPABILITIES: &[Capability] = &[
         "ingest.upload",
         "ingest",
         "手动上传",
-        "把所选会话、日期或消息打包上传到 Devify 空间。",
+        "把所选会话、日期或消息打包上传到 空间。",
         false,
     ),
     cap(

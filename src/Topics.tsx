@@ -124,7 +124,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
     } catch (reason) { setError(String(reason)); }
   };
 
-  if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>主题订阅由 Devify 服务端保存和执行，请在桌面应用中使用。</p></div>;
+  if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>主题订阅由服务端保存和执行，请在桌面应用中使用。</p></div>;
   if (loading) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>正在同步主题订阅…</p></div>;
 
   return <div className="topic-page">
@@ -165,7 +165,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
         </div>
       </header>
 
-      {!spaceId && <div className="topic-empty"><h2>还没有选择 Devify 空间</h2><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
+      {!spaceId && <div className="topic-empty"><h2>还没有选择 空间</h2><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
       {error && <p className="topic-error" role="alert">{error}</p>}
 
       {spaceId && creating && <div className="topic-create-wrap">

@@ -223,16 +223,16 @@ async fn devify_auth_config(
         .get(format!("{}/api/v1/auth/desktop/config", base_url))
         .send()
         .await
-        .map_err(|e| devify_network_message("读取 Devify 登录配置失败", &e))?;
+        .map_err(|e| devify_network_message("读取服务端登录配置失败", &e))?;
     if !response.status().is_success() {
-        return Err(format!("读取 Devify 登录配置失败：{}", response.status()));
+        return Err(format!("读取服务端登录配置失败：{}", response.status()));
     }
     let payload: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("读取 Devify 登录配置响应失败：{e}"))?;
+        .map_err(|e| format!("读取服务端登录配置响应失败：{e}"))?;
     serde_json::from_value(payload.get("data").unwrap_or(&payload).clone())
-        .map_err(|e| format!("Devify 登录配置格式无效：{e}"))
+        .map_err(|e| format!("服务端登录配置格式无效：{e}"))
 }
 
 /// Read a string claim from a JWT without verifying it. The server remains the
@@ -282,7 +282,7 @@ async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, clear
         return Ok(access.to_string());
     }
     let refresh = if tokens.refresh.is_empty() {
-        return Err("Devify refresh token 不存在，请重新登录。".into());
+        return Err("服务端刷新令牌不存在，请重新登录。".into());
     } else {
         &tokens.refresh
     };
@@ -295,7 +295,7 @@ async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, clear
         .send()
         .await
         .map_err(|e| {
-            DevifyTokenError::Unavailable(devify_network_message("刷新 Devify token 失败", &e))
+            DevifyTokenError::Unavailable(devify_network_message("刷新服务端登录令牌失败", &e))
         })?;
     let status = response.status();
     if !status.is_success() {
@@ -306,7 +306,7 @@ async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, clear
                 *cleared_generation = Some(token_generation.wrapping_add(1));
             }
         }
-        return Err("Devify token 已失效，请重新登录。".into());
+        return Err("服务端登录令牌已失效，请重新登录。".into());
     }
     let payload: serde_json::Value = response
         .json()
@@ -322,7 +322,7 @@ async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, clear
         tokens.refresh = new_refresh.to_string();
     }
     if !desktop_credentials::save_if_current(app_data, token_generation, &original_tokens, &tokens)? {
-        return Err("Devify 登录状态已改变，请重新操作。".into());
+        return Err("服务端登录状态已改变，请重新操作。".into());
     }
     Ok(new_access.to_string())
 }
@@ -422,7 +422,7 @@ fn upload_list_pagination(page: Option<u32>, page_size: Option<u32>) -> Result<(
 fn upload_list_base_url(settings: &settings::AppSettings, space_id: i64) -> Result<String, String> {
     validate_devify_space(settings, space_id)?;
     let base_url = settings.devify.resolved_base_url()?;
-    let parsed = Url::parse(&base_url).map_err(|_| "Devify 服务地址无效。")?;
+    let parsed = Url::parse(&base_url).map_err(|_| "服务端地址无效。")?;
     if !matches!(parsed.scheme(), "http" | "https")
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
@@ -430,7 +430,7 @@ fn upload_list_base_url(settings: &settings::AppSettings, space_id: i64) -> Resu
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
-        return Err("Devify 服务地址无效。".into());
+        return Err("服务端地址无效。".into());
     }
     Ok(base_url)
 }
@@ -500,25 +500,25 @@ async fn devify_upload_list(
         // Only a network failure gets the "check the connection" wording; an expired
         // session must still tell the user to sign in again.
         Err(DevifyTokenError::Unavailable(_)) => {
-            return Err("刷新 Devify 登录状态失败，请检查网络连接。".into());
+            return Err("刷新服务端登录状态失败，请检查网络连接。".into());
         }
         Err(error) => return Err(error.to_string()),
     };
     if upload_list_base_url(&settings::load(&data)?, space_id)? != base_url {
-        return Err("Devify 服务地址已改变，请重新读取上传列表。".into());
+        return Err("服务端地址已改变，请重新读取上传列表。".into());
     }
     if desktop_credentials::load(&data, &base_url)?.access != token {
-        return Err("Devify 登录状态已改变，请重新读取上传列表。".into());
+        return Err("服务端登录状态已改变，请重新读取上传列表。".into());
     }
     let generation = request_generation(&data, &base_url, &token)?;
     let (status, body) = fetch_upload_list(&base_url, space_id, page, page_size, &token).await?;
     // A response for an old selection must not overwrite the new space or service.
     let current = settings::load(&data)?;
     if upload_list_base_url(&current, space_id)? != base_url {
-        return Err("Devify 服务地址已改变，请重新读取上传列表。".into());
+        return Err("服务端地址已改变，请重新读取上传列表。".into());
     }
     if desktop_credentials::load(&data, &base_url)?.access != token {
-        return Err("Devify 登录状态已改变，请重新读取上传列表。".into());
+        return Err("服务端登录状态已改变，请重新读取上传列表。".into());
     }
     if !status.is_success() {
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -655,7 +655,7 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
         .bearer_auth(&token)
         .send()
         .await
-        .map_err(|e| devify_network_message("读取 Devify 空间失败", &e))?;
+        .map_err(|e| devify_network_message("读取 空间失败", &e))?;
     let status = response.status();
     let payload: serde_json::Value = response
         .json()
@@ -664,7 +664,7 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
     if !status.is_success() {
         let fallback = format!("HTTP {status}");
         return Err(format!(
-            "读取 Devify 空间失败：{}",
+            "读取 空间失败：{}",
             devify_response_error(&app, status, &payload, &fallback, &settings.devify.base_url, &token, generation)
         ));
     }
@@ -726,14 +726,14 @@ async fn devify_analysis_list(
         return Err("不支持的服务端分析类型。".into());
     }
     if space_id <= 0 {
-        return Err("请先选择 Devify 空间。".into());
+        return Err("请先选择 空间。".into());
     }
     if conversation_id.is_some_and(|id| id <= 0) || (conversation_id.is_some() && kind != "events") {
         return Err("会话标识无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
     if settings.devify.active_space_id != Some(space_id) {
-        return Err("Devify 空间已改变，请重新选择后再同步。".into());
+        return Err("空间已改变，请重新选择后再同步。".into());
     }
     let resource = if kind == "events" {
         "events"
@@ -795,7 +795,7 @@ async fn devify_analysis_list(
 
 fn validate_devify_space(settings: &settings::AppSettings, space_id: i64) -> Result<(), String> {
     if space_id <= 0 || settings.devify.active_space_id != Some(space_id) {
-        return Err("Devify 空间已改变，请重新选择后再同步。".into());
+        return Err("空间已改变，请重新选择后再同步。".into());
     }
     Ok(())
 }
@@ -851,20 +851,20 @@ fn devify_error_text(payload: &serde_json::Value, fallback: &str) -> String {
 /// instead of retrying the same request until every page looks broken.
 fn request_generation(data: &Path, base_url: &str, token: &str) -> Result<u64, String> {
     let (credentials, generation) = desktop_credentials::load_with_generation(data, base_url)?;
-    if credentials.access != token { return Err("Devify 登录状态已改变，请重新操作。".into()); }
+    if credentials.access != token { return Err("服务端登录状态已改变，请重新操作。".into()); }
     Ok(generation)
 }
 
 fn forget_devify_session(app: &AppHandle, payload: &serde_json::Value, base_url: &str, token: &str, generation: u64) -> String {
     let Ok(_identity) = UPLOAD_IDENTITY_LOCK.try_write() else {
-        return "Devify 登录状态正在使用，请重新操作。".into();
+        return "服务端登录状态正在使用，请重新操作。".into();
     };
     if !desktop_credentials::clear_if_access_locked(&app_data(app), base_url, token, generation).unwrap_or(false) {
-        return "Devify 登录状态已改变，请重新操作。".into();
+        return "服务端登录状态已改变，请重新操作。".into();
     }
     let message = devify_error_message(payload).unwrap_or_else(|| "登录状态已失效，请重新登录。".to_string());
     let _ = app.emit("devify-auth-expired", serde_json::json!({ "message": message }));
-    "登录状态已失效，请重新登录 Devify。".to_string()
+    "登录状态已失效，请重新登录服务端。".to_string()
 }
 
 fn devify_response_error(
@@ -887,7 +887,7 @@ fn devify_response_error(
 /// (or an admin without a takeover), so both cases share the same 404.
 fn devify_friendly_error(status: reqwest::StatusCode, detail: &str) -> String {
     if status == reqwest::StatusCode::NOT_FOUND && detail.contains("Space not found") {
-        return "当前 Devify 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。".into();
+        return "当前 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。".into();
     }
     detail.to_string()
 }
@@ -914,7 +914,7 @@ async fn devify_json_request(
     let response = request
         .send()
         .await
-        .map_err(|e| devify_network_message("访问 Devify 失败", &e))?;
+        .map_err(|e| devify_network_message("访问服务端失败", &e))?;
     let status = response.status();
     if status == reqwest::StatusCode::NO_CONTENT {
         return Ok(serde_json::Value::Null);
@@ -922,10 +922,10 @@ async fn devify_json_request(
     let payload: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("读取 Devify 响应失败：{e}"))?;
+        .map_err(|e| format!("读取服务端响应失败：{e}"))?;
     if !status.is_success() {
         let detail = devify_response_error(app, status, &payload, "服务端拒绝了请求", &settings.devify.base_url, &token, generation);
-        return Err(format!("Devify 请求失败：{detail}"));
+        return Err(format!("服务端请求失败：{detail}"));
     }
     Ok(payload.get("data").cloned().unwrap_or(payload))
 }
@@ -1025,7 +1025,7 @@ async fn devify_event_notes(
     )
     .await?;
     if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
-        return Err("事件不属于当前 Devify 空间。".into());
+        return Err("事件不属于当前 空间。".into());
     }
     let mut notes = Vec::new();
     for id in id_list(event.get("note_ids")) {
@@ -1065,7 +1065,7 @@ async fn devify_event_note_remove(
     )
     .await?;
     if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
-        return Err("事件不属于当前 Devify 空间。".into());
+        return Err("事件不属于当前 空间。".into());
     }
     devify_json_request(
         &app,
@@ -1103,7 +1103,7 @@ async fn devify_event_note_create(
     )
     .await?;
     if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
-        return Err("事件不属于当前 Devify 空间。".into());
+        return Err("事件不属于当前 空间。".into());
     }
     let now = chrono::Utc::now();
     let note_key = format!("manual:{event_id}:{}", now.timestamp_millis());
@@ -1155,7 +1155,7 @@ async fn devify_event_note_assign(
     )
     .await?;
     if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
-        return Err("事件不属于当前 Devify 空间。".into());
+        return Err("事件不属于当前 空间。".into());
     }
     devify_json_request(
         &app,
@@ -1481,7 +1481,7 @@ async fn devify_topic_detail(
         .and_then(serde_json::Value::as_i64)
         .is_some_and(|topic_space_id| topic_space_id != space_id)
     {
-        return Err("主题不属于当前 Devify 空间。".into());
+        return Err("主题不属于当前 空间。".into());
     }
     Ok(topic)
 }
@@ -1509,7 +1509,7 @@ async fn devify_note_detail(
         .and_then(serde_json::Value::as_i64)
         .is_some_and(|note_space_id| note_space_id != space_id)
     {
-        return Err("原文不属于当前 Devify 空间。".into());
+        return Err("原文不属于当前 空间。".into());
     }
     Ok(note)
 }
@@ -2902,7 +2902,7 @@ async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) 
     let owner = settings::UploadOwner { base_url, space_id, account_id: account_id.to_string(), user_id, device_id };
     validate_owner_state(&settings::load(data)?, &owner, &token)?;
     if desktop_credentials::load(data, &owner.base_url)?.access != token {
-        return Err("Devify 登录状态已改变，请重新操作。".into());
+        return Err("服务端登录状态已改变，请重新操作。".into());
     }
     Ok((owner, token))
 }
@@ -2943,7 +2943,7 @@ fn validate_live_owned_job(data: &Path, job_id: &str, owner: &settings::UploadOw
     let job = settings.upload_queue.iter().find(|job| job.id == job_id)
         .ok_or("找不到原始上传任务。")?;
     if desktop_credentials::load(data, &owner.base_url)?.access != token {
-        return Err("Devify 登录状态已改变，请重新操作。".into());
+        return Err("服务端登录状态已改变，请重新操作。".into());
     }
     validate_owned_job(&settings, job, owner, token, scope)
 }
@@ -3596,7 +3596,7 @@ async fn devify_auth_start(
         base_url,
         auth_config.browser_authorize_path
     ))
-    .map_err(|e| format!("Devify 地址无效：{e}"))?;
+    .map_err(|e| format!("服务端地址无效：{e}"))?;
     url.query_pairs_mut()
         .append_pair("client_id", &auth_config.client_id)
         .append_pair("redirect_uri", &auth_config.redirect_uri)
@@ -3686,9 +3686,9 @@ async fn devify_auth_callback(
         }))
         .send()
         .await
-        .map_err(|e| devify_network_message("换取 Devify token 失败", &e))?;
+        .map_err(|e| devify_network_message("换取服务端登录令牌失败", &e))?;
     if !response.status().is_success() {
-        return Err(format!("Devify 登录失败：{}", response.status()));
+        return Err(format!("服务端登录失败：{}", response.status()));
     }
     let payload: serde_json::Value = response
         .json()
@@ -3715,7 +3715,7 @@ async fn devify_auth_callback(
     settings::with_identity(&app_data, |current| {
         if current.devify.resolved_base_url()? != pending.base_url
             || !desktop_credentials::save_if_generation_locked(&app_data, pending.generation, &credentials)? {
-            return Err("Devify 登录状态已改变，请重新登录。".into());
+            return Err("服务端登录状态已改变，请重新登录。".into());
         }
         Ok(())
     })?;
@@ -3726,7 +3726,7 @@ async fn devify_auth_callback(
         let (stored, generation) = desktop_credentials::load_with_generation(&app_data, &pending.base_url)?;
         if current.devify.resolved_base_url()? != pending.base_url
             || stored != credentials || generation != pending.generation.wrapping_add(1) {
-            return Err("Devify 登录状态已改变，请重新登录。".into());
+            return Err("服务端登录状态已改变，请重新登录。".into());
         }
         device_changed = current.devify.device_id != device_id;
         current.devify.device_id = device_id.clone();
@@ -3739,7 +3739,7 @@ async fn devify_auth_callback(
     let _ = ensure_active_space_for(&app, Some((&credentials, committed_generation)), &mut completed_generation).await;
     if !desktop_credentials::load_with_generation(&app_data, &pending.base_url).ok().as_ref()
         .is_some_and(|(stored, generation)| stored == &credentials && *generation == completed_generation.unwrap_or(committed_generation)) {
-        return Err("Devify 登录状态已改变，请重新登录。".into());
+        return Err("服务端登录状态已改变，请重新登录。".into());
     }
     Ok(DevifyAuthResult {
         device_id,
@@ -3877,7 +3877,7 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
                 authenticated: false,
                 unavailable: true,
                 error: format!(
-                    "Devify 服务端异常（HTTP {}），请稍后重试。",
+                    "服务端异常（HTTP {}），请稍后重试。",
                     response.status().as_u16()
                 ),
             })
@@ -4048,12 +4048,12 @@ async fn devify_login_password(
         .json(&serde_json::json!({ "username": username, "password": password }))
         .send()
         .await
-        .map_err(|e| devify_network_message("连接 Devify 登录服务失败", &e))?;
+        .map_err(|e| devify_network_message("连接服务端登录服务失败", &e))?;
     let status = response.status();
     let payload: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("读取 Devify 登录响应失败：{e}"))?;
+        .map_err(|e| format!("读取服务端登录响应失败：{e}"))?;
     if !status.is_success() {
         let detail = payload
             .get("data")
@@ -4093,7 +4093,7 @@ async fn devify_login_password(
     settings::with_identity(&data, |current| {
         if current.devify.resolved_base_url()? != base_url
             || !desktop_credentials::save_if_generation_locked(&data, auth_generation, &credentials)? {
-            return Err("Devify 登录状态已改变，请重新登录。".into());
+            return Err("服务端登录状态已改变，请重新登录。".into());
         }
         Ok(())
     })?;
@@ -4104,7 +4104,7 @@ async fn devify_login_password(
     let _ = ensure_active_space_for(&app, Some((&credentials, device_generation)), &mut completed_generation).await;
     if !desktop_credentials::load_with_generation(&data, &base_url).ok().as_ref()
         .is_some_and(|(stored, generation)| stored == &credentials && *generation == completed_generation.unwrap_or(device_generation)) {
-        return Err("Devify 登录状态已改变，请重新登录。".into());
+        return Err("服务端登录状态已改变，请重新登录。".into());
     }
     Ok(DevifyAuthResult {
         device_id: device.map(|value| value.device_id).unwrap_or_default(),
@@ -4485,7 +4485,7 @@ async fn sync_daily_schedule(
         return Err("日报计划的登录状态已改变，请重试。".into());
     }
     let space_id = value.devify.active_space_id
-        .ok_or("请先在「设置 / 账户」中登录并选择 Devify 空间。")?;
+        .ok_or("请先在「设置 / 账户」中登录并选择 空间。")?;
     validate_devify_space(&value, space_id)?;
     let enabled = value.automation.enabled && value.automation.daily_summary_enabled;
     let time_local = value.automation.daily_time.trim().to_string();
@@ -5144,7 +5144,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
     let upload_state = app.state::<UploadState>();
     let _upload_guard = begin_account_upload(&upload_state, &account_id)?;
     let Some(space_id) = value.devify.active_space_id else {
-        return Err("请先在 Devify 配置中选择要同步到的空间。".into());
+        return Err("请先在服务端配置中选择要同步到的空间。".into());
     };
     let mut whitelist = value
         .chat
@@ -5174,7 +5174,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
     settings::update(&data, |current| {
         validate_owner_state(current, &sync_owner, &sync_token)?;
         if desktop_credentials::load(&data, &sync_owner.base_url)?.access != sync_token {
-            return Err("Devify 登录状态已改变。".into());
+            return Err("服务端登录状态已改变。".into());
         }
         validate_sync_owner(current, &sync_owner)?;
         // Completed legacy sync jobs may still contain unapplied progress. Never bind
@@ -5303,7 +5303,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
                     validate_owner_state(current, &sync_owner, &sync_token)?;
                     validate_sync_owner(current, &sync_owner)?;
                     if desktop_credentials::load(&data, &sync_owner.base_url)?.access != sync_token {
-                        return Err("Devify 登录状态已改变。".into());
+                        return Err("服务端登录状态已改变。".into());
                     }
                     let live = serde_json::to_value((
                         current.sync.cursors.get(&account_id).and_then(|items| items.get(username)),
@@ -5412,7 +5412,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
         let inserted = settings::update(&data, |current| {
             validate_owner_state(current, &sync_owner, &sync_token)?;
             if desktop_credentials::load(&data, &sync_owner.base_url)?.access != sync_token {
-                return Err("Devify 登录状态已改变。".into());
+                return Err("服务端登录状态已改变。".into());
             }
             validate_sync_owner(current, &sync_owner)?;
             let current_snapshot = serde_json::to_value((
@@ -7294,7 +7294,7 @@ async fn wechat_upload_state(
     let data = app_data(&app);
     let initial = settings::load(&data)?;
     if !initial.connectors.wechat_enabled { return Ok(Vec::new()); }
-    let space_id = initial.devify.active_space_id.ok_or("请先选择 Devify 空间。")?;
+    let space_id = initial.devify.active_space_id.ok_or("请先选择 空间。")?;
     let (owner, token) = tokio::time::timeout(Duration::from_secs(5), verified_upload_identity(&data, &account_id, space_id)).await
         .map_err(|_| "确认云端身份超时，请稍后重试。")??;
     let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
@@ -8245,7 +8245,7 @@ mod devify_error_tests {
     fn points_at_space_selection_when_the_space_is_gone() {
         assert_eq!(
             devify_friendly_error(reqwest::StatusCode::NOT_FOUND, "Space not found."),
-            "当前 Devify 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。"
+            "当前 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。"
         );
         assert_eq!(
             devify_friendly_error(reqwest::StatusCode::NOT_FOUND, "Event not found."),

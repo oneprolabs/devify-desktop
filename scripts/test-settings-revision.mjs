@@ -164,7 +164,7 @@ invoke = (command, args) => {
 };
 const account = { hooks: [] };
 render(account, DevifySettings); await flush();
-const accountInput = tree => find(tree, node => node.type === 'input' && node.props['aria-label'] === 'Devify 服务地址');
+const accountInput = tree => find(tree, node => node.type === 'input' && node.props['aria-label'] === '服务端地址');
 tree = render(account, DevifySettings);
 accountInput(tree).props.onChange({ target: { value: 'https://first.example' } });
 tree = render(account, DevifySettings); accountInput(tree).props.onBlur(); await flush();

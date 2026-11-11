@@ -119,7 +119,7 @@ export default function PrototypeShell() {
       .then(status => {
         if (!authMounted.current || authEpoch.current !== requestEpoch) return;
         if (status.unavailable) {
-          setAuthError(status.error || 'Devify 服务端暂不可用，请稍后重试。');
+          setAuthError(status.error || '服务端暂不可用，请稍后重试。');
           setAuthState('unavailable');
           return;
         }
@@ -215,7 +215,7 @@ export default function PrototypeShell() {
         <div className="auth-gate-card">
           <span className="auth-gate-mark"><img src={appIcon} alt=""/></span>
           <h1>服务端暂不可用</h1>
-          <p>{authError || 'Devify 服务端暂不可用，请稍后重试。'}</p>
+          <p>{authError || '服务端暂不可用，请稍后重试。'}</p>
           <p className="auth-gate-hint">已保存的登录状态不会丢失，服务恢复后点「重试」即可。</p>
           <button type="button" className="auth-gate-primary" onClick={checkAuth}>重试</button>
           <button type="button" className="auth-gate-secondary" onClick={() => { setAuthNotice(''); setAuthState('anonymous'); }}>返回登录</button>

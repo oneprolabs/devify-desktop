@@ -451,7 +451,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   </div>;
 }
 
-export function StrategySettings({ title = '本地自动化', description = '每日总结在本机生成后投递到 Devify。上传频率、上传时段由「备份周期」页面单独配置。' }: { title?: string; description?: string } = {}) {
+export function StrategySettings({ title = '本地自动化', description = '每日总结在本机生成后投递到服务端。上传频率、上传时段由「备份周期」页面单独配置。' }: { title?: string; description?: string } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
   const saveLock = useRef(false);
@@ -512,7 +512,7 @@ export function StrategySettings({ title = '本地自动化', description = '每
           </select>
         </label>
       </div>
-      <p className="help">日报计划保存在 Devify 服务端，到点后由服务端基于已上传的聊天记录生成；应用关闭也会执行。请先在「账户」登录并选择空间，并确保需要的内容已经上传。</p>
+      <p className="help">日报计划保存在服务端，到点后由服务端基于已上传的聊天记录生成；应用关闭也会执行。请先在「账户」登录并选择空间，并确保需要的内容已经上传。</p>
       {settings.automation.last_daily_run && <p className="muted">最近执行：{settings.automation.last_daily_run} · {DAILY_STATUS_LABEL[settings.automation.last_daily_status ?? ''] ?? '未知'}</p>}
       {settings.automation.last_daily_error && <div className="config warn">{settings.automation.last_daily_error}</div>}
       {settings.automation.last_schedule_error && <div className="config warn">计划同步失败：{settings.automation.last_schedule_error}</div>}
@@ -616,7 +616,7 @@ export function DevifySettings() {
         setAuthenticated(true);
         await invoke<number | null>('devify_space_ensure').catch(() => null);
         acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
-        setAuthStatus(`Devify 已登录，设备 ${result.device_id}`);
+        setAuthStatus(`服务端已登录，设备 ${result.device_id}`);
         setSpacesStatus('正在读取可用空间…');
         const available = await invoke<DevifySpace[]>('devify_spaces');
         if (!active) return;
@@ -648,7 +648,7 @@ export function DevifySettings() {
       return;
     }
     setError('');
-    setAuthStatus('正在打开 Devify 登录…');
+    setAuthStatus('正在打开服务端登录…');
     try {
       const url = await invoke<string>('devify_auth_start', { deviceLabel: settings.devify.device_label });
       await invoke('devify_auth_open', { url });
@@ -739,7 +739,7 @@ export function DevifySettings() {
           <input
             className="plan-input"
             type="url"
-            aria-label="Devify 服务地址"
+            aria-label="服务端地址"
             placeholder="https://devify.example.com"
             value={settings.devify.base_url}
             onChange={event => { const baseUrl = event.target.value; draftDirty.current = true; draftUrl.current = baseUrl; setSettings(current => ({ ...current, devify: { ...current.devify, base_url: baseUrl } })); }}
