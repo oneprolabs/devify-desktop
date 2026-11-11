@@ -36,6 +36,12 @@ pub mod wechat;
 pub mod mcp;
 mod network;
 mod update_gate;
+#[cfg(test)]
+mod reconcile_owner_tests;
+#[cfg(test)]
+mod manual_upload_tests;
+#[cfg(test)]
+mod security_identity_tests;
 
 /// Single-file page shown in the browser after the loopback callback fires.
 /// It is inlined because the listener answers exactly one request.
@@ -97,9 +103,16 @@ fn update_begin_install(state: State<'_, UploadState>) -> Result<(), String> { s
 #[tauri::command]
 fn update_cancel_install(state: State<'_, UploadState>) { state.syncing.cancel_install(); }
 
+struct PendingDevifyAuth {
+    state: String,
+    verifier: String,
+    base_url: String,
+    generation: u64,
+}
+
 #[derive(Default)]
 struct DevifyAuthState {
-    pending: Mutex<Option<(String, String)>>,
+    pending: Mutex<Option<PendingDevifyAuth>>,
     /// Keeps the loopback listener task so a new attempt can abort a stale one
     /// instead of failing with `Address already in use` on port 47832.
     listener: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -119,11 +132,16 @@ struct DevifyAuthConfig {
     redirect_uri: String,
 }
 
+fn auth_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建登录请求。".into())
+}
+
 async fn devify_auth_config(
     settings: &settings::DevifySettings,
 ) -> Result<DevifyAuthConfig, String> {
     let base_url = settings.resolved_base_url()?;
-    let response = reqwest::Client::new()
+    let response = auth_http_client()?
         .get(format!("{}/api/v1/auth/desktop/config", base_url))
         .send()
         .await
@@ -155,9 +173,22 @@ fn access_token_claim(access: &str, claim: &str) -> Option<String> {
         })
 }
 
+/// Uploads hold a read lease over the fixed credential/context; identity changes fail
+/// rather than switching the user, service or device in the middle of an upload.
+pub(crate) static UPLOAD_IDENTITY_LOCK: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+static CREDENTIAL_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static AUTH_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<String, String> {
+    devify_access_token_with_cleanup(app_data, base_url, &mut None).await
+}
+
+async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, cleared_generation: &mut Option<u64>) -> Result<String, String> {
     let base_url = settings::normalize_base_url(base_url)?;
-    let mut tokens = desktop_credentials::load(app_data, &base_url)?;
+    // Serialize refresh requests while allowing login/logout to invalidate their CAS.
+    let _refresh_guard = CREDENTIAL_REFRESH_LOCK.lock().await;
+    let (mut tokens, token_generation) = desktop_credentials::load_with_generation(app_data, &base_url)?;
+    let original_tokens = tokens.clone();
     let access = tokens.access.as_str();
     let exp = access
         .split('.')
@@ -177,7 +208,7 @@ async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<St
     } else {
         &tokens.refresh
     };
-    let response = reqwest::Client::new()
+    let response = auth_http_client()?
         .post(format!(
             "{}/api/v1/auth/token/refresh",
             base_url.trim_end_matches('/')
@@ -191,7 +222,9 @@ async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<St
         if status == reqwest::StatusCode::UNAUTHORIZED {
             // The refresh token was revoked or its account no longer exists.
             // Keep trying it forever would only hide the real problem.
-            let _ = desktop_credentials::clear(app_data);
+            if desktop_credentials::clear_if_current(app_data, token_generation, &original_tokens).unwrap_or(false) {
+                *cleared_generation = Some(token_generation.wrapping_add(1));
+            }
         }
         return Err("Devify token 已失效，请重新登录。".into());
     }
@@ -208,7 +241,9 @@ async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<St
     if let Some(new_refresh) = data.get("refresh").and_then(|v| v.as_str()) {
         tokens.refresh = new_refresh.to_string();
     }
-    desktop_credentials::save(app_data, &tokens)?;
+    if !desktop_credentials::save_if_current(app_data, token_generation, &original_tokens, &tokens)? {
+        return Err("Devify 登录状态已改变，请重新操作。".into());
+    }
     Ok(new_access.to_string())
 }
 
@@ -242,12 +277,14 @@ struct DevifyUploadStatus {
 #[tauri::command]
 async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUploadStatus, String> {
     let settings = settings::load(&app_data(&app))?;
+    let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
+    let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
     let response = reqwest::Client::new()
         .get(format!(
             "{}/api/v1/chat/uploads/{batch_id}",
             settings.devify.base_url.trim_end_matches('/')
         ))
-        .bearer_auth(devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?)
+        .bearer_auth(&token)
         .send()
         .await
         .map_err(|e| format!("读取上传状态失败：{e}"))?;
@@ -260,7 +297,7 @@ async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUpl
         let fallback = format!("HTTP {status}");
         return Err(format!(
             "读取上传状态失败：{}",
-            devify_response_error(&app, status, &payload, &fallback)
+            devify_response_error(&app, status, &payload, &fallback, &settings.devify.base_url, &token, generation)
         ));
     }
     let data = payload.get("data").unwrap_or(&payload);
@@ -285,6 +322,130 @@ async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUpl
             .unwrap_or_default()
             .to_string(),
     })
+}
+
+const UPLOAD_LIST_MAX_PAGE: u32 = 1_000_000;
+const UPLOAD_LIST_MAX_PAGE_SIZE: u32 = 100;
+const UPLOAD_LIST_MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
+
+fn upload_list_pagination(page: Option<u32>, page_size: Option<u32>) -> Result<(u32, u32), String> {
+    let page = page.unwrap_or(1);
+    let page_size = page_size.unwrap_or(UPLOAD_LIST_MAX_PAGE_SIZE);
+    if !(1..=UPLOAD_LIST_MAX_PAGE).contains(&page)
+        || !(1..=UPLOAD_LIST_MAX_PAGE_SIZE).contains(&page_size)
+    {
+        return Err("上传列表分页参数无效。".into());
+    }
+    Ok((page, page_size))
+}
+
+fn upload_list_base_url(settings: &settings::AppSettings, space_id: i64) -> Result<String, String> {
+    validate_devify_space(settings, space_id)?;
+    let base_url = settings.devify.resolved_base_url()?;
+    let parsed = Url::parse(&base_url).map_err(|_| "Devify 服务地址无效。")?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("Devify 服务地址无效。".into());
+    }
+    Ok(base_url)
+}
+
+fn parse_upload_list(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    let data = payload.get("data").unwrap_or(&payload);
+    let pagination = data.get("pagination");
+    let link_valid = |name: &str| pagination.and_then(|value| value.get(name))
+        .is_some_and(|value| value.is_null() || value.is_string());
+    if !data.get("list").and_then(serde_json::Value::as_array)
+        .is_some_and(|items| items.iter().all(serde_json::Value::is_object))
+        || !pagination.and_then(|value| value.get("total")).is_some_and(|value| value.as_u64().is_some())
+        || !pagination.and_then(|value| value.get("page")).is_some_and(|value| value.as_u64().is_some_and(|page| page > 0))
+        || !pagination.and_then(|value| value.get("page_size")).is_some_and(|value| value.as_u64().is_some_and(|size| size > 0 && size <= u64::from(UPLOAD_LIST_MAX_PAGE_SIZE)))
+        || !link_valid("next")
+        || !link_valid("previous")
+    {
+        return Err("服务端上传列表响应格式无效。".into());
+    }
+    Ok(data.clone())
+}
+
+async fn fetch_upload_list(
+    base_url: &str,
+    space_id: i64,
+    page: u32,
+    page_size: u32,
+    token: &str,
+) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
+    // Never forward a bearer token via an HTTP redirect or return request URLs in errors.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "无法创建上传列表请求。")?;
+    let mut response = client
+        .get(format!("{base_url}/api/v1/spaces/{space_id}/chat/uploads"))
+        .query(&[("page", page), ("page_size", page_size)])
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| "读取服务端上传列表失败，请检查网络连接。")?;
+    let status = response.status();
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "读取上传列表响应失败。")? {
+        if body.len().saturating_add(chunk.len()) > UPLOAD_LIST_MAX_RESPONSE_BYTES {
+            return Err("服务端上传列表响应过大。".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((status, body))
+}
+
+#[tauri::command]
+async fn devify_upload_list(
+    app: AppHandle,
+    space_id: i64,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let (page, page_size) = upload_list_pagination(page, page_size)?;
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    let base_url = upload_list_base_url(&settings, space_id)?;
+    let token = devify_access_token_async(&data, &base_url).await.map_err(|error| {
+        if error.starts_with("刷新 Devify token 失败：") {
+            "刷新 Devify 登录状态失败，请检查网络连接。".to_string()
+        } else {
+            error
+        }
+    })?;
+    if upload_list_base_url(&settings::load(&data)?, space_id)? != base_url {
+        return Err("Devify 服务地址已改变，请重新读取上传列表。".into());
+    }
+    if desktop_credentials::load(&data, &base_url)?.access != token {
+        return Err("Devify 登录状态已改变，请重新读取上传列表。".into());
+    }
+    let generation = request_generation(&data, &base_url, &token)?;
+    let (status, body) = fetch_upload_list(&base_url, space_id, page, page_size, &token).await?;
+    // A response for an old selection must not overwrite the new space or service.
+    let current = settings::load(&data)?;
+    if upload_list_base_url(&current, space_id)? != base_url {
+        return Err("Devify 服务地址已改变，请重新读取上传列表。".into());
+    }
+    if desktop_credentials::load(&data, &base_url)?.access != token {
+        return Err("Devify 登录状态已改变，请重新读取上传列表。".into());
+    }
+    if !status.is_success() {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(forget_devify_session(&app, &serde_json::Value::Null, &base_url, &token, generation));
+        }
+        return Err(format!("读取服务端上传列表失败：HTTP {}。", status.as_u16()));
+    }
+    let payload = serde_json::from_slice(&body).map_err(|_| "服务端上传列表响应格式无效。")?;
+    parse_upload_list(payload)
 }
 
 #[derive(serde::Deserialize, Serialize)]
@@ -346,19 +507,48 @@ fn pick_personal_space(spaces: &[DevifySpace]) -> Option<i64> {
 /// Login should not leave the app without an upload target: select the personal space when
 /// nothing is chosen yet (or when the stored space no longer exists).
 async fn ensure_active_space(app: &AppHandle) -> Option<i64> {
+    let mut ignored_generation = None;
+    ensure_active_space_for(app, None, &mut ignored_generation).await
+}
+
+async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_credentials::Credentials, u64)>, completed_generation: &mut Option<u64>) -> Option<i64> {
     let data = app_data(app);
-    let mut settings = settings::load(&data).ok()?;
-    let spaces = devify_spaces(app.clone()).await.ok()?;
+    let settings = settings::load(&data).ok()?;
+    let base = settings.devify.resolved_base_url().ok()?;
+    let token = if let Some((credentials, _)) = expected {
+        credentials.access.clone()
+    } else {
+        devify_access_token_async(&data, &base).await.ok()?
+    };
+    let identity = UPLOAD_IDENTITY_LOCK.read().await;
+    let (credentials, generation) = desktop_credentials::load_with_generation(&data, &base).ok()?;
+    let current = settings::load(&data).ok()?;
+    if credentials.access != token || current.devify.resolved_base_url().ok()? != base
+        || expected.is_some_and(|(expected, expected_generation)| credentials != *expected || generation != expected_generation)
+        || current.devify.active_space_id != settings.devify.active_space_id
+        || current.devify.device_id != settings.devify.device_id
+        || current.active_account_id != settings.active_account_id { return None; }
+    let payload = fixed_identity_get(&base, &token, "/api/v1/spaces").await.ok()?;
+    let spaces: Vec<DevifySpace> = serde_json::from_value(payload).ok()?;
     let known = |id: i64| spaces.iter().any(|space| space.id == id);
-    let chosen = settings
-        .devify
-        .active_space_id
-        .filter(|id| known(*id))
+    let chosen = settings.devify.active_space_id.filter(|id| known(*id))
         .or_else(|| pick_personal_space(&spaces));
-    if settings.devify.active_space_id != chosen {
-        settings.devify.active_space_id = chosen;
-        let _ = settings::save(&data, &settings);
-    }
+    drop(identity);
+    let mut space_changed = false;
+    settings::update_identity(&data, |current| {
+        let (stored, current_generation) = desktop_credentials::load_with_generation(&data, &base)?;
+        if stored != credentials || current_generation != generation
+            || current.devify.resolved_base_url()? != base
+            || current.devify.active_space_id != settings.devify.active_space_id
+            || current.devify.device_id != settings.devify.device_id
+            || current.active_account_id != settings.active_account_id {
+            return Err("选择空间时登录状态已改变。".into());
+        }
+        space_changed = current.devify.active_space_id != chosen;
+        current.devify.active_space_id = chosen;
+        Ok(())
+    }).ok()?;
+    *completed_generation = Some(generation.wrapping_add(u64::from(space_changed)));
     chosen
 }
 
@@ -373,12 +563,14 @@ async fn devify_space_ensure(app: AppHandle) -> Result<Option<i64>, String> {
 #[tauri::command]
 async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
     let settings = settings::load(&app_data(&app))?;
+    let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
+    let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
     let response = reqwest::Client::new()
         .get(format!(
             "{}/api/v1/spaces",
             settings.devify.base_url.trim_end_matches('/')
         ))
-        .bearer_auth(devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?)
+        .bearer_auth(&token)
         .send()
         .await
         .map_err(|e| format!("读取 Devify 空间失败：{e}"))?;
@@ -391,7 +583,7 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
         let fallback = format!("HTTP {status}");
         return Err(format!(
             "读取 Devify 空间失败：{}",
-            devify_response_error(&app, status, &payload, &fallback)
+            devify_response_error(&app, status, &payload, &fallback, &settings.devify.base_url, &token, generation)
         ));
     }
     let data = payload.get("data").unwrap_or(&payload);
@@ -469,6 +661,7 @@ async fn devify_analysis_list(
     let first_page = page.unwrap_or(1).max(1);
     let client = reqwest::Client::new();
     let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
+    let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
     let mut all_items = Vec::new();
     let mut current_page = first_page;
     let mut total = None;
@@ -492,7 +685,7 @@ async fn devify_analysis_list(
             .await
             .map_err(|e| format!("读取服务端{kind}响应失败：{e}"))?;
         if !status.is_success() {
-            let detail = devify_response_error(&app, status, &payload, "服务端拒绝了请求");
+            let detail = devify_response_error(&app, status, &payload, "服务端拒绝了请求", &settings.devify.base_url, &token, generation);
             return Err(format!("同步服务端{kind}失败：{detail}"));
         }
         let data = payload.get("data").cloned().unwrap_or(payload);
@@ -574,16 +767,21 @@ fn devify_error_text(payload: &serde_json::Value, fallback: &str) -> String {
 /// The server rejected the stored credentials (expired, revoked or the account
 /// no longer exists). Drop them and tell the UI to reopen the login gate
 /// instead of retrying the same request until every page looks broken.
-fn forget_devify_session(app: &AppHandle, payload: &serde_json::Value) -> String {
-    let _ = desktop_credentials::clear(&app_data(app));
-    let detail = devify_error_message(payload);
-    let message = detail
-        .clone()
-        .unwrap_or_else(|| "登录状态已失效，请重新登录。".to_string());
-    let _ = app.emit(
-        "devify-auth-expired",
-        serde_json::json!({ "message": message }),
-    );
+fn request_generation(data: &Path, base_url: &str, token: &str) -> Result<u64, String> {
+    let (credentials, generation) = desktop_credentials::load_with_generation(data, base_url)?;
+    if credentials.access != token { return Err("Devify 登录状态已改变，请重新操作。".into()); }
+    Ok(generation)
+}
+
+fn forget_devify_session(app: &AppHandle, payload: &serde_json::Value, base_url: &str, token: &str, generation: u64) -> String {
+    let Ok(_identity) = UPLOAD_IDENTITY_LOCK.try_write() else {
+        return "Devify 登录状态正在使用，请重新操作。".into();
+    };
+    if !desktop_credentials::clear_if_access_locked(&app_data(app), base_url, token, generation).unwrap_or(false) {
+        return "Devify 登录状态已改变，请重新操作。".into();
+    }
+    let message = devify_error_message(payload).unwrap_or_else(|| "登录状态已失效，请重新登录。".to_string());
+    let _ = app.emit("devify-auth-expired", serde_json::json!({ "message": message }));
     "登录状态已失效，请重新登录 Devify。".to_string()
 }
 
@@ -592,9 +790,12 @@ fn devify_response_error(
     status: reqwest::StatusCode,
     payload: &serde_json::Value,
     fallback: &str,
+    base_url: &str,
+    token: &str,
+    generation: u64,
 ) -> String {
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return forget_devify_session(app, payload);
+        return forget_devify_session(app, payload, base_url, token, generation);
     }
     devify_friendly_error(status, &devify_error_text(payload, fallback))
 }
@@ -617,13 +818,14 @@ async fn devify_json_request(
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(app))?;
     let token = devify_access_token_async(&app_data(app), &settings.devify.base_url).await?;
+    let generation = request_generation(&app_data(app), &settings.devify.base_url, &token)?;
     let client = reqwest::Client::new();
     let mut request = client
         .request(
             method,
             format!("{}{}", settings.devify.base_url.trim_end_matches('/'), path),
         )
-        .bearer_auth(token);
+        .bearer_auth(&token);
     if let Some(body) = body {
         request = request.json(&body);
     }
@@ -640,7 +842,7 @@ async fn devify_json_request(
         .await
         .map_err(|e| format!("读取 Devify 响应失败：{e}"))?;
     if !status.is_success() {
-        let detail = devify_response_error(app, status, &payload, "服务端拒绝了请求");
+        let detail = devify_response_error(app, status, &payload, "服务端拒绝了请求", &settings.devify.base_url, &token, generation);
         return Err(format!("Devify 请求失败：{detail}"));
     }
     Ok(payload.get("data").cloned().unwrap_or(payload))
@@ -649,7 +851,7 @@ async fn devify_json_request(
 #[tauri::command]
 async fn devify_current_user(app: AppHandle) -> Result<serde_json::Value, String> {
     let user = devify_json_request(&app, reqwest::Method::GET, "/api/v1/auth/user".into(), None).await?;
-    Ok(serde_json::json!({ "display_name": user.get("display_name"), "username": user.get("username") }))
+    Ok(serde_json::json!({ "id": user.get("id"), "display_name": user.get("display_name"), "username": user.get("username") }))
 }
 
 #[tauri::command]
@@ -1360,16 +1562,30 @@ struct ExistingUploadKeys {
 }
 type LegacyUploadKeys = HashMap<String, ExistingUploadKeys>;
 
+async fn fixed_identity_get(base: &str, token: &str, path: &str) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建云端请求。")?;
+    let mut response = client.get(format!("{base}{path}")).bearer_auth(token)
+        .send().await.map_err(|_| "无法读取云端数据，请检查网络连接。")?;
+    if !response.status().is_success() { return Err(format!("无法读取云端数据：HTTP {}。", response.status().as_u16())); }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端响应。")? {
+        append_retry_identity_body(&mut body, &chunk)?;
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&body).map_err(|_| "云端响应格式无效。")?;
+    Ok(payload.get("data").cloned().unwrap_or(payload))
+}
+
 /// Read existing legacy message keys before assigning new identities. Never assume that a
 /// historic `src:<local_id>` belongs to the earliest or latest local shard.
-async fn load_legacy_upload_keys(app: &AppHandle, space_id: i64, account_id: &str, usernames: &[String]) -> Result<LegacyUploadKeys, String> {
+async fn load_legacy_upload_keys(app: &AppHandle, space_id: i64, account_id: &str, usernames: &[String], fixed: Option<(&str, &str)>) -> Result<LegacyUploadKeys, String> {
     let mut result = LegacyUploadKeys::new();
     for username in usernames {
         let encoded: String = url::form_urlencoded::byte_serialize(username.as_bytes()).collect();
         let mut conversation = None;
         for page in 1..=100 {
             let path = format!("/api/v1/spaces/{space_id}/conversations?search={encoded}&page={page}&page_size=100");
-            let data = devify_json_request(app, reqwest::Method::GET, path, None).await?;
+            let data = if let Some((base, token)) = fixed { fixed_identity_get(base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
             let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端会话列表。")?;
             for item in items {
                 if item.get("platform").and_then(|v| v.as_str()) == Some("wechat")
@@ -1387,7 +1603,7 @@ async fn load_legacy_upload_keys(app: &AppHandle, space_id: i64, account_id: &st
         if let Some(id) = conversation {
             for page in 1..=10000 {
                 let path = format!("/api/v1/spaces/{space_id}/conversations/{id}/messages?page={page}&page_size=100");
-                let data = devify_json_request(app, reqwest::Method::GET, path, None).await?;
+                let data = if let Some((base, token)) = fixed { fixed_identity_get(base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
                 let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端消息列表。")?;
                 for item in items {
                     let key = item.get("message_key").and_then(|v| v.as_str()).unwrap_or_default();
@@ -1449,13 +1665,16 @@ fn manual_batch_plan(selection: &BTreeMap<String, Vec<settings::MessageRef>>, li
     Ok(batches)
 }
 
-fn next_manual_batch(value: &settings::AppSettings) -> Option<String> {
+fn next_manual_batch(value: &settings::AppSettings, owner: &settings::UploadOwner) -> Option<String> {
     value.upload_queue.iter().filter(|job| {
         let Some(group) = job.manual_group.as_ref() else { return false; };
-        if job.account_id != value.active_account_id || value.devify.active_space_id != Some(job.space_id) { return false; }
-        if !matches!(job.status.as_str(), "queued" | "running") || job.batch_id.is_some() { return false; }
+        if job.owner.as_ref() != Some(owner) || job.account_id != owner.account_id
+            || job.account_id != value.active_account_id || job.space_id != owner.space_id
+            || value.devify.active_space_id != Some(job.space_id) { return false; }
+        if !matches!(job.status.as_str(), "queued" | "running")
+            || job.batch_id.is_some() || job.create_started != Some(false) { return false; }
         let previous: Vec<_> = value.upload_queue.iter().filter(|other| other.manual_group.as_ref() == Some(group) && other.manual_index < job.manual_index).collect();
-        previous.len() == job.manual_index && previous.iter().all(|other| other.status == "completed")
+        previous.len() == job.manual_index && previous.iter().all(|other| other.owner.as_ref() == Some(owner) && other.status == "completed")
     }).min_by_key(|job| (&job.created_at, job.manual_index)).map(|job| job.id.clone())
 }
 
@@ -2168,16 +2387,25 @@ async fn devify_upload_preview(
     let settings = settings::load(&data)?;
     validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
     entitlements::require(&data, &settings.devify.base_url, capabilities::INGEST_UPLOAD)?;
+    let (owner, token) = verified_upload_identity(&data, &account_id, space_id).await?;
+    let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
+    let latest = settings::load(&data)?;
+    validate_owner_state(&latest, &owner, &token)?;
+    validate_upload_scope(&latest, &account_id, space_id, &usernames)?;
+    if desktop_credentials::load(&data, &owner.base_url)?.access != token {
+        return Err("登录状态已改变，请重新确认采集任务。".into());
+    }
     let cache = decrypt::cache_dir(&data, &account_id);
     let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
-    let base_url = settings.devify.base_url.clone();
-    let voice_settings = settings.voice.clone();
-    let attachments = settings.backup.attachments.clone();
+    let base_url = owner.base_url.clone();
+    let voice_settings = latest.voice.clone();
+    let attachments = latest.backup.attachments.clone();
     let selection = message_selection.unwrap_or_default();
-    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames).await?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
+    let data_for_prepare = data.clone();
+    let preview = tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
-            &data,
+            &data_for_prepare,
             &cache,
             &media_root,
             &account_id,
@@ -2194,19 +2422,82 @@ async fn devify_upload_preview(
         .map(|prepared| prepared.preview)
     })
     .await
-    .map_err(|e| format!("读取上传预览失败：{e}"))?
+    .map_err(|e| format!("读取上传预览失败：{e}"))??;
+    validate_owner_state(&settings::load(&data)?, &owner, &token)?;
+    if desktop_credentials::load(&data, &owner.base_url)?.access != token {
+        return Err("登录状态已改变，请重新确认采集任务。".into());
+    }
+    Ok(preview)
 }
 
-fn mark_manual_batch_failed(app: &AppHandle, job_id: &str, error: &str) {
-    let data = app_data(app);
-    if let Ok(mut value) = settings::load(&data) {
-        if let Some(job) = value.upload_queue.iter_mut().find(|job| job.id == job_id) {
-            job.status = "failed".into();
-            job.message = error.into();
-            job.updated_at = chrono::Utc::now().to_rfc3339();
-            let _ = settings::save(&data, &value);
+/// Merge an upload outcome into the persisted task without restoring the pre-POST snapshot.
+fn apply_manual_upload_outcome(
+    item: &mut settings::UploadJob,
+    expected: &settings::UploadJob,
+    result: &Result<DevifyUploadResult, String>,
+    success_message: &str,
+) -> Result<(), String> {
+    if item.id != expected.id || item.owner.is_none() || item.owner != expected.owner || item.scope != expected.scope {
+        return Err("任务身份或上传范围已改变，无法保存结果。".into());
+    }
+    if let Ok(value) = result {
+        if item.batch_id != Some(value.batch_id) || item.create_started != Some(true) {
+            return Err("本机批次状态已改变，无法保存结果。".into());
         }
     }
+    // Reconciliation can report a terminal state before this request returns. Do not
+    // overwrite that later observation with an older request's success or failure.
+    let later_terminal = matches!(item.status.as_str(), "completed" | "cancelled")
+        || (item.status == "failed" && (expected.status != "failed" || item.updated_at != expected.updated_at));
+    if later_terminal {
+        if matches!(item.status.as_str(), "completed" | "cancelled")
+            && (item.batch_id.is_none() || item.create_started != Some(true)) {
+            return Err("已结束任务缺少可核验的批次状态。".into());
+        }
+        return Ok(());
+    }
+    item.updated_at = chrono::Utc::now().to_rfc3339();
+    match result {
+        Ok(value) => {
+            item.status = "processing".into();
+            item.covered = value.covered.clone();
+            item.voice_processed = value.voice_processed.clone();
+            item.voice_pending = value.voice_pending.clone();
+            item.message = success_message.into();
+        }
+        Err(error) if item.batch_id.is_some() => {
+            item.status = "processing".into();
+            item.message = format!("上传中断，等待核对服务端批次：{error}");
+        }
+        Err(error) => {
+            item.status = "failed".into();
+            item.message = error.clone();
+        }
+    }
+    Ok(())
+}
+
+fn mark_manual_batch_failed(app: &AppHandle, job_id: &str, owner: &settings::UploadOwner, token: &str, error: &str) -> Result<(), String> {
+    let data = app_data(app);
+    settings::update(&data, |value| {
+        validate_owner_state(value, owner, token)?;
+        if desktop_credentials::load(&data, &owner.base_url)?.access != token {
+            return Err("登录状态已改变，不会修改原账号的任务。".into());
+        }
+        let job = value.upload_queue.iter_mut().find(|job| job.id == job_id)
+            .ok_or("找不到上传任务，无法保存失败状态。")?;
+        if job.owner.as_ref() != Some(owner) { return Err("任务归属已改变。".into()); }
+        if matches!(job.status.as_str(), "completed" | "failed" | "cancelled") { return Ok(()); }
+        if job.batch_id.is_some() {
+            job.status = "processing".into();
+            job.message = format!("上传中断，等待核对服务端批次：{error}");
+        } else {
+            job.status = "failed".into();
+            job.message = error.into();
+        }
+        job.updated_at = chrono::Utc::now().to_rfc3339();
+        Ok(())
+    }).map(|_| ())
 }
 
 async fn submit_manual_batch(app: &AppHandle, job_id: &str) -> Result<DevifyUploadResult, String> {
@@ -2216,34 +2507,38 @@ async fn submit_manual_batch(app: &AppHandle, job_id: &str) -> Result<DevifyUplo
     let scope = job.scope.clone().ok_or("找不到上传范围。")?;
     validate_upload_scope(&value, &job.account_id, job.space_id, &scope.usernames)?;
     if scope.base_url.trim_end_matches('/') != value.devify.base_url.trim_end_matches('/') { return Err("服务地址已更改，无法继续原上传任务。".into()); }
+    let (owner, token) = verified_upload_identity(&data, &job.account_id, job.space_id).await?;
+    validate_owned_job(&value, &job, &owner, &token, &scope)?;
+    if !matches!(job.status.as_str(), "queued" | "running") || job.batch_id.is_some() || job.create_started != Some(false) {
+        return Err("无法确认本机批次尚未提交，请检查服务端记录。".into());
+    }
     let preview = devify_upload_preview(app.clone(), job.account_id.clone(), job.space_id, scope.usernames.clone(), scope.since, scope.until, Some(scope.message_selection.clone())).await?;
     if job.manual_fingerprint.as_deref().is_some_and(|old| old != preview.fingerprint) {
         return Err("本批消息或附件已变化，无法安全重试；请重新预览并创建任务。".into());
     }
-    let mut value = settings::load(&data)?;
-    let current = value.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
-    current.status = "running".into();
-    current.manual_fingerprint = Some(preview.fingerprint.clone());
-    current.message = format!("正在上传第 {}/{} 批", job.manual_index + 1, job.manual_total);
-    current.updated_at = chrono::Utc::now().to_rfc3339();
-    settings::save(&data, &value)?;
-    let result = devify_upload_wechat(app.clone(), job.space_id, job.account_id.clone(), scope.usernames, scope.since, scope.until, Some(scope.base_url), Some(preview.fingerprint), scope.message_selection).await;
-    let mut value = settings::load(&data)?;
-    if let Some(current) = value.upload_queue.iter_mut().find(|item| item.id == job_id) {
-        current.updated_at = chrono::Utc::now().to_rfc3339();
-        match &result {
-            Ok(upload) => {
-                current.batch_id = Some(upload.batch_id);
-                current.status = "processing".into();
-                current.covered = upload.covered.clone();
-                current.voice_processed = upload.voice_processed.clone();
-                current.voice_pending = upload.voice_pending.clone();
-                current.message = format!("第 {}/{} 批已提交服务端处理", job.manual_index + 1, job.manual_total);
-            }
-            Err(error) => { current.status = "failed".into(); current.message = error.clone(); }
+    settings::update(&data, |current| {
+        let item = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+        validate_owned_job(current, item, &owner, &token, &scope)?;
+        if desktop_credentials::load(&data, &owner.base_url)?.access != token
+            || !matches!(item.status.as_str(), "queued" | "running")
+            || item.batch_id.is_some() || item.create_started != Some(false) {
+            return Err("上传任务或登录状态已改变，请重新确认。".into());
         }
-    }
-    settings::save(&data, &value)?;
+        let item = current.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+        item.status = "running".into();
+        item.manual_fingerprint = Some(preview.fingerprint.clone());
+        item.message = format!("正在上传第 {}/{} 批", job.manual_index + 1, job.manual_total);
+        item.updated_at = chrono::Utc::now().to_rfc3339();
+        Ok(())
+    })?;
+    let result = devify_upload_wechat(app.clone(), job_id.to_string(), job.space_id, job.account_id.clone(), scope.usernames.clone(), scope.since, scope.until, Some(scope.base_url.clone()), Some(preview.fingerprint), scope.message_selection.clone(), UploadTrigger::Manual, None).await;
+    settings::update(&data, |current| {
+        let item = current.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+        apply_manual_upload_outcome(
+            item, &job, &result,
+            &format!("第 {}/{} 批已提交服务端处理", job.manual_index + 1, job.manual_total),
+        )
+    })?;
     result.map(|mut result| { result.job_id = job_id.into(); result })
 }
 
@@ -2268,6 +2563,7 @@ async fn devify_upload_selected(
         return Err("请先预览并确认上传范围。".into());
     }
     let message_selection = message_selection.unwrap_or_default();
+    let (owner, owner_token) = verified_upload_identity(&app_data(&app), &account_id, space_id).await?;
     let mut initial_baselines = BTreeMap::new();
     if initial_history.unwrap_or(false) {
         if !message_selection.is_empty() { return Err("首次历史上传请选择整段记录。".into()); }
@@ -2298,11 +2594,13 @@ async fn devify_upload_selected(
         let group = format!("manual-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
         let total = batches.len();
         let now = chrono::Utc::now().to_rfc3339();
-        let mut next = settings::load(&app_data(&app))?;
+        let data = app_data(&app);
+        let mut pending = Vec::with_capacity(total);
         for (index, selection) in batches.into_iter().enumerate() {
             let names = selection.keys().cloned().collect();
-            next.upload_queue.push(settings::UploadJob {
+            pending.push(settings::UploadJob {
                 id: format!("{group}-{index}"), space_id, account_id: account_id.clone(),
+                owner: Some(owner.clone()), create_started: Some(false),
                 status: "queued".into(), message: format!("等待上传第 {}/{} 批", index + 1, total),
                 created_at: now.clone(), updated_at: now.clone(),
                 scope: Some(settings::UploadScope { usernames: names, since, until, base_url: settings.devify.base_url.clone(), message_selection: selection }),
@@ -2311,10 +2609,24 @@ async fn devify_upload_selected(
                 ..Default::default()
             });
         }
-        settings::save(&app_data(&app), &next)?;
+        settings::update(&data, |current| {
+            validate_owner_state(current, &owner, &owner_token)?;
+            if desktop_credentials::load(&data, &owner.base_url)?.access != owner_token {
+                return Err("登录状态已改变，请重新确认采集任务。".into());
+            }
+            validate_upload_scope(current, &account_id, space_id, &usernames)?;
+            if pending.iter().any(|job| current.upload_queue.iter().any(|existing| existing.id == job.id)) {
+                return Err("上传任务标识重复，请重新创建采集任务。".into());
+            }
+            current.upload_queue.extend(pending);
+            Ok(())
+        })?;
         let first_id = format!("{group}-0");
         let result = submit_manual_batch(&app, &first_id).await;
-        if let Err(error) = &result { mark_manual_batch_failed(&app, &first_id, error); }
+        if let Err(error) = &result {
+            mark_manual_batch_failed(&app, &first_id, &owner, &owner_token, error)
+                .map_err(|save_error| format!("{error}；保存本机任务失败：{save_error}"))?;
+        }
         return result;
     }
     let scope = settings::UploadScope {
@@ -2324,13 +2636,17 @@ async fn devify_upload_selected(
         base_url: settings.devify.base_url.clone(),
         message_selection: message_selection.clone(),
     };
-    let job_id = format!("upload-{}", chrono::Utc::now().timestamp_millis());
+    let job_id = format!("upload-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
     let now = chrono::Utc::now().to_rfc3339();
-    let mut job = settings::UploadJob {
+    let job = settings::UploadJob {
         id: job_id.clone(),
         space_id,
         account_id: account_id.clone(),
         batch_id: None,
+        owner: Some(owner.clone()),
+        create_started: Some(false),
+        package_digest: None,
+        verified_completion_digest: None,
         status: "running".into(),
         message: "正在生成并上传聊天包".into(),
         created_at: now.clone(),
@@ -2341,7 +2657,7 @@ async fn devify_upload_selected(
         initial_chunks: BTreeMap::new(),
         sync_advance: false,
         continue_sync: false,
-        continuation_manual: false,
+        continuation_manual: None,
         manual_group: None,
         manual_index: 0,
         manual_total: 0,
@@ -2349,13 +2665,24 @@ async fn devify_upload_selected(
         voice_processed: BTreeMap::new(),
         voice_pending: BTreeMap::new(),
     };
-    let mut next_settings = settings.clone();
-    next_settings.upload_queue.push(job.clone());
-    settings::save(&app_data(&app), &next_settings)?;
+    let data = app_data(&app);
+    settings::update(&data, |current| {
+        validate_owner_state(current, &owner, &owner_token)?;
+        if desktop_credentials::load(&data, &owner.base_url)?.access != owner_token {
+            return Err("登录状态已改变，请重新确认采集任务。".into());
+        }
+        validate_upload_scope(current, &account_id, space_id, &usernames)?;
+        if current.upload_queue.iter().any(|existing| existing.id == job.id) {
+            return Err("上传任务标识重复，请重新创建采集任务。".into());
+        }
+        current.upload_queue.push(job.clone());
+        Ok(())
+    })?;
     let upload_account_id = account_id.clone();
     let upload_usernames = usernames.clone();
     let result = devify_upload_wechat(
         app.clone(),
+        job_id.clone(),
         space_id,
         upload_account_id,
         upload_usernames,
@@ -2364,34 +2691,19 @@ async fn devify_upload_selected(
         Some(settings.devify.base_url.clone()),
         Some(fingerprint),
         message_selection,
+        UploadTrigger::Manual,
+        None,
     )
     .await;
-    let mut next_settings = settings::load(&app_data(&app))?;
-    match result {
-        Ok(mut result) => {
-            job.batch_id = Some(result.batch_id);
-            job.covered = result.covered.clone();
-            job.status = "processing".into();
-            job.message = "已提交服务端解析".into();
-            job.updated_at = chrono::Utc::now().to_rfc3339();
-            job.voice_processed = result.voice_processed.clone();
-            job.voice_pending = result.voice_pending.clone();
-            next_settings.upload_queue.retain(|item| item.id != job.id);
-            next_settings.upload_queue.insert(0, job);
-            settings::save(&app_data(&app), &next_settings)?;
-            result.job_id = job_id;
-            Ok(result)
-        }
-        Err(error) => {
-            job.status = "failed".into();
-            job.message = error.clone();
-            job.updated_at = chrono::Utc::now().to_rfc3339();
-            next_settings.upload_queue.retain(|item| item.id != job.id);
-            next_settings.upload_queue.insert(0, job);
-            settings::save(&app_data(&app), &next_settings)?;
-            Err(error)
-        }
-    }
+    settings::update(&data, |current| {
+        let item = current.upload_queue.iter_mut().find(|item| item.id == job_id)
+            .ok_or("找不到上传任务，无法保存结果。")?;
+        apply_manual_upload_outcome(item, &job, &result, "已提交服务端解析")
+    }).map_err(|save_error| match &result {
+        Err(error) => format!("{error}；保存本机任务失败：{save_error}"),
+        Ok(_) => save_error,
+    })?;
+    result.map(|mut value| { value.job_id = job_id; value })
 }
 
 #[tauri::command]
@@ -2408,24 +2720,37 @@ async fn devify_upload_retry_preview(
         .cloned()
         .ok_or_else(|| "找不到上传任务。".to_string())?;
     let scope = job.retry_scope(&settings)?.clone();
+    if job.owner.is_none() || (job.batch_id.is_none() && job.create_started != Some(false)) {
+        return Err("无法确认原任务的账号或服务端批次，请核对后重新创建采集任务。".into());
+    }
+    if job.batch_id.is_some() && job.package_digest.is_none() {
+        return Err("原任务没有保存归档摘要，无法安全重试，请重新创建采集任务。".into());
+    }
+    let (owner, token) = verified_upload_identity(&data, &job.account_id, job.space_id).await?;
+    let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    let latest = settings::load(&data)?;
     let cache = decrypt::cache_dir(&data, &job.account_id);
-    let voice_settings = settings.voice.clone();
-    let attachments = settings.backup.attachments.clone();
+    let voice_settings = latest.voice.clone();
+    let attachments = latest.backup.attachments.clone();
     let account_id = job.account_id.clone();
     let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
-    let legacy_keys = load_legacy_upload_keys(&app, job.space_id, &account_id, &scope.usernames).await?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let legacy_keys = load_legacy_upload_keys(&app, job.space_id, &account_id, &scope.usernames, Some((&owner.base_url, &token))).await?;
+    let data_for_prepare = data.clone();
+    let scope_for_prepare = scope.clone();
+    let space_id = job.space_id;
+    let preview = tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
-            &data,
+            &data_for_prepare,
             &cache,
             &media_root,
             &account_id,
-            job.space_id,
-            &scope.base_url,
-            &scope.usernames,
-            scope.since,
-            scope.until,
-            &scope.message_selection,
+            space_id,
+            &scope_for_prepare.base_url,
+            &scope_for_prepare.usernames,
+            scope_for_prepare.since,
+            scope_for_prepare.until,
+            &scope_for_prepare.message_selection,
             &voice_settings,
             &attachments,
             &legacy_keys,
@@ -2433,7 +2758,222 @@ async fn devify_upload_retry_preview(
         .map(|prepared| prepared.preview)
     })
     .await
-    .map_err(|e| format!("读取上传预览失败：{e}"))?
+    .map_err(|e| format!("读取上传预览失败：{e}"))??;
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    Ok(preview)
+}
+
+// The token is deliberately never serialized, formatted, or logged.
+struct CloudRetryAuth {
+    token: String,
+    base_url: String,
+    job_id: String,
+    space_id: i64,
+    account_id: String,
+    batch_id: i64,
+    device_id: String,
+    user_id: i64,
+    idempotency_key: String,
+    scope: settings::UploadScope,
+}
+
+fn cloud_retry_device_id(configured: &str, token: &str) -> Result<String, String> {
+    let claim = access_token_claim(token, "device_id");
+    let device_id = if configured.is_empty() { claim.as_deref().unwrap_or("") } else { configured };
+    if device_id.is_empty() || device_id.trim() != device_id
+        || claim.as_deref().is_some_and(|value| value != device_id)
+    {
+        return Err("无法确认当前设备，不能重试云端批次。".into());
+    }
+    Ok(device_id.to_string())
+}
+
+async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) -> Result<(settings::UploadOwner, String), String> {
+    let settings = settings::load(data)?;
+    if settings.active_account_id != account_id { return Err("当前微信账号已改变。".into()); }
+    let base_url = upload_list_base_url(&settings, space_id)?;
+    let token = devify_access_token_async(data, &base_url).await?;
+    let device_id = cloud_retry_device_id(&settings.devify.device_id, &token)?;
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建身份请求。")?;
+    let mut response = client.get(format!("{base_url}/api/v1/auth/user"))
+        .bearer_auth(&token).send().await.map_err(|_| "无法确认云端登录用户。")?;
+    if !response.status().is_success() { return Err("无法确认云端登录用户。".into()); }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端用户。")? {
+        append_retry_identity_body(&mut body, &chunk)?;
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&body).map_err(|_| "云端用户响应无效。")?;
+    let user = payload.get("data").unwrap_or(&payload);
+    let user_id = user.get("id").and_then(serde_json::Value::as_i64).filter(|id| *id > 0)
+        .ok_or("无法确认云端用户标识。")?;
+    // A configured device without a JWT claim is not proof of ownership. Verify its
+    // active registration using the very same authenticated token as the user lookup.
+    let devices = fixed_identity_get(&base_url, &token, "/api/v1/auth/desktop/devices").await?;
+    let items = devices.as_array().or_else(|| devices.get("list").and_then(serde_json::Value::as_array))
+        .ok_or("无法确认当前设备登记。")?;
+    if items.iter().filter(|item| item.get("device_id").and_then(serde_json::Value::as_str) == Some(device_id.as_str())
+        && item.get("status").and_then(serde_json::Value::as_str) == Some("active")).count() != 1 {
+        return Err("当前设备不属于该用户或已停用，无法上传。".into());
+    }
+    let owner = settings::UploadOwner { base_url, space_id, account_id: account_id.to_string(), user_id, device_id };
+    validate_owner_state(&settings::load(data)?, &owner, &token)?;
+    if desktop_credentials::load(data, &owner.base_url)?.access != token {
+        return Err("Devify 登录状态已改变，请重新操作。".into());
+    }
+    Ok((owner, token))
+}
+
+fn validate_owner_state(settings: &settings::AppSettings, owner: &settings::UploadOwner, token: &str) -> Result<(), String> {
+    if owner.user_id <= 0 || owner.device_id.is_empty() || owner.device_id.trim() != owner.device_id
+        || owner.account_id.is_empty() || settings.active_account_id != owner.account_id
+        || upload_list_base_url(settings, owner.space_id).ok().as_deref() != Some(owner.base_url.as_str())
+        || cloud_retry_device_id(&settings.devify.device_id, token).ok().as_deref() != Some(owner.device_id.as_str()) {
+        return Err("任务的登录状态、服务、空间、微信账号或设备已改变。".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn devify_upload_identity(app: AppHandle) -> Result<serde_json::Value, String> {
+    let data = app_data(&app);
+    let settings = settings::load(&data)?;
+    let space = settings.devify.active_space_id.ok_or("请先选择空间。")?;
+    let (owner, _) = verified_upload_identity(&data, &settings.active_account_id, space).await?;
+    Ok(serde_json::json!({"user_id": owner.user_id, "device_id": owner.device_id}))
+}
+
+fn validate_owned_job(settings: &settings::AppSettings, job: &settings::UploadJob,
+    owner: &settings::UploadOwner, token: &str, scope: &settings::UploadScope) -> Result<(), String> {
+    validate_owner_state(settings, owner, token)?;
+    if job.owner.as_ref() != Some(owner) || job.account_id != owner.account_id
+        || job.space_id != owner.space_id || job.scope.as_ref() != Some(scope)
+        || settings::normalize_base_url(&scope.base_url)? != owner.base_url {
+        return Err("任务身份或上传范围已改变，请重新创建采集任务。".into());
+    }
+    validate_upload_scope(settings, &owner.account_id, owner.space_id, &scope.usernames)
+}
+
+fn validate_live_owned_job(data: &Path, job_id: &str, owner: &settings::UploadOwner,
+    token: &str, scope: &settings::UploadScope) -> Result<(), String> {
+    let settings = settings::load(data)?;
+    let job = settings.upload_queue.iter().find(|job| job.id == job_id)
+        .ok_or("找不到原始上传任务。")?;
+    if desktop_credentials::load(data, &owner.base_url)?.access != token {
+        return Err("Devify 登录状态已改变，请重新操作。".into());
+    }
+    validate_owned_job(&settings, job, owner, token, scope)
+}
+
+fn validate_cloud_retry_context(
+    settings: &settings::AppSettings,
+    job: &settings::UploadJob,
+    auth: &CloudRetryAuth,
+    current_token: &str,
+) -> Result<(), String> {
+    let invalid = || "重试任务的登录状态、空间、账号、设备或范围已改变，请重新确认。".to_string();
+    if auth.token.is_empty() || current_token != auth.token || auth.batch_id <= 0
+        || job.id != auth.job_id || job.batch_id != Some(auth.batch_id)
+        || job.space_id != auth.space_id || job.account_id != auth.account_id
+        || settings.active_account_id != auth.account_id
+        || upload_list_base_url(settings, auth.space_id).ok().as_deref() != Some(auth.base_url.as_str())
+        || cloud_retry_device_id(&settings.devify.device_id, current_token).ok().as_deref() != Some(auth.device_id.as_str())
+    {
+        return Err(invalid());
+    }
+    validate_upload_scope(settings, &auth.account_id, auth.space_id, &auth.scope.usernames)
+        .map_err(|_| invalid())?;
+    let scope = job.retry_scope(settings).map_err(|_| invalid())?;
+    if scope.usernames != auth.scope.usernames || scope.since != auth.scope.since
+        || scope.until != auth.scope.until || scope.base_url != auth.scope.base_url
+        || scope.message_selection != auth.scope.message_selection
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn validate_remote_owner(owner: &settings::UploadOwner, batch_id: i64, batch: &serde_json::Value, key: Option<&str>) -> Result<(), String> {
+    if batch_id <= 0 || batch.get("id").and_then(serde_json::Value::as_i64) != Some(batch_id)
+        || batch.get("space_id").and_then(serde_json::Value::as_i64) != Some(owner.space_id)
+        || batch.get("uploaded_by_id").and_then(serde_json::Value::as_i64) != Some(owner.user_id)
+        || batch.get("source_type").and_then(serde_json::Value::as_str) != Some("wechat")
+        || batch.get("source_account_id").and_then(serde_json::Value::as_str) != Some(owner.account_id.as_str())
+        || batch.get("device_id").and_then(serde_json::Value::as_str) != Some(owner.device_id.as_str())
+        || key.is_some_and(|expected| batch.get("idempotency_key").and_then(serde_json::Value::as_str) != Some(expected)) {
+        return Err("无法确认云端批次的用户、空间、设备和来源。".into());
+    }
+    Ok(())
+}
+
+fn validate_cloud_retry_remote(
+    auth: &CloudRetryAuth,
+    user: &serde_json::Value,
+    batch: &serde_json::Value,
+) -> Result<(i64, String), String> {
+    let user_id = user.get("id").and_then(serde_json::Value::as_i64).filter(|id| *id > 0);
+    if user_id.is_none()
+        || batch.get("id").and_then(serde_json::Value::as_i64) != Some(auth.batch_id)
+        || batch.get("space_id").and_then(serde_json::Value::as_i64) != Some(auth.space_id)
+        || batch.get("uploaded_by_id").and_then(serde_json::Value::as_i64) != user_id
+        || batch.get("source_type").and_then(serde_json::Value::as_str) != Some("wechat")
+        || batch.get("source_account_id").and_then(serde_json::Value::as_str) != Some(auth.account_id.as_str())
+        || batch.get("device_id").and_then(serde_json::Value::as_str) != Some(auth.device_id.as_str())
+        || batch.get("status").and_then(serde_json::Value::as_str) != Some("failed")
+    {
+        return Err("无法确认云端失败批次的用户、设备和来源，不能重试。".into());
+    }
+    let key = batch.get("idempotency_key").and_then(serde_json::Value::as_str)
+        .filter(|key| !key.is_empty() && key.len() <= 1024)
+        .ok_or("云端批次缺少有效幂等键，不能安全重试。")?;
+    Ok((user_id.ok_or("无法确认云端用户。")?, key.to_string()))
+}
+
+fn validate_cloud_retry_package(auth: &CloudRetryAuth, space_id: i64, account_id: &str, key: &str) -> Result<(), String> {
+    if auth.space_id != space_id || auth.account_id != account_id || auth.idempotency_key != key {
+        return Err("上传内容或范围已变化，请重新创建采集任务。".into());
+    }
+    Ok(())
+}
+
+fn validate_live_cloud_retry(data: &Path, auth: &CloudRetryAuth) -> Result<(), String> {
+    let settings = settings::load(data)?;
+    let job = settings.upload_queue.iter().find(|job| job.id == auth.job_id)
+        .ok_or("找不到原始上传任务，不能重试。")?;
+    let credentials = desktop_credentials::load(data, &auth.base_url)?;
+    validate_cloud_retry_context(&settings, job, auth, &credentials.access)
+}
+
+fn append_retry_identity_body(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
+    if body.len().saturating_add(chunk.len()) > UPLOAD_LIST_MAX_RESPONSE_BYTES {
+        return Err("云端重试身份响应过大。".into());
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+async fn retry_identity_get(client: &reqwest::Client, auth: &CloudRetryAuth, path: &str) -> Result<serde_json::Value, String> {
+    let mut response = client.get(format!("{}{path}", auth.base_url))
+        .bearer_auth(&auth.token).send().await
+        .map_err(|_| "无法读取云端重试身份，请检查网络连接。")?;
+    if !response.status().is_success() {
+        return Err(format!("无法确认云端重试身份：HTTP {}。", response.status().as_u16()));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端重试身份响应。")? {
+        append_retry_identity_body(&mut body, &chunk)?;
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|_| "云端重试身份响应格式无效。")?;
+    Ok(payload.get("data").cloned().unwrap_or(payload))
+}
+
+async fn verify_cloud_retry_remote(auth: &CloudRetryAuth) -> Result<(i64, String), String> {
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建云端重试身份请求。")?;
+    let user = retry_identity_get(&client, auth, "/api/v1/auth/user").await?;
+    let batch = retry_identity_get(&client, auth, &format!("/api/v1/chat/uploads/{}", auth.batch_id)).await?;
+    validate_cloud_retry_remote(auth, &user, &batch)
 }
 
 #[tauri::command]
@@ -2460,13 +3000,51 @@ async fn devify_upload_retry(
     if job.manual_fingerprint.as_deref().is_some_and(|old| old != fingerprint) {
         return Err("本批消息或附件已变化，无法安全重试；请重新创建采集任务。".into());
     }
-    if job.manual_group.is_some() && job.manual_fingerprint.is_none() {
-        let mut next = settings::load(&data)?;
-        if let Some(item) = next.upload_queue.iter_mut().find(|item| item.id == job_id) {
-            item.manual_fingerprint = Some(fingerprint.clone());
-        }
-        settings::save(&data, &next)?;
+    if job.owner.is_none() || (job.batch_id.is_none() && job.create_started != Some(false)) {
+        return Err("无法确认原任务的账号或服务端批次，请核对后重新创建采集任务。".into());
     }
+    if job.batch_id.is_some() && job.package_digest.is_none() {
+        return Err("原任务没有保存归档摘要，无法安全重试。".into());
+    }
+    let (owner, token) = verified_upload_identity(&data, &job.account_id, job.space_id).await?;
+    let identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    let cloud_retry = if let Some(batch_id) = job.batch_id {
+        if batch_id <= 0 { return Err("原上传批次无效，不能重试。".into()); }
+        let mut auth = CloudRetryAuth {
+            token: token.clone(), base_url: owner.base_url.clone(), job_id: job.id.clone(),
+            space_id: job.space_id, account_id: job.account_id.clone(), batch_id,
+            device_id: owner.device_id.clone(), user_id: 0, idempotency_key: String::new(), scope: scope.clone(),
+        };
+        validate_live_cloud_retry(&data, &auth)?;
+        let (user_id, key) = verify_cloud_retry_remote(&auth).await?;
+        if user_id != owner.user_id { return Err("云端上传者与原任务账号不一致，不能重试。".into()); }
+        auth.user_id = user_id;
+        auth.idempotency_key = key;
+        validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+        validate_live_cloud_retry(&data, &auth)?;
+        let confirmed_key = format!("wechat-{}-{}", job.account_id, &fingerprint[..32]);
+        validate_cloud_retry_package(&auth, job.space_id, &job.account_id, &confirmed_key)?;
+        Some(auth)
+    } else {
+        None
+    };
+    if job.manual_group.is_some() && job.manual_fingerprint.is_none() {
+        settings::update(&data, |current| {
+            let item = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+            validate_owned_job(current, item, &owner, &token, &scope)?;
+            if desktop_credentials::load(&data, &owner.base_url)?.access != token {
+                return Err("登录状态已改变，请重新确认重试任务。".into());
+            }
+            let item = current.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+            if item.manual_fingerprint.as_deref().is_some_and(|old| old != fingerprint) {
+                return Err("原任务内容已变化，请重新创建采集任务。".into());
+            }
+            item.manual_fingerprint = Some(fingerprint.clone());
+            Ok(())
+        })?;
+    }
+    drop(identity_guard);
     let retry_usernames = scope.usernames.clone();
     let retry_since = scope.since;
     let retry_until = scope.until;
@@ -2474,6 +3052,7 @@ async fn devify_upload_retry(
     let retry_selection = scope.message_selection.clone();
     let result = devify_upload_wechat(
         app.clone(),
+        job_id.clone(),
         job.space_id,
         job.account_id.clone(),
         retry_usernames,
@@ -2482,35 +3061,59 @@ async fn devify_upload_retry(
         Some(retry_base_url),
         Some(fingerprint),
         retry_selection,
+        UploadTrigger::Manual,
+        cloud_retry,
     )
     .await;
-    let mut next = settings::load(&data)?;
-    if let Some(item) = next.upload_queue.iter_mut().find(|item| item.id == job_id) {
-        item.updated_at = chrono::Utc::now().to_rfc3339();
-        match &result {
-            Ok(value) => {
-                item.status = "processing".into();
-                item.batch_id = Some(value.batch_id);
-                item.covered = value.covered.clone();
-                item.message = "已重新提交服务端解析".into();
-                item.voice_processed = value.voice_processed.clone();
-                item.voice_pending = value.voice_pending.clone();
-            }
-            Err(error) => {
-                item.status = "failed".into();
-                item.message = error.clone();
-            }
-        }
-    }
-    settings::save(&data, &next)?;
+    settings::update(&data, |current| {
+        let item = current.upload_queue.iter_mut().find(|item| item.id == job_id)
+            .ok_or("找不到上传任务，无法保存重试结果。")?;
+        apply_manual_upload_outcome(item, &job, &result, "已重新提交服务端解析")
+    })?;
     result.map(|mut value| {
         value.job_id = job_id;
         value
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum UploadTrigger {
+    Manual,
+    Scheduled,
+    Unknown,
+}
+
+fn sync_upload_trigger(manual: bool, continuation_only: bool, original_manual: Option<bool>) -> UploadTrigger {
+    match if continuation_only { original_manual } else { Some(manual) } {
+        Some(true) => UploadTrigger::Manual,
+        Some(false) => UploadTrigger::Scheduled,
+        None => UploadTrigger::Unknown,
+    }
+}
+
+fn upload_create_body(
+    account_id: &str,
+    key: &str,
+    device_id: &str,
+    device_label: &str,
+    platform: &str,
+    trigger: UploadTrigger,
+) -> serde_json::Value {
+    serde_json::json!({
+        "source_type": "wechat",
+        "trigger": trigger,
+        "source_account_id": account_id,
+        "idempotency_key": key,
+        "device_id": device_id,
+        "device_label": device_label,
+        "platform": platform,
+    })
+}
+
 async fn devify_upload_wechat(
     app: AppHandle,
+    job_id: String,
     space_id: i64,
     account_id: String,
     usernames: Vec<String>,
@@ -2519,6 +3122,8 @@ async fn devify_upload_wechat(
     expected_base_url: Option<String>,
     expected_fingerprint: Option<String>,
     message_selection: BTreeMap<String, Vec<settings::MessageRef>>,
+    trigger: UploadTrigger,
+    cloud_retry: Option<CloudRetryAuth>,
 ) -> Result<DevifyUploadResult, String> {
     if usernames.is_empty() {
         return Err("请至少选择一个会话。".into());
@@ -2528,15 +3133,24 @@ async fn devify_upload_wechat(
         return Err("上传范围包含不在当前白名单中的会话。".into());
     }
     let data = app_data(&app);
-    let cache = decrypt::cache_dir(&data, &account_id);
+    let (owner, token) = verified_upload_identity(&data, &account_id, space_id).await?;
+    let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     let current_settings = settings::load(&data)?;
+    let scope = current_settings.upload_queue.iter().find(|job| job.id == job_id)
+        .and_then(|job| job.scope.clone()).ok_or("找不到原始上传范围。")?;
+    if scope.usernames != usernames || scope.since != since || scope.until != until
+        || scope.message_selection != message_selection {
+        return Err("上传范围已改变，请重新创建采集任务。".into());
+    }
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    let cache = decrypt::cache_dir(&data, &account_id);
     let base_url = expected_base_url
         .clone()
         .unwrap_or_else(|| current_settings.devify.base_url.clone());
     if base_url.trim_end_matches('/') != current_settings.devify.base_url.trim_end_matches('/') {
         return Err("服务地址已更改，无法安全匹配旧消息。".into());
     }
-    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames).await?;
+    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
     let account_for_prepare = account_id.clone();
     let names_for_prepare = usernames.clone();
     let voice_settings = current_settings.voice.clone();
@@ -2649,38 +3263,66 @@ async fn devify_upload_wechat(
     {
         return Err("上传范围中的会话已移出白名单，上传已取消。".into());
     }
-    let token = devify_access_token_async(&data, &settings.devify.base_url).await?;
-    let client = reqwest::Client::new();
+    // The key must still identify the batch whose ownership was verified, before POST can
+    // create anything. Otherwise a changed archive would silently create a new batch.
+    let key = format!("wechat-{}-{}", account_id, &package_key[..32]);
+    if let Some(auth) = &cloud_retry {
+        if auth.token != token || auth.user_id != owner.user_id || auth.device_id != owner.device_id {
+            return Err("重试任务的登录用户或设备已改变。".into());
+        }
+        validate_cloud_retry_package(auth, space_id, &account_id, &key)?;
+        validate_live_cloud_retry(&data, auth)?;
+        let (user_id, remote_key) = verify_cloud_retry_remote(auth).await?;
+        if user_id != auth.user_id || remote_key != auth.idempotency_key {
+            return Err("云端批次或用户已变化，请重新确认重试任务。".into());
+        }
+        validate_live_cloud_retry(&data, auth)?;
+    }
+    let digest = hex::encode(sha2::Sha256::digest(&body));
+    // Record the exact ZIP and the possibility of a sent request *before* POST. If the
+    // response is lost, the unknown batch cannot be blindly created a second time.
+    settings::update(&data, |current| {
+        let job = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+        validate_owned_job(current, job, &owner, &token, &scope)?;
+        if desktop_credentials::load(&data, &owner.base_url)?.access != token { return Err("登录状态已改变。".into()); }
+        if cloud_retry.is_some() {
+            if job.package_digest.as_deref() != Some(digest.as_str()) { return Err("无法确认原始归档完全一致，请重新创建采集任务。".into()); }
+        } else if job.batch_id.is_some() || job.create_started != Some(false) {
+            return Err("无法确认服务端是否已有批次，请核对后重新创建采集任务。".into());
+        }
+        let job = current.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+        job.create_started = Some(true);
+        job.package_digest = Some(digest.clone());
+        Ok(())
+    })?;
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()
+        .map_err(|_| "无法创建上传请求。")?;
     let upload_platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
     } else {
         settings.devify.platform.clone()
     };
-    let upload_device_id = if settings.devify.device_id.is_empty() {
-        access_token_claim(&token, "device_id").unwrap_or_default()
-    } else {
-        settings.devify.device_id.clone()
-    };
-    // The key is derived from the packaged content, so retrying the same range reuses its
-    // batch instead of creating a duplicate one.
-    let key = format!("wechat-{}-{}", account_id, &package_key[..32]);
-    let created = client
-        .post(format!(
-            "{}/api/v1/spaces/{space_id}/chat/uploads",
-            settings.devify.base_url.trim_end_matches('/')
-        ))
+    let upload_device_id = owner.device_id.clone();
+    let upload_base_url = owner.base_url.as_str();
+    let request = client
+        .post(format!("{upload_base_url}/api/v1/spaces/{space_id}/chat/uploads"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({
-            "source_type": "wechat",
-            "source_account_id": account_id,
-            "idempotency_key": key,
-            "device_id": upload_device_id,
-            "device_label": settings::resolved_device_label(&settings.devify),
-            "platform": upload_platform,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("创建上传批次失败：{e}"))?;
+        .json(&upload_create_body(
+            &account_id,
+            &key,
+            &upload_device_id,
+            &settings::resolved_device_label(&settings.devify),
+            &upload_platform,
+            trigger,
+        ));
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    if let Some(auth) = &cloud_retry {
+        validate_live_cloud_retry(&data, auth)?;
+    }
+    let created = request.send().await.map_err(|error| {
+        if cloud_retry.is_some() { "创建上传批次失败，请检查网络连接。".to_string() }
+        else { format!("创建上传批次失败：{error}") }
+    })?;
     if !created.status().is_success() {
         return Err(format!("创建上传批次失败：{}", created.status()));
     }
@@ -2689,11 +3331,28 @@ async fn devify_upload_wechat(
         .await
         .map_err(|e| format!("读取上传响应失败：{e}"))?;
     let batch = payload.get("data").unwrap_or(&payload);
-    let batch_id = batch
-        .get("id")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| "上传响应缺少批次 ID。".to_string())?;
-    let batch_status = batch.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let batch_id = batch.get("id").and_then(|v| v.as_i64()).filter(|id| *id > 0)
+        .ok_or_else(|| "上传响应缺少批次 ID；请核对服务端记录。".to_string())?;
+    if cloud_retry.as_ref().is_some_and(|auth| auth.batch_id != batch_id) {
+        return Err("服务端返回了不同的上传批次，已取消上传。".into());
+    }
+    // Save the server ID and package coverage before any subsequent network request.
+    // A failed save leaves create_started=true and prevents an ambiguous replay.
+    settings::update(&data, |current| {
+        let job = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+        validate_owned_job(current, job, &owner, &token, &scope)?;
+        if job.batch_id.is_some_and(|saved| saved != batch_id) { return Err("本机批次标识已改变。".into()); }
+        let job = current.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
+        job.batch_id = Some(batch_id);
+        job.covered = covered.clone();
+        job.voice_pending = voice_pending.clone();
+        job.voice_processed = voice_processed.clone();
+        Ok(())
+    })?;
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    let remote = fixed_identity_get(upload_base_url, &token, &format!("/api/v1/chat/uploads/{batch_id}")).await?;
+    validate_remote_owner(&owner, batch_id, &remote, Some(&key))?;
+    let batch_status = remote.get("status").and_then(|v| v.as_str()).unwrap_or("");
     if matches!(batch_status, "processing" | "completed") {
         // This package was already accepted; never upload or submit it a second time.
         return Ok(DevifyUploadResult {
@@ -2715,11 +3374,12 @@ async fn devify_upload_wechat(
             .mime_str("application/zip")
             .map_err(|e| e.to_string())?,
     );
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    if let Some(auth) = &cloud_retry {
+        validate_live_cloud_retry(&data, auth)?;
+    }
     let uploaded = client
-        .put(format!(
-            "{}/api/v1/chat/uploads/{batch_id}/archive",
-            settings.devify.base_url.trim_end_matches('/')
-        ))
+        .put(format!("{upload_base_url}/api/v1/chat/uploads/{batch_id}/archive"))
         .bearer_auth(&token)
         .multipart(form)
         .send()
@@ -2728,11 +3388,12 @@ async fn devify_upload_wechat(
     if !uploaded.status().is_success() {
         return Err(format!("上传归档失败：{}", uploaded.status()));
     }
+    validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+    if let Some(auth) = &cloud_retry {
+        validate_live_cloud_retry(&data, auth)?;
+    }
     let completed = client
-        .post(format!(
-            "{}/api/v1/chat/uploads/{batch_id}/complete",
-            settings.devify.base_url.trim_end_matches('/')
-        ))
+        .post(format!("{upload_base_url}/api/v1/chat/uploads/{batch_id}/complete"))
         .bearer_auth(&token)
         .send()
         .await
@@ -2759,7 +3420,10 @@ async fn devify_auth_start(
     state: State<'_, DevifyAuthState>,
     device_label: Option<String>,
 ) -> Result<String, String> {
+    let _start = AUTH_START_LOCK.lock().await;
+    let auth_generation = desktop_credentials::begin_auth_attempt()?;
     let settings = settings::load(&app_data(&app))?;
+    let base_url = settings.devify.resolved_base_url()?;
     let device_label = device_label
         .map(|value| value.trim().to_string())
         .filter(|value| {
@@ -2769,6 +3433,9 @@ async fn devify_auth_start(
         })
         .unwrap_or_else(settings::device_default_label);
     let auth_config = devify_auth_config(&settings.devify).await?;
+    if desktop_credentials::generation()? != auth_generation {
+        return Err("登录状态已改变，请重新登录。".into());
+    }
     let mut state_bytes = [0u8; 24];
     let mut verifier_bytes = [0u8; 48];
     getrandom::getrandom(&mut state_bytes).map_err(|e| e.to_string())?;
@@ -2832,14 +3499,17 @@ async fn devify_auth_start(
     if let Ok(mut slot) = state.listener.lock() {
         *slot = Some(handle);
     }
-    state
-        .pending
-        .lock()
-        .map_err(|_| "读取登录状态失败。".to_string())?
-        .replace((oauth_state.clone(), verifier));
+    {
+        let mut pending = state.pending.lock().map_err(|_| "读取登录状态失败。".to_string())?;
+        if desktop_credentials::generation()? != auth_generation
+            || settings::load(&app_data(&app))?.devify.resolved_base_url()? != base_url {
+            return Err("登录状态已改变，请重新登录。".into());
+        }
+        pending.replace(PendingDevifyAuth { state: oauth_state.clone(), verifier, base_url: base_url.clone(), generation: auth_generation });
+    }
     let mut url = Url::parse(&format!(
         "{}{}",
-        settings.devify.base_url.trim_end_matches('/'),
+        base_url,
         auth_config.browser_authorize_path
     ))
     .map_err(|e| format!("Devify 地址无效：{e}"))?;
@@ -2896,16 +3566,17 @@ async fn devify_auth_callback(
         .find(|(key, _)| key == "state")
         .map(|(_, value)| value.to_string())
         .unwrap_or_default();
-    let (expected_state, verifier) = state
-        .pending
-        .lock()
-        .map_err(|_| "读取登录状态失败。".to_string())?
-        .take()
-        .ok_or_else(|| "没有待处理的登录请求。".to_string())?;
-    if returned_state != expected_state {
-        return Err("登录 state 校验失败。".into());
+    let pending = {
+        let mut slot = state.pending.lock().map_err(|_| "读取登录状态失败。".to_string())?;
+        let expected = slot.as_ref().ok_or_else(|| "没有待处理的登录请求。".to_string())?;
+        if returned_state != expected.state { return Err("登录 state 校验失败。".into()); }
+        slot.take().ok_or_else(|| "没有待处理的登录请求。".to_string())?
+    };
+    let settings = settings::load(&app_data(&app))?;
+    if settings.devify.resolved_base_url()? != pending.base_url
+        || desktop_credentials::generation()? != pending.generation {
+        return Err("登录状态已改变，请重新登录。".into());
     }
-    let mut settings = settings::load(&app_data(&app))?;
     let auth_config = devify_auth_config(&settings.devify).await?;
     let platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
@@ -2913,10 +3584,10 @@ async fn devify_auth_callback(
         settings.devify.platform.clone()
     };
     let device_label = settings::resolved_device_label(&settings.devify);
-    let response = reqwest::Client::new()
+    let response = auth_http_client()?
         .post(format!(
             "{}{}",
-            settings.devify.base_url.trim_end_matches('/'),
+            pending.base_url,
             auth_config.token_path
         ))
         .json(&serde_json::json!({
@@ -2924,7 +3595,7 @@ async fn devify_auth_callback(
             "client_id": auth_config.client_id,
             "redirect_uri": auth_config.redirect_uri,
             "code": code,
-            "code_verifier": verifier,
+            "code_verifier": pending.verifier,
             "device_label": device_label.clone(),
             "device_id": settings.devify.device_id.clone(),
             "platform": platform.clone(),
@@ -2953,25 +3624,38 @@ async fn devify_auth_callback(
         .and_then(|v| v.as_str())
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "token 响应缺少 refresh。".to_string())?;
-    desktop_credentials::save(
-        &app_data(&app),
-        &desktop_credentials::Credentials {
-            base_url: settings.devify.base_url.trim_end_matches('/').to_string(),
-            access: access.to_string(),
-            refresh: refresh.to_string(),
-        },
-    )?;
-    let _ = ensure_active_space(&app).await;
-    let device_id = data
-        .get("device_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    settings.devify.device_id = device_id.clone();
-    settings.devify.platform = platform;
-    settings.devify.device_label = device_label;
-    if let Err(error) = settings::save(&app_data(&app), &settings) {
-        eprintln!("保存 Devify 设备信息失败：{error}");
+    let app_data = app_data(&app);
+    let credentials = desktop_credentials::Credentials {
+        base_url: pending.base_url.clone(), access: access.to_string(), refresh: refresh.to_string(),
+    };
+    settings::with_identity(&app_data, |current| {
+        if current.devify.resolved_base_url()? != pending.base_url
+            || !desktop_credentials::save_if_generation_locked(&app_data, pending.generation, &credentials)? {
+            return Err("Devify 登录状态已改变，请重新登录。".into());
+        }
+        Ok(())
+    })?;
+    let device_id = data.get("device_id").and_then(|v| v.as_str())
+        .map(str::to_string).or_else(|| access_token_claim(access, "device_id")).unwrap_or_default();
+    let mut device_changed = false;
+    settings::update_identity(&app_data, |current| {
+        let (stored, generation) = desktop_credentials::load_with_generation(&app_data, &pending.base_url)?;
+        if current.devify.resolved_base_url()? != pending.base_url
+            || stored != credentials || generation != pending.generation.wrapping_add(1) {
+            return Err("Devify 登录状态已改变，请重新登录。".into());
+        }
+        device_changed = current.devify.device_id != device_id;
+        current.devify.device_id = device_id.clone();
+        current.devify.platform = platform;
+        current.devify.device_label = device_label;
+        Ok(())
+    })?;
+    let committed_generation = pending.generation.wrapping_add(1).wrapping_add(u64::from(device_changed));
+    let mut completed_generation = None;
+    let _ = ensure_active_space_for(&app, Some((&credentials, committed_generation)), &mut completed_generation).await;
+    if !desktop_credentials::load_with_generation(&app_data, &pending.base_url).ok().as_ref()
+        .is_some_and(|(stored, generation)| stored == &credentials && *generation == completed_generation.unwrap_or(committed_generation)) {
+        return Err("Devify 登录状态已改变，请重新登录。".into());
     }
     Ok(DevifyAuthResult {
         device_id,
@@ -2984,6 +3668,8 @@ async fn devify_auth_callback(
 
 #[tauri::command]
 fn devify_auth_cancel(state: State<'_, DevifyAuthState>) -> Result<(), String> {
+    // A callback may already have consumed pending and be awaiting the token endpoint.
+    desktop_credentials::begin_auth_attempt()?;
     if let Some(handle) = state
         .listener
         .lock()
@@ -3003,6 +3689,22 @@ fn devify_auth_cancel(state: State<'_, DevifyAuthState>) -> Result<(), String> {
 #[derive(Serialize)]
 struct DevifyAuthStatus {
     authenticated: bool,
+}
+
+fn auth_status_after_token_failure(data: &Path, base: &str, before: u64, cleared_generation: Option<u64>) -> Result<DevifyAuthStatus, String> {
+    if let Some(cleared_generation) = cleared_generation {
+        return settings::with_identity(data, |current| {
+            if current.devify.resolved_base_url()? != settings::normalize_base_url(base)?
+                || !desktop_credentials::absent_at_generation(data, cleared_generation)? {
+                return Err("登录状态已改变，请重新检查。".into());
+            }
+            Ok(DevifyAuthStatus { authenticated: false })
+        });
+    }
+    if desktop_credentials::generation()? != before {
+        return Err("登录状态已改变，请重新检查。".into());
+    }
+    Ok(DevifyAuthStatus { authenticated: false })
 }
 
 /// Report whether usable desktop credentials exist. An expired access token is
@@ -3043,29 +3745,36 @@ async fn entitlements_refresh(app: AppHandle) -> Result<entitlements::View, Stri
 async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> {
     let data = app_data(&app);
     let settings = settings::load(&data)?;
-    let Ok(token) = devify_access_token_async(&data, &settings.devify.base_url).await else {
-        return Ok(DevifyAuthStatus {
-            authenticated: false,
-        });
+    let before = desktop_credentials::generation()?;
+    let mut cleared_generation = None;
+    let Ok(token) = devify_access_token_with_cleanup(&data, &settings.devify.base_url, &mut cleared_generation).await else {
+        return auth_status_after_token_failure(&data, &settings.devify.base_url, before, cleared_generation);
     };
+    let (credentials, generation) = desktop_credentials::load_with_generation(&data, &settings.devify.base_url)?;
+    if credentials.access != token || settings::load(&data)?.devify.resolved_base_url()? != settings.devify.resolved_base_url()? {
+        return Err("登录状态已改变，请重新检查。".into());
+    }
     let response = reqwest::Client::new()
         .get(format!(
             "{}/api/v1/spaces",
             settings.devify.base_url.trim_end_matches('/')
         ))
-        .bearer_auth(token)
+        .bearer_auth(&token)
         .send()
         .await;
     match response {
         Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
-            let _ = desktop_credentials::clear(&data);
-            Ok(DevifyAuthStatus {
-                authenticated: false,
-            })
+            if !desktop_credentials::clear_if_access(&data, &settings.devify.base_url, &token, generation)? {
+                return Err("登录状态已改变，请重新检查。".into());
+            }
+            Ok(DevifyAuthStatus { authenticated: false })
         }
-        _ => Ok(DevifyAuthStatus {
-            authenticated: true,
-        }),
+        _ => {
+            if request_generation(&data, &settings.devify.base_url, &token)? != generation {
+                return Err("登录状态已改变，请重新检查。".into());
+            }
+            Ok(DevifyAuthStatus { authenticated: true })
+        },
     }
 }
 
@@ -3075,6 +3784,8 @@ struct DevifyDeviceResult {
     label: String,
     platform: String,
     status: String,
+    #[serde(skip)]
+    generation: u64,
 }
 
 /// Bind or refresh this machine on Devify without forcing a new browser login.
@@ -3084,10 +3795,28 @@ struct DevifyDeviceResult {
 /// the web console's 设备与设置 page.
 #[tauri::command]
 async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, String> {
+    devify_device_register_for(app, None).await
+}
+
+async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_credentials::Credentials, u64)>) -> Result<DevifyDeviceResult, String> {
     let data = app_data(&app);
-    let mut settings = settings::load(&data)?;
-    let base = settings.devify.base_url.trim_end_matches('/').to_string();
-    let token = devify_access_token_async(&data, &base).await?;
+    let settings = settings::load(&data)?;
+    let base = settings.devify.resolved_base_url()?;
+    let token = if let Some((credentials, _)) = expected {
+        credentials.access.clone()
+    } else {
+        devify_access_token_async(&data, &base).await?
+    };
+    let identity = UPLOAD_IDENTITY_LOCK.read().await;
+    let (credentials, generation) = desktop_credentials::load_with_generation(&data, &base)?;
+    let current = settings::load(&data)?;
+    if credentials.access != token || current.devify.resolved_base_url()? != base
+        || expected.is_some_and(|(expected, expected_generation)| credentials != *expected || generation != expected_generation)
+        || current.devify.device_id != settings.devify.device_id
+        || current.devify.active_space_id != settings.devify.active_space_id
+        || current.active_account_id != settings.active_account_id {
+        return Err("设备登记的登录状态已改变。".into());
+    }
     let mut device_id = settings.devify.device_id.clone();
     if device_id.is_empty() {
         device_id = access_token_claim(&token, "device_id").unwrap_or_default();
@@ -3098,7 +3827,7 @@ async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, St
         settings.devify.platform.clone()
     };
     let device_label = settings::resolved_device_label(&settings.devify);
-    let response = reqwest::Client::new()
+    let response = auth_http_client()?
         .post(format!("{base}/api/v1/auth/desktop/devices"))
         .bearer_auth(&token)
         .json(&serde_json::json!({
@@ -3123,10 +3852,32 @@ async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, St
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "设备响应缺少 device_id。".to_string())?
         .to_string();
-    settings.devify.device_id = device_id.clone();
-    settings.devify.platform = platform.clone();
-    settings.devify.device_label = device_label.clone();
-    settings::save(&data, &settings)?;
+    if access_token_claim(&token, "device_id").is_some_and(|claim| claim != device_id) {
+        return Err("登记设备与登录设备不匹配。".into());
+    }
+    let devices = fixed_identity_get(&base, &token, "/api/v1/auth/desktop/devices").await?;
+    let items = devices.as_array().or_else(|| devices.get("list").and_then(serde_json::Value::as_array))
+        .ok_or("无法确认当前设备登记。")?;
+    if items.iter().filter(|item| item.get("device_id").and_then(serde_json::Value::as_str) == Some(device_id.as_str())
+        && item.get("status").and_then(serde_json::Value::as_str) == Some("active")).count() != 1 {
+        return Err("当前设备不属于该用户或已停用。".into());
+    }
+    drop(identity);
+    let device_changed = device_id != settings.devify.device_id;
+    settings::update_identity(&data, |current| {
+        let (stored, current_generation) = desktop_credentials::load_with_generation(&data, &base)?;
+        if stored != credentials || current_generation != generation
+            || current.devify.resolved_base_url()? != base
+            || current.devify.device_id != settings.devify.device_id
+            || current.devify.active_space_id != settings.devify.active_space_id
+            || current.active_account_id != settings.active_account_id {
+            return Err("设备登记的登录状态已改变。".into());
+        }
+        current.devify.device_id = device_id.clone();
+        current.devify.platform = platform.clone();
+        current.devify.device_label = device_label.clone();
+        Ok(())
+    })?;
     Ok(DevifyDeviceResult {
         device_id,
         label: device
@@ -3141,6 +3892,7 @@ async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, St
             .and_then(|value| value.as_str())
             .unwrap_or("active")
             .to_string(),
+        generation: generation.wrapping_add(u64::from(device_changed)),
     })
 }
 
@@ -3157,9 +3909,10 @@ async fn devify_login_password(
         return Err("请输入用户名和密码。".to_string());
     }
     let data = app_data(&app);
+    let auth_generation = desktop_credentials::begin_auth_attempt()?;
     let settings = settings::load(&data)?;
     let base_url = settings.devify.resolved_base_url()?;
-    let response = reqwest::Client::new()
+    let response = auth_http_client()?
         .post(format!("{base_url}/api/v1/auth/login"))
         .json(&serde_json::json!({ "username": username, "password": password }))
         .send()
@@ -3203,16 +3956,25 @@ async fn devify_login_password(
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "登录响应缺少 refresh token。".to_string())?;
-    desktop_credentials::save(
-        &data,
-        &desktop_credentials::Credentials {
-            base_url,
-            access: access.to_string(),
-            refresh: refresh.to_string(),
-        },
-    )?;
-    let device = devify_device_register(app.clone()).await.ok();
-    let _ = ensure_active_space(&app).await;
+    let credentials = desktop_credentials::Credentials {
+        base_url: base_url.clone(), access: access.to_string(), refresh: refresh.to_string(),
+    };
+    settings::with_identity(&data, |current| {
+        if current.devify.resolved_base_url()? != base_url
+            || !desktop_credentials::save_if_generation_locked(&data, auth_generation, &credentials)? {
+            return Err("Devify 登录状态已改变，请重新登录。".into());
+        }
+        Ok(())
+    })?;
+    let committed_generation = auth_generation.wrapping_add(1);
+    let device = devify_device_register_for(app.clone(), Some((&credentials, committed_generation))).await.ok();
+    let device_generation = device.as_ref().map(|value| value.generation).unwrap_or(committed_generation);
+    let mut completed_generation = None;
+    let _ = ensure_active_space_for(&app, Some((&credentials, device_generation)), &mut completed_generation).await;
+    if !desktop_credentials::load_with_generation(&data, &base_url).ok().as_ref()
+        .is_some_and(|(stored, generation)| stored == &credentials && *generation == completed_generation.unwrap_or(device_generation)) {
+        return Err("Devify 登录状态已改变，请重新登录。".into());
+    }
     Ok(DevifyAuthResult {
         device_id: device.map(|value| value.device_id).unwrap_or_default(),
         expires_in: 3600,
@@ -3484,17 +4246,79 @@ struct DailyScheduleStatus {
     message: String,
 }
 
+static DAILY_SCHEDULE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct DailyIdentity {
+    data: PathBuf,
+    base: String,
+    credentials: desktop_credentials::Credentials,
+    generation: u64,
+    space_id: i64,
+    account_id: String,
+    device_id: String,
+    enabled: bool,
+    time_local: String,
+    topic_id: Option<i64>,
+    topic_space_id: Option<i64>,
+}
+
+impl DailyIdentity {
+    fn validate_settings(&self, current: &settings::AppSettings) -> Result<(), String> {
+        let (credentials, generation) = desktop_credentials::load_with_generation(&self.data, &self.base)?;
+        if credentials != self.credentials || generation != self.generation
+            || current.devify.resolved_base_url()? != self.base
+            || current.devify.active_space_id != Some(self.space_id)
+            || current.devify.device_id != self.device_id
+            || current.active_account_id != self.account_id
+            || (current.automation.enabled && current.automation.daily_summary_enabled) != self.enabled
+            || current.automation.daily_time.trim() != self.time_local
+            || current.automation.daily_topic_id != self.topic_id
+            || current.automation.daily_topic_space_id != self.topic_space_id {
+            return Err("日报计划的登录状态或配置已改变，请重试。".into());
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), String> { self.validate_settings(&settings::load(&self.data)?) }
+}
+
+async fn daily_request(context: &DailyIdentity, method: reqwest::Method, path: String, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    context.validate()?;
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建日报请求。")?;
+    let mut request = client.request(method, format!("{}{path}", context.base)).bearer_auth(&context.credentials.access);
+    if let Some(body) = body { request = request.json(&body); }
+    let response = request.send().await;
+    context.validate()?;
+    let mut response = response.map_err(|_| "日报请求失败，请检查网络连接。")?;
+    if !response.status().is_success() { return Err(format!("日报请求失败：HTTP {}。", response.status().as_u16())); }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取日报响应。")? {
+        append_retry_identity_body(&mut body, &chunk)?;
+    }
+    context.validate()?;
+    let payload: serde_json::Value = serde_json::from_slice(&body).map_err(|_| "日报响应格式无效。")?;
+    Ok(payload.get("data").cloned().unwrap_or(payload))
+}
+
+fn daily_stale_topic_warning(value: &settings::AppSettings, space_id: i64) -> Option<&'static str> {
+    (value.automation.daily_topic_id.is_some() && value.automation.daily_topic_space_id != Some(space_id))
+        .then_some("旧空间日报计划无法确认归属，请先在服务端检查并关闭。")
+}
+
 fn local_timezone() -> String {
     iana_time_zone::get_timezone().unwrap_or_else(|_| "Asia/Shanghai".to_string())
 }
 
-fn daily_schedule_signature(value: &settings::AppSettings) -> String {
+fn daily_schedule_signature(value: &settings::AppSettings, token: &str) -> String {
+    let fingerprint = URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(token.as_bytes()));
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         value.automation.enabled && value.automation.daily_summary_enabled,
-        value.automation.daily_time,
+        value.automation.daily_time.trim(),
         value.devify.active_space_id.unwrap_or(0),
         local_timezone(),
+        fingerprint,
     )
 }
 
@@ -3520,10 +4344,18 @@ async fn sync_daily_schedule(
     app: &AppHandle,
     force: bool,
 ) -> Result<DailyScheduleStatus, String> {
-    let value = settings::load(&app_data(app))?;
-    let space_id = value
-        .devify
-        .active_space_id
+    let _schedule = DAILY_SCHEDULE_LOCK.lock().await;
+    let data = app_data(app);
+    let initial = settings::load(&data)?;
+    let base = initial.devify.resolved_base_url()?;
+    let token = devify_access_token_async(&data, &base).await?;
+    let _identity = UPLOAD_IDENTITY_LOCK.read().await;
+    let value = settings::load(&data)?;
+    let (credentials, generation) = desktop_credentials::load_with_generation(&data, &base)?;
+    if value.devify.resolved_base_url()? != base || credentials.access != token {
+        return Err("日报计划的登录状态已改变，请重试。".into());
+    }
+    let space_id = value.devify.active_space_id
         .ok_or("请先在「设置 / 账户」中登录并选择 Devify 空间。")?;
     validate_devify_space(&value, space_id)?;
     let enabled = value.automation.enabled && value.automation.daily_summary_enabled;
@@ -3532,18 +4364,24 @@ async fn sync_daily_schedule(
         return Err("日报时间必须使用 HH:MM 格式。".into());
     }
     let timezone = local_timezone();
-    let signature = format!("{}|{}|{}|{}", enabled, time_local, space_id, timezone);
-    let topic_space_matches = value.automation.daily_topic_space_id == Some(space_id);
-    let current_topic_id = if topic_space_matches {
-        value.automation.daily_topic_id
-    } else {
-        None
+    // A cache entry from another login must never suppress the new user's sync.
+    let signature = daily_schedule_signature(&value, &credentials.access);
+    let current_topic_id = value.automation.daily_topic_id;
+    let context = DailyIdentity {
+        data: data.clone(), base, credentials, generation, space_id,
+        account_id: value.active_account_id.clone(), device_id: value.devify.device_id.clone(),
+        enabled, time_local: time_local.clone(), topic_id: value.automation.daily_topic_id,
+        topic_space_id: value.automation.daily_topic_space_id,
     };
-    let stale_topic_id = if topic_space_matches {
-        None
-    } else {
-        value.automation.daily_topic_id
-    };
+    context.validate()?;
+    if let Some(warning) = daily_stale_topic_warning(&value, space_id) {
+        settings::update(&data, |stored| {
+            context.validate_settings(stored)?;
+            stored.automation.last_schedule_error = Some(warning.to_string());
+            Ok(())
+        })?;
+        return Err(warning.into());
+    }
     if !force
         && value.automation.last_schedule_signature.as_deref() == Some(signature.as_str())
         && schedule_attempt_is_recent(&value)
@@ -3561,19 +4399,8 @@ async fn sync_daily_schedule(
 
     let attempt_at = Utc::now().to_rfc3339();
     let result: Result<serde_json::Value, String> = async {
-        if let Some(stale_topic_id) = stale_topic_id {
-            // The active space changed. Stop the old topic so two spaces do
-            // not generate the same daily report.
-            let _ = devify_json_request(
-                app,
-                reqwest::Method::PATCH,
-                format!("/api/v1/topics/{stale_topic_id}"),
-                Some(serde_json::json!({"enabled": false})),
-            )
-            .await;
-        }
-        let topics = devify_json_request(
-            app,
+        let topics = daily_request(
+            &context,
             reqwest::Method::GET,
             format!("/api/v1/spaces/{space_id}/topics"),
             None,
@@ -3598,8 +4425,8 @@ async fn sync_daily_schedule(
                 "enabled": enabled,
                 "include_open": true,
             });
-            devify_json_request(
-                app,
+            daily_request(
+                &context,
                 reqwest::Method::PATCH,
                 format!("/api/v1/topics/{topic_id}"),
                 Some(body),
@@ -3615,8 +4442,8 @@ async fn sync_daily_schedule(
                 "enabled": true,
                 "include_open": true,
             });
-            devify_json_request(
-                app,
+            daily_request(
+                &context,
                 reqwest::Method::POST,
                 format!("/api/v1/spaces/{space_id}/topics"),
                 Some(body),
@@ -3628,29 +4455,24 @@ async fn sync_daily_schedule(
     }
     .await;
 
-    let mut stored = settings::load(&app_data(app))?;
-    stored.automation.last_schedule_sync_at = Some(attempt_at);
+    context.validate()?;
     match result {
         Ok(topic) => {
-            let topic_id = topic.get("id").and_then(|value| value.as_i64());
-            stored.automation.daily_topic_id = topic_id.or(current_topic_id);
-            stored.automation.daily_topic_space_id = Some(space_id);
-            stored.automation.last_schedule_signature = Some(signature);
-            stored.automation.last_schedule_error = None;
-            if let Some(run) = topic.get("last_run_at").and_then(|value| value.as_str()) {
-                stored.automation.last_daily_run = Some(run.to_string());
-            }
-            stored.automation.last_daily_error = topic
-                .get("last_error")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string());
-            stored.automation.last_daily_status = Some(if enabled {
-                "scheduled".to_string()
-            } else {
-                "disabled".to_string()
-            });
-            settings::save(&app_data(app), &stored)?;
+            let stored = settings::update(&data, |stored| {
+                context.validate_settings(stored)?;
+                stored.automation.last_schedule_sync_at = Some(attempt_at);
+                stored.automation.daily_topic_id = topic.get("id").and_then(|value| value.as_i64()).or(current_topic_id);
+                stored.automation.daily_topic_space_id = Some(space_id);
+                stored.automation.last_schedule_signature = Some(signature);
+                stored.automation.last_schedule_error = None;
+                if let Some(run) = topic.get("last_run_at").and_then(|value| value.as_str()) {
+                    stored.automation.last_daily_run = Some(run.to_string());
+                }
+                stored.automation.last_daily_error = topic.get("last_error").and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty()).map(str::to_string);
+                stored.automation.last_daily_status = Some(if enabled { "scheduled" } else { "disabled" }.to_string());
+                Ok(())
+            })?;
             Ok(DailyScheduleStatus {
                 topic_id: stored.automation.daily_topic_id,
                 enabled,
@@ -3658,16 +4480,16 @@ async fn sync_daily_schedule(
                 timezone,
                 last_run_at: stored.automation.last_daily_run.clone(),
                 last_error: stored.automation.last_daily_error.clone(),
-                message: if enabled {
-                    "日报计划已同步到服务端。".into()
-                } else {
-                    "日报已关闭。".into()
-                },
+                message: if enabled { "日报计划已同步到服务端。".into() } else { "日报已关闭。".into() },
             })
         }
         Err(error) => {
-            stored.automation.last_schedule_error = Some(error.clone());
-            let _ = settings::save(&app_data(app), &stored);
+            settings::update(&data, |stored| {
+                context.validate_settings(stored)?;
+                stored.automation.last_schedule_sync_at = Some(attempt_at);
+                stored.automation.last_schedule_error = Some(error.clone());
+                Ok(())
+            })?;
             Err(error)
         }
     }
@@ -3684,11 +4506,14 @@ async fn daily_schedule_tick(app: &AppHandle) {
     if !enabled && value.automation.daily_topic_id.is_none() {
         return;
     }
-    let signature = daily_schedule_signature(&value);
-    if value.automation.last_schedule_signature.as_deref() == Some(signature.as_str())
-        && schedule_attempt_is_recent(&value)
-    {
-        return;
+    let credentials = desktop_credentials::load(&app_data(app), &value.devify.base_url).ok();
+    if let Some(credentials) = credentials {
+        let signature = daily_schedule_signature(&value, &credentials.access);
+        if daily_stale_topic_warning(&value, value.devify.active_space_id.unwrap_or(0)).is_none()
+            && value.automation.last_schedule_signature.as_deref() == Some(signature.as_str())
+            && schedule_attempt_is_recent(&value) {
+            return;
+        }
     }
     let _ = sync_daily_schedule(app, false).await;
 }
@@ -3704,7 +4529,7 @@ async fn devify_daily_schedule_sync(
 /// run is due (interval elapsed, scheduled time reached, and the window allows it).
 fn continuation_sessions(value: &settings::AppSettings, account_id: &str) -> Vec<String> {
     let allowed = value.chat.allowed_usernames.get(account_id);
-    let mut names: Vec<_> = value.sync.continuation.get(account_id).into_iter().flat_map(|items| items.iter()).filter(|(name, scope)| (scope.manual || value.sync.enabled) && Some(scope.space_id) == value.devify.active_space_id && scope.base_url.trim_end_matches('/') == value.devify.base_url.trim_end_matches('/') && allowed.is_some_and(|list| list.contains(name))).map(|(name, _)| name.clone()).collect();
+    let mut names: Vec<_> = value.sync.continuation.get(account_id).into_iter().flat_map(|items| items.iter()).filter(|(name, scope)| (scope.manual == Some(true) || value.sync.enabled) && Some(scope.space_id) == value.devify.active_space_id && scope.base_url.trim_end_matches('/') == value.devify.base_url.trim_end_matches('/') && allowed.is_some_and(|list| list.contains(name))).map(|(name, _)| name.clone()).collect();
     names.sort();
     names
 }
@@ -3724,14 +4549,32 @@ async fn backup_tick(app: &AppHandle) {
     if !value.connectors.wechat_enabled {
         return;
     }
-    if let Some(job_id) = next_manual_batch(&value) {
-        if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok() && network::allow_upload(value.backup.wifi_only) {
-            let upload = app.state::<UploadState>();
-            if let Ok(_guard) = begin_account_upload(&upload, &value.active_account_id) {
-                if let Err(error) = submit_manual_batch(app, &job_id).await { mark_manual_batch_failed(app, &job_id, &error); }
-            };
+    let has_manual_candidates = value.upload_queue.iter().any(|job| {
+        job.manual_group.is_some() && job.owner.is_some()
+            && job.account_id == value.active_account_id
+            && value.devify.active_space_id == Some(job.space_id)
+            && matches!(job.status.as_str(), "queued" | "running")
+            && job.batch_id.is_none() && job.create_started == Some(false)
+    });
+    if has_manual_candidates {
+        if let Some(space_id) = value.devify.active_space_id {
+            if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok()
+                && network::allow_upload(value.backup.wifi_only) {
+                if let Ok((owner, token)) = verified_upload_identity(&data, &value.active_account_id, space_id).await {
+                    if let Some(job_id) = next_manual_batch(&value, &owner) {
+                        let upload = app.state::<UploadState>();
+                        if let Ok(_guard) = begin_account_upload(&upload, &value.active_account_id) {
+                            if let Err(error) = submit_manual_batch(app, &job_id).await {
+                                if let Err(save_error) = mark_manual_batch_failed(app, &job_id, &owner, &token, &error) {
+                                    eprintln!("无法保存上传任务状态：{save_error}");
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
         }
-        return;
     }
     if !continuation_sessions(&value, &value.active_account_id).is_empty() {
         if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok() && network::allow_upload(value.backup.wifi_only) {
@@ -3864,72 +4707,186 @@ fn apply_completed_uploads(value: &mut settings::AppSettings) {
     }
 }
 
+// This digest binds the locally stored last-confirmed coverage to the complete immutable
+// ownership/scope snapshot. It is not a live guarantee against later server deletion.
+fn upload_completion_digest(job: &settings::UploadJob) -> Option<String> {
+    let owner = job.owner.as_ref()?;
+    let scope = job.scope.as_ref()?;
+    if job.status != "completed" || job.id.is_empty() || job.batch_id.filter(|id| *id > 0).is_none()
+        || job.account_id != owner.account_id || job.space_id != owner.space_id
+        || owner.user_id <= 0 || owner.space_id <= 0 || owner.account_id.is_empty()
+        || owner.device_id.is_empty() || owner.device_id.trim() != owner.device_id
+        || settings::normalize_base_url(&scope.base_url).ok().as_deref() != Some(owner.base_url.as_str()) {
+        return None;
+    }
+    let bytes = serde_json::to_vec(&("verified-completion-v1", &job.id, job.batch_id, owner,
+        &job.account_id, job.space_id, scope, &job.covered, &job.status, &job.created_at, &job.updated_at)).ok()?;
+    Some(hex::encode(sha2::Sha256::digest(bytes)))
+}
+
+fn upload_completion_is_verified(job: &settings::UploadJob) -> bool {
+    job.verified_completion_digest.as_ref().is_some_and(|saved| upload_completion_digest(job).as_ref() == Some(saved))
+}
+
+fn upload_job_has_pending_sync(job: &settings::UploadJob) -> bool {
+    !job.initial_baselines.is_empty() || !job.initial_chunks.is_empty() || job.sync_advance
+        || job.continue_sync || !job.voice_processed.is_empty() || !job.voice_pending.is_empty()
+}
+
+fn upload_job_needs_reconciliation(job: &settings::UploadJob) -> bool {
+    matches!(job.status.as_str(), "queued" | "running" | "processing" | "uploading")
+        || (job.status == "completed" && (upload_job_has_pending_sync(job) || !upload_completion_is_verified(job)))
+}
+
+const RECONCILE_MAX_BATCH_CHECKS: usize = 8;
+const RECONCILE_TOTAL_BUDGET: Duration = Duration::from_secs(5);
+const RECONCILE_BATCH_TIMEOUT: Duration = Duration::from_secs(1);
+
+// Advance by the last *attempted* ID, not a fixed page size: a timed-out round may
+// manage only one request. With a stable pending set every job eventually gets a turn.
+fn next_reconcile_job<'a>(jobs: &'a [settings::UploadJob], last: Option<&str>) -> Option<&'a settings::UploadJob> {
+    jobs.iter().filter(|job| last.is_some_and(|id| job.id.as_str() > id))
+        .min_by(|a, b| a.id.cmp(&b.id))
+        .or_else(|| jobs.iter().min_by(|a, b| a.id.cmp(&b.id)))
+}
+
 async fn reconcile_upload_jobs(app: &AppHandle) {
+    // Concurrent scheduler/manual ticks must not duplicate a round or race its cursor.
+    static ROUND: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static LAST_JOB_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let Ok(_round) = ROUND.try_lock() else { return; };
+    let deadline = tokio::time::Instant::now() + RECONCILE_TOTAL_BUDGET;
     let data = app_data(app);
-    let Ok(value) = settings::load(&data) else {
+    let Ok(value) = settings::load(&data) else { return; };
+    let Some(space_id) = value.devify.active_space_id else { return; };
+    if !value.upload_queue.iter().any(|job| job.batch_id.is_some() && job.owner.is_some()
+        && upload_job_needs_reconciliation(job)) {
         return;
+    }
+    // Refresh can require the identity write lock, so verify first, then take the read lease
+    // and recheck the snapshot before making any batch requests or committing results.
+    let Ok(Ok((owner, token))) = tokio::time::timeout_at(deadline, verified_upload_identity(&data, &value.active_account_id, space_id)).await else { return; };
+    let Ok(_identity_guard) = tokio::time::timeout_at(deadline, UPLOAD_IDENTITY_LOCK.read()).await else { return; };
+    let Ok(current) = settings::load(&data) else { return; };
+    if validate_owner_state(&current, &owner, &token).is_err()
+        || desktop_credentials::load(&data, &owner.base_url).ok().as_ref().map(|c| c.access.as_str()) != Some(token.as_str()) {
+        return;
+    }
+    let pending: Vec<_> = current.upload_queue.iter().filter(|job| {
+        job.owner.as_ref() == Some(&owner) && job.batch_id.is_some()
+            && upload_job_needs_reconciliation(job)
+    }).cloned().collect();
+    reconcile_owned_round(&data, &owner, &token, &pending, &LAST_JOB_ID, deadline).await;
+}
+
+// A single caller owns the round gate; the cursor is updated before each cancellable GET.
+async fn reconcile_owned_round(data: &Path, owner: &settings::UploadOwner, token: &str,
+    pending: &[settings::UploadJob], last_id: &std::sync::Mutex<Option<String>>,
+    deadline: tokio::time::Instant) -> usize {
+    let mut attempted = 0;
+    for _ in 0..pending.len().min(RECONCILE_MAX_BATCH_CHECKS) {
+        if tokio::time::Instant::now() >= deadline { break; }
+        let job = {
+            let Ok(mut last) = last_id.lock() else { break; };
+            let Some(job) = next_reconcile_job(pending, last.as_deref()) else { break; };
+            *last = Some(job.id.clone());
+            job
+        };
+        attempted += 1;
+        let _ = reconcile_owned_job_until(data, owner, token, job, deadline).await;
+    }
+    attempted
+}
+
+// Cancellation before the response leaves the job untouched; the commit after a
+// validated response is a synchronous settings transaction with its own CAS.
+async fn reconcile_owned_job_until(data: &Path, owner: &settings::UploadOwner, token: &str,
+    job: &settings::UploadJob, deadline: tokio::time::Instant) -> Result<(), String> {
+    let until = deadline.min(tokio::time::Instant::now() + RECONCILE_BATCH_TIMEOUT);
+    tokio::time::timeout_at(until, reconcile_owned_job(data, owner, token, job)).await
+        .map_err(|_| "对账请求超时。".to_string())?
+}
+
+// The caller holds UPLOAD_IDENTITY_LOCK's read lease and supplies a freshly verified owner.
+// Fetch from the fixed service/token; never reuse a response merely because batch ids match.
+async fn reconcile_owned_job(data: &Path, owner: &settings::UploadOwner, token: &str, snapshot: &settings::UploadJob) -> Result<(), String> {
+    let batch_id = snapshot.batch_id.filter(|id| *id > 0).ok_or("缺少云端批次。")?;
+    if snapshot.id.is_empty() || snapshot.owner.as_ref() != Some(owner)
+        || snapshot.account_id != owner.account_id || snapshot.space_id != owner.space_id
+        || !upload_job_needs_reconciliation(snapshot)
+        || snapshot.scope.as_ref().and_then(|scope| settings::normalize_base_url(&scope.base_url).ok()).as_deref() != Some(owner.base_url.as_str()) {
+        return Err("任务归属不完整或已改变。".into());
+    }
+    let batch = fixed_identity_get(&owner.base_url, token, &format!("/api/v1/chat/uploads/{batch_id}")).await?;
+    validate_remote_owner(owner, batch_id, &batch, None)?;
+    let (state, message) = match batch.get("status").and_then(serde_json::Value::as_str) {
+        Some("completed") => ("completed", format!("服务端解析完成，共 {} 条消息", batch.get("message_count").and_then(serde_json::Value::as_i64).unwrap_or_default())),
+        Some("failed") => ("failed", batch.get("error_message").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()).unwrap_or("服务端解析失败").to_string()),
+        Some("cancelled") => ("cancelled", "服务端任务已取消".to_string()),
+        _ => return Ok(()),
     };
-    let pending: Vec<settings::UploadJob> = value
-        .upload_queue
-        .iter()
-        .filter(|job| {
-            job.batch_id.is_some()
-                && matches!(
-                    job.status.as_str(),
-                    "queued" | "running" | "processing" | "uploading"
-                )
-        })
-        .cloned()
-        .collect();
-    if pending.is_empty() {
-        return;
-    }
-    let mut updates = std::collections::HashMap::new();
-    let mut checked = HashSet::new();
-    for job in pending {
-        let Some(batch_id) = job.batch_id else {
-            continue;
-        };
-        if !checked.insert(batch_id) { continue; }
-        let Ok(status) = devify_upload_status(app.clone(), batch_id).await else {
-            continue;
-        };
-        let mapped = match status.status.as_str() {
-            "completed" => Some((
-                "completed".to_string(),
-                format!("服务端解析完成，共 {} 条消息", status.message_count),
-            )),
-            "failed" => Some((
-                "failed".to_string(),
-                if status.error_message.is_empty() {
-                    "服务端解析失败".to_string()
-                } else {
-                    status.error_message
-                },
-            )),
-            "cancelled" => Some(("cancelled".to_string(), "服务端任务已取消".to_string())),
-            _ => None,
-        };
-        if let Some((state, message)) = mapped {
-            updates.insert(batch_id, (state, message));
+    // A deferred completed job may apply local effects only if the same remote batch
+    // is still confirmed completed; never roll it back to another terminal state.
+    if snapshot.status == "completed" && state != "completed" { return Err("云端批次完成状态已改变。".into()); }
+    settings::update(data, |current| {
+        validate_owner_state(current, owner, token)?;
+        if desktop_credentials::load(data, &owner.base_url)?.access != token { return Err("登录状态已改变。".into()); }
+        if current.upload_queue.iter().filter(|job| job.id == snapshot.id).count() != 1 { return Err("任务标识不唯一。".into()); }
+        let index = current.upload_queue.iter().position(|job| job.id == snapshot.id).ok_or("任务已删除。")?;
+        let live = &current.upload_queue[index];
+        // The entire cursor-affecting snapshot must still match; create intent and digest may
+        // independently advance and are intentionally neither compared nor overwritten.
+        let mut before = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
+        let mut now = serde_json::to_value(live).map_err(|e| e.to_string())?;
+        for field in ["create_started", "package_digest"] {
+            before.as_object_mut().ok_or("任务格式无效。")?.remove(field);
+            now.as_object_mut().ok_or("任务格式无效。")?.remove(field);
         }
-    }
-    if updates.is_empty() {
-        return;
-    }
-    let Ok(mut next) = settings::load(&data) else {
-        return;
-    };
-    for item in &mut next.upload_queue {
-        if let Some((state, message)) = item.batch_id.and_then(|id| updates.get(&id)) {
-            item.status = state.clone();
-            item.message = message.clone();
-            item.updated_at = chrono::Utc::now().to_rfc3339();
+        if before != now || live.owner.as_ref() != Some(owner) || live.batch_id != Some(batch_id) {
+            return Err("任务已被其他操作修改。".into());
         }
-    }
-    apply_completed_history_baselines(&mut next);
-    apply_completed_uploads(&mut next);
-    let _ = settings::save(&data, &next);
+        let has_effects = state == "completed" && upload_job_has_pending_sync(live);
+        let can_apply = !has_effects || validate_sync_owner(current, owner).is_ok();
+        if snapshot.status == "completed" && !can_apply && upload_completion_is_verified(snapshot)
+            && snapshot.message.contains("本地同步或语音进度属于其他或未知账号，已保留待确认。") {
+            // The warning and deferred fields are already durable; avoid rewriting the
+            // job on every scheduler tick while the conflicting owner remains unchanged.
+            return Err("同步进度归属尚未确认。".into());
+        }
+        let mut isolated = current.clone();
+        isolated.upload_queue = vec![live.clone()];
+        let item = &mut isolated.upload_queue[0];
+        item.status = state.to_string();
+        item.message = if can_apply { message.clone() } else {
+            format!("{message}；本地同步或语音进度属于其他或未知账号，已保留待确认。")
+        };
+        item.updated_at = chrono::Utc::now().to_rfc3339();
+        if has_effects && can_apply {
+            isolated.sync.owners.entry(owner.account_id.clone()).or_insert_with(|| owner.clone());
+            apply_completed_history_baselines(&mut isolated);
+            apply_completed_uploads(&mut isolated);
+        }
+        // Only a fresh successful remote owner/status check can create this marker.
+        let completion_digest = if state == "completed" {
+            Some(upload_completion_digest(&isolated.upload_queue[0]).ok_or("无法确认完成快照。")?)
+        } else { None };
+        isolated.upload_queue[0].verified_completion_digest = completion_digest;
+        current.sync = isolated.sync;
+        let processed = &isolated.upload_queue[0];
+        let live = &mut current.upload_queue[index];
+        live.status = processed.status.clone();
+        live.message = processed.message.clone();
+        live.updated_at = processed.updated_at.clone();
+        live.verified_completion_digest = processed.verified_completion_digest.clone();
+        live.initial_baselines = processed.initial_baselines.clone();
+        live.initial_chunks = processed.initial_chunks.clone();
+        live.sync_advance = processed.sync_advance;
+        live.continue_sync = processed.continue_sync;
+        live.voice_processed = processed.voice_processed.clone();
+        live.voice_pending = processed.voice_pending.clone();
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn update_pending_voice(
@@ -3965,52 +4922,39 @@ fn update_pending_voice(
 }
 
 fn sync_job(
-    account_id: &str,
-    space_id: i64,
-    username: &str,
-    ordinal: usize,
-    since: Option<i64>,
-    base_url: &str,
-    batch_id: Option<i64>,
-    status: &str,
-    message: &str,
-) -> settings::UploadJob {
+    owner: &settings::UploadOwner,
+    scope: settings::UploadScope,
+) -> Result<settings::UploadJob, String> {
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce).map_err(|_| "无法生成唯一同步任务标识。")?;
     let now = chrono::Utc::now().to_rfc3339();
-    settings::UploadJob {
-        // Conversations are uploaded in one tick, so the ordinal keeps the ids unique.
-        id: format!(
-            "sync-{}-{}-{}",
-            account_id,
-            chrono::Utc::now().timestamp_millis(),
-            ordinal
-        ),
-        space_id,
-        account_id: account_id.to_string(),
-        batch_id,
-        status: status.to_string(),
-        message: message.to_string(),
+    Ok(settings::UploadJob {
+        id: format!("sync-{}", hex::encode(nonce)),
+        space_id: owner.space_id,
+        account_id: owner.account_id.clone(),
+        batch_id: None,
+        owner: Some(owner.clone()),
+        create_started: Some(false),
+        package_digest: None,
+        verified_completion_digest: None,
+        status: "running".into(),
+        message: "正在生成并上传聊天包".into(),
         created_at: now.clone(),
         updated_at: now,
-        scope: Some(settings::UploadScope {
-            usernames: vec![username.to_string()],
-            since,
-            until: None,
-            base_url: base_url.trim_end_matches('/').to_string(),
-            message_selection: BTreeMap::new(),
-        }),
+        scope: Some(scope),
         covered: BTreeMap::new(),
         initial_baselines: BTreeMap::new(),
         initial_chunks: BTreeMap::new(),
         sync_advance: false,
         continue_sync: false,
-        continuation_manual: false,
+        continuation_manual: None,
         manual_group: None,
         manual_index: 0,
         manual_total: 0,
         manual_fingerprint: None,
         voice_processed: BTreeMap::new(),
         voice_pending: BTreeMap::new(),
-    }
+    })
 }
 
 /// True when the stored run status is missing or too old to answer "when did it last run".
@@ -4032,6 +4976,19 @@ fn sync_status_is_stale(sync: &settings::SyncSettings) -> bool {
 /// indexed query, so only actual uploads are capped.
 const SYNC_UPLOADS_PER_TICK: usize = 50;
 const SYNC_MESSAGES_PER_BATCH: usize = 1000;
+
+fn validate_sync_owner(value: &settings::AppSettings, owner: &settings::UploadOwner) -> Result<(), String> {
+    let account = &owner.account_id;
+    let has_legacy_state = value.sync.cursors.get(account).is_some_and(|v| !v.is_empty())
+        || value.sync.initial_progress.get(account).is_some_and(|v| !v.is_empty())
+        || value.sync.continuation.get(account).is_some_and(|v| !v.is_empty())
+        || value.sync.pending_voice.get(account).is_some_and(|v| !v.is_empty());
+    match value.sync.owners.get(account) {
+        Some(saved) if saved == owner => Ok(()),
+        None if !has_legacy_state => Ok(()),
+        _ => Err("同步进度属于其他或未知云端账号、空间或设备；已暂停，请重新确认并创建采集。".into()),
+    }
+}
 
 /// Decrypt the local cache, then upload every allowlisted conversation that has messages
 /// newer than its cursor. The first run of a conversation uploads its full local history.
@@ -4074,7 +5031,31 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
         if whitelist.is_empty() { return Err("没有可继续的上传任务。".into()); }
     }
     let base_url = value.devify.base_url.clone();
+    let (sync_owner, sync_token) = verified_upload_identity(&data, &account_id, space_id).await?;
+    {
+        let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
+        let deadline = tokio::time::Instant::now() + LEGACY_ADOPT_BUDGET;
+        let _ = adopt_legacy_upload_history(&data, &sync_owner, &sync_token, deadline).await;
+    }
+    value = settings::load(&data)?;
+    validate_sync_owner(&value, &sync_owner)?;
     reconcile_upload_jobs(app).await;
+    settings::update(&data, |current| {
+        validate_owner_state(current, &sync_owner, &sync_token)?;
+        if desktop_credentials::load(&data, &sync_owner.base_url)?.access != sync_token {
+            return Err("Devify 登录状态已改变。".into());
+        }
+        validate_sync_owner(current, &sync_owner)?;
+        // Completed legacy sync jobs may still contain unapplied progress. Never bind
+        // an unknown or different historical owner to the newly verified identity.
+        if current.upload_queue.iter().any(|job| job.account_id == account_id
+            && job.id.starts_with("sync-") && job.owner.as_ref() != Some(&sync_owner)
+            && !legacy_job_is_inert(job)) {
+            return Err("已有旧同步任务的云端账号或设备未知或不匹配；已暂停，请先核对。".into());
+        }
+        current.sync.owners.entry(account_id.clone()).or_insert_with(|| sync_owner.clone());
+        Ok(())
+    })?;
     value = settings::load(&data)?;
 
     let scan = discover::scan();
@@ -4111,35 +5092,37 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
         return Err(format!("读取本机聊天记录失败（{}）：{reason}", failure.rel));
     }
 
-    let account_cursors = value
-        .sync
-        .cursors
-        .get(&account_id)
-        .cloned()
-        .unwrap_or_default();
     let cache = decrypt::cache_dir(&data, &account_id);
     let mut uploaded = 0usize;
     let mut skipped = 0usize;
     let mut message_count = 0usize;
     let mut failures: Vec<String> = Vec::new();
-    let mut jobs: Vec<settings::UploadJob> = Vec::new();
+    let mut batch_ids = Vec::new();
     let mut touched = false;
 
-    for (ordinal, username) in whitelist.iter().enumerate() {
+    // A failed or interrupted create may already exist remotely. Legacy jobs without an
+    // owner, scope, or create marker are equally ambiguous and must not be replayed.
+    let blocks_sync = |current: &settings::AppSettings, username: &str| {
+        current.upload_queue.iter().any(|job| {
+            job.account_id == account_id && job.status != "completed"
+                && job.scope.as_ref().map_or(true, |scope| scope.usernames.is_empty() || scope.usernames.iter().any(|name| name == username))
+                && (matches!(job.status.as_str(), "queued" | "running" | "processing" | "uploading")
+                    || job.owner.as_ref() != Some(&sync_owner)
+                    || job.create_started != Some(false)
+                    || job.batch_id.is_some())
+        })
+    };
+
+    for username in &whitelist {
         if !manual && uploaded >= SYNC_UPLOADS_PER_TICK {
             break;
         }
-        if value.upload_queue.iter().any(|job| job.account_id == account_id && job.space_id == space_id && matches!(job.status.as_str(), "queued" | "running" | "processing" | "uploading") && job.scope.as_ref().is_some_and(|scope| scope.usernames.contains(username))) {
+        if blocks_sync(&value, username) {
             skipped += 1;
-            failures.push(format!("{username}：已有上传任务正在处理，请在任务中查看状态"));
+            failures.push(format!("{username}：已有未完成或身份不明的上传任务，请在任务中核对状态"));
             continue;
         }
-        if value.upload_queue.iter().any(|job| job.account_id == account_id && (job.initial_baselines.contains_key(username) || job.initial_chunks.contains_key(username))) {
-            skipped += 1;
-            failures.push(format!("{username}：首次历史上传尚未完成，请在任务中查看状态"));
-            continue;
-        }
-        let cursor = account_cursors.get(username).copied();
+        let cursor = value.sync.cursors.get(&account_id).and_then(|items| items.get(username)).copied();
         let progress = value.sync.initial_progress.get(&account_id).and_then(|items| items.get(username)).cloned();
         if progress.as_ref().is_some_and(|p| !initial_progress_matches(p, space_id, &base_url)) {
             failures.push(format!("{username}：首次历史上传属于其他空间，请切回原空间继续"));
@@ -4176,6 +5159,34 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
             }
         };
         if !needs_upload {
+            // If the process died after a completed final batch was saved, its old
+            // continuation marker may remain. Clear only after a fresh, unchanged cursor
+            // proves there is no work and no ambiguous job for this conversation.
+            if continuation_only && cursor.is_some() {
+                let expected = serde_json::to_value((
+                    value.sync.cursors.get(&account_id).and_then(|items| items.get(username)),
+                    value.sync.continuation.get(&account_id).and_then(|items| items.get(username)),
+                )).map_err(|e| format!("无法核对后续同步：{e}"))?;
+                value = settings::update(&data, |current| {
+                    validate_owner_state(current, &sync_owner, &sync_token)?;
+                    validate_sync_owner(current, &sync_owner)?;
+                    if desktop_credentials::load(&data, &sync_owner.base_url)?.access != sync_token {
+                        return Err("Devify 登录状态已改变。".into());
+                    }
+                    let live = serde_json::to_value((
+                        current.sync.cursors.get(&account_id).and_then(|items| items.get(username)),
+                        current.sync.continuation.get(&account_id).and_then(|items| items.get(username)),
+                    )).map_err(|e| format!("无法核对后续同步：{e}"))?;
+                    if live == expected && !blocks_sync(current, username) {
+                        if let Some(items) = current.sync.continuation.get_mut(&account_id) {
+                            items.remove(username);
+                            if items.is_empty() { current.sync.continuation.remove(&account_id); }
+                        }
+                    }
+                    Ok(())
+                })?;
+                touched = true;
+            }
             skipped += 1;
             continue;
         }
@@ -4233,106 +5244,134 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
             if cursor.is_none() { failures.push(format!("{username}：所选历史日期范围内没有可上传的消息，请在导入管理调整日期")); }
             continue;
         }
+        let last = selected.iter().max_by_key(|item| (item.time, item.local_id)).expect("selection is not empty");
+        let selected_position = settings::SyncCursor {
+            time: last.time,
+            local_id: last.local_id,
+            boundary_count: Some(selected.iter().filter(|item| item.time == last.time).count()),
+        };
         selection.insert(username.clone(), selected);
+        let original_manual = value.sync.continuation.get(&account_id)
+            .and_then(|entries| entries.get(username))
+            .and_then(|scope| scope.manual);
+        let trigger = sync_upload_trigger(manual, continuation_only, original_manual);
+        let scope = settings::UploadScope {
+            usernames: vec![username.clone()], since, until,
+            base_url: sync_owner.base_url.clone(), message_selection: selection.clone(),
+        };
+        let mut job = sync_job(&sync_owner, scope.clone())?;
+        // These fields must survive a crash after the uploader saves a batch ID but before
+        // this function receives its result. The selected position matches the exact scope.
+        if let Some(baseline) = initial_baseline {
+            job.initial_chunks.insert(username.clone(), settings::InitialChunk {
+                since, until, baseline, position: selected_position, final_chunk: !planned.has_more,
+                space_id, base_url: sync_owner.base_url.clone(),
+            });
+        }
+        job.continue_sync = planned.has_more;
+        job.continuation_manual = if continuation_only { original_manual } else { Some(manual) };
+        job.sync_advance = cursor.is_some() && has_new;
+        let job_id = job.id.clone();
+        let snapshot = serde_json::to_value((
+            value.sync.cursors.get(&account_id), value.sync.initial_progress.get(&account_id),
+            value.sync.continuation.get(&account_id), value.sync.pending_voice.get(&account_id),
+            value.chat.initial_ranges.get(&account_id),
+        )).map_err(|e| format!("无法核对同步进度：{e}"))?;
+        let inserted = settings::update(&data, |current| {
+            validate_owner_state(current, &sync_owner, &sync_token)?;
+            if desktop_credentials::load(&data, &sync_owner.base_url)?.access != sync_token {
+                return Err("Devify 登录状态已改变。".into());
+            }
+            validate_sync_owner(current, &sync_owner)?;
+            let current_snapshot = serde_json::to_value((
+                current.sync.cursors.get(&account_id), current.sync.initial_progress.get(&account_id),
+                current.sync.continuation.get(&account_id), current.sync.pending_voice.get(&account_id),
+                current.chat.initial_ranges.get(&account_id),
+            )).map_err(|e| format!("无法核对同步进度：{e}"))?;
+            if current_snapshot != snapshot { return Err("同步进度已改变，请重新同步。".into()); }
+            if blocks_sync(current, username) { return Err("已有未完成或身份不明的上传任务，请先核对。".into()); }
+            if current.upload_queue.iter().any(|item| item.id == job_id) { return Err("同步任务标识冲突，请重试。".into()); }
+            validate_owned_job(current, &job, &sync_owner, &sync_token, &scope)?;
+            current.upload_queue.insert(0, job.clone());
+            Ok(())
+        });
+        value = match inserted {
+            Ok(current) => current,
+            Err(error) => { failures.push(format!("{username}：{error}")); break; }
+        };
         let result = devify_upload_wechat(
-            app.clone(),
-            space_id,
-            account_id.clone(),
-            vec![username.clone()],
-            since,
-            until,
-            Some(base_url.clone()),
-            None,
-            selection.clone(),
-        )
-        .await;
+            app.clone(), job_id.clone(), space_id, account_id.clone(), vec![username.clone()],
+            since, until, Some(base_url.clone()), None, selection, trigger, None,
+        ).await;
+        let continuation_snapshot = serde_json::to_value(
+            value.sync.continuation.get(&account_id).and_then(|items| items.get(username))
+        ).map_err(|e| format!("无法核对后续同步：{e}"))?;
+        let updated = settings::update(&data, |current| {
+            let mut consume_continuation = false;
+            let mut job_changed = false;
+            let job = current.upload_queue.iter_mut().find(|item| item.id == job_id)
+                .ok_or("找不到原始同步任务，无法保存结果。")?;
+            if job.owner.as_ref() != Some(&sync_owner) || job.scope.as_ref() != Some(&scope) {
+                return Err("原始同步任务身份或范围已改变，无法保存结果。".into());
+            }
+            match &result {
+                Ok(result) => {
+                    if job.batch_id != Some(result.batch_id) || job.create_started != Some(true) {
+                        return Err("同步批次未安全保存，请核对任务。".into());
+                    }
+                    if matches!(job.status.as_str(), "running" | "queued" | "uploading" | "processing") {
+                        job.status = "processing".into();
+                        job.message = format!("自动同步：已提交 {} 条消息", result.message_count);
+                        job_changed = true;
+                        consume_continuation = true;
+                    }
+                }
+                Err(error) => {
+                    // A known ID stays queryable; an unknown POST result stays failed and
+                    // blocks any new create. Never replace the durable fields with a clone.
+                    if matches!(job.status.as_str(), "running" | "queued" | "uploading" | "processing") {
+                        job.status = if job.batch_id.is_some() { "processing" } else { "failed" }.into();
+                        job.message = error.clone();
+                        job_changed = true;
+                    }
+                }
+            }
+            if job_changed { job.updated_at = chrono::Utc::now().to_rfc3339(); }
+            if consume_continuation && continuation_only && current.sync.owners.get(&account_id) == Some(&sync_owner) {
+                let live = serde_json::to_value(current.sync.continuation.get(&account_id)
+                    .and_then(|items| items.get(username))).map_err(|e| format!("无法核对后续同步：{e}"))?;
+                if live == continuation_snapshot {
+                    if let Some(items) = current.sync.continuation.get_mut(&account_id) {
+                        items.remove(username);
+                        if items.is_empty() { current.sync.continuation.remove(&account_id); }
+                    }
+                }
+            }
+            Ok(())
+        }).map_err(|error| format!("保存同步任务结果失败：{error}；请在任务中核对，勿重复上传。"))?;
+        let saved = updated.upload_queue.iter().find(|item| item.id == job_id)
+            .ok_or("找不到已保存的同步任务。")?;
+        if let Some(id) = saved.batch_id { batch_ids.push(id); }
+        let result = if result.is_ok() && matches!(saved.status.as_str(), "failed" | "cancelled") {
+            Err(format!("服务端任务已{}：{}", if saved.status == "failed" { "失败" } else { "取消" }, saved.message))
+        } else { result };
+        value = updated;
         match result {
-            Ok(result) => {
-                uploaded += 1;
-                message_count += result.message_count;
-                let mut job = sync_job(
-                    &account_id,
-                    space_id,
-                    username,
-                    ordinal,
-                    since,
-                    &base_url,
-                    Some(result.batch_id),
-                    "processing",
-                    &format!("自动同步：已提交 {} 条消息", result.message_count),
-                );
-                if let Some(scope) = job.scope.as_mut() { scope.message_selection = selection; }
-                if let Some(scope) = job.scope.as_mut() { scope.until = until; }
-                if let (Some(baseline), Some(position)) = (initial_baseline, result.covered.get(username).copied()) {
-                    job.initial_chunks.insert(username.clone(), settings::InitialChunk { since, until, baseline, position, final_chunk: !planned.has_more, space_id, base_url: base_url.clone() });
-                }
-                job.continue_sync = planned.has_more;
-                job.continuation_manual = if continuation_only { value.sync.continuation.get(&account_id).and_then(|entries| entries.get(username)).is_some_and(|scope| scope.manual) } else { manual };
-                job.sync_advance = cursor.is_some() && has_new;
-                job.voice_processed = result.voice_processed.clone();
-                job.voice_pending = result.voice_pending.clone();
-                if let Some(position) = result.covered.get(username).copied() {
-                    job.covered.insert(username.clone(), position);
-                }
-                jobs.push(job);
-                touched = true;
-            }
-            Err(error) if error.contains("没有可上传的消息") && initial_range.is_some() => {
-                skipped += 1;
-                failures.push(format!("{username}：所选历史日期范围内没有可上传的消息，请在导入管理调整日期"));
-            },
-            Err(error) if error.contains("没有可上传的消息") => skipped += 1,
-            Err(error) => {
-                // Stop at the first failure so a server or network problem does not
-                // produce one failed job per conversation.
-                jobs.push(sync_job(
-                    &account_id,
-                    space_id,
-                    username,
-                    ordinal,
-                    since,
-                    &base_url,
-                    None,
-                    "failed",
-                    &error,
-                ));
-                failures.push(format!("{username}：{error}"));
-                break;
-            }
+            Ok(result) => { uploaded += 1; message_count += result.message_count; touched = true; }
+            Err(error) => { failures.push(format!("{username}：{error}")); break; }
         }
     }
-
-    let batch_ids: Vec<i64> = jobs.iter().filter_map(|job| job.batch_id).collect();
 
     // A run with nothing to do is still a run: refresh the status, but do not rewrite the
     // settings file on every idle tick.
     if touched || !failures.is_empty() || sync_status_is_stale(&value.sync) {
-        let mut next = settings::load(&data)?;
-        if continuation_only {
-            if let Some(items) = next.sync.continuation.get_mut(&account_id) {
-                for username in &whitelist { items.remove(username); }
-                if items.is_empty() { next.sync.continuation.remove(&account_id); }
-            }
-        }
-        if !jobs.is_empty() {
-            next.upload_queue.splice(0..0, jobs);
-        }
-        next.sync.last_run_at = Some(chrono::Utc::now().to_rfc3339());
-        next.sync.last_status = Some(
-            if failures.is_empty() {
-                "success"
-            } else {
-                "failed"
-            }
-            .into(),
-        );
-        next.sync.last_error = if failures.is_empty() {
-            None
-        } else {
-            Some(failures.join("；"))
-        };
-        next.sync.last_message_count = message_count as u64;
-        settings::save(&data, &next)?;
+        settings::update(&data, |next| {
+            next.sync.last_run_at = Some(chrono::Utc::now().to_rfc3339());
+            next.sync.last_status = Some(if failures.is_empty() { "success" } else { "failed" }.into());
+            next.sync.last_error = if failures.is_empty() { None } else { Some(failures.join("；")) };
+            next.sync.last_message_count = message_count as u64;
+            Ok(())
+        })?;
     }
 
     Ok(ChatSyncSummary {
@@ -4390,21 +5429,25 @@ fn app_settings_save(
     app: AppHandle,
     mut value: settings::AppSettings,
 ) -> Result<settings::AppSettings, String> {
-    let stored = settings::load(&app_data(&app))?;
-    // The queue is managed by upload commands, not by potentially stale settings forms.
-    value.upload_queue = stored.upload_queue;
-    // Settings forms only toggle automatic sync; cursors and run history stay owned by the
-    // sync loop.
-    value.sync.cursors = stored.sync.cursors;
-    value.sync.initial_progress = stored.sync.initial_progress;
-    value.sync.continuation = stored.sync.continuation;
-    value.sync.pending_voice = stored.sync.pending_voice;
-    value.sync.last_run_at = stored.sync.last_run_at;
-    value.sync.last_status = stored.sync.last_status;
-    value.sync.last_error = stored.sync.last_error;
-    value.sync.last_message_count = stored.sync.last_message_count;
-    settings::save(&app_data(&app), &value)?;
-    Ok(value)
+    settings::update(&app_data(&app), |stored| {
+        if value.user_settings_revision != stored.user_settings_revision {
+            return Err("SETTINGS_CONFLICT: 设置已在其他位置更改，请重新加载后重试。".into());
+        }
+        value.upload_queue = stored.upload_queue.clone();
+        let sync_enabled = value.sync.enabled;
+        value.sync = stored.sync.clone();
+        value.sync.enabled = sync_enabled;
+        value.automation.last_daily_run = stored.automation.last_daily_run.clone();
+        value.automation.last_daily_status = stored.automation.last_daily_status.clone();
+        value.automation.last_daily_error = stored.automation.last_daily_error.clone();
+        value.automation.daily_topic_id = stored.automation.daily_topic_id;
+        value.automation.daily_topic_space_id = stored.automation.daily_topic_space_id;
+        value.automation.last_schedule_sync_at = stored.automation.last_schedule_sync_at.clone();
+        value.automation.last_schedule_signature = stored.automation.last_schedule_signature.clone();
+        value.automation.last_schedule_error = stored.automation.last_schedule_error.clone();
+        *stored = value;
+        Ok(())
+    })
 }
 
 #[derive(Serialize)]
@@ -5839,63 +6882,198 @@ struct SessionUploadState {
     new_messages: usize,
 }
 
-/// Newest successfully uploaded position per conversation for one account.
-///
-/// The incremental sync cursor is authoritative. Manual uploads keep their own coverage on
-/// the job, and only a job the server finished counts, so a failed or in-flight upload never
-/// clears the "new local records" mark. Legacy completed jobs have no per-conversation
-/// coverage; their completion time is the only upper bound available, which is conservative.
+/// A pre-ownership job that never obtained a cloud batch and carries no deferred local
+/// effects. Nothing of it exists remotely, so it cannot hide uploaded coverage.
+fn legacy_job_is_inert(job: &settings::UploadJob) -> bool {
+    job.owner.is_none() && job.batch_id.is_none()
+        && matches!(job.status.as_str(), "failed" | "cancelled")
+        && !upload_job_has_pending_sync(job)
+}
+
+fn legacy_adoption_candidate(job: &settings::UploadJob, owner: &settings::UploadOwner) -> bool {
+    job.owner.is_none() && !job.id.is_empty() && job.batch_id.is_some_and(|id| id > 0)
+        && job.account_id == owner.account_id && job.space_id == owner.space_id
+        && matches!(job.status.as_str(), "completed" | "failed" | "cancelled")
+        && job.scope.as_ref().and_then(|scope| settings::normalize_base_url(&scope.base_url).ok())
+            .as_deref() == Some(owner.base_url.as_str())
+}
+
+/// Legacy cursors belong to `owner` only when every cursor position is covered by a
+/// completed job whose completion was verified for that same owner. Without legacy state
+/// there is nothing to adopt, so a fresh account is never pinned to an owner here.
+fn legacy_cursors_explained(value: &settings::AppSettings, owner: &settings::UploadOwner) -> bool {
+    let account = &owner.account_id;
+    let has_state = value.sync.cursors.get(account).is_some_and(|v| !v.is_empty())
+        || value.sync.pending_voice.get(account).is_some_and(|v| !v.is_empty());
+    if !has_state || value.sync.initial_progress.get(account).is_some_and(|v| !v.is_empty())
+        || value.sync.continuation.get(account).is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    let verified: Vec<_> = value.upload_queue.iter()
+        .filter(|job| job.owner.as_ref() == Some(owner) && upload_completion_is_verified(job))
+        .collect();
+    value.sync.cursors.get(account).map_or(true, |cursors| cursors.iter().all(|(username, cursor)| {
+        verified.iter().any(|job| job.covered.get(username)
+            .is_some_and(|position| position.covers((cursor.time, cursor.local_id))))
+    }))
+}
+
+const LEGACY_ADOPT_CONCURRENCY: usize = 8;
+const LEGACY_ADOPT_BUDGET: Duration = Duration::from_secs(20);
+
+/// Bind pre-ownership history to the freshly verified owner, one cloud batch at a time.
+/// A job is adopted only when the server confirms the batch's user, space, device, source
+/// account and a terminal status consistent with the local one; anything else stays
+/// unowned and keeps its conversations "unknown". The caller holds the identity lease.
+async fn adopt_legacy_upload_history(data: &Path, owner: &settings::UploadOwner, token: &str,
+    deadline: tokio::time::Instant) -> Result<(), String> {
+    let current = settings::load(data)?;
+    let mut counts = HashMap::new();
+    for job in &current.upload_queue { *counts.entry(job.id.clone()).or_insert(0usize) += 1; }
+    let candidates: Vec<(String, i64, String)> = current.upload_queue.iter()
+        .filter(|job| legacy_adoption_candidate(job, owner) && counts.get(&job.id) == Some(&1))
+        .map(|job| (job.id.clone(), job.batch_id.unwrap_or_default(), job.status.clone()))
+        .collect();
+    let mut confirmed = HashSet::new();
+    for chunk in candidates.chunks(LEGACY_ADOPT_CONCURRENCY) {
+        if tokio::time::Instant::now() >= deadline { break; }
+        let handles: Vec<_> = chunk.iter().map(|(job_id, batch_id, status)| {
+            let (base, token, path) = (owner.base_url.clone(), token.to_string(), format!("/api/v1/chat/uploads/{batch_id}"));
+            let (job_id, batch_id, status) = (job_id.clone(), *batch_id, status.clone());
+            tauri::async_runtime::spawn(async move {
+                let batch = tokio::time::timeout_at(deadline, fixed_identity_get(&base, &token, &path)).await.ok()?.ok()?;
+                Some((job_id, batch_id, status, batch))
+            })
+        }).collect();
+        for handle in handles {
+            let Ok(Some((job_id, batch_id, status, batch))) = handle.await else { continue; };
+            if validate_remote_owner(owner, batch_id, &batch, None).is_err() { continue; }
+            let remote = batch.get("status").and_then(serde_json::Value::as_str).unwrap_or_default();
+            let consistent = if status == "completed" { remote == "completed" }
+                else { matches!(remote, "failed" | "cancelled") };
+            if consistent { confirmed.insert((job_id, batch_id)); }
+        }
+    }
+    if confirmed.is_empty() && (current.sync.owners.contains_key(&owner.account_id)
+        || !legacy_cursors_explained(&current, owner)) {
+        return Ok(());
+    }
+    settings::update(data, |current| {
+        validate_owner_state(current, owner, token)?;
+        if desktop_credentials::load(data, &owner.base_url)?.access != token { return Err("登录状态已改变。".into()); }
+        let mut counts = HashMap::new();
+        for job in &current.upload_queue { *counts.entry(job.id.clone()).or_insert(0usize) += 1; }
+        for job in current.upload_queue.iter_mut() {
+            if !legacy_adoption_candidate(job, owner) || counts.get(&job.id) != Some(&1)
+                || !confirmed.contains(&(job.id.clone(), job.batch_id.unwrap_or_default())) {
+                continue;
+            }
+            job.owner = Some(owner.clone());
+            job.verified_completion_digest = if job.status == "completed" {
+                Some(upload_completion_digest(job).ok_or("无法确认完成快照。")?)
+            } else { None };
+        }
+        if !current.sync.owners.contains_key(&owner.account_id) && legacy_cursors_explained(current, owner) {
+            current.sync.owners.insert(owner.account_id.clone(), owner.clone());
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// Legacy history cannot establish ownership or coverage, but it must not be
+// mistaken for proof that a conversation was never uploaded.
+fn legacy_uncertain_coverage(value: &settings::AppSettings, owner: &settings::UploadOwner) -> (HashSet<String>, bool) {
+    let mut uncertain = HashSet::new();
+    let mut uncertain_all = false;
+    if !value.sync.owners.contains_key(&owner.account_id) {
+        if let Some(items) = value.sync.cursors.get(&owner.account_id) { uncertain.extend(items.keys().cloned()); }
+        if let Some(items) = value.sync.initial_progress.get(&owner.account_id) { uncertain.extend(items.keys().cloned()); }
+        if let Some(items) = value.sync.continuation.get(&owner.account_id) { uncertain.extend(items.keys().cloned()); }
+        if let Some(items) = value.sync.pending_voice.get(&owner.account_id) { uncertain.extend(items.keys().cloned()); }
+    }
+    for job in &value.upload_queue {
+        if job.owner.is_some() || legacy_job_is_inert(job) || job.account_id != owner.account_id
+            || job.space_id != owner.space_id { continue; }
+        match job.scope.as_ref() {
+            Some(scope) => {
+                let base = settings::normalize_base_url(&scope.base_url).ok().filter(|base| {
+                    Url::parse(base).is_ok_and(|url| matches!(url.scheme(), "http" | "https")
+                        && url.host_str().is_some() && url.username().is_empty()
+                        && url.password().is_none() && url.query().is_none() && url.fragment().is_none())
+                });
+                match base {
+                    Some(base) if base == owner.base_url => {
+                        if scope.usernames.is_empty() { uncertain_all = true; }
+                        else { uncertain.extend(scope.usernames.iter().cloned()); }
+                    }
+                    Some(_) => {},
+                    None => uncertain_all = true,
+                }
+            }
+            None => uncertain_all = true,
+        }
+    }
+    (uncertain, uncertain_all)
+}
+
+// The caller holds the identity lease. Completed jobs count only when their entire
+// owner/batch/scope/coverage snapshot was previously verified by reconciliation. This is
+// last-confirmed coverage, not a live check for later server deletion or mutation.
+async fn verified_coverage_settings(data: &Path, owner: &settings::UploadOwner, token: &str) -> Result<(settings::AppSettings, HashSet<String>, bool), String> {
+    let mut current = settings::load(data)?;
+    validate_owner_state(&current, owner, token)?;
+    if desktop_credentials::load(data, &owner.base_url)?.access != token { return Err("登录状态已改变。".into()); }
+    let (mut uncertain, mut uncertain_all) = legacy_uncertain_coverage(&current, owner);
+    let mut counts = HashMap::new();
+    for job in &current.upload_queue { *counts.entry(job.id.clone()).or_insert(0usize) += 1; }
+    current.upload_queue.retain(|job| {
+        let same_owner = job.owner.as_ref() == Some(owner) && job.account_id == owner.account_id && job.space_id == owner.space_id;
+        let scope_ok = job.scope.as_ref().and_then(|scope| settings::normalize_base_url(&scope.base_url).ok()).as_deref() == Some(owner.base_url.as_str());
+        let checked = same_owner && !job.id.is_empty() && counts.get(&job.id) == Some(&1) && scope_ok
+            && (job.status != "completed" || upload_completion_is_verified(job));
+        if !checked && same_owner && job.status == "completed" {
+            if let Some(scope) = &job.scope { uncertain.extend(scope.usernames.iter().cloned()); } else { uncertain_all = true; }
+        }
+        checked
+    });
+    Ok((current, uncertain, uncertain_all))
+}
+
+/// Newest explicitly covered position for the freshly verified current owner.
+/// Jobs must first be filtered by verified_coverage_settings. Legacy ownerless cursors and
+/// timestamp-only jobs cannot establish coverage.
 fn upload_coverage(
     value: &settings::AppSettings,
-    account_id: &str,
+    owner: &settings::UploadOwner,
 ) -> HashMap<String, settings::SyncCursor> {
-    let mut coverage = value
-        .sync
-        .cursors
-        .get(account_id)
-        .cloned()
-        .unwrap_or_default();
+    let mut coverage = if value.sync.owners.get(&owner.account_id) == Some(owner) {
+        value.sync.cursors.get(&owner.account_id).cloned().unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
     for job in &value.upload_queue {
-        if job.account_id != account_id || job.status != "completed" {
+        if job.owner.as_ref() != Some(owner) || job.account_id != owner.account_id
+            || job.space_id != owner.space_id || !upload_completion_is_verified(job) {
             continue;
         }
-        let Some(scope) = job.scope.as_ref() else {
-            continue;
-        };
-        let fallback = if job.covered.is_empty() {
-            // Legacy jobs predate per-conversation coverage; the completion time is the only
-            // upper bound we have, and treating it as "uploaded through then" is conservative.
-            chrono::DateTime::parse_from_rfc3339(&job.updated_at)
-                .ok()
-                .map(|at| settings::SyncCursor {
-                    boundary_count: None,
-                    time: at.timestamp(),
-                    local_id: 0,
-                })
-        } else {
-            // A modern job that lists coverage for other conversations says nothing about one
-            // it skipped, so it must not claim that conversation was uploaded.
-            None
-        };
+        let Some(scope) = job.scope.as_ref() else { continue; };
+        if settings::normalize_base_url(&scope.base_url).ok().as_deref() != Some(owner.base_url.as_str()) { continue; }
         for username in &scope.usernames {
-            let Some(position) = job.covered.get(username).copied().or(fallback) else {
-                continue;
-            };
+            let Some(position) = job.covered.get(username).copied() else { continue; };
             let newer = coverage.get(username).map_or(true, |current| {
                 (position.time, position.local_id) > (current.time, current.local_id)
                     || ((position.time, position.local_id) == (current.time, current.local_id)
                         && position.boundary_count > current.boundary_count)
             });
-            if newer {
-                coverage.insert(username.clone(), position);
-            }
+            if newer { coverage.insert(username.clone(), position); }
         }
     }
     coverage
 }
 
-fn conversation_job_state<'a>(value: &'a settings::AppSettings, account_id: &str, username: &str) -> Option<&'a str> {
-    let matches = |job: &&settings::UploadJob| job.account_id == account_id && Some(job.space_id) == value.devify.active_space_id && job.scope.as_ref().is_some_and(|scope| scope.usernames.iter().any(|name| name == username));
+fn conversation_job_state<'a>(value: &'a settings::AppSettings, owner: &settings::UploadOwner, username: &str) -> Option<&'a str> {
+    let matches = |job: &&settings::UploadJob| job.owner.as_ref() == Some(owner) && job.account_id == owner.account_id && job.space_id == owner.space_id && (job.status != "completed" || upload_completion_is_verified(job)) && job.scope.as_ref().is_some_and(|scope| settings::normalize_base_url(&scope.base_url).ok().as_deref() == Some(owner.base_url.as_str()) && scope.usernames.iter().any(|name| name == username));
     if value.upload_queue.iter().filter(matches).any(|job| matches!(job.status.as_str(), "queued" | "running" | "uploading" | "processing")) { return Some("processing"); }
     let latest = value.upload_queue.iter().filter(matches).max_by(|a, b| a.created_at.cmp(&b.created_at));
     if value.upload_queue.iter().filter(matches).any(|job| job.status == "failed" && job.batch_id.is_some()) {
@@ -5916,12 +7094,18 @@ async fn wechat_upload_state(
     usernames: Vec<String>,
 ) -> Result<Vec<SessionUploadState>, String> {
     validate_account_id(&account_id)?;
-    reconcile_upload_jobs(&app).await;
+    // Reconciliation runs in the scheduler; do not fan out its whole queue from a list read.
     let data = app_data(&app);
-    let value = settings::load(&data)?;
-    if !value.connectors.wechat_enabled {
-        return Ok(Vec::new());
-    }
+    let initial = settings::load(&data)?;
+    if !initial.connectors.wechat_enabled { return Ok(Vec::new()); }
+    let space_id = initial.devify.active_space_id.ok_or("请先选择 Devify 空间。")?;
+    let (owner, token) = tokio::time::timeout(Duration::from_secs(5), verified_upload_identity(&data, &account_id, space_id)).await
+        .map_err(|_| "确认云端身份超时，请稍后重试。")??;
+    let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
+    let deadline = tokio::time::Instant::now() + LEGACY_ADOPT_BUDGET;
+    let _ = adopt_legacy_upload_history(&data, &owner, &token, deadline).await;
+    let (value, uncertain, uncertain_all) = verified_coverage_settings(&data, &owner, &token).await?;
+    if !value.connectors.wechat_enabled { return Ok(Vec::new()); }
     let allowed: HashSet<String> = value
         .chat
         .allowed_usernames
@@ -5930,7 +7114,7 @@ async fn wechat_upload_state(
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let coverage = upload_coverage(&value, &account_id);
+    let coverage = upload_coverage(&value, &owner);
     let mut requested: Vec<String> = usernames
         .into_iter()
         .filter(|username| allowed.contains(username))
@@ -5958,7 +7142,8 @@ async fn wechat_upload_state(
                 ),
                 None => ("local", 0),
             };
-            let state = if state == "synced" { conversation_job_state(&value, &account_id, &username).unwrap_or("unknown") } else { state };
+            let state = if uncertain_all || uncertain.contains(&username) { "unknown" }
+                else if state == "synced" { conversation_job_state(&value, &owner, &username).unwrap_or("synced") } else { state };
             states.push(SessionUploadState {
                 username,
                 state: state.to_string(),
@@ -6406,11 +7591,13 @@ pub fn run() {
             wechat_collection_dates,
             wechat_catalog_dates,
             devify_upload_preview,
+            devify_upload_identity,
             devify_upload_selected,
             devify_upload_retry_preview,
             devify_upload_retry,
             devify_upload_status,
             devify_daily_schedule_sync,
+            devify_upload_list,
             app_settings_get,
             app_settings_save,
             wechat_scan,
@@ -6474,6 +7661,226 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
+}
+
+#[cfg(test)]
+mod cloud_retry_tests {
+    use super::*;
+
+    fn fixture() -> (settings::AppSettings, settings::UploadJob, CloudRetryAuth) {
+        let scope = settings::UploadScope {
+            usernames: vec!["chat".into()], since: Some(1), until: Some(5),
+            base_url: "https://example.test".into(), message_selection: BTreeMap::new(),
+        };
+        let job = settings::UploadJob {
+            id: "job".into(), space_id: 4, account_id: "account".into(),
+            batch_id: Some(8), status: "failed".into(), scope: Some(scope.clone()),
+            ..Default::default()
+        };
+        let mut settings = settings::AppSettings::default();
+        settings.active_account_id = "account".into();
+        settings.devify.active_space_id = Some(4);
+        settings.devify.base_url = "https://example.test".into();
+        settings.devify.device_id = "device".into();
+        settings.chat.allowed_usernames.insert("account".into(), vec!["chat".into()]);
+        let auth = CloudRetryAuth {
+            token: "synthetic-token".into(), base_url: "https://example.test".into(),
+            job_id: "job".into(), space_id: 4, account_id: "account".into(),
+            batch_id: 8, device_id: "device".into(), user_id: 3,
+            idempotency_key: "package-key".into(), scope,
+        };
+        (settings, job, auth)
+    }
+
+    fn remote_batch() -> serde_json::Value {
+        serde_json::json!({"id": 8, "space_id": 4, "uploaded_by_id": 3,
+            "source_type": "wechat", "source_account_id": "account",
+            "device_id": "device", "status": "failed", "idempotency_key": "package-key"})
+    }
+
+    #[test]
+    fn remote_identity_requires_every_field_to_match() {
+        let (_, _, auth) = fixture();
+        let user = serde_json::json!({"id": 3});
+        assert_eq!(validate_cloud_retry_remote(&auth, &user, &remote_batch()).unwrap(), (3, "package-key".into()));
+        for (field, wrong) in [
+            ("id", serde_json::json!(9)), ("space_id", serde_json::json!(5)),
+            ("uploaded_by_id", serde_json::json!(2)), ("source_type", serde_json::json!("other")),
+            ("source_account_id", serde_json::json!("other")), ("device_id", serde_json::json!("other")),
+            ("status", serde_json::json!("processing")), ("idempotency_key", serde_json::json!("")),
+        ] {
+            let mut batch = remote_batch();
+            batch[field] = wrong;
+            assert!(validate_cloud_retry_remote(&auth, &user, &batch).is_err(), "{field}");
+            batch.as_object_mut().unwrap().remove(field);
+            assert!(validate_cloud_retry_remote(&auth, &user, &batch).is_err(), "missing {field}");
+        }
+        assert!(validate_cloud_retry_remote(&auth, &serde_json::json!({}), &remote_batch()).is_err());
+        assert!(validate_cloud_retry_remote(&auth, &serde_json::json!({"id": 0}), &remote_batch()).is_err());
+        assert!(validate_cloud_retry_remote(&auth, &serde_json::json!({"id": 2}), &remote_batch()).is_err());
+    }
+
+    #[test]
+    fn retry_context_requires_original_account_space_service_device_scope_and_token() {
+        let (settings, job, auth) = fixture();
+        assert!(validate_cloud_retry_context(&settings, &job, &auth, "synthetic-token").is_ok());
+        assert!(validate_cloud_retry_context(&settings, &job, &auth, "changed-token").is_err());
+        let mut changed = settings.clone(); changed.active_account_id = "other".into();
+        assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
+        let mut changed = settings.clone(); changed.devify.active_space_id = Some(5);
+        assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
+        let mut changed = settings.clone(); changed.devify.base_url = "https://other.test".into();
+        assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
+        let mut changed = settings.clone(); changed.devify.device_id = "other".into();
+        assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
+        let mut changed = settings.clone(); changed.devify.device_id.clear();
+        assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
+        let mut changed = settings.clone(); changed.chat.allowed_usernames.clear();
+        assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
+        let mut changed = job.clone(); changed.batch_id = Some(9);
+        assert!(validate_cloud_retry_context(&settings, &changed, &auth, "synthetic-token").is_err());
+        let mut changed = job.clone(); changed.status = "processing".into();
+        assert!(validate_cloud_retry_context(&settings, &changed, &auth, "synthetic-token").is_err());
+        let mut changed = job.clone(); changed.scope.as_mut().unwrap().until = Some(6);
+        assert!(validate_cloud_retry_context(&settings, &changed, &auth, "synthetic-token").is_err());
+    }
+
+    #[test]
+    fn retry_identity_response_allows_five_mib_but_rejects_more() {
+        let mut body = Vec::new();
+        let first = vec![0u8; 1024 * 1024 + 1];
+        append_retry_identity_body(&mut body, &first).unwrap();
+        let rest = vec![0u8; UPLOAD_LIST_MAX_RESPONSE_BYTES - first.len()];
+        append_retry_identity_body(&mut body, &rest).unwrap();
+        assert_eq!(body.len(), UPLOAD_LIST_MAX_RESPONSE_BYTES);
+        assert!(append_retry_identity_body(&mut body, &[0]).is_err());
+        assert_eq!(body.len(), UPLOAD_LIST_MAX_RESPONSE_BYTES);
+    }
+
+    #[test]
+    fn package_key_and_device_claim_are_not_guessed() {
+        let (_, _, auth) = fixture();
+        assert!(validate_cloud_retry_package(&auth, 4, "account", "package-key").is_ok());
+        assert!(validate_cloud_retry_package(&auth, 4, "account", "changed-key").is_err());
+        assert!(validate_cloud_retry_package(&auth, 5, "account", "package-key").is_err());
+        assert!(validate_cloud_retry_package(&auth, 4, "other", "package-key").is_err());
+        let token = format!("header.{}.signature", URL_SAFE_NO_PAD.encode(br#"{"device_id":"device"}"#));
+        assert_eq!(cloud_retry_device_id("", &token).unwrap(), "device");
+        assert_eq!(cloud_retry_device_id("device", &token).unwrap(), "device");
+        assert!(cloud_retry_device_id("other", &token).is_err());
+        assert!(cloud_retry_device_id("", "synthetic-token").is_err());
+        assert!(cloud_retry_device_id(" device", "synthetic-token").is_err());
+    }
+}
+
+#[cfg(test)]
+mod upload_list_tests {
+    use super::*;
+    use std::net::TcpListener as StdListener;
+
+    fn valid_page() -> serde_json::Value {
+        serde_json::json!({
+            "list": [{"id": 9, "status": "processing", "trigger": "scheduled"}],
+            "pagination": {"total": 1, "page": 1, "page_size": 100, "next": null, "previous": null}
+        })
+    }
+
+    #[test]
+    fn pagination_rejects_zero_and_overflow() {
+        assert_eq!(upload_list_pagination(None, None).unwrap(), (1, 100));
+        assert_eq!(upload_list_pagination(Some(2), Some(1)).unwrap(), (2, 1));
+        for (page, size) in [(0, 1), (1, 0), (1, 101), (UPLOAD_LIST_MAX_PAGE + 1, 1)] {
+            assert!(upload_list_pagination(Some(page), Some(size)).is_err());
+        }
+    }
+
+    #[test]
+    fn upload_list_requires_complete_pagination_and_keeps_server_rows() {
+        let expected = valid_page();
+        assert_eq!(parse_upload_list(serde_json::json!({"code": 0, "data": expected})).unwrap(), expected);
+        assert_eq!(parse_upload_list(expected.clone()).unwrap(), expected);
+        for payload in [
+            serde_json::json!({"data": null}),
+            serde_json::json!({"list": null, "pagination": {}}),
+            serde_json::json!({"list": [null], "pagination": {"total": 1, "page": 1, "page_size": 10, "next": null, "previous": null}}),
+            serde_json::json!({"list": [], "pagination": {"total": 0, "page": 1, "page_size": 10, "next": null}}),
+            serde_json::json!({"list": [], "pagination": {"total": 0, "page": 0, "page_size": 10, "next": null, "previous": null}}),
+            serde_json::json!({"list": [], "pagination": {"total": 0, "page": 1, "page_size": 101, "next": null, "previous": null}}),
+        ] { assert!(parse_upload_list(payload).is_err()); }
+    }
+
+    #[test]
+    fn list_rejects_wrong_space_and_unsafe_service_address() {
+        let mut settings = settings::AppSettings::default();
+        settings.devify.active_space_id = Some(4);
+        settings.devify.base_url = "https://example.test/".into();
+        assert_eq!(upload_list_base_url(&settings, 4).unwrap(), "https://example.test");
+        assert!(upload_list_base_url(&settings, 3).is_err());
+        assert!(upload_list_base_url(&settings, 0).is_err());
+        for base in ["https://user:password@example.test", "https://example.test/?token=secret", "file:///tmp/data", "https://example.test/#fragment"] {
+            settings.devify.base_url = base.into();
+            assert!(upload_list_base_url(&settings, 4).is_err());
+        }
+    }
+
+    #[test]
+    fn list_http_request_is_paged_authenticated_and_does_not_follow_redirect() {
+        let listener = StdListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = stream.read(&mut buf).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buf[..count]);
+            }
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (status, body) = runtime.block_on(fetch_upload_list(&format!("http://{address}"), 42, 2, 30, "test-token")).unwrap();
+        assert_eq!(status, reqwest::StatusCode::FOUND);
+        assert!(body.is_empty());
+        let request = server.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("get /api/v1/spaces/42/chat/uploads?page=2&page_size=30 http/1.1\r\n"));
+        assert!(request.contains("authorization: bearer test-token\r\n"));
+    }
+
+    #[test]
+    fn trigger_respects_original_sync_source_and_unknown_history() {
+        assert_eq!(sync_upload_trigger(true, false, None), UploadTrigger::Manual);
+        assert_eq!(sync_upload_trigger(false, false, None), UploadTrigger::Scheduled);
+        assert_eq!(sync_upload_trigger(true, true, Some(true)), UploadTrigger::Manual);
+        assert_eq!(sync_upload_trigger(true, true, Some(false)), UploadTrigger::Scheduled);
+        assert_eq!(sync_upload_trigger(true, true, None), UploadTrigger::Unknown);
+        for (trigger, expected) in [(UploadTrigger::Manual, "manual"), (UploadTrigger::Scheduled, "scheduled"), (UploadTrigger::Unknown, "unknown")] {
+            let body = upload_create_body("account", "key", "device", "label", "mac", trigger);
+            assert_eq!(body["trigger"], expected);
+            assert_eq!(body["source_type"], "wechat");
+            assert_eq!(body["idempotency_key"], "key");
+        }
+        let legacy: settings::ContinuationScope = serde_json::from_value(serde_json::json!({"space_id": 1, "base_url": "https://example.test"})).unwrap();
+        assert_eq!(legacy.manual, None);
+        let legacy_job: settings::UploadJob = serde_json::from_value(serde_json::json!({"id": "old"})).unwrap();
+        assert_eq!(legacy_job.continuation_manual, None);
+        for source in [Some(true), Some(false), None] {
+            let mut value = settings::AppSettings::default();
+            value.upload_queue.push(settings::UploadJob {
+                account_id: "account".into(), space_id: 1, status: "completed".into(),
+                continue_sync: true, continuation_manual: source,
+                scope: Some(settings::UploadScope {
+                    usernames: vec!["chat".into()], since: None, until: None,
+                    base_url: "https://example.test".into(), message_selection: BTreeMap::new(),
+                }),
+                ..Default::default()
+            });
+            apply_completed_uploads(&mut value);
+            assert_eq!(value.sync.continuation["account"]["chat"].manual, source);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -6810,27 +8217,35 @@ mod key_flow_tests {
         let mut value = settings::AppSettings::default();
         value.active_account_id = "account".into();
         value.devify.active_space_id = Some(7);
+        let owner = settings::UploadOwner { base_url: "https://example.invalid".into(), space_id: 7,
+            account_id: "account".into(), user_id: 1, device_id: "device".into() };
         value.upload_queue = (0..3).map(|index| settings::UploadJob {
             id: format!("batch-{index}"), account_id: "account".into(), space_id: 7,
+            owner: Some(owner.clone()), create_started: Some(false),
             status: "queued".into(), manual_group: Some("group".into()), manual_index: index,
             manual_total: 3, ..Default::default()
         }).collect();
-        assert_eq!(super::next_manual_batch(&value).as_deref(), Some("batch-0"));
+        assert_eq!(super::next_manual_batch(&value, &owner).as_deref(), Some("batch-0"));
+        let mut other_user = owner.clone(); other_user.user_id = 2;
+        assert!(super::next_manual_batch(&value, &other_user).is_none());
+        assert_eq!(value.upload_queue[0].status, "queued");
         value.upload_queue[0].status = "running".into();
         value.upload_queue[0].manual_fingerprint = Some("saved".into());
         let mut value: settings::AppSettings = serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
-        assert_eq!(super::next_manual_batch(&value).as_deref(), Some("batch-0"));
+        assert_eq!(super::next_manual_batch(&value, &owner).as_deref(), Some("batch-0"));
+        value.upload_queue[0].create_started = Some(true);
+        assert!(super::next_manual_batch(&value, &owner).is_none());
         value.upload_queue[0].status = "failed".into();
-        assert!(super::next_manual_batch(&value).is_none());
+        assert!(super::next_manual_batch(&value, &owner).is_none());
         value.upload_queue[0].status = "completed".into();
-        assert_eq!(super::next_manual_batch(&value).as_deref(), Some("batch-1"));
+        assert_eq!(super::next_manual_batch(&value, &owner).as_deref(), Some("batch-1"));
         value.upload_queue[1].status = "processing".into();
         value.upload_queue[1].batch_id = Some(1);
-        assert!(super::next_manual_batch(&value).is_none());
+        assert!(super::next_manual_batch(&value, &owner).is_none());
         value.upload_queue.push(settings::UploadJob { id: "old-stopped".into(), account_id: "account".into(), space_id: 7, status: "failed".into(), ..Default::default() });
-        assert!(super::next_manual_batch(&value).is_none());
+        assert!(super::next_manual_batch(&value, &owner).is_none());
         value.devify.active_space_id = Some(8);
-        assert!(super::next_manual_batch(&value).is_none());
+        assert!(super::next_manual_batch(&value, &owner).is_none());
     }
 
     #[test]
@@ -7435,6 +8850,10 @@ mod upload_coverage_tests {
         assert!(super::validate_upload_batch_size(1001).is_err());
     }
 
+    fn owner() -> settings::UploadOwner {
+        settings::UploadOwner { base_url: "https://example.test".into(), space_id: 1, account_id: "acct".into(), user_id: 7, device_id: "device".into() }
+    }
+
     fn job(status: &str, covered: SyncCursor, fallback_at: &str) -> UploadJob {
         let mut covered_map = BTreeMap::new();
         covered_map.insert("one".to_string(), covered);
@@ -7443,6 +8862,7 @@ mod upload_coverage_tests {
             account_id: "acct".into(),
             space_id: 1,
             batch_id: Some(1),
+            owner: Some(owner()),
             status: status.into(),
             created_at: fallback_at.into(),
             updated_at: fallback_at.into(),
@@ -7460,7 +8880,11 @@ mod upload_coverage_tests {
 
     fn with_jobs(jobs: Vec<UploadJob>) -> settings::AppSettings {
         let mut value = settings::AppSettings::default();
-        value.upload_queue = jobs;
+        value.upload_queue = jobs.into_iter().map(|mut item| {
+            item.verified_completion_digest = super::upload_completion_digest(&item);
+            item
+        }).collect();
+        value.sync.owners.insert("acct".into(), owner());
         value
     }
 
@@ -7468,7 +8892,7 @@ mod upload_coverage_tests {
     fn equal_position_preserves_precise_boundary_count() {
         let mut value = with_jobs(vec![job("completed", SyncCursor { time: 100, local_id: 5, boundary_count: None }, "")]);
         value.sync.cursors.entry("acct".into()).or_default().insert("one".into(), SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) });
-        assert_eq!(upload_coverage(&value, "acct")["one"].boundary_count, Some(1));
+        assert_eq!(upload_coverage(&value, &owner())["one"].boundary_count, Some(1));
     }
 
     #[test]
@@ -7485,7 +8909,7 @@ mod upload_coverage_tests {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("processing", position, "2026-11-06T00:00:00Z")]);
         value.devify.active_space_id = Some(1);
-        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("processing"));
+        assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("processing"));
     }
 
     #[test]
@@ -7493,7 +8917,7 @@ mod upload_coverage_tests {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("completed", position, "2026-11-06T01:00:00Z"), job("processing", position, "2026-11-06T00:00:00Z")]);
         value.devify.active_space_id = Some(1);
-        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("processing"));
+        assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("processing"));
     }
 
     #[test]
@@ -7501,7 +8925,7 @@ mod upload_coverage_tests {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("completed", position, "2026-11-06T01:00:00Z"), job("failed", position, "2026-11-06T00:00:00Z")]);
         value.devify.active_space_id = Some(1);
-        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("history_failed"));
+        assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("history_failed"));
     }
 
     #[test]
@@ -7509,7 +8933,7 @@ mod upload_coverage_tests {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("completed", position, "2026-11-06T00:00:00Z"), job("failed", position, "2026-11-06T01:00:00Z")]);
         value.devify.active_space_id = Some(1);
-        assert_eq!(super::conversation_job_state(&value, "acct", "one"), Some("failed"));
+        assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("failed"));
     }
 
     #[test]
@@ -7548,7 +8972,7 @@ mod upload_coverage_tests {
         value.devify.active_space_id = Some(1);
         value.devify.base_url = "https://example.test".into();
         value.chat.allowed_usernames.insert("acct".into(), vec!["one".into()]);
-        value.sync.continuation.entry("acct".into()).or_default().insert("one".into(), settings::ContinuationScope { space_id: 1, base_url: "https://example.test".into(), manual: true });
+        value.sync.continuation.entry("acct".into()).or_default().insert("one".into(), settings::ContinuationScope { space_id: 1, base_url: "https://example.test".into(), manual: Some(true) });
         assert_eq!(super::continuation_sessions(&value, "acct"), vec!["one".to_string()]);
         value.devify.active_space_id = Some(2);
         assert!(super::continuation_sessions(&value, "acct").is_empty());
@@ -7556,7 +8980,7 @@ mod upload_coverage_tests {
         value.chat.allowed_usernames.clear();
         assert!(super::continuation_sessions(&value, "acct").is_empty());
         value.chat.allowed_usernames.insert("acct".into(), vec!["one".into()]);
-        value.sync.continuation.get_mut("acct").unwrap().get_mut("one").unwrap().manual = false;
+        value.sync.continuation.get_mut("acct").unwrap().get_mut("one").unwrap().manual = Some(false);
         assert!(super::continuation_sessions(&value, "acct").is_empty());
         value.sync.enabled = true;
         assert_eq!(super::continuation_sessions(&value, "acct"), vec!["one".to_string()]);
@@ -7662,10 +9086,10 @@ mod upload_coverage_tests {
             local_id: 9,
         };
         assert!(
-            upload_coverage(&with_jobs(vec![job("processing", position, "")]), "acct").is_empty()
+            upload_coverage(&with_jobs(vec![job("processing", position, "")]), &owner()).is_empty()
         );
-        assert!(upload_coverage(&with_jobs(vec![job("failed", position, "")]), "acct").is_empty());
-        let completed = upload_coverage(&with_jobs(vec![job("completed", position, "")]), "acct");
+        assert!(upload_coverage(&with_jobs(vec![job("failed", position, "")]), &owner()).is_empty());
+        let completed = upload_coverage(&with_jobs(vec![job("completed", position, "")]), &owner());
         assert_eq!(
             completed.get("one").map(|c| (c.time, c.local_id)),
             Some((180, 9))
@@ -7692,7 +9116,7 @@ mod upload_coverage_tests {
                 job("completed", older, ""),
                 foreign,
             ]),
-            "acct",
+            &owner(),
         );
         assert_eq!(
             coverage.get("one").map(|c| (c.time, c.local_id)),
@@ -7701,15 +9125,15 @@ mod upload_coverage_tests {
     }
 
     #[test]
-    fn legacy_jobs_fall_back_to_completion_time() {
+    fn jobs_without_coverage_do_not_infer_completion_time() {
         let mut legacy = job(
             "completed",
             SyncCursor::default(),
             "2026-10-01T10:00:00+00:00",
         );
         legacy.covered.clear();
-        let coverage = upload_coverage(&with_jobs(vec![legacy]), "acct");
-        assert_eq!(coverage.get("one").map(|c| c.time), Some(1790848800));
+        let coverage = upload_coverage(&with_jobs(vec![legacy]), &owner());
+        assert!(coverage.is_empty());
     }
 
     #[test]
@@ -7725,7 +9149,7 @@ mod upload_coverage_tests {
         );
         // Another conversation was uploaded, this one was not part of the package.
         modern.scope.as_mut().unwrap().usernames = vec!["one".into(), "two".into()];
-        let coverage = upload_coverage(&with_jobs(vec![modern]), "acct");
+        let coverage = upload_coverage(&with_jobs(vec![modern]), &owner());
         assert_eq!(coverage.get("one").map(|c| c.time), Some(200));
         assert!(coverage.get("two").is_none());
     }

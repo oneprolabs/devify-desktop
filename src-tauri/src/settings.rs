@@ -2,12 +2,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
+use std::io::Write;
+use std::sync::Mutex;
 
 const SETTINGS_FILE: &str = "app-settings.json";
+static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct AppSettings {
+    /// Optimistic concurrency generation, owned by the settings store.
+    pub settings_revision: u64,
+    /// Version of user-editable fields, unaffected by background queue/status writes.
+    pub user_settings_revision: u64,
     pub active_account_id: String,
     pub chat: ChatPolicy,
     pub connectors: ConnectorSettings,
@@ -135,6 +142,8 @@ impl Default for VoiceUploadSettings {
 #[serde(default)]
 pub struct SyncSettings {
     pub enabled: bool,
+    /// Identity that owns each account's local sync state. Missing legacy ownership pauses sync.
+    pub owners: HashMap<String, UploadOwner>,
     /// account id → conversation username → upload position.
     pub cursors: HashMap<String, HashMap<String, SyncCursor>>,
     pub initial_progress: HashMap<String, HashMap<String, InitialChunk>>,
@@ -162,6 +171,7 @@ impl Default for SyncSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            owners: HashMap::new(),
             cursors: HashMap::new(),
             initial_progress: HashMap::new(),
             continuation: HashMap::new(),
@@ -181,6 +191,16 @@ pub struct UploadJob {
     pub space_id: i64,
     pub account_id: String,
     pub batch_id: Option<i64>,
+    /// Verified cloud identity at task creation; legacy tasks have no owner.
+    pub owner: Option<UploadOwner>,
+    /// Durable intent: once true, a missing response is ambiguous and must not be resent.
+    pub create_started: Option<bool>,
+    /// Digest of the exact ZIP, when known; legacy jobs cannot prove an identical archive.
+    pub package_digest: Option<String>,
+    /// Snapshot digest recorded only after the completed batch's remote owner is verified.
+    /// This is a last-confirmed state, not proof that the server has not since deleted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_completion_digest: Option<String>,
     pub status: String,
     pub message: String,
     pub created_at: String,
@@ -198,13 +218,24 @@ pub struct UploadJob {
     pub initial_chunks: BTreeMap<String, InitialChunk>,
     pub sync_advance: bool,
     pub continue_sync: bool,
-    pub continuation_manual: bool,
+    /// None means the source was not recorded by an older version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_manual: Option<bool>,
     pub manual_group: Option<String>,
     pub manual_index: usize,
     pub manual_total: usize,
     pub manual_fingerprint: Option<String>,
     pub voice_processed: BTreeMap<String, Vec<VoiceRef>>,
     pub voice_pending: BTreeMap<String, Vec<VoiceRef>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct UploadOwner {
+    pub base_url: String,
+    pub space_id: i64,
+    pub account_id: String,
+    pub user_id: i64,
+    pub device_id: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -222,8 +253,8 @@ pub struct InitialChunk {
 pub struct ContinuationScope {
     pub space_id: i64,
     pub base_url: String,
-    #[serde(default)]
-    pub manual: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
@@ -234,7 +265,7 @@ pub struct MessageRef {
     pub source_shard: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct UploadScope {
     pub usernames: Vec<String>,
     pub since: Option<i64>,
@@ -283,6 +314,10 @@ impl Default for UploadJob {
             space_id: 0,
             account_id: String::new(),
             batch_id: None,
+            owner: None,
+            create_started: None,
+            package_digest: None,
+            verified_completion_digest: None,
             status: "queued".into(),
             message: String::new(),
             created_at: String::new(),
@@ -293,7 +328,7 @@ impl Default for UploadJob {
             initial_chunks: BTreeMap::new(),
             sync_advance: false,
             continue_sync: false,
-            continuation_manual: false,
+            continuation_manual: None,
             manual_group: None,
             manual_index: 0,
             manual_total: 0,
@@ -380,7 +415,7 @@ pub struct AutomationSettings {
     pub last_daily_error: Option<String>,
     /// Server-side TopicSubscription that owns the daily report schedule.
     pub daily_topic_id: Option<i64>,
-    /// Space that owns `daily_topic_id`; switching spaces disables the old topic.
+    /// Space that owns `daily_topic_id`; an unverified old topic requires manual review.
     pub daily_topic_space_id: Option<i64>,
     /// Last successful (or attempted) sync of the schedule to Devify.
     pub last_schedule_sync_at: Option<String>,
@@ -406,6 +441,8 @@ pub struct AgentSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            settings_revision: 0,
+            user_settings_revision: 0,
             active_account_id: String::new(),
             chat: ChatPolicy::default(),
             connectors: ConnectorSettings::default(),
@@ -546,13 +583,99 @@ pub fn load(app_data: &Path) -> Result<AppSettings, String> {
 
 pub fn save(app_data: &Path, settings: &AppSettings) -> Result<(), String> {
     validate(settings)?;
+    let _guard = SETTINGS_LOCK.lock().map_err(|_| "无法锁定应用策略。")?;
+    let current = load(app_data)?;
+    if current.settings_revision != settings.settings_revision {
+        return Err("应用策略已被其他操作修改，请重新加载后重试。".into());
+    }
+    let mut updated = settings.clone();
+    let _identity = identity_write_guard(&current, &updated)?;
+    assign_revisions(&current, &mut updated)?;
+    save_unlocked(app_data, &updated)?;
+    if _identity.is_some() { crate::desktop_credentials::advance_generation_locked()?; }
+    Ok(())
+}
+
+/// Mutate only the caller's fields while holding the shared settings transaction lock.
+pub fn update(app_data: &Path, mutate: impl FnOnce(&mut AppSettings) -> Result<(), String>) -> Result<AppSettings, String> {
+    let _guard = SETTINGS_LOCK.lock().map_err(|_| "无法锁定应用策略。")?;
+    let current = load(app_data)?;
+    let mut updated = current.clone();
+    mutate(&mut updated)?;
+    validate(&updated)?;
+    let _identity = identity_write_guard(&current, &updated)?;
+    assign_revisions(&current, &mut updated)?;
+    save_unlocked(app_data, &updated)?;
+    if _identity.is_some() { crate::desktop_credentials::advance_generation_locked()?; }
+    Ok(updated)
+}
+
+/// Identity transactions use the settings, identity, credentials lock order.
+/// The callback must not call settings save/update or reacquire identity.
+pub(crate) fn with_identity<T>(app_data: &Path, check: impl FnOnce(&AppSettings) -> Result<T, String>) -> Result<T, String> {
+    let _settings = SETTINGS_LOCK.lock().map_err(|_| "无法锁定应用策略。")?;
+    let _identity = crate::UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "上传期间无法更改登录状态，请稍后重试。")?;
+    check(&load(app_data)?)
+}
+
+pub(crate) fn update_identity(app_data: &Path, mutate: impl FnOnce(&mut AppSettings) -> Result<(), String>) -> Result<AppSettings, String> {
+    let _settings = SETTINGS_LOCK.lock().map_err(|_| "无法锁定应用策略。")?;
+    let _identity = crate::UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "上传期间无法更改登录状态，请稍后重试。")?;
+    let current = load(app_data)?;
+    let mut updated = current.clone();
+    mutate(&mut updated)?;
+    validate(&updated)?;
+    let changed = identity_changed(&current, &updated);
+    assign_revisions(&current, &mut updated)?;
+    save_unlocked(app_data, &updated)?;
+    if changed { crate::desktop_credentials::advance_generation_locked()?; }
+    Ok(updated)
+}
+
+fn identity_changed(current: &AppSettings, next: &AppSettings) -> bool {
+    current.active_account_id != next.active_account_id
+        || current.devify.base_url != next.devify.base_url
+        || current.devify.active_space_id != next.devify.active_space_id
+        || current.devify.device_id != next.devify.device_id
+        || current.automation.enabled != next.automation.enabled
+        || current.automation.daily_summary_enabled != next.automation.daily_summary_enabled
+        || current.automation.daily_time != next.automation.daily_time
+}
+
+fn identity_write_guard<'a>(current: &AppSettings, next: &AppSettings) -> Result<Option<tokio::sync::RwLockWriteGuard<'a, ()>>, String> {
+    if identity_changed(current, next) {
+        Ok(Some(crate::UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "上传期间无法切换账号、服务、空间或设备，请稍后重试。")?))
+    } else { Ok(None) }
+}
+
+fn user_settings_view(settings: &AppSettings) -> Result<serde_json::Value, String> {
+    let mut value = serde_json::to_value(settings).map_err(|e| format!("序列化应用策略失败：{e}"))?;
+    if let Some(root) = value.as_object_mut() {
+        root.remove("settings_revision"); root.remove("user_settings_revision"); root.remove("upload_queue");
+        if let Some(sync) = root.get_mut("sync").and_then(serde_json::Value::as_object_mut) {
+            for name in ["owners", "cursors", "initial_progress", "continuation", "pending_voice", "last_run_at", "last_status", "last_error", "last_message_count"] { sync.remove(name); }
+        }
+        if let Some(automation) = root.get_mut("automation").and_then(serde_json::Value::as_object_mut) {
+            for name in ["last_daily_run", "last_daily_status", "last_daily_error", "daily_topic_id", "daily_topic_space_id", "last_schedule_sync_at", "last_schedule_signature", "last_schedule_error"] { automation.remove(name); }
+        }
+    }
+    Ok(value)
+}
+
+fn assign_revisions(current: &AppSettings, updated: &mut AppSettings) -> Result<(), String> {
+    updated.settings_revision = current.settings_revision.checked_add(1).ok_or("应用策略版本已耗尽。")?;
+    updated.user_settings_revision = if user_settings_view(current)? != user_settings_view(updated)? {
+        current.user_settings_revision.checked_add(1).ok_or("用户设置版本已耗尽。")?
+    } else { current.user_settings_revision };
+    Ok(())
+}
+
+fn save_unlocked(app_data: &Path, updated: &AppSettings) -> Result<(), String> {
     fs::create_dir_all(app_data).map_err(|e| format!("创建应用数据目录失败：{e}"))?;
-    let file = path(app_data);
-    let temp = file.with_extension("json.tmp");
-    let content =
-        serde_json::to_vec_pretty(settings).map_err(|e| format!("序列化应用策略失败：{e}"))?;
-    fs::write(&temp, content).map_err(|e| format!("写入应用策略失败：{e}"))?;
-    fs::rename(&temp, &file).map_err(|e| format!("保存应用策略失败：{e}"))?;
+    let content = serde_json::to_vec_pretty(&updated).map_err(|e| format!("序列化应用策略失败：{e}"))?;
+    let mut temp = tempfile::NamedTempFile::new_in(app_data).map_err(|e| format!("创建临时策略失败：{e}"))?;
+    temp.write_all(&content).and_then(|_| temp.as_file().sync_all()).map_err(|e| format!("写入应用策略失败：{e}"))?;
+    temp.persist(path(app_data)).map_err(|e| format!("保存应用策略失败：{e}"))?;
     Ok(())
 }
 
