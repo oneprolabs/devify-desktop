@@ -26,6 +26,7 @@ pub mod access;
 pub mod agent;
 pub mod backup;
 pub mod capabilities;
+pub mod connectors;
 mod desktop_credentials;
 pub mod entitlements;
 pub mod history;
@@ -38,6 +39,8 @@ mod network;
 mod update_gate;
 #[cfg(test)]
 mod reconcile_owner_tests;
+#[cfg(test)]
+mod connector_gate_tests;
 #[cfg(test)]
 mod manual_upload_tests;
 #[cfg(test)]
@@ -2647,6 +2650,7 @@ async fn devify_upload_selected(
         create_started: Some(false),
         package_digest: None,
         verified_completion_digest: None,
+        legacy_failure_confirmed: false,
         status: "running".into(),
         message: "正在生成并上传聊天包".into(),
         created_at: now.clone(),
@@ -4637,8 +4641,9 @@ async fn sync_automation_tick(app: &AppHandle) {
     }
     let store = keys::load(&keys::store_path(&data));
     let data_for_sync = data.clone();
+    let env = connector_environment(app);
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        decrypt::decrypt_account(&data_for_sync, &account, &store, true, true)
+        read_new_wechat_data(&data_for_sync, &env, &account, &store, true, true)
     })
     .await;
     end_sync(&sync_state, &account_id);
@@ -4937,6 +4942,7 @@ fn sync_job(
         create_started: Some(false),
         package_digest: None,
         verified_completion_digest: None,
+        legacy_failure_confirmed: false,
         status: "running".into(),
         message: "正在生成并上传聊天包".into(),
         created_at: now.clone(),
@@ -5073,12 +5079,13 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
     }
     let store = keys::load(&keys::store_path(&data));
     let data_for_decrypt = data.clone();
-    let outcomes = tauri::async_runtime::spawn_blocking(move || {
-        decrypt::decrypt_account(&data_for_decrypt, &account, &store, true, true)
+    let env = connector_environment(app);
+    let read = tauri::async_runtime::spawn_blocking(move || {
+        read_new_wechat_data(&data_for_decrypt, &env, &account, &store, true, true)
     })
-    .await
-    .map_err(|e| format!("读取本机聊天记录失败：{e}"))?;
+    .await;
     end_sync(&sync_state, &account_id);
+    let outcomes = read.map_err(|e| format!("读取本机聊天记录失败：{e}"))??;
     if let Some(failure) = outcomes
         .iter()
         .find(|outcome| outcome.status == "failed" || outcome.status == "no-key")
@@ -5104,7 +5111,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
     // owner, scope, or create marker are equally ambiguous and must not be replayed.
     let blocks_sync = |current: &settings::AppSettings, username: &str| {
         current.upload_queue.iter().any(|job| {
-            job.account_id == account_id && job.status != "completed"
+            job.account_id == account_id && job.status != "completed" && !job_never_blocks_sync(job)
                 && job.scope.as_ref().map_or(true, |scope| scope.usernames.is_empty() || scope.usernames.iter().any(|name| name == username))
                 && (matches!(job.status.as_str(), "queued" | "running" | "processing" | "uploading")
                     || job.owner.as_ref() != Some(&sync_owner)
@@ -5944,6 +5951,44 @@ fn capture_root(app: &AppHandle) -> PathBuf {
     app_data(app).join("key-capture")
 }
 
+fn connector_environment(app: &AppHandle) -> connectors::Environment {
+    connectors::Environment {
+        capture_pending: capture_root(app).join(capture::STATE_NAME).exists(),
+    }
+}
+
+fn require_connector_installed(
+    app: &AppHandle,
+    kind: connectors::ConnectorKind,
+) -> Result<(), String> {
+    connectors::require_installed(kind, &connector_environment(app))
+}
+
+/// `codesign` takes a moment, so detection runs off the main thread.
+#[tauri::command]
+async fn connector_detect(app: AppHandle, kind: String) -> Result<connectors::ConnectorDetect, String> {
+    let kind = connectors::ConnectorKind::parse(&kind)
+        .ok_or_else(|| format!("未知的连接器：{kind}"))?;
+    let env = connector_environment(&app);
+    tauri::async_runtime::spawn_blocking(move || connectors::detect(kind, &env))
+        .await
+        .map_err(|error| format!("检测本机应用失败：{error}"))
+}
+
+/// The only path that reads new WeChat data, so an uninstalled or tampered WeChat stops
+/// every new read (manual, scheduled and background) while imported data stays viewable.
+fn read_new_wechat_data(
+    data: &Path,
+    env: &connectors::Environment,
+    account: &discover::Account,
+    store: &KeyStore,
+    apply_wal: bool,
+    only_chat: bool,
+) -> Result<Vec<DecryptOutcome>, String> {
+    connectors::require_installed(connectors::ConnectorKind::Wechat, env)?;
+    Ok(decrypt::decrypt_account(data, account, store, apply_wal, only_chat))
+}
+
 fn capture_backup_root(app: &AppHandle) -> PathBuf {
     capture_root(app).join("wechat-app-backups")
 }
@@ -6035,6 +6080,8 @@ async fn wechat_capture_status(app: AppHandle) -> capture::CaptureStatus {
 async fn wechat_capture_prepare(
     app: AppHandle,
 ) -> Result<capture::PrepareResult, capture::CaptureError> {
+    require_connector_installed(&app, connectors::ConnectorKind::Wechat)
+        .map_err(|message| capture::CaptureError::new("wechat_not_installed", message))?;
     let root = capture_root(&app);
     let backup_root = capture_backup_root(&app);
     tauri::async_runtime::spawn_blocking(move || {
@@ -6368,6 +6415,7 @@ fn import_key_text(
     text: &str,
     selected: Option<&str>,
 ) -> Result<KeyImportResult, String> {
+    require_connector_installed(app, connectors::ConnectorKind::Wechat)?;
     let candidates = keys::parse_candidates(text)?;
     let path = keys::store_path(&app_data(app));
     let mut store: KeyStore = keys::load(&path);
@@ -6565,13 +6613,14 @@ async fn wechat_decrypt(
         .cloned()
         .ok_or_else(|| format!("找不到账号 {account_id}"))?;
     let store = keys::load(&keys::store_path(&app_data(&app)));
-    Ok(decrypt::decrypt_account(
+    read_new_wechat_data(
         &app_data(&app),
+        &connector_environment(&app),
         &account,
         &store,
         apply_wal,
         only_chat,
-    ))
+    )
 }
 
 #[tauri::command]
@@ -6591,9 +6640,16 @@ async fn wechat_sync(
         return Err("该账号正在同步，请稍后重试。".into());
     }
     let store = keys::load(&keys::store_path(&app_data(&app)));
-    let outcomes = decrypt::decrypt_account(&app_data(&app), &account, &store, true, true);
+    let outcomes = read_new_wechat_data(
+        &app_data(&app),
+        &connector_environment(&app),
+        &account,
+        &store,
+        true,
+        true,
+    );
     end_sync(&state, &account_id);
-    Ok(outcomes)
+    outcomes
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -6891,11 +6947,23 @@ fn legacy_job_is_inert(job: &settings::UploadJob) -> bool {
 }
 
 fn legacy_adoption_candidate(job: &settings::UploadJob, owner: &settings::UploadOwner) -> bool {
-    job.owner.is_none() && !job.id.is_empty() && job.batch_id.is_some_and(|id| id > 0)
+    let unowned = job.owner.is_none();
+    // Jobs created before create intent was recorded have `create_started == None`; once
+    // adopted, their terminal failure still needs one server confirmation.
+    let adopted_failure = job.owner.as_ref() == Some(owner) && job.create_started.is_none()
+        && matches!(job.status.as_str(), "failed" | "cancelled") && !job.legacy_failure_confirmed;
+    (unowned || adopted_failure) && !job.id.is_empty() && job.batch_id.is_some_and(|id| id > 0)
         && job.account_id == owner.account_id && job.space_id == owner.space_id
         && matches!(job.status.as_str(), "completed" | "failed" | "cancelled")
         && job.scope.as_ref().and_then(|scope| settings::normalize_base_url(&scope.base_url).ok())
             .as_deref() == Some(owner.base_url.as_str())
+}
+
+/// A non-completed job that does not stop a conversation from syncing: it either never
+/// reached the server, or the server confirmed its legacy batch ended without ingesting.
+fn job_never_blocks_sync(job: &settings::UploadJob) -> bool {
+    legacy_job_is_inert(job)
+        || (job.legacy_failure_confirmed && matches!(job.status.as_str(), "failed" | "cancelled"))
 }
 
 /// Legacy cursors belong to `owner` only when every cursor position is covered by a
@@ -6969,9 +7037,12 @@ async fn adopt_legacy_upload_history(data: &Path, owner: &settings::UploadOwner,
                 continue;
             }
             job.owner = Some(owner.clone());
-            job.verified_completion_digest = if job.status == "completed" {
-                Some(upload_completion_digest(job).ok_or("无法确认完成快照。")?)
-            } else { None };
+            if job.status == "completed" {
+                job.verified_completion_digest = Some(upload_completion_digest(job).ok_or("无法确认完成快照。")?);
+            } else {
+                job.verified_completion_digest = None;
+                job.legacy_failure_confirmed = true;
+            }
         }
         if !current.sync.owners.contains_key(&owner.account_id) && legacy_cursors_explained(current, owner) {
             current.sync.owners.insert(owner.account_id.clone(), owner.clone());
@@ -7542,6 +7613,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            connector_detect,
             update_begin_install,
             update_cancel_install,
             devify_auth_start,

@@ -777,6 +777,67 @@ fn legacy_cursor_beyond_verified_coverage_is_not_adopted() {
     assert!(legacy_uncertain_coverage(&saved, &owner).0.contains("chat"));
 }
 
+fn adopted_legacy_failure(base: &str, owner: &settings::UploadOwner) -> settings::UploadJob {
+    let mut item = job("sync-stopped", Some(owner.clone()), base);
+    item.status = "failed".into();
+    item.create_started = None;
+    item.sync_advance = false;
+    item
+}
+
+fn confirm_adopted_failure(remote_status: &str) -> settings::UploadJob {
+    let listener = StdListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+        account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
+    let (data, _, fixed_token) = fixture(&base, vec![adopted_legacy_failure(&base, &owner)]);
+    let mut remote = batch();
+    remote["status"] = serde_json::json!(remote_status);
+    let server = serve(listener, fixed_token, remote, || {});
+    runtime().block_on(async {
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let _lease = UPLOAD_IDENTITY_LOCK.read().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        adopt_legacy_upload_history(data.path(), &verified, &token, deadline).await.unwrap();
+    });
+    server.join().unwrap();
+    settings::load(data.path()).unwrap().upload_queue.remove(0)
+}
+
+#[test]
+fn server_confirmed_legacy_failure_stops_blocking_sync() {
+    let saved = confirm_adopted_failure("failed");
+    assert!(saved.legacy_failure_confirmed);
+    assert!(job_never_blocks_sync(&saved));
+}
+
+#[test]
+fn legacy_failure_that_completed_remotely_keeps_blocking_sync() {
+    let saved = confirm_adopted_failure("completed");
+    assert!(!saved.legacy_failure_confirmed);
+    assert!(!job_never_blocks_sync(&saved));
+}
+
+#[test]
+fn only_batchless_or_confirmed_legacy_failures_skip_the_sync_gate() {
+    let base = "https://example.test";
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+        account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
+    assert!(job_never_blocks_sync(&inert_failed("sync-never-sent", base)));
+    let mut current_failure = adopted_legacy_failure(base, &owner);
+    current_failure.create_started = Some(true);
+    assert!(!job_never_blocks_sync(&current_failure));
+    assert!(!legacy_adoption_candidate(&current_failure, &owner));
+    let mut unconfirmed = adopted_legacy_failure(base, &owner);
+    assert!(!job_never_blocks_sync(&unconfirmed));
+    assert!(legacy_adoption_candidate(&unconfirmed, &owner));
+    unconfirmed.legacy_failure_confirmed = true;
+    assert!(!legacy_adoption_candidate(&unconfirmed, &owner));
+    let mut running = job("sync-running", Some(owner), base);
+    running.legacy_failure_confirmed = true;
+    assert!(!job_never_blocks_sync(&running));
+}
+
 #[test]
 fn inert_legacy_failure_is_not_uncertain_and_fresh_accounts_are_not_pinned() {
     let base = "https://example.test";

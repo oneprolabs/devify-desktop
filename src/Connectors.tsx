@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from './Settings';
+import { detectTitle, useConnectorDetect } from './connectorDetect';
 import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import telegramIcon from './assets/connectors/telegram.svg';
@@ -27,20 +28,21 @@ type Scan = { accounts: Array<{ id: string }> };
 type KeyStatus = { keys: Array<{ account: string }> };
 type Probe = { accounts: number; verifiedAccounts: number };
 
-type Connector = { name: string; description: string; capabilities: string };
+type Connector = { name: string; description: string; capabilities: string; local?: boolean };
 const futureConnectors: Connector[] = [
-  { name: 'WhatsApp', description: '读取桌面版本地数据', capabilities: '历史记录 · 群聊 · 增量同步' },
+  { local: true, name: 'WhatsApp', description: '读取桌面版本地数据', capabilities: '历史记录 · 群聊 · 增量同步' },
   { name: '邮件', description: '连接邮箱，整理邮件对话', capabilities: '历史记录 · 邮件夹' },
-  { name: 'Telegram', description: '读取群组与私聊', capabilities: '' },
-  { name: 'Slack', description: '读取工作区频道与私信', capabilities: '' },
-  { name: '飞书', description: '读取群聊与话题', capabilities: '' },
-  { name: '钉钉', description: '读取群消息', capabilities: '' },
-  { name: '企业微信', description: '读取客户群与内部群', capabilities: '' },
-  { name: 'Discord', description: '读取服务器频道', capabilities: '' },
+  { local: true, name: 'Telegram', description: '读取群组与私聊', capabilities: '' },
+  { local: true, name: 'Slack', description: '读取工作区频道与私信', capabilities: '' },
+  { local: true, name: '飞书', description: '读取群聊与话题', capabilities: '' },
+  { local: true, name: '钉钉', description: '读取群消息', capabilities: '' },
+  { local: true, name: '企业微信', description: '读取客户群与内部群', capabilities: '' },
+  { local: true, name: 'Discord', description: '读取服务器频道', capabilities: '' },
   { name: 'LINE', description: '导入聊天文本', capabilities: '' },
 ];
 
 export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolean) => void }) {
+  const install = useConnectorDetect('wechat');
   const [probe, setProbe] = useState<Probe | null>(null);
   const [waitlist, setWaitlist] = useState<string[]>([]);
   const [confirmedWaitlist, setConfirmedWaitlist] = useState<string[]>([]);
@@ -129,6 +131,9 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
   useEffect(() => { void refresh(); }, [refresh]);
 
   const status = !isTauri() ? '请在桌面应用中检查' : loading ? '正在检查…' : error ? '状态检查失败' : !probe?.accounts ? '未发现账号' : probe.verifiedAccounts ? `已校验 ${probe.verifiedAccounts} 个账号的密钥` : `发现 ${probe.accounts} 个账号，待校验密钥`;
+  const missing = !install.checking && !install.usable && install.detect;
+  const recheckAll = () => { void install.recheck(); void refresh(); };
+  const hasHistory = Boolean(probe?.verifiedAccounts);
 
   return <div className="connector-page">
     <header className="connector-hero">
@@ -137,29 +142,39 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
     </header>
     <section aria-labelledby="connector-available">
       <h2 id="connector-available">微信</h2>
+      {missing && enabled && hasHistory && <div className="connector-install-banner" role="status">
+        <span className="connector-install-icon" aria-hidden="true">!</span>
+        <div><strong>未检测到微信，已停止读取新消息</strong><p>已导入的聊天记录仍可查看，云端记录不受影响。重新安装微信后点「重新检查」即可恢复。</p></div>
+        <button type="button" className="connector-quiet" onClick={recheckAll} disabled={install.checking}>重新检查</button>
+      </div>}
       <div className="connector-grid">
-        <article className={`connector-card${enabled ? '' : ' off'}`}>
+        <article className={`connector-card${enabled ? '' : ' off'}${missing ? ' blocked' : ''}`}>
           <div className="connector-card-head">
             <ConnectorIcon name="微信" />
             <div>
               <h3>微信</h3>
               <p className="connector-state">
-                <span className={enabled && probe?.verifiedAccounts ? 'good' : ''} />
-                {enabled ? status : '已断开 · 停止读取本机消息'}
+                <span className={missing ? 'bad' : enabled && probe?.verifiedAccounts ? 'good' : ''} />
+                {install.checking ? '正在检测本机微信…' : missing ? detectTitle[install.detect!.state] : enabled ? status : '已断开 · 停止读取本机消息'}
               </p>
             </div>
           </div>
-          <p className="connector-description">
+          {missing && !(enabled && hasHistory) ? <div className="connector-install-check">
+            <p>{install.detect!.message}</p>
+            {install.detect!.app_path && <p className="connector-install-path">检测位置：{install.detect!.app_path}</p>}
+          </div> : <p className="connector-description">
             {enabled
               ? '读取本机数据库，只读，不改动聊天数据'
               : '本机密钥与解密快照仍然保留，重新连接不需要再次导入；云端已上传的记录保持不变。'}
-          </p>
+          </p>}
+          {!missing && install.detect?.version && <p className="connector-install-meta">微信 {install.detect.version} · 官方签名 · {install.detect.app_path}</p>}
           <p className="connector-capabilities">历史记录 · 群聊 · 增量同步</p>
           <div className="connector-actions">
             {enabled ? <>
-              <button type="button" className="connector-primary" onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))}>{probe?.verifiedAccounts ? '重新配置' : '打开连接向导'}</button>
-              {isTauri() && <button type="button" className="connector-quiet" onClick={() => void refresh()} disabled={loading}>重新检查</button>}
-              {isTauri() && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving || !settingsLoaded}>断开连接</button>}
+              <button type="button" className="connector-primary" onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))} disabled={!install.usable} title={missing ? '请先安装微信' : undefined}>{probe?.verifiedAccounts ? '重新配置' : '打开连接向导'}</button>
+              {isTauri() && <button type="button" className="connector-quiet" onClick={recheckAll} disabled={loading || install.checking}>重新检查</button>}
+              {missing && install.detect!.state === 'not_installed' && <a className="connector-link" href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">前往下载微信 ↗</a>}
+              {isTauri() && (!missing || hasHistory) && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving || !settingsLoaded}>断开连接</button>}
             </> : <>
               <button type="button" className="connector-primary" onClick={() => void setConnected(true)} disabled={saving || !settingsLoaded}>{saving ? '连接中…' : '重新连接'}</button>
               {isTauri() && <button type="button" className="connector-quiet" onClick={() => void refresh()} disabled={loading}>重新检查</button>}
@@ -189,6 +204,7 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
         <div className="connector-card-head"><ConnectorIcon name={connector.name} /><div><h3>{connector.name}</h3><p className="connector-state">尚未接入</p></div></div>
         <p className="connector-description">{connector.description}</p>
         {connector.capabilities && <p className="connector-capabilities">{connector.capabilities}</p>}
+        <p className="connector-install-meta">{connector.local ? '接入时会先检测本机是否安装桌面版' : '无需安装本机应用'}</p>
         <div className="connector-actions"><button
           type="button"
           className={`connector-notify${waitlist.includes(connector.name) ? ' on' : ''}`}

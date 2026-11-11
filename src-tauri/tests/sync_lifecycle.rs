@@ -74,7 +74,7 @@ mod settings {
     pub struct UploadJob {
         pub id: String, pub space_id: i64, pub account_id: String, pub batch_id: Option<i64>,
         pub owner: Option<UploadOwner>, pub create_started: Option<bool>, pub package_digest: Option<String>,
-        pub verified_completion_digest: Option<String>,
+        pub verified_completion_digest: Option<String>, pub legacy_failure_confirmed: bool,
         pub status: String, pub message: String, pub created_at: String, pub updated_at: String,
         pub scope: Option<UploadScope>, pub covered: BTreeMap<String, ()>,
         pub initial_baselines: BTreeMap<String, ()>, pub initial_chunks: BTreeMap<String, ()>,
@@ -187,6 +187,12 @@ fn main() {
         let tail = &source[start..];
         let end = tail.find("\n    };\n").unwrap() + "\n    };".len();
         let predicate = &tail[..end];
+        let helpers: String = ["fn upload_job_has_pending_sync(", "fn legacy_job_is_inert(", "fn job_never_blocks_sync("]
+            .iter().map(|name| {
+                let start = source.find(name).unwrap();
+                let end = source[start..].find("\n}\n").unwrap() + start + "\n}\n".len();
+                source[start..end].to_string()
+            }).collect();
         let fixture = r#"
 use std::collections::BTreeMap;
 mod settings {
@@ -197,9 +203,13 @@ mod settings {
         pub account_id: String, pub status: String, pub scope: Option<Scope>,
         pub owner: Option<UploadOwner>, pub create_started: Option<bool>, pub batch_id: Option<i64>,
         pub initial_baselines: BTreeMap<String, ()>, pub initial_chunks: BTreeMap<String, ()>,
+        pub sync_advance: bool, pub continue_sync: bool, pub legacy_failure_confirmed: bool,
+        pub voice_processed: BTreeMap<String, ()>, pub voice_pending: BTreeMap<String, ()>,
     }
+    pub type UploadJob = Job;
     pub struct AppSettings { pub upload_queue: Vec<Job> }
 }
+HELPERS
 fn main() {
     let account_id = "account".to_string();
     let sync_owner = settings::UploadOwner { name: "verified" };
@@ -207,18 +217,30 @@ fn main() {
     let mut job = settings::Job { account_id: account_id.clone(), status: "failed".into(),
         scope: Some(settings::Scope { usernames: vec!["alice".into()] }),
         owner: Some(sync_owner.clone()), create_started: Some(false), batch_id: None,
-        initial_baselines: BTreeMap::new(), initial_chunks: BTreeMap::new() };
+        initial_baselines: BTreeMap::new(), initial_chunks: BTreeMap::new(),
+        sync_advance: false, continue_sync: false, legacy_failure_confirmed: false,
+        voice_processed: BTreeMap::new(), voice_pending: BTreeMap::new() };
     let check = |job: &settings::Job| blocks_sync(&settings::AppSettings { upload_queue: vec![job.clone()] }, "alice");
     assert!(!check(&job));
     job.create_started = Some(true); assert!(check(&job));
     job.batch_id = Some(123); assert!(check(&job));
     job.create_started = None; assert!(check(&job));
-    job.create_started = Some(false); job.batch_id = None; job.owner = None; assert!(check(&job));
+    // A server-confirmed legacy failure can no longer be ingested remotely.
+    job.legacy_failure_confirmed = true; assert!(!check(&job));
+    job.status = "running".into(); assert!(check(&job));
+    job.status = "failed".into(); job.legacy_failure_confirmed = false;
+    job.create_started = Some(false); job.batch_id = None; job.owner = None;
+    // An ownerless failure without a batch never reached the server.
+    assert!(!check(&job));
+    job.status = "running".into(); assert!(check(&job));
+    job.status = "failed".into(); job.sync_advance = true; assert!(check(&job));
+    job.sync_advance = false; job.batch_id = Some(123); assert!(check(&job));
+    job.batch_id = None;
     job.owner = Some(settings::UploadOwner { name: "other" }); assert!(check(&job));
     job.owner = Some(sync_owner.clone()); job.scope = None; job.create_started = None; assert!(check(&job));
     job.scope = Some(settings::Scope { usernames: Vec::new() }); assert!(check(&job));
 }
-"#.replace("PREDICATE", predicate);
+"#.replace("HELPERS", &helpers).replace("PREDICATE", predicate);
         run_fixture(&fixture);
     }
 }

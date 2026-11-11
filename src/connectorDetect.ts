@@ -1,0 +1,43 @@
+import { useCallback, useEffect, useState } from 'react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+
+export type DetectState = 'installed' | 'not_installed' | 'untrusted' | 'unsupported' | 'not_required';
+export type ConnectorDetect = {
+  state: DetectState;
+  app_path: string | null;
+  version: string | null;
+  message: string;
+};
+
+/** Re-checked on mount, on window focus and on demand, so a reinstall is picked up without a restart. */
+export function useConnectorDetect(kind: string) {
+  const [detect, setDetect] = useState<ConnectorDetect | null>(null);
+  const [checking, setChecking] = useState(isTauri());
+  const recheck = useCallback(async () => {
+    if (!isTauri()) return;
+    setChecking(true);
+    try {
+      setDetect(await invoke<ConnectorDetect>('connector_detect', { kind }));
+    } catch (reason) {
+      setDetect({ state: 'not_installed', app_path: null, version: null, message: `无法检测：${String(reason)}` });
+    } finally {
+      setChecking(false);
+    }
+  }, [kind]);
+  useEffect(() => {
+    void recheck();
+    const onFocus = () => { void recheck(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [recheck]);
+  const usable = detect?.state === 'installed' || detect?.state === 'not_required';
+  return { detect, checking, usable, recheck };
+}
+
+export const detectTitle: Record<DetectState, string> = {
+  installed: '已检测到微信',
+  not_installed: '未检测到微信',
+  untrusted: '检测到的微信不是官方版本',
+  unsupported: '当前系统暂不支持',
+  not_required: '无需检测',
+};
