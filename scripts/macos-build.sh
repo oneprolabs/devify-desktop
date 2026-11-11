@@ -53,6 +53,9 @@ if [ -d "$APP" ]; then
   trap 'rm -rf "$STAGING"' EXIT
   ditto "$APP" "$STAGING/AIMyChats.app"
   ln -s /Applications "$STAGING/Applications"
+  # `tauri build --bundles app` does not create the dmg directory, and hdiutil does
+  # not create it either: a clean checkout fails here without this.
+  mkdir -p "$(dirname "$DMG")"
   rm -f "$DMG"
   hdiutil create -quiet -volname AIMyChats -srcfolder "$STAGING" -ov -format UDZO "$DMG"
   rm -rf "$STAGING"
