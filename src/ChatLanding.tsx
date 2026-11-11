@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { ConnectorIcon } from './Connectors';
+import { detectTitle, useConnectorDetect } from './connectorDetect';
 
 type HomeMode = 'new' | 'connected';
 type Account = { id: string; modified_at?: number | null; encrypted_count?: number };
@@ -8,11 +10,11 @@ type ScanResult = { accounts?: Account[] };
 type Settings = { active_account_id?: string; chat?: { allowed_usernames?: Record<string, string[]>; sync_interval_seconds?: number }; devify?: { active_space_id?: number | null } };
 
 type Step = { number: string; title: string; description: string; state: 'current' | 'next' | 'done' };
-type Connector = { name: string; mark: string; tone: string; description: string; disabled?: boolean };
+type Connector = { name: string; description: string };
 const connectors: Connector[] = [
-  { name: '微信', mark: '微', tone: 'green', description: '读取本机微信聊天记录，也可以导入 JSON 文件' },
-  { name: 'WhatsApp', mark: 'W', tone: 'teal', description: '读取本机 WhatsApp 聊天记录' },
-  { name: '邮件', mark: '@', tone: 'blue', description: '用只读授权连接 Gmail、Outlook 或 IMAP 邮箱' },
+  { name: '微信', description: '读取本机微信聊天记录，也可以导入 JSON 文件' },
+  { name: 'WhatsApp', description: '读取本机 WhatsApp 聊天记录' },
+  { name: '邮件', description: '用只读授权连接 Gmail、Outlook 或 IMAP 邮箱' },
 ];
 
 function steps(mode: HomeMode, sessions = 0, syncIntervalSeconds = 1800): Step[] {
@@ -29,6 +31,8 @@ function steps(mode: HomeMode, sessions = 0, syncIntervalSeconds = 1800): Step[]
 
 export function ChatLanding({ mode, sessionCount, syncIntervalSeconds, onConnect, onImport, onBackup, onSchedule }: { mode: HomeMode; sessionCount: number; syncIntervalSeconds: number; onConnect: (connector?: string) => void; onImport: () => void; onBackup: () => void; onSchedule: () => void }) {
   const isNew = mode === 'new';
+  const wechat = useConnectorDetect('wechat');
+  const wechatMissing = !wechat.checking && !wechat.usable && wechat.detect;
   const summary = `将备份微信的 ${sessionCount.toLocaleString()} 个会话。`;
   return <div className="chat-landing">
     <div className="chat-landing-inner">
@@ -39,11 +43,23 @@ export function ChatLanding({ mode, sessionCount, syncIntervalSeconds, onConnect
       </header>
 
       {isNew ? <section className="chat-landing-connectors" aria-label="连接聊天来源">
-        {connectors.map(connector => <article className="chat-landing-connector" key={connector.name}>
-          <span className={`chat-landing-connector-mark ${connector.tone}`}>{connector.mark}</span>
-          <div><h2>{connector.name}</h2><p>{connector.description}</p></div>
-          <button type="button" className="chat-landing-primary" onClick={() => onConnect(connector.name)} >{connector.name === '微信' ? '打开连接向导' : '查看连接器'}</button>
-        </article>)}
+        {connectors.map(connector => {
+          const isWechat = connector.name === '微信';
+          const blocked = isWechat && wechatMissing;
+          return <article className={`chat-landing-connector${blocked ? ' blocked' : ''}`} key={connector.name}>
+            <ConnectorIcon name={connector.name} />
+            <div>
+              <h2>{connector.name}</h2>
+              {blocked ? <p className="chat-landing-install"><span />{detectTitle[wechatMissing.state]}：{wechatMissing.message}</p>
+                : <p>{isWechat && wechat.checking ? '正在检测本机微信…' : connector.description}</p>}
+              {blocked && <p className="chat-landing-install-actions">
+                <button type="button" onClick={() => void wechat.recheck()}>重新检查</button>
+                {wechatMissing.state === 'not_installed' && <a href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">前往下载微信 ↗</a>}
+              </p>}
+            </div>
+            <button type="button" className="chat-landing-primary" onClick={() => onConnect(connector.name)} disabled={isWechat && !wechat.usable && isTauri()}>{isWechat ? '打开连接向导' : '查看连接器'}</button>
+          </article>;
+        })}
       </section> : <section className="chat-landing-first-backup">
         <p>{summary}</p>
         <div className="chat-landing-actions"><button type="button" className="chat-landing-primary" onClick={onBackup}>立即备份</button><button type="button" className="chat-landing-link" onClick={onImport}>调整导入范围</button><button type="button" className="chat-landing-link" onClick={onSchedule}>设置备份周期</button></div>

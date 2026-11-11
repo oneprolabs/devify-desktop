@@ -58,6 +58,8 @@ const find = (tree, test) => {
   return node;
 };
 let invoke;
+const installed = { detect: { state: 'installed', app_path: '/Applications/WeChat.app', version: '4.1.2', message: '' }, checking: false, usable: true, recheck: async () => {} };
+let connectorInstall = installed;
 const mockedRequire = id => {
   if (id === 'react') return react;
   if (id === 'react/jsx-runtime') return jsx;
@@ -66,6 +68,7 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/plugin-deep-link') return { onOpenUrl: async () => () => {} };
   if (id === './devifyDevice') return { registerDevifyDevice: async () => {} };
   if (id === './Settings') return module.exports;
+  if (id === './connectorDetect') return { useConnectorDetect: () => connectorInstall, detectTitle: { not_installed: '未检测到微信', untrusted: '检测到的微信不是官方版本' } };
   if (id.endsWith('.svg') || id.endsWith('.png')) return id;
   throw Error(`unexpected import ${id}`);
 };
@@ -249,6 +252,18 @@ connectorSaves[1].reject('SETTINGS_CONFLICT: changed'); await flush();
 tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
 assert.match(notify(tree)[1].props.children, /未保存/);
 assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
+// A missing WeChat blocks the wizard and offers the download; installing unblocks it.
+const wizardButton = tree => find(tree, node => node.type === 'button' && node.props.className === 'connector-primary');
+assert.equal(wizardButton(tree).props.disabled, false);
+connectorInstall = { detect: { state: 'not_installed', app_path: null, version: null, message: '请先安装微信。' }, checking: false, usable: false, recheck: async () => {} };
+tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
+assert.equal(wizardButton(tree).props.disabled, true);
+assert.ok(elements(tree).some(node => node.type === 'a' && node.props.href === 'https://pc.weixin.qq.com/'));
+connectorInstall = { ...connectorInstall, detect: { ...connectorInstall.detect, state: 'untrusted', app_path: '/Applications/WeChat.app' } };
+tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
+assert.equal(wizardButton(tree).props.disabled, true);
+assert.ok(!elements(tree).some(node => node.type === 'a' && node.props.href === 'https://pc.weixin.qq.com/'));
+connectorInstall = installed;
 
 // Login gate saves from its loaded context and does not overwrite later typing.
 const { LoginGate } = loadModule('../src/LoginGate.tsx');

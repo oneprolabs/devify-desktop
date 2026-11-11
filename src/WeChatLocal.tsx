@@ -900,13 +900,14 @@ export default function WeChatLocal({
     setBusy('scan');
     setError('');
     try {
+      const detect = await invoke<{ state: string }>('connector_detect', { kind: 'wechat' });
       const result = await invoke<ScanResult>('wechat_scan');
       setScan(result);
       const nextId = currentAccount(result.accounts, preferredId ?? settingsRef.current?.active_account_id ?? '')?.id ?? '';
       if (nextId) await rememberAccount(nextId);
       setAccountId(nextId);
       await refreshKeys();
-      if (!result.accounts.length) {
+      if (!result.accounts.length && detect?.state === 'installed') {
         setError('没有找到微信 4.x 数据目录。若微信已登录，请按下方的文字步骤授予「完全磁盘访问权限」后重新检测。');
       }
       if (nextId) await loadSessions(nextId);
