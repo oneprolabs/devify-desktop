@@ -25,6 +25,10 @@ on:
         description: Mark the GitHub release as a prerelease
         type: boolean
         default: true
+      publish:
+        description: Publish to the releases repository (needs RELEASES_TOKEN)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -74,6 +78,7 @@ jobs:
       - name: Check required secrets
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          PUBLISH: ${{ inputs.publish }}
           MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
           MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
           MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
@@ -81,7 +86,10 @@ jobs:
         run: |
           set -euo pipefail
           missing=""
-          if [ -z "${GH_TOKEN:-}" ]; then missing="$missing RELEASES_TOKEN"; fi
+          # RELEASES_TOKEN is only needed to publish; a build-only run verifies the
+          # cache, the signing identity and the updater archive without touching the
+          # releases repository.
+          if [ "$PUBLISH" = "true" ] && [ -z "${GH_TOKEN:-}" ]; then missing="$missing RELEASES_TOKEN"; fi
           if [ -z "${MACOS_SIGNING_P12:-}" ]; then missing="$missing MACOS_SIGNING_P12"; fi
           if [ -z "${MACOS_SIGNING_P12_PASSWORD:-}" ]; then missing="$missing MACOS_SIGNING_P12_PASSWORD"; fi
           if [ -z "${MACOS_KEYCHAIN_PASSWORD:-}" ]; then missing="$missing MACOS_KEYCHAIN_PASSWORD"; fi
@@ -175,6 +183,7 @@ jobs:
             src-tauri/target/release/bundle/macos/latest.json
 
       - name: Publish to releases repository
+        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           NOTES: ${{ inputs.notes }}
@@ -208,6 +217,8 @@ jobs:
           gh release upload "$RELEASES_TAG" -R "$RELEASES_REPO" --clobber "$MANIFEST"
 
       - name: Summarise publish
+        env:
+          PUBLISH: ${{ inputs.publish }}
         run: |
           {
             echo "### AIMyChats release"
@@ -215,5 +226,9 @@ jobs:
             echo "- Repository: \`$RELEASES_REPO\`"
             echo "- Tag: \`$RELEASES_TAG\`"
             echo "- Version: \`$(node -p "require('./src-tauri/tauri.conf.json').version")\`"
-            echo "- Release: https://github.com/$RELEASES_REPO/releases/tag/$RELEASES_TAG"
+            if [ "$PUBLISH" = "true" ]; then
+              echo "- Release: https://github.com/$RELEASES_REPO/releases/tag/$RELEASES_TAG"
+            else
+              echo "- Publish: **skipped** (build-only run); artifacts are attached to this workflow run"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
