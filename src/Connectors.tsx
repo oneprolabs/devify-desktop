@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { type AppSettings, mergeSettings } from './Settings';
+import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import telegramIcon from './assets/connectors/telegram.svg';
@@ -43,63 +43,78 @@ const futureConnectors: Connector[] = [
 export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolean) => void }) {
   const [probe, setProbe] = useState<Probe | null>(null);
   const [waitlist, setWaitlist] = useState<string[]>([]);
+  const [confirmedWaitlist, setConfirmedWaitlist] = useState<string[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [loading, setLoading] = useState(isTauri());
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const confirmed = useRef<AppSettings | null>(null);
+  const waitlistDraft = useRef<string[]>([]);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const queueFailed = useRef(false);
+  const connectionSaving = useRef(false);
 
   useEffect(() => {
     if (!isTauri()) return;
     void invoke<AppSettings>('app_settings_get')
       .then(stored => {
-        const settings = mergeSettings(stored);
+        const settings = mergeSettings(requireSettingsRevision(stored));
+        confirmed.current = settings;
+        waitlistDraft.current = settings.connectors.waitlist;
+        setSettingsLoaded(true);
         setWaitlist(settings.connectors.waitlist);
+        setConfirmedWaitlist(settings.connectors.waitlist);
         setEnabled(settings.connectors.wechat_enabled);
       })
-      .catch(() => undefined);
+      .catch(reason => setError(`设置加载失败：${String(reason)}，请重新打开页面。`));
   }, []);
 
-  /** Remembered locally: there is no notification service, so the label says "已加入". */
-  const toggleWaitlist = async (name: string) => {
-    const next = waitlist.includes(name) ? waitlist.filter(item => item !== name) : [...waitlist, name];
-    const previous = waitlist;
-    setWaitlist(next);
-    try {
-      const stored = mergeSettings(await invoke<AppSettings>('app_settings_get'));
-      await invoke('app_settings_save', { value: { ...stored, connectors: { ...stored.connectors, waitlist: next } } });
-      setError('');
-    } catch (e) {
-      setWaitlist(previous);
-      setError(`保存失败：${String(e)}`);
-    }
+  /** Each action is explicit, but rapid actions must use the last confirmed revision. */
+  const enqueueConnectorSave = (patch: Partial<AppSettings['connectors']>, onSaved?: () => void) => {
+    if (!confirmed.current || queueFailed.current) return;
+    queue.current = queue.current.then(async () => {
+      if (!confirmed.current || queueFailed.current) return;
+      const value = { ...confirmed.current, connectors: { ...confirmed.current.connectors, ...patch } };
+      try {
+        confirmed.current = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value })));
+        setConfirmedWaitlist(confirmed.current.connectors.waitlist);
+        onSaved?.();
+        setSaveError('');
+      } catch (reason) {
+        queueFailed.current = true;
+        setSaveError(`${settingsSaveError(reason)} 修改已保留，请重新打开页面确认后重试。`);
+      }
+    }).finally(() => {
+      if (onSaved) { connectionSaving.current = false; setSaving(false); }
+    });
   };
 
-  /**
-   * Disconnecting flips one switch: the backend stops reading, searching, uploading and
-   * backing up, while keys and the decrypted snapshot stay on disk and uploaded records on
-   * the server are untouched. Reconnecting only has to flip it back.
-   */
-  const setConnected = async (next: boolean) => {
-    if (!isTauri()) return;
+  /** Remembered locally: there is no notification service, so the label says "已加入". */
+  const toggleWaitlist = (name: string) => {
+    if (!confirmed.current) return;
+    const next = waitlistDraft.current.includes(name) ? waitlistDraft.current.filter(item => item !== name) : [...waitlistDraft.current, name];
+    waitlistDraft.current = next;
+    setWaitlist(next);
+    if (!queueFailed.current) enqueueConnectorSave({ waitlist: next });
+  };
+
+  /** Disconnecting stops reading and uploading; cached keys and cloud data are retained. */
+  const setConnected = (next: boolean) => {
+    if (!isTauri() || !confirmed.current || queueFailed.current || connectionSaving.current) return;
+    connectionSaving.current = true;
     setSaving(true);
-    try {
-      const stored = mergeSettings(await invoke<AppSettings>('app_settings_get'));
-      await invoke('app_settings_save', { value: { ...stored, connectors: { ...stored.connectors, wechat_enabled: next } } });
+    enqueueConnectorSave({ wechat_enabled: next }, () => {
       setEnabled(next);
       setConfirming(false);
-      setError('');
-    } catch (e) {
-      setError(`保存失败：${String(e)}`);
-    } finally {
-      setSaving(false);
-    }
+    });
   };
 
   const refresh = useCallback(async () => {
     if (!isTauri()) return;
     setLoading(true);
-    setError('');
     try {
       const [scan, keys] = await Promise.all([invoke<Scan>('wechat_scan'), invoke<KeyStatus>('wechat_key_status')]);
       const verified = new Set(keys.keys.map(key => key.account));
@@ -144,9 +159,9 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
             {enabled ? <>
               <button type="button" className="connector-primary" onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))}>{probe?.verifiedAccounts ? '重新配置' : '打开连接向导'}</button>
               {isTauri() && <button type="button" className="connector-quiet" onClick={() => void refresh()} disabled={loading}>重新检查</button>}
-              {isTauri() && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving}>断开连接</button>}
+              {isTauri() && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving || !settingsLoaded}>断开连接</button>}
             </> : <>
-              <button type="button" className="connector-primary" onClick={() => void setConnected(true)} disabled={saving}>{saving ? '连接中…' : '重新连接'}</button>
+              <button type="button" className="connector-primary" onClick={() => void setConnected(true)} disabled={saving || !settingsLoaded}>{saving ? '连接中…' : '重新连接'}</button>
               {isTauri() && <button type="button" className="connector-quiet" onClick={() => void refresh()} disabled={loading}>重新检查</button>}
             </>}
           </div>
@@ -158,13 +173,14 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
               <li>云端已上传的记录不会删除</li>
             </ul>
             <div className="connector-actions">
-              <button type="button" className="connector-danger" onClick={() => void setConnected(false)} disabled={saving}>{saving ? '断开中…' : '确认断开'}</button>
-              <button type="button" className="connector-quiet" onClick={() => setConfirming(false)} disabled={saving}>取消</button>
+              <button type="button" className="connector-danger" onClick={() => void setConnected(false)} disabled={saving || !settingsLoaded}>{saving ? '断开中…' : '确认断开'}</button>
+              <button type="button" className="connector-quiet" onClick={() => setConfirming(false)} disabled={saving || !settingsLoaded}>取消</button>
             </div>
           </div>}
         </article>
       </div>
       {error && <p className="connector-error" role="alert">{error}</p>}
+      {saveError && <p className="connector-error" role="alert">{saveError}</p>}
     </section>
     <section aria-labelledby="connector-upcoming">
       <div className="connector-section-head"><h2 id="connector-upcoming">其他来源</h2></div>
@@ -177,8 +193,9 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
           type="button"
           className={`connector-notify${waitlist.includes(connector.name) ? ' on' : ''}`}
           aria-pressed={waitlist.includes(connector.name)}
-          onClick={() => void toggleWaitlist(connector.name)}
-        >{waitlist.includes(connector.name) ? '已加入，上线通知你' : '通知我'}</button></div>
+          disabled={!settingsLoaded}
+          onClick={() => toggleWaitlist(connector.name)}
+        >{waitlist.includes(connector.name) !== confirmedWaitlist.includes(connector.name) ? (waitlist.includes(connector.name) ? '已加入（未保存）' : '未加入（未保存）') : waitlist.includes(connector.name) ? '已加入，上线通知你' : '通知我'}</button></div>
       </article>)}</div>
     </section>
   </div>;

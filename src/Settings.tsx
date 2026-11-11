@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -66,6 +66,7 @@ function currentAccount(accounts: Account[], remembered: string): Account | null
 }
 
 export type AppSettings = {
+  user_settings_revision: number;
   active_account_id: string;
   chat: {
     allowed_usernames: Record<string, string[]>;
@@ -127,6 +128,7 @@ export type AppSettings = {
 
 export function defaultSettings(): AppSettings {
   return {
+    user_settings_revision: 0,
     active_account_id: '',
     chat: { allowed_usernames: {}, initial_ranges: {}, sync_interval_seconds: 1800 },
     connectors: { waitlist: [], wechat_enabled: true },
@@ -173,6 +175,54 @@ function accountLabel(account: Account): string {
   return account.id.length > 38 ? `${account.id.slice(0, 35)}…` : account.id;
 }
 
+export function requireSettingsRevision<T extends { user_settings_revision?: unknown }>(stored: T): T {
+  if (!Number.isSafeInteger(stored?.user_settings_revision) || (stored.user_settings_revision as number) < 0) {
+    throw new Error('设置版本缺失或无效，请更新应用并重新打开页面。');
+  }
+  return stored;
+}
+
+function settingsErrorMessage(reason: unknown): string {
+  if (typeof reason === 'string') return reason;
+  if (reason && typeof reason === 'object' && 'message' in reason) return String(reason.message);
+  try { return JSON.stringify(reason) ?? String(reason); } catch { return String(reason); }
+}
+
+export function isSettingsConflict(reason: unknown): boolean {
+  return settingsErrorMessage(reason).includes('SETTINGS_CONFLICT:');
+}
+
+export function settingsSaveError(reason: unknown): string {
+  const message = settingsErrorMessage(reason);
+  if (message.includes('SETTINGS_CONFLICT:')) {
+    return `设置已在其他页面或账号/空间中变化，未保存。请重新打开页面，确认当前账号和空间后重新操作。${message.split('SETTINGS_CONFLICT:').slice(1).join('SETTINGS_CONFLICT:')}`;
+  }
+  return `保存失败：${message}。请检查当前账号和空间后重试。`;
+}
+
+/** Apply a confirmed response without discarding edits made after the request began. */
+export function mergeSavedSettings(saved: AppSettings, submitted: AppSettings, draft: AppSettings): AppSettings {
+  const merge = (confirmed: unknown, sent: unknown, current: unknown): unknown => {
+    if (Object.is(current, sent)) return confirmed;
+    if (current && sent && confirmed && typeof current === 'object' && typeof sent === 'object'
+      && typeof confirmed === 'object' && !Array.isArray(current) && !Array.isArray(sent) && !Array.isArray(confirmed)) {
+      const result: Record<string, unknown> = { ...confirmed as Record<string, unknown> };
+      const before = sent as Record<string, unknown>;
+      const now = current as Record<string, unknown>;
+      for (const key of new Set([...Object.keys(before), ...Object.keys(now)])) {
+        if (!(key in now)) delete result[key];
+        else result[key] = merge(result[key], before[key], now[key]);
+      }
+      return result;
+    }
+    return current;
+  };
+  const result = merge(saved, submitted, draft) as AppSettings;
+  // A revision is backend-owned, even if a stale render was used by an input handler.
+  result.user_settings_revision = saved.user_settings_revision;
+  return result;
+}
+
 export function mergeSettings(stored: AppSettings): AppSettings {
   const defaults = defaultSettings();
   const chat = { ...defaults.chat, ...stored.chat };
@@ -196,9 +246,13 @@ export function mergeSettings(stored: AppSettings): AppSettings {
 
 export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [loaded, setLoaded] = useState(false);
+  const saveLock = useRef(false);
+  const confirmedRevision = useRef<number | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const profiles = useWechatProfiles(accounts);
   const [accountId, setAccountId] = useState('');
+  const accountIdRef = useRef('');
   const [catalog, setCatalog] = useState<SessionItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [kind, setKind] = useState<'all' | 'group' | 'direct'>('all');
@@ -206,6 +260,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [dateDetails, setDateDetails] = useState<Record<string, Array<[string, number]>>>({});
   const [dateLoading, setDateLoading] = useState('');
   const [focusedSession, setFocusedSession] = useState('');
@@ -220,8 +275,10 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
   const setDate = (username: string, key: 'since' | 'until', text: string) => {
     const date = text ? new Date(`${text}T00:00:00`) : null;
     if (date && key === 'until') date.setDate(date.getDate() + 1);
-    const range = settings.chat.initial_ranges[accountId]?.[username] ?? { since: null, until: null };
-    setSettings(current => ({ ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges, [accountId]: { ...current.chat.initial_ranges[accountId], [username]: { ...range, [key]: date ? Math.floor(date.getTime() / 1000) : null } } } } }));
+    setSettings(current => {
+      const range = current.chat.initial_ranges[accountId]?.[username] ?? { since: null, until: null };
+      return { ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges, [accountId]: { ...current.chat.initial_ranges[accountId], [username]: { ...range, [key]: date ? Math.floor(date.getTime() / 1000) : null } } } } };
+    });
   };
   const loadDates = async (username: string) => {
     setDateLoading(username); setError('');
@@ -269,11 +326,16 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
           invoke<AppSettings>('app_settings_get'),
           invoke<ScanResult>('wechat_scan'),
         ]);
-        const next = mergeSettings(stored);
+        const next = mergeSettings(requireSettingsRevision(stored));
         const list = scan.accounts ?? [];
+        confirmedRevision.current = next.user_settings_revision;
         setSettings(next);
+        setLoaded(true);
         setAccounts(list);
-        setAccountId(currentAccount(list, next.active_account_id)?.id ?? '');
+        const id = currentAccount(list, next.active_account_id)?.id ?? '';
+        accountIdRef.current = id;
+        setCatalogLoading(Boolean(id));
+        setAccountId(id);
       } catch (e) {
         setError(String(e));
       }
@@ -282,38 +344,44 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
 
   useEffect(() => {
     if (!accountId) return;
+    let active = true;
+    setCatalog([]);
     setCatalogLoading(true);
     setError('');
     void invoke<SessionItem[]>('wechat_session_catalog', { accountId })
-      .then(setCatalog)
+      .then(items => { if (active && accountIdRef.current === accountId) setCatalog(items); })
       .catch(e => {
+        if (!active || accountIdRef.current !== accountId) return;
         setCatalog([]);
         setError(`无法读取该账号的会话候选：${String(e)}`);
       })
-      .finally(() => setCatalogLoading(false));
+      .finally(() => { if (active && accountIdRef.current === accountId) setCatalogLoading(false); });
+    return () => { active = false; };
   }, [accountId]);
 
   const setVisibleSelection = (selected: boolean) => {
-    const next = new Set(allowed);
-    visibleCatalog.forEach(session => selected ? next.add(session.username) : next.delete(session.username));
-    setSettings(current => ({ ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] } } }));
+    setSettings(current => {
+      const next = new Set(current.chat.allowed_usernames[accountId] ?? []);
+      visibleCatalog.forEach(session => selected ? next.add(session.username) : next.delete(session.username));
+      return { ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] } } };
+    });
   };
 
   const toggleUsername = (username: string) => {
-    const next = new Set(allowed);
-    if (next.has(username)) next.delete(username);
-    else { next.add(username); setFocusedSession(username); }
-    setSettings(current => ({
-      ...current,
-      chat: {
-        ...current.chat,
-        allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] },
-      },
-    }));
+    if (!allowed.has(username)) setFocusedSession(username);
+    setSettings(current => {
+      const next = new Set(current.chat.allowed_usernames[accountId] ?? []);
+      if (next.has(username)) next.delete(username);
+      else next.add(username);
+      return { ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] } } };
+    });
   };
 
   const save = async () => {
+    if (!loaded || !accountId || catalogLoading || confirmedRevision.current === null || saveLock.current) return;
+    saveLock.current = true;
     setSaving(true);
+    setSaveError('');
     setError('');
     setNotice('');
     try {
@@ -326,22 +394,24 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
       const keep = catalog.length
         ? (settings.chat.allowed_usernames[accountId] ?? []).filter(username => catalogUsernames.has(username))
         : settings.chat.allowed_usernames[accountId];
-      const saved = await invoke<AppSettings>('app_settings_save', {
-        value: {
-          ...settings,
-          active_account_id: accountId,
-          chat: {
-            ...settings.chat,
-            allowed_usernames: { ...settings.chat.allowed_usernames, [accountId]: keep ?? [] },
-          },
+      const submitted: AppSettings = {
+        ...settings,
+        user_settings_revision: confirmedRevision.current,
+        active_account_id: accountId,
+        chat: {
+          ...settings.chat,
+          allowed_usernames: { ...settings.chat.allowed_usernames, [accountId]: keep ?? [] },
         },
-      });
-      setSettings(saved);
+      };
+      const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: submitted })));
+      confirmedRevision.current = saved.user_settings_revision;
+      setSettings(current => mergeSavedSettings(saved, settings, current));
       setNotice('微信导入范围已保存，重新打开聊天记录页面后立即生效。');
       onSaved?.();
     } catch (e) {
-      setError(String(e));
+      setSaveError(settingsSaveError(e));
     } finally {
+      saveLock.current = false;
       setSaving(false);
     }
   };
@@ -357,10 +427,12 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
     if (uploadAll) setSettings(current => ({ ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges, [accountId]: { ...current.chat.initial_ranges[accountId], [focused.username]: { since: null, until: null } } } } }));
   };
 
+  if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
+
   return <div className="settings-page imports-page">
     <header className="page-head"><h2>导入管理</h2><p className="help">选择要导入的微信会话，并为每个会话设置首次上传的历史日期范围。</p></header>
-    <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} /> : <><span className="wechat-account-avatar">微</span><span className="wechat-account-details"><strong>微信账号</strong><small>未检测到微信账号</small></span></>}{accounts.length > 1 && <select aria-label="微信账号" value={accountId} onChange={event => { setAccountId(event.target.value); setFocusedSession(''); }}>{accounts.map(account => <option key={account.id} value={account.id}>{profiles[account.id]?.nickname || accountLabel(account)}</option>)}</select>}</section>
-    <p className="imports-hint">首次历史日期范围仅用于第一次上传；后续自动备份会继续同步新增消息。</p>
+    <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} /> : <><span className="wechat-account-avatar">微</span><span className="wechat-account-details"><strong>微信账号</strong><small>未检测到微信账号</small></span></>}{accounts.length > 1 && <select aria-label="微信账号" disabled={saving} value={accountId} onChange={event => { if (saveLock.current) return; const id = event.target.value; accountIdRef.current = id; setCatalog([]); setCatalogLoading(Boolean(id)); setAccountId(id); setFocusedSession(''); }}>{accounts.map(account => <option key={account.id} value={account.id}>{profiles[account.id]?.nickname || accountLabel(account)}</option>)}</select>}</section>
+    <p className="imports-hint">首次历史日期范围仅用于第一次上传；后续自动备份会继续同步新增消息。选择的微信账号和范围在保存成功后才生效。</p>
     <div className="imports-workspace">
       <div className="imports-choices"><input className="plan-input imports-search" type="search" value={search} placeholder="搜索会话名或 wxid" aria-label="搜索会话" onChange={event => setSearch(event.target.value)}/>
         <div className="plan-pills" role="group" aria-label="按会话类型筛选">
@@ -374,29 +446,38 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
       </div>
       <section className="imports-detail">{focused ? <><header><h3>{focused.display}</h3><p>{focused.is_group ? '群聊' : '单聊'} · {focused.username}</p></header>{!allowed.has(focused.username) ? <p className="help">勾选此会话后，可以设置首次上传的历史范围。</p> : alreadySynced ? <p className="help">此会话已有同步进度，首次历史范围不再生效。</p> : <><h3>首次上传范围</h3><label className="imports-all-history"><input type="checkbox" checked={!isCustomRange} onChange={e => setUploadAllHistory(e.target.checked)}/><span><strong>上传全部历史记录</strong><small>首次上传该会话的全部本机历史记录。</small></span></label>{isCustomRange && <><p className="help">选择首次上传的历史日期范围；可只填写开始日期或结束日期。</p><div className="imports-dates"><label>开始日期<input type="date" value={dateText(focusedRange?.since)} onChange={e => setDate(focused.username, 'since', e.target.value)}/></label><span>至</span><label>结束日期<input type="date" value={dateText(focusedRange?.until, true)} onChange={e => setDate(focused.username, 'until', e.target.value)}/></label></div><div className="imports-available"><strong>有记录的日期</strong><button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(focused.username)}>{dateLoading === focused.username ? '正在读取…' : '查看日期'}</button>{dateDetails[focused.username] && (dateDetails[focused.username].length ? <><p className="imports-date-hint">选择日期作为开始日期，结束日期保持不变。</p><div className="imports-date-list" aria-label="选择有记录的开始日期">{dateDetails[focused.username].map(([day]) => <button type="button" key={day} className={dateText(focusedRange?.since) === day ? 'selected' : ''} aria-pressed={dateText(focusedRange?.since) === day} onClick={() => setDate(focused.username, 'since', day)}>{day}</button>)}</div></> : <p>没有可用记录</p>)}</div></>}</>}</> : <p className="help">选择一个会话，查看并设置首次上传的日期范围。</p>}</section>
     </div>
-    {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
-    <div className="page-actions"><button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存所选会话'}</button><span>已选 {allowedCount} 个会话</span></div>
+    {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}
+    <div className="page-actions"><button className="primary" disabled={saving || !accountId || catalogLoading} onClick={() => void save()}>{saving ? '正在保存…' : '保存所选会话'}</button><span>已选 {allowedCount} 个会话</span></div>
   </div>;
 }
 
 export function StrategySettings({ title = '本地自动化', description = '每日总结在本机生成后投递到 Devify。上传频率、上传时段由「备份周期」页面单独配置。' }: { title?: string; description?: string } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [loaded, setLoaded] = useState(false);
+  const saveLock = useRef(false);
+  const confirmedRevision = useRef<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
     void invoke<AppSettings>('app_settings_get')
-      .then(stored => setSettings(mergeSettings(stored)))
+      .then(stored => { const next = mergeSettings(requireSettingsRevision(stored)); confirmedRevision.current = next.user_settings_revision; setSettings(next); setLoaded(true); })
       .catch(e => setError(String(e)));
   }, []);
 
   const save = async () => {
+    if (!loaded || confirmedRevision.current === null || saveLock.current) return;
+    saveLock.current = true;
     setSaving(true);
+    setSaveError('');
     setError('');
     setNotice('');
     try {
-      await invoke('app_settings_save', { value: settings });
+      const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: { ...settings, user_settings_revision: confirmedRevision.current } })));
+      confirmedRevision.current = saved.user_settings_revision;
+      setSettings(current => mergeSavedSettings(saved, settings, current));
       try {
         const status = await invoke<{ message?: string }>('devify_daily_schedule_sync');
         setNotice(status?.message || '日报计划已同步到服务端。');
@@ -404,11 +485,14 @@ export function StrategySettings({ title = '本地自动化', description = '每
         setError(`设置已保存，但日报计划同步失败：${String(syncError)}`);
       }
     } catch (e) {
-      setError(String(e));
+      setSaveError(settingsSaveError(e));
     } finally {
+      saveLock.current = false;
       setSaving(false);
     }
   };
+
+  if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
 
   return <div className="settings-page">
     <header className="page-head">
@@ -434,7 +518,7 @@ export function StrategySettings({ title = '本地自动化', description = '每
       {settings.automation.last_schedule_error && <div className="config warn">计划同步失败：{settings.automation.last_schedule_error}</div>}
     </section>
     {notice && <div className="notice">{notice}</div>}
-    {error && <div className="error">{error}</div>}
+    {error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}
     <div className="page-actions">
       <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存并同步日报计划'}</button>
     </div>
@@ -443,6 +527,29 @@ export function StrategySettings({ title = '本地自动化', description = '每
 
 export function DevifySettings() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [loaded, setLoaded] = useState(false);
+  const confirmed = useRef<AppSettings | null>(null);
+  const draftDirty = useRef(false);
+  const draftUrl = useRef('');
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const queueFailed = useRef(false);
+  const pendingSaves = useRef(0);
+
+  const acceptLoadedSettings = (stored: AppSettings) => {
+    const next = mergeSettings(requireSettingsRevision(stored));
+    if (draftDirty.current || pendingSaves.current || queueFailed.current) {
+      if (confirmed.current && next.user_settings_revision > confirmed.current.user_settings_revision && !queueFailed.current) {
+        queueFailed.current = true;
+        setSaveError('账号、空间或设置已变化，地址草稿未保存。请重新打开页面，确认当前账号和空间后重试。');
+      }
+      return;
+    }
+    if (confirmed.current && next.user_settings_revision < confirmed.current.user_settings_revision) return;
+    confirmed.current = next;
+    draftUrl.current = next.devify.base_url;
+    setSettings(next);
+    setLoaded(true);
+  };
   const [profile, setProfile] = useState<{ display_name?: string; username?: string } | null>(null);
   const [wechatStatus, setWechatStatus] = useState('正在检查…');
   const [wechatAccounts, setWechatAccounts] = useState<Account[]>([]);
@@ -450,6 +557,7 @@ export function DevifySettings() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [authStatus, setAuthStatus] = useState('');
   const [authenticated, setAuthenticated] = useState(false);
   const [spaces, setSpaces] = useState<DevifySpace[]>([]);
@@ -473,7 +581,7 @@ export function DevifySettings() {
 
   useEffect(() => {
     void invoke<AppSettings>('app_settings_get')
-      .then(stored => setSettings({ ...defaultSettings(), ...stored, devify: { ...defaultSettings().devify, ...stored.devify } }))
+      .then(acceptLoadedSettings)
       .catch(e => setError(String(e)));
   }, []);
 
@@ -489,7 +597,7 @@ export function DevifySettings() {
           if (!active) return;
           await invoke<number | null>('devify_space_ensure').catch(() => null);
           if (!active) return;
-          setSettings(mergeSettings(await invoke<AppSettings>('app_settings_get')));
+          acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
           await loadSpaces();
         })();
       })
@@ -507,14 +615,14 @@ export function DevifySettings() {
         if (!active) return;
         setAuthenticated(true);
         await invoke<number | null>('devify_space_ensure').catch(() => null);
-        setSettings(mergeSettings(await invoke<AppSettings>('app_settings_get')));
+        acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
         setAuthStatus(`Devify 已登录，设备 ${result.device_id}`);
         setSpacesStatus('正在读取可用空间…');
         const available = await invoke<DevifySpace[]>('devify_spaces');
         if (!active) return;
         setSpaces(available);
         setSpacesStatus(available.length ? `已读取 ${available.length} 个空间。` : '当前账号没有可用空间。');
-        setError('');
+        if (!queueFailed.current) setError('');
       } catch (e) {
         if (active) setError(String(e));
       }
@@ -530,22 +638,15 @@ export function DevifySettings() {
     return () => { active = false; cleanDeepLink?.(); cleanLoopback?.(); };
   }, []);
 
-  const save = async () => {
-    setSaving(true);
-    setError('');
-    setNotice('');
-    try {
-      const saved = await invoke<AppSettings>('app_settings_save', { value: settings });
-      setSettings(mergeSettings(saved));
-      setNotice('Devify 配置已保存。');
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const loginDevify = async () => {
+    if (draftDirty.current && !pendingSaves.current && !queueFailed.current) {
+      persist({ ...settings, devify: { ...settings.devify, base_url: draftUrl.current } });
+    }
+    while (pendingSaves.current) await saveQueue.current;
+    if (queueFailed.current || draftDirty.current) {
+      setSaveError(current => current || '服务地址尚未确认保存，不能继续登录。请确认地址、账号和空间后重试。');
+      return;
+    }
     setError('');
     setAuthStatus('正在打开 Devify 登录…');
     try {
@@ -558,10 +659,11 @@ export function DevifySettings() {
   };
 
   const logoutDevify = async () => {
-    setError('');
+    if (!queueFailed.current) setError('');
     try {
       await invoke('devify_logout');
       setAuthenticated(false);
+      if (draftDirty.current || pendingSaves.current) { queueFailed.current = true; setSaveError('登录状态已变化，地址草稿未保存。请重新打开页面并确认账号和空间。'); }
       setSpaces([]);
       setSpacesStatus('');
       setAuthStatus('已退出登录。');
@@ -570,7 +672,6 @@ export function DevifySettings() {
   };
 
   const loadSpaces = async () => {
-    setError('');
     setSpacesStatus('正在读取可用空间…');
     try {
       const available = await invoke<DevifySpace[]>('devify_spaces');
@@ -592,14 +693,29 @@ export function DevifySettings() {
     } catch (e) { setError(String(e)); }
   };
 
-  /** 账户页的控件直接落库：文本字段在失焦时提交，选择类立刻提交。 */
+  /** Queue blur saves against our own last confirmed revision, never a fresh external context. */
   const persist = (next: AppSettings) => {
-    setSettings(next);
-    void invoke<AppSettings>('app_settings_save', { value: next })
-      .then(saved => { setSettings(mergeSettings(saved)); setError(''); })
-      .catch(e => setError(`保存失败：${String(e)}`));
+    if (!confirmed.current || queueFailed.current) return;
+    pendingSaves.current += 1;
+    saveQueue.current = saveQueue.current.then(async () => {
+      if (queueFailed.current || !confirmed.current) return;
+      const base = confirmed.current;
+      const submitted = { ...base, devify: { ...base.devify, base_url: next.devify.base_url } };
+      try {
+        const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: submitted })));
+        confirmed.current = saved;
+        draftDirty.current = draftUrl.current !== next.devify.base_url;
+        if (!draftDirty.current && pendingSaves.current === 1) draftUrl.current = saved.devify.base_url;
+        setSettings(current => mergeSavedSettings(saved, next, current));
+        if (!queueFailed.current) setSaveError('');
+      } catch (reason) {
+        queueFailed.current = true;
+        setSaveError(`${settingsSaveError(reason)} 地址草稿已保留；请重新打开页面确认后保存。`);
+      }
+    }).finally(() => { pendingSaves.current -= 1; });
   };
-  const setDevify = (patch: Partial<AppSettings['devify']>) => ({ ...settings, devify: { ...settings.devify, ...patch } });
+
+  if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
 
   return <div className="settings-page account-settings">
     <header className="page-head">
@@ -626,8 +742,8 @@ export function DevifySettings() {
             aria-label="Devify 服务地址"
             placeholder="https://devify.example.com"
             value={settings.devify.base_url}
-            onChange={event => setSettings(setDevify({ base_url: event.target.value }))}
-            onBlur={() => persist(settings)}
+            onChange={event => { const baseUrl = event.target.value; draftDirty.current = true; draftUrl.current = baseUrl; setSettings(current => ({ ...current, devify: { ...current.devify, base_url: baseUrl } })); }}
+            onBlur={() => persist({ ...settings, devify: { ...settings.devify, base_url: draftUrl.current } })}
           />
         </div>
       </div>
@@ -666,5 +782,6 @@ export function DevifySettings() {
 
     {notice && <div className="notice">{notice}</div>}
     {error && <div className="error">{error}</div>}
+    {saveError && <div className="error" role="alert">{saveError}</div>}
   </div>;
 }

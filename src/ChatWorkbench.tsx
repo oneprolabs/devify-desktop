@@ -296,7 +296,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     if (state?.state === 'processing') return { text: '已提交 · 等待服务端处理', tone: 'pending' };
     if (state?.state === 'failed') return { text: '上传失败 · 请检查任务', tone: 'pending' };
     if (state?.state === 'history_failed') return { text: '历史任务未完成 · 请检查任务', tone: 'pending' };
-    if (state?.state === 'synced') return { text: '已同步', tone: 'synced' };
+    if (state?.state === 'synced') return { text: '已同步 · 最近确认', tone: 'synced' };
     return { text: '同步状态待确认', tone: 'local' };
   };
 

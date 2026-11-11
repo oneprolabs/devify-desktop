@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
+import { analysisSettingsError } from './analysisSettingsText';
+import { createSettingsSaveQueue, settingsSaveFailure, settingsUserRevision, type SettingsSaveQueue } from './settingsSaveQueue';
 
 const DAILY_STATUS_LABEL: Record<string, string> = {
   scheduled: '服务端已计划',
@@ -24,12 +26,13 @@ type Task = {
   rows: Row[];
 };
 
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: (next: boolean) => void; label: string }) {
+function Switch({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean }) {
   return <button
     type="button"
     role="switch"
     aria-checked={checked}
     aria-label={label}
+    disabled={disabled}
     className={`plan-switch${checked ? ' on' : ''}`}
     onClick={() => onChange(!checked)}
   ><span /></button>;
@@ -42,16 +45,56 @@ export function AnalysisSettings() {
   const [preferencesError, setPreferencesError] = useState('');
   const [preferencesNotice, setPreferencesNotice] = useState('');
   const [preferencesSaving, setPreferencesSaving] = useState(false);
-  const chain = useRef<Promise<void>>(Promise.resolve());
+  const [ready, setReady] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [blocked, setBlocked] = useState(false);
+  const [scheduleError, setScheduleError] = useState('');
+  const queue = useRef<SettingsSaveQueue<AppSettings> | null>(null);
+  const unsubscribe = useRef<(() => void) | null>(null);
+  const active = useRef(false);
+  const loadId = useRef(0);
 
-  useEffect(() => {
-    void invoke<AppSettings>('app_settings_get')
-      .then(stored => setSettings(mergeSettings(stored)))
-      .catch(e => setError(String(e)));
+  const load = useCallback(async () => {
+    const request = ++loadId.current;
+    setLoading(true);
+    try {
+      const stored = await invoke<AppSettings>('app_settings_get');
+      settingsUserRevision(stored);
+      if (!active.current || request !== loadId.current) return;
+      const next = createSettingsSaveQueue({
+        initial: mergeSettings(stored),
+        save: value => invoke<AppSettings>('app_settings_save', { value }),
+        afterSave: async () => { await invoke('devify_daily_schedule_sync'); },
+        onAfterSaveError: reason => {
+          if (active.current) setScheduleError(`设置已保存，但日报计划同步失败：${analysisSettingsError(reason)}`);
+        },
+      });
+      unsubscribe.current?.();
+      queue.current = next;
+      unsubscribe.current = next.subscribe(state => {
+        if (!active.current) return;
+        setSettings(state.draft);
+        setBlocked(state.blocked);
+        if (state.blocked) setError(settingsSaveFailure(analysisSettingsError(state.error)));
+      });
+      setError('');
+      setReady(true);
+    } catch (e) {
+      if (active.current && request === loadId.current) setError(`无法加载设置：${analysisSettingsError(e)}`);
+    } finally {
+      if (active.current && request === loadId.current) setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
+    active.current = true;
+    void load();
+    return () => { active.current = false; loadId.current += 1; unsubscribe.current?.(); };
+  }, [load]);
+
+  useEffect(() => {
     let active = true;
+    if (!ready || blocked) return;
     const spaceId = settings.devify.active_space_id;
     setPreferences(null);
     setPreferencesNotice('');
@@ -64,9 +107,9 @@ export function AnalysisSettings() {
         return;
       }
       setPreferences(value);
-    }).catch(reason => { if (active) setPreferencesError(String(reason)); });
+    }).catch(reason => { if (active) setPreferencesError(analysisSettingsError(reason)); });
     return () => { active = false; };
-  }, [settings.devify.active_space_id]);
+  }, [ready, blocked, settings.devify.active_space_id]);
 
   useEffect(() => {
     if (!preferencesNotice) return;
@@ -87,30 +130,13 @@ export function AnalysisSettings() {
       const saved = await invoke<AnalysisPreferences>('devify_analysis_preferences_save', { spaceId, preferences });
       setPreferences(saved);
       setPreferencesNotice('已保存');
-    } catch (reason) { setPreferencesError(String(reason)); }
+    } catch (reason) { setPreferencesError(analysisSettingsError(reason)); }
     finally { setPreferencesSaving(false); }
   };
 
-  /** Same rule as 备份周期: each control saves straight away, no separate "保存" step. */
+  /** Save each explicit edit against the most recently confirmed revision. */
   const update = useCallback((change: (current: AppSettings) => AppSettings) => {
-    setSettings(current => {
-      const next = change(current);
-      chain.current = chain.current.then(async () => {
-        try {
-          await invoke<AppSettings>('app_settings_save', { value: next });
-        } catch (e) {
-          setError(`保存失败：${String(e)}`);
-          return;
-        }
-        try {
-          await invoke('devify_daily_schedule_sync');
-          setError('');
-        } catch (e) {
-          setError(`设置已保存，但日报计划同步失败：${String(e)}`);
-        }
-      });
-      return next;
-    });
+    queue.current?.enqueue(change);
   }, []);
 
   const automation = settings.automation;
@@ -134,7 +160,7 @@ export function AnalysisSettings() {
         summary: '服务端在备份解析完成后自动生成',
         badge: '服务端',
         rows: [
-          { label: '触发方式', value: '备份解析完成后由 Devify 服务端自动整理' },
+          { label: '触发方式', value: '备份解析完成后由服务端自动整理' },
           { label: '使用范围', value: '只使用已上传的记录，未上传的本机记录不参与' },
           { label: '查看位置', value: '事件、主题页面（客户端只同步结果）' },
         ],
@@ -162,7 +188,7 @@ export function AnalysisSettings() {
         {
           id: 'daily',
           name: '日报',
-          desc: '每天由 Devify 服务端汇总已上传记录',
+          desc: '每天由服务端汇总已上传记录',
           summary: dailyOn ? `每天 ${automation.daily_time} · 服务端生成` : '已关闭',
           control: {
             label: '每日日报',
@@ -195,7 +221,7 @@ export function AnalysisSettings() {
           id: 'weekly',
           name: '周报',
           desc: '按自然周汇总事件与进展',
-          summary: '由 Devify 服务端生成',
+          summary: '由服务端生成',
           badge: '服务端',
           rows: [
             { label: '触发方式', value: '服务端按空间设置生成' },
@@ -206,7 +232,7 @@ export function AnalysisSettings() {
           id: 'monthly',
           name: '月报',
           desc: '按自然月汇总事件与进展',
-          summary: '由 Devify 服务端生成',
+          summary: '由服务端生成',
           badge: '服务端',
           rows: [
             { label: '触发方式', value: '服务端按空间设置生成' },
@@ -217,6 +243,8 @@ export function AnalysisSettings() {
     },
   ];
 
+  if (!ready) return <div className="settings-page analysis-settings"><h2>智能分析</h2><p>{loading ? '正在加载设置…' : '设置尚未加载，无法安全保存。'}</p>{error && <div className="error" role="alert">{error}</div>}{!loading && <button type="button" onClick={() => void load()}>重新加载</button>}</div>;
+
   return <div className="settings-page analysis-settings">
     <header className="page-head">
       <h2>智能分析</h2>
@@ -224,9 +252,10 @@ export function AnalysisSettings() {
       <p className="help" role="status">分析范围和行为用于之后创建的任务；事件粒度和摘要要求由模型参考，结果可能有所不同。</p>
     </header>
 
+    <fieldset disabled={blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
     <section className="analysis-service">
       <div className="analysis-service-icon" aria-hidden="true">✦</div>
-      <div><strong>服务端分析</strong><p>事件分析和云端报告由服务端处理，模型和分析配置在服务端管理。</p><small>本机日报开关不会影响服务端分析。</small></div>
+      <div><strong>服务端分析</strong><p>事件分析和云端报告由服务端处理，模型和分析配置在服务端管理。</p><small>日报开关不会影响事件分析。</small></div>
     </section>
 
     <section className="analysis-group analysis-preferences">
@@ -270,6 +299,9 @@ export function AnalysisSettings() {
       </section>)}
     </div>
 
-    {error && <div className="error">{error}</div>}
+    </fieldset>
+    {error && <div className="error" role="alert">{error}</div>}
+    {scheduleError && <div className="error" role="alert">{scheduleError}</div>}
+    {blocked && <div><p>当前修改未确认保存；重新加载会放弃这些修改。</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? '正在加载…' : '放弃未保存修改并重新加载'}</button></div>}
   </div>;
 }

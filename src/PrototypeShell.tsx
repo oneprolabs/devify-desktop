@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
@@ -22,6 +22,7 @@ import { ChatWorkbench } from './ChatWorkbench';
 import { LoginGate } from './LoginGate';
 import { registerDevifyDevice } from './devifyDevice';
 import { refreshEntitlements } from './entitlements';
+import { shouldApplyAuthExpired } from './authEvents';
 import './prototype-shell.css';
 import './reference-theme.css';
 import './desktop-visual-refresh.css';
@@ -88,6 +89,7 @@ export default function PrototypeShell() {
   const [chatReady, setChatReady] = useState(false);
   const [startTaskCreate, setStartTaskCreate] = useState(false);
   const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous'>('checking');
+  const authEpoch = useRef(0);
   const [authNotice, setAuthNotice] = useState('');
   const [currentUser, setCurrentUser] = useState('');
   const [accountMenu, setAccountMenu] = useState(false);
@@ -97,28 +99,37 @@ export default function PrototypeShell() {
     if (authState === 'authed') void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(user => { if (active) setCurrentUser(user.display_name || user.username || ''); }).catch(() => { if (active) setCurrentUser(''); });
     return () => { active = false; };
   }, [authState]);
-  const handleAuthenticated = useCallback(() => { setAuthState('authed'); setAuthNotice(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
+  const handleAuthenticated = useCallback(() => { authEpoch.current += 1; setAuthState('authed'); setAuthNotice(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
   useEffect(() => {
     let active = true;
     let cleanExpired: (() => void) | undefined;
+    const initialEpoch = authEpoch.current;
     void invoke<{ authenticated: boolean }>('devify_auth_status')
       .then(status => {
-        if (!active) return;
+        if (!active || authEpoch.current !== initialEpoch) return;
         setAuthState(status.authenticated ? 'authed' : 'anonymous');
         if (status.authenticated) {
           void registerDevifyDevice();
         }
       })
-      .catch(() => { if (active) setAuthState('anonymous'); });
-    // The backend drops stale credentials and emits this when the server rejects
-    // the stored session (expired, revoked or deleted account), so the app falls
-    // back to the login gate instead of showing every Devify page as broken.
+      .catch(() => { if (active && authEpoch.current === initialEpoch) setAuthState('anonymous'); });
+    // A queued expiry event may belong to a previous login. Recheck the current
+    // credentials and discard the callback if another login finishes meanwhile.
     void listen<{ message?: string }>('devify-auth-expired', event => {
-      setAuthNotice(event.payload?.message ?? '登录状态已失效，请重新登录。');
-      setAuthState('anonymous');
+      const eventEpoch = authEpoch.current;
+      void shouldApplyAuthExpired(
+        () => invoke<{ authenticated: boolean }>('devify_auth_status'),
+        () => active && authEpoch.current === eventEpoch,
+      ).then(apply => {
+        if (!apply || !active || authEpoch.current !== eventEpoch) return;
+        authEpoch.current += 1;
+        setAuthNotice(event.payload?.message ?? '登录状态已失效，请重新登录。');
+        setAuthState('anonymous');
+      });
     }).then(unlisten => { if (active) cleanExpired = unlisten; else unlisten(); }).catch(() => {});
     const onAuthChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ authenticated?: boolean }>).detail;
+      authEpoch.current += 1;
       setAuthNotice('');
       setAuthState(detail?.authenticated === false ? 'anonymous' : 'authed');
       setChatReady(false);

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { defaultSettings, mergeSettings, type AppSettings } from './Settings';
+import { defaultSettings, mergeSettings, mergeSavedSettings, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
 
 type AgentInfo = {
   id: string;
@@ -32,6 +32,9 @@ const MIN_TIMEOUT = 30;
 
 export function AgentSettings() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [loaded, setLoaded] = useState(false);
+  const saveLock = useRef(false);
+  const confirmedRevision = useRef<number | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -42,6 +45,7 @@ export function AgentSettings() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [voiceState, setVoiceState] = useState<VoiceStatus | null>(null);
   const [voiceSaving, setVoiceSaving] = useState(false);
   const [voiceNotice, setVoiceNotice] = useState('');
@@ -57,7 +61,6 @@ export function AgentSettings() {
 
   const scanAgents = useCallback(async () => {
     setScanning(true);
-    setError('');
     try {
       setAgents(await invoke<AgentInfo[]>('agent_scan'));
     } catch (e) {
@@ -72,7 +75,10 @@ export function AgentSettings() {
     void (async () => {
       try {
         const stored = await invoke<AppSettings>('app_settings_get');
-        setSettings(mergeSettings(stored));
+        const next = mergeSettings(requireSettingsRevision(stored));
+        confirmedRevision.current = next.user_settings_revision;
+        setSettings(next);
+        setLoaded(true);
       } catch (e) {
         setError(String(e));
       }
@@ -141,17 +147,22 @@ export function AgentSettings() {
   };
 
   const save = async () => {
+    if (!loaded || confirmedRevision.current === null || saveLock.current) return;
+    saveLock.current = true;
     setSaving(true);
+    setSaveError('');
     setError('');
     setNotice('');
     try {
-      const saved = await invoke<AppSettings>('app_settings_save', { value: settings });
-      setSettings(mergeSettings(saved));
+      const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: { ...settings, user_settings_revision: confirmedRevision.current } })));
+      confirmedRevision.current = saved.user_settings_revision;
+      setSettings(current => mergeSavedSettings(saved, settings, current));
       setNotice('Agent 配置已保存。聊天记录页的「AI 总结」会立即使用该配置。');
       await scanAgents();
     } catch (e) {
-      setError(String(e));
+      setSaveError(settingsSaveError(e));
     } finally {
+      saveLock.current = false;
       setSaving(false);
     }
   };
@@ -179,6 +190,8 @@ export function AgentSettings() {
   };
 
   const timeout = Number.isFinite(agent.timeout_seconds) ? agent.timeout_seconds : MIN_TIMEOUT;
+
+  if (!loaded) return <div className="agent-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
 
   return (
     <div className="agent-page">
@@ -400,6 +413,7 @@ export function AgentSettings() {
 
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error">{error}</div>}
+      {saveError && <div className="error" role="alert">{saveError}</div>}
       <div className="page-actions">
         <button className="primary" disabled={saving} onClick={() => void save()}>
           {saving ? '正在保存…' : '保存 Agent 配置'}

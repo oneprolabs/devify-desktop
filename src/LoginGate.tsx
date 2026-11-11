@@ -3,8 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import appIcon from './assets/app-icon.png';
+import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from './Settings';
 
 type GateSettings = {
+  user_settings_revision: number;
   devify?: { base_url?: string; device_label?: string };
   [key: string]: unknown;
 };
@@ -28,6 +30,12 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [serverDraft, setServerDraft] = useState('');
   const [serverStatus, setServerStatus] = useState('');
   const completed = useRef(false);
+  const settingsRef = useRef<GateSettings | null>(null);
+  const draftRef = useRef('');
+  const saveLock = useRef(false);
+  const conflict = useRef(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [serverSaving, setServerSaving] = useState(false);
 
   const finishBrowserLogin = useCallback(async (url: string) => {
     try {
@@ -65,13 +73,17 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   useEffect(() => {
     void invoke<GateSettings>('app_settings_get')
       .then(stored => {
+        requireSettingsRevision(stored);
+        settingsRef.current = stored;
+        setSettingsLoaded(true);
         const value = stored.devify?.base_url?.trim().replace(/\/+$/, '') || '';
+        draftRef.current = value;
         setBaseUrl(value);
         setServerDraft(value);
         // A fresh install has no server, so the field is required instead of hidden.
         if (!value) setServerOpen(true);
       })
-      .catch(() => {});
+      .catch(reason => setError(`设置加载失败：${String(reason)}，请重新打开页面。`));
   }, []);
 
   useEffect(() => {
@@ -115,17 +127,32 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   };
 
   const persistServer = async (value: string): Promise<boolean> => {
+    if (!settingsRef.current || saveLock.current || conflict.current) return false;
+    saveLock.current = true;
+    setServerSaving(true);
+    const draftAtStart = draftRef.current;
     try {
-      const stored = await invoke<GateSettings>('app_settings_get');
+      const stored = settingsRef.current;
       const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: value } };
-      await invoke('app_settings_save', { value: next });
-      setBaseUrl(value);
-      setServerDraft(value);
+      const saved = requireSettingsRevision(await invoke<GateSettings>('app_settings_save', { value: next }));
+      settingsRef.current = saved;
+      const confirmed = saved.devify?.base_url?.trim().replace(/\/+$/, '') || '';
+      setBaseUrl(confirmed);
+      if (draftRef.current !== draftAtStart) {
+        setServerStatus('之前的地址已保存，新的输入尚未保存，请确认后重试。');
+        return false;
+      }
+      draftRef.current = confirmed;
+      setServerDraft(confirmed);
       setError('');
       return true;
     } catch (reason) {
-      setServerStatus(String(reason));
+      if (isSettingsConflict(reason)) conflict.current = true;
+      setServerStatus(settingsSaveError(reason));
       return false;
+    } finally {
+      saveLock.current = false;
+      setServerSaving(false);
     }
   };
 
@@ -135,6 +162,8 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
    * continue with the normalized value.
    */
   const ensureServer = async (): Promise<string | null> => {
+    if (conflict.current) { setError('设置已变化，请重新打开页面并确认账号和服务地址。'); return null; }
+    if (!settingsRef.current || saveLock.current) { setError('设置尚未加载或正在保存，请稍后重试。'); return null; }
     const current = baseUrl.trim().replace(/\/+$/, '');
     const candidate = serverDraft.trim().replace(/\/+$/, '') || current;
     if (!candidate) {
@@ -205,6 +234,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   };
 
   const saveServer = async () => {
+    if (conflict.current) { setServerStatus('设置已变化，请重新打开页面并确认账号和服务地址。'); return; }
     const value = serverDraft.trim().replace(/\/+$/, '');
     if (!value) {
       setServerStatus('请填写 Devify 服务地址。');
@@ -228,7 +258,8 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       {notice && <p className="auth-gate-error" role="alert">{notice}</p>}
       {busy === 'browser'
         ? <div className="auth-gate-waiting" role="status"><span className="auth-gate-pulse"/><span>正在等待浏览器完成授权…</span></div>
-        : <button type="button" className="auth-gate-primary" onClick={() => {
+        : <button type="button" className="auth-gate-primary" disabled={!settingsLoaded || serverSaving} onClick={() => {
+            if (!settingsLoaded) return;
             if (!baseUrl.trim()) {
               setServerOpen(true);
               setServerStatus('请先填写 Devify 服务地址，再继续登录。');
@@ -244,20 +275,21 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
               <label>{baseUrl ? 'Devify 服务地址' : 'Devify 服务地址（首次使用请填写）'}
                 <input
                   type="url"
+                  disabled={!settingsLoaded}
                   value={serverDraft}
                   autoFocus={!baseUrl}
-                  onChange={event => { setServerDraft(event.target.value); setServerStatus(''); }}
+                  onChange={event => { draftRef.current = event.target.value; setServerDraft(event.target.value); }}
                   onKeyDown={event => { if (event.key === 'Enter') void saveServer(); }}
                   placeholder={SERVER_PLACEHOLDER}
                 />
               </label>
               {!baseUrl && <p className="auth-gate-hint">服务端不随客户端分发，请填写你们部署的 Devify 地址。</p>}
               <div className="auth-gate-server-actions">
-                <button type="button" onClick={() => void saveServer()}>保存</button>
-                {baseUrl && <button type="button" onClick={() => { setServerOpen(false); setServerDraft(baseUrl); setServerStatus(''); }}>取消</button>}
+                <button type="button" disabled={!settingsLoaded || serverSaving} onClick={() => void saveServer()}>保存</button>
+                {baseUrl && <button type="button" onClick={() => { setServerOpen(false); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>取消</button>}
               </div>
             </>
-          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); setServerDraft(baseUrl); setServerStatus(''); }}>服务地址 · {baseUrl.replace(/^https?:\/\//, '')}</button>}
+          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>服务地址 · {baseUrl.replace(/^https?:\/\//, '')}</button>}
       </div>
       {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
     </div>
