@@ -6,7 +6,6 @@ import { checkForUpdates, downloadUpdate, installUpdate, RELEASE_URL, useUpdater
 type AppInfo = {
   name: string;
   version: string;
-  stage: string;
   platform: string;
   arch: string;
 };
@@ -49,7 +48,16 @@ export function About() {
       .catch(value => setError(`读取版本信息失败：${String(value)}`));
   }, []);
 
-  const version = info ? `${info.stage} ${info.version}` : '正在读取版本…';
+  const busyUpdate = ['checking', 'downloading', 'installing'].includes(update.status);
+  const updateStatus = update.status === 'checking' ? '正在检查更新…'
+    : update.status === 'latest' ? '当前已是最新版本'
+    : update.status === 'available' ? `发现新版本 ${update.version}`
+    : update.status === 'downloading' ? `正在下载${update.progress == null ? '…' : ` ${update.progress}%`}`
+    : update.status === 'downloaded' ? `版本 ${update.version} 已下载`
+    : update.status === 'installed' ? '更新已安装，请重启应用'
+    : update.status === 'installing' ? '正在安装更新…'
+    : update.status === 'error' ? '检查更新失败'
+    : '检查软件更新';
 
   return <div className="settings-page about-page">
     <header className="page-head"><h2>关于</h2><p className="help">了解 AIMyChats 应用和版本信息。</p></header>
@@ -59,27 +67,36 @@ export function About() {
         <h2>{info?.name ?? 'AIMyChats'}</h2>
       </div>
       <p className="about-tagline">查看和备份微信聊天记录，整理事件与总结。</p>
-      <span className="about-version">{version}</span>
-      <button type="button" className="secondary about-source" onClick={() => void invoke('devify_auth_open', { url: 'https://github.com/oneprolabs/devify-desktop' }).catch(value => setError(`打开项目地址失败：${String(value)}`))}>查看源项目 ↗</button>
       {error && <div className="error" role="alert">{error}</div>}
     </div>
 
     <div className="about-details">
     <section className="panel">
       <h2>版本信息</h2>
-      <div className="about-update" aria-live="polite">
-        <p>{update.status === 'checking' ? '正在检查更新…' : update.status === 'latest' ? '当前已是最新版本' : update.status === 'available' ? `发现新版本 ${update.version}` : update.status === 'downloading' ? `正在下载${update.progress == null ? '…' : ` ${update.progress}%`}` : update.status === 'downloaded' ? `版本 ${update.version} 已下载` : update.status === 'installed' ? '更新已安装，请重启应用' : update.status === 'installing' ? '正在安装更新…' : update.status === 'error' ? '检查更新失败' : '检查软件更新'}</p>
-        {update.notes && <p className="about-update-notes">{update.notes}</p>}
-        {update.error && <p className="error" role="alert">{update.error}</p>}
-        {['idle', 'latest', 'error'].includes(update.status) && <button type="button" onClick={() => void checkForUpdates()}>检查更新</button>}
-        {update.status === 'available' && <button type="button" onClick={() => void downloadUpdate()}>下载更新</button>}
-        {['downloaded', 'installed'].includes(update.status) && <button type="button" onClick={() => void installUpdate()}>{update.status === 'installed' ? '重新启动' : '安装并重启'}</button>}
-        <button type="button" onClick={() => void invoke('devify_auth_open', { url: RELEASE_URL }).catch(value => setError(`打开下载页面失败：${String(value)}`))}>打开 GitHub 下载页</button>
+      <div className="about-update" aria-live="polite" aria-busy={busyUpdate}>
+        <div className="about-update-status">
+          {busyUpdate
+            ? <span className="update-spinner" aria-hidden="true"/>
+            : update.status !== 'idle' && <span className={`update-dot${update.status === 'latest' ? ' is-ok' : update.status === 'available' ? ' is-new' : update.status === 'error' ? ' is-error' : ''}`} aria-hidden="true"/>}
+          <div className="about-update-status-text">
+            <strong>{updateStatus}</strong>
+            {update.error
+              ? <span className="about-update-sub is-error" role="alert">{update.error}</span>
+              : update.notes && <span className="about-update-sub">{update.notes}</span>}
+          </div>
+        </div>
+        <div className="about-update-actions">
+          {['idle', 'latest', 'error'].includes(update.status) && <button type="button" onClick={() => void checkForUpdates()}>检查更新</button>}
+          {update.status === 'available' && <button type="button" className="update-primary" onClick={() => void downloadUpdate()}>下载更新</button>}
+          {['downloaded', 'installed'].includes(update.status) && <button type="button" className="update-primary" onClick={() => void installUpdate()}>{update.status === 'installed' ? '重新启动' : '安装并重启'}</button>}
+          <button type="button" className="update-link" onClick={() => void invoke('devify_auth_open', { url: RELEASE_URL }).catch(value => setError(`打开下载页面失败：${String(value)}`))}>手动下载</button>
+        </div>
+        {update.status === 'downloading' && update.progress != null && <div className="about-update-progress" role="progressbar" aria-valuenow={update.progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${update.progress}%` }}/></div>}
       </div>
       <dl className="about-meta">
         <div>
           <dt>版本</dt>
-          <dd>{info ? `${info.stage} ${info.version}` : '—'}</dd>
+          <dd>{info ? info.version : '—'}</dd>
         </div>
         <div>
           <dt>运行平台</dt>
@@ -103,7 +120,7 @@ export function About() {
     </section>
 
     <section className="panel">
-      <h2>Alpha 阶段说明</h2>
+      <h2>版本说明</h2>
       <ul className="about-checklist">
         <li>功能、配置字段和本地缓存格式仍可能调整；升级前建议保留自己的密钥与备份。</li>
         <li>聊天记录可以按设置上传到所连接的服务，事件等结果由服务端处理。</li>

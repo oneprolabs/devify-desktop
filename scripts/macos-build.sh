@@ -30,7 +30,7 @@ cd "$ROOT"
 if [ -f "$PASS_FILE" ]; then
   security unlock-keychain -p "$(cat "$PASS_FILE")" "$KEYCHAIN"
 fi
-if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "$IDENTITY"; then
+if ! security find-identity -p codesigning "$KEYCHAIN" | grep -q "$IDENTITY"; then
   echo "找不到签名身份 \"$IDENTITY\"。先按 README 的「macOS signing」一节创建自签名证书。" >&2
   exit 1
 fi
@@ -45,9 +45,16 @@ codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp=none "$AP
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 # The bundler wrote the DMG from the ad-hoc app; rebuild it from the signed one.
+# Stage the app next to an /Applications symlink so the DMG supports drag-to-install.
 if [ -d "$APP" ]; then
+  STAGING="$(mktemp -d "${TMPDIR:-/tmp}/aimychats-dmg.XXXXXX")"
+  trap 'rm -rf "$STAGING"' EXIT
+  ditto "$APP" "$STAGING/AIMyChats.app"
+  ln -s /Applications "$STAGING/Applications"
   rm -f "$DMG"
-  hdiutil create -quiet -volname AIMyChats -srcfolder "$APP" -ov -format UDZO "$DMG"
+  hdiutil create -quiet -volname AIMyChats -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+  rm -rf "$STAGING"
+  trap - EXIT
 fi
 
 echo

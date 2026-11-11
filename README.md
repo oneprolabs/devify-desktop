@@ -9,7 +9,7 @@ Main areas:
 3. **自动化策略** — configures local sync interval, incremental upload of allowlisted conversations to Devify, and the daily report time that is synced to a Devify topic subscription.
 4. **Devify 配置** — selects the server, space, and device. The daily report schedule is stored on the server.
 5. **Agent 集成** — one settings tab with two sections. **本地总结** picks a local CLI agent, model, timeout, and extra instructions for manual chat summaries. **工具接入** generates one prompt that installs the read-only `wxq` CLI and the three `SKILL.md` documents from the app's in-process download service into directories you choose, then verifies them with `wxq health` / `wxq policy`. No MCP configuration is involved.
-6. **关于** — shows the current build (`Alpha 0.0.1`), the runtime platform, and the app identifier. The version is read from the Rust build (`Cargo.toml`), which is kept in sync with `package.json` and `tauri.conf.json`.
+6. **关于** — shows the current build (`0.0.2`), the runtime platform, and the app identifier. The version is read from the Rust build (`Cargo.toml`), which is kept in sync with `package.json` and `tauri.conf.json`.
 
 聊天记录是默认入口；原始消息可以在本地导出，自动化策略负责按白名单上传记录，日报由 Devify 服务端按计划生成。
 
@@ -413,7 +413,7 @@ scripts/macos-build.sh              # builds, signs, and replaces /Applications/
 scripts/macos-build.sh --no-install # builds + signs only, leaves /Applications untouched
 ```
 
-Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.1_aarch64.dmg`). On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
+Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.0.2_aarch64.dmg`). The DMG mounts with `AIMyChats.app` next to an `Applications` symlink, so the app can be dragged straight into `/Applications`. On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
 
 ### macOS signing (why not ad-hoc)
 
@@ -527,14 +527,49 @@ WX_PASS='<64 hex>' cargo run --quiet --example probe -- 会议 200
 
 ### Alpha updater releases
 
-The updater reads `latest.json` from the fixed `alpha` Release in this repository. While the repository is private, anonymous update checks will fail; users with repository access can download and install the DMG manually. The first updater-enabled version also requires manual installation.
+The updater reads `latest.json` from the fixed `alpha` Release in
+[`oneprolabs/devify-desktop-releases`](https://github.com/oneprolabs/devify-desktop-releases),
+which is public so anonymous update checks work. The source repository stays private; only build
+artifacts are published. The first updater-enabled version still requires one manual installation.
 
-Keep the Tauri updater private key outside this repository and back it up securely. Do not commit it or embed it in the app. The Tauri updater signing key and the macOS app signing identity are separate. The existing local self-signed macOS identity is for local testing and may not be trusted on other Macs.
+GitHub Actions workflow `.github/workflows/release-macos.yml` builds and publishes every release:
 
-1. Set the same new SemVer version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. Alpha prereleases must compare newer than the installed version: `0.0.1-alpha.1` is older than `0.0.1`.
-2. Set `TAURI_SIGNING_PRIVATE_KEY_PATH` to the private key file and optionally `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Set `AIMYCHATS_RELEASE_NOTES` to the release notes.
-3. Run `scripts/prepare-alpha-update.sh`. It verifies version consistency, builds and locally signs the app, then creates the updater archive and signs its final bytes. It does not install or publish.
-4. Verify the DMG, app, `.app.tar.gz`, `.sig`, and `latest.json`. Upload the archive and signature first to the fixed `alpha` prerelease, and upload `latest.json` last. Keep the archive filename and URL consistent with the manifest. Do not publish a manifest pointing to a missing or mismatched asset.
-5. Install an updater-enabled baseline manually. Test the next version's check, download, install, restart, preserved data and login, and macOS Full Disk Access before relying on updates. Test private GitHub release access separately after the repository is public.
+1. Run **Actions → Release macOS → Run workflow** and pick the release tag (default `alpha`).
+2. The job runs on `macos-15` (Apple Silicon), imports the self-signed macOS identity, runs
+   `scripts/prepare-alpha-update.sh` (version check → build → `macos-build.sh --no-install` →
+   updater archive → Tauri signature → `latest.json`), then uploads the DMG, `.app.tar.gz`, `.sig`
+   and finally `latest.json` to the releases repository. Uploading the manifest last means a
+   published manifest never points at an asset that has not landed yet.
+3. The run page links to the release; the same files are attached to the workflow run as artifacts.
 
-The generated manifest currently includes only the architecture built on this Mac; merge valid platform entries from separately built artifacts before releasing multiple architectures.
+Required repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `RELEASES_TOKEN` | PAT with **Contents: read and write** on `oneprolabs/devify-desktop-releases`. The default `GITHUB_TOKEN` cannot write to another repository. |
+| `MACOS_SIGNING_P12` | base64 of the `AIMyChats Local Signing` identity exported from `~/Library/Keychains/signing.keychain-db` (`security export -t identities -f pkcs12 -o identity.p12`, then `base64 -i identity.p12`). |
+| `MACOS_SIGNING_P12_PASSWORD` | Password protecting that `.p12`. |
+| `MACOS_KEYCHAIN_PASSWORD` | Any throwaway password; the workflow creates an ephemeral keychain on the runner. |
+| `TAURI_SIGNING_PRIVATE_KEY` | base64 of the Tauri updater private key file. Keep the original outside the repository and back it up; losing it makes every installed app unable to verify updates. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password of the updater key, or empty when it has none. |
+
+The Tauri updater signing key and the macOS app signing identity are separate. The macOS identity
+is self-signed, so a downloaded DMG is still blocked by Gatekeeper on other Macs until the app is
+notarised; alpha users install manually the first time and afterwards use the in-app updater.
+
+Publishing by hand (same result, useful when Actions is unavailable):
+
+1. Set the same new SemVer version in `package.json`, `src-tauri/tauri.conf.json`, and
+   `src-tauri/Cargo.toml`. Alpha prereleases must compare newer than the installed version:
+   `0.0.1-alpha.1` is older than `0.0.1`.
+2. Set `TAURI_SIGNING_PRIVATE_KEY_PATH`, optionally `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
+   `AIMYCHATS_RELEASE_NOTES`. `RELEASES_REPO` / `RELEASES_TAG` default to
+   `oneprolabs/devify-desktop-releases` / `alpha`.
+3. Run `scripts/prepare-alpha-update.sh`. It builds and signs without installing or publishing.
+4. Upload the DMG, the archive and signature first, then `latest.json` last:
+   `gh release upload alpha -R oneprolabs/devify-desktop-releases --clobber <files>`.
+5. Install an updater-enabled baseline manually, then test check → download → install → restart,
+   preserved data and login, and macOS Full Disk Access before relying on updates.
+
+The generated manifest currently includes only the architecture built on this Mac; merge valid
+platform entries from separately built artifacts before releasing multiple architectures.

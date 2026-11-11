@@ -46,6 +46,81 @@ mod manual_upload_tests;
 #[cfg(test)]
 mod security_identity_tests;
 
+/// Network calls to Devify must never leave the UI spinning forever. Without a
+/// timeout, a wrong LAN address or an unreachable host keeps "checking login"
+/// pending until the kernel gives up, which can be minutes.
+const DEVIFY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const DEVIFY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Chat uploads carry a whole batch and can legitimately take much longer.
+const DEVIFY_UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn devify_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(DEVIFY_CONNECT_TIMEOUT)
+        .timeout(DEVIFY_REQUEST_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn devify_upload_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(DEVIFY_CONNECT_TIMEOUT)
+        .timeout(DEVIFY_UPLOAD_TIMEOUT)
+        .build()
+        .map_err(|_| "无法创建上传请求。".to_string())
+}
+
+/// A timeout or a refused connection means "server unavailable", not "logged
+/// out". Keep reqwest's URL-heavy wording out of the UI.
+fn devify_unreachable(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect()
+}
+
+fn devify_network_message(context: &str, error: &reqwest::Error) -> String {
+    if devify_unreachable(error) {
+        format!("{context}：服务端暂不可用，请稍后重试。")
+    } else if error.is_body() || error.is_decode() {
+        format!("{context}：服务端响应无效，请稍后重试。")
+    } else {
+        format!("{context}：{error}")
+    }
+}
+
+/// Errors raised while resolving a desktop token. `Unavailable` must not be
+/// treated as "the session expired": the server simply could not be reached.
+#[derive(Debug)]
+enum DevifyTokenError {
+    Message(String),
+    Unavailable(String),
+}
+
+impl std::fmt::Display for DevifyTokenError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Message(message) | Self::Unavailable(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<DevifyTokenError> for String {
+    fn from(error: DevifyTokenError) -> Self {
+        error.to_string()
+    }
+}
+
+impl From<String> for DevifyTokenError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<&str> for DevifyTokenError {
+    fn from(message: &str) -> Self {
+        Self::Message(message.to_string())
+    }
+}
+
 /// Single-file page shown in the browser after the loopback callback fires.
 /// It is inlined because the listener answers exactly one request.
 const AUTH_COMPLETE_HTML: &str = include_str!("../assets/auth-complete.html");
@@ -148,7 +223,7 @@ async fn devify_auth_config(
         .get(format!("{}/api/v1/auth/desktop/config", base_url))
         .send()
         .await
-        .map_err(|e| format!("读取 Devify 登录配置失败：{e}"))?;
+        .map_err(|e| devify_network_message("读取 Devify 登录配置失败", &e))?;
     if !response.status().is_success() {
         return Err(format!("读取 Devify 登录配置失败：{}", response.status()));
     }
@@ -182,11 +257,11 @@ pub(crate) static UPLOAD_IDENTITY_LOCK: tokio::sync::RwLock<()> = tokio::sync::R
 static CREDENTIAL_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static AUTH_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<String, String> {
+async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<String, DevifyTokenError> {
     devify_access_token_with_cleanup(app_data, base_url, &mut None).await
 }
 
-async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, cleared_generation: &mut Option<u64>) -> Result<String, String> {
+async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, cleared_generation: &mut Option<u64>) -> Result<String, DevifyTokenError> {
     let base_url = settings::normalize_base_url(base_url)?;
     // Serialize refresh requests while allowing login/logout to invalidate their CAS.
     let _refresh_guard = CREDENTIAL_REFRESH_LOCK.lock().await;
@@ -219,7 +294,9 @@ async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, clear
         .json(&serde_json::json!({"refresh": refresh}))
         .send()
         .await
-        .map_err(|e| format!("刷新 Devify token 失败：{e}"))?;
+        .map_err(|e| {
+            DevifyTokenError::Unavailable(devify_network_message("刷新 Devify token 失败", &e))
+        })?;
     let status = response.status();
     if !status.is_success() {
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -282,7 +359,7 @@ async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUpl
     let settings = settings::load(&app_data(&app))?;
     let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
     let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
-    let response = reqwest::Client::new()
+    let response = devify_client()
         .get(format!(
             "{}/api/v1/chat/uploads/{batch_id}",
             settings.devify.base_url.trim_end_matches('/')
@@ -290,7 +367,7 @@ async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUpl
         .bearer_auth(&token)
         .send()
         .await
-        .map_err(|e| format!("读取上传状态失败：{e}"))?;
+        .map_err(|e| devify_network_message("读取上传状态失败", &e))?;
     let status = response.status();
     let payload: serde_json::Value = response
         .json()
@@ -418,13 +495,15 @@ async fn devify_upload_list(
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     let base_url = upload_list_base_url(&settings, space_id)?;
-    let token = devify_access_token_async(&data, &base_url).await.map_err(|error| {
-        if error.starts_with("刷新 Devify token 失败：") {
-            "刷新 Devify 登录状态失败，请检查网络连接。".to_string()
-        } else {
-            error
+    let token = match devify_access_token_async(&data, &base_url).await {
+        Ok(token) => token,
+        // Only a network failure gets the "check the connection" wording; an expired
+        // session must still tell the user to sign in again.
+        Err(DevifyTokenError::Unavailable(_)) => {
+            return Err("刷新 Devify 登录状态失败，请检查网络连接。".into());
         }
-    })?;
+        Err(error) => return Err(error.to_string()),
+    };
     if upload_list_base_url(&settings::load(&data)?, space_id)? != base_url {
         return Err("Devify 服务地址已改变，请重新读取上传列表。".into());
     }
@@ -475,7 +554,7 @@ async fn devify_space_takeover(
     }
     let settings = settings::load(&app_data(&app))?;
     let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
-    let response = reqwest::Client::new()
+    let response = devify_client()
         .post(format!(
             "{}/api/v1/spaces/{space_id}/takeover",
             settings.devify.base_url.trim_end_matches('/')
@@ -484,7 +563,7 @@ async fn devify_space_takeover(
         .json(&serde_json::json!({"reason": reason.trim()}))
         .send()
         .await
-        .map_err(|e| format!("接管空间失败：{e}"))?;
+        .map_err(|e| devify_network_message("接管空间失败", &e))?;
     if !response.status().is_success() {
         return Err(format!("接管空间失败：{}", response.status()));
     }
@@ -568,7 +647,7 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
     let settings = settings::load(&app_data(&app))?;
     let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
     let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
-    let response = reqwest::Client::new()
+    let response = devify_client()
         .get(format!(
             "{}/api/v1/spaces",
             settings.devify.base_url.trim_end_matches('/')
@@ -576,7 +655,7 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
         .bearer_auth(&token)
         .send()
         .await
-        .map_err(|e| format!("读取 Devify 空间失败：{e}"))?;
+        .map_err(|e| devify_network_message("读取 Devify 空间失败", &e))?;
     let status = response.status();
     let payload: serde_json::Value = response
         .json()
@@ -662,7 +741,7 @@ async fn devify_analysis_list(
         "reports"
     };
     let first_page = page.unwrap_or(1).max(1);
-    let client = reqwest::Client::new();
+    let client = devify_client();
     let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
     let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
     let mut all_items = Vec::new();
@@ -681,7 +760,7 @@ async fn devify_analysis_list(
             .bearer_auth(&token)
             .send()
             .await
-            .map_err(|e| format!("同步服务端{kind}失败：{e}"))?;
+            .map_err(|e| devify_network_message(&format!("同步服务端{kind}失败"), &e))?;
         let status = response.status();
         let payload: serde_json::Value = response
             .json()
@@ -822,7 +901,7 @@ async fn devify_json_request(
     let settings = settings::load(&app_data(app))?;
     let token = devify_access_token_async(&app_data(app), &settings.devify.base_url).await?;
     let generation = request_generation(&app_data(app), &settings.devify.base_url, &token)?;
-    let client = reqwest::Client::new();
+    let client = devify_client();
     let mut request = client
         .request(
             method,
@@ -835,7 +914,7 @@ async fn devify_json_request(
     let response = request
         .send()
         .await
-        .map_err(|e| format!("访问 Devify 失败：{e}"))?;
+        .map_err(|e| devify_network_message("访问 Devify 失败", &e))?;
     let status = response.status();
     if status == reqwest::StatusCode::NO_CONTENT {
         return Ok(serde_json::Value::Null);
@@ -3299,8 +3378,9 @@ async fn devify_upload_wechat(
         job.package_digest = Some(digest.clone());
         Ok(())
     })?;
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()
-        .map_err(|_| "无法创建上传请求。")?;
+    // Redirects stay disabled: a 3xx on the create/upload call must not silently
+    // resend a whole package elsewhere.
+    let client = devify_upload_client()?;
     let upload_platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
     } else {
@@ -3388,7 +3468,7 @@ async fn devify_upload_wechat(
         .multipart(form)
         .send()
         .await
-        .map_err(|e| format!("上传归档失败：{e}"))?;
+        .map_err(|e| devify_network_message("上传归档失败", &e))?;
     if !uploaded.status().is_success() {
         return Err(format!("上传归档失败：{}", uploaded.status()));
     }
@@ -3401,7 +3481,7 @@ async fn devify_upload_wechat(
         .bearer_auth(&token)
         .send()
         .await
-        .map_err(|e| format!("提交解析失败：{e}"))?;
+        .map_err(|e| devify_network_message("提交解析失败", &e))?;
     if !completed.status().is_success() {
         return Err(format!("提交解析失败：{}", completed.status()));
     }
@@ -3606,7 +3686,7 @@ async fn devify_auth_callback(
         }))
         .send()
         .await
-        .map_err(|e| format!("换取 Devify token 失败：{e}"))?;
+        .map_err(|e| devify_network_message("换取 Devify token 失败", &e))?;
     if !response.status().is_success() {
         return Err(format!("Devify 登录失败：{}", response.status()));
     }
@@ -3693,6 +3773,11 @@ fn devify_auth_cancel(state: State<'_, DevifyAuthState>) -> Result<(), String> {
 #[derive(Serialize)]
 struct DevifyAuthStatus {
     authenticated: bool,
+    /// The server could not be reached (timeout, refused connection or 5xx).
+    /// The UI must say "service unavailable, retry later" instead of showing the
+    /// login gate, and must not drop the stored session.
+    unavailable: bool,
+    error: String,
 }
 
 fn auth_status_after_token_failure(data: &Path, base: &str, before: u64, cleared_generation: Option<u64>) -> Result<DevifyAuthStatus, String> {
@@ -3702,13 +3787,13 @@ fn auth_status_after_token_failure(data: &Path, base: &str, before: u64, cleared
                 || !desktop_credentials::absent_at_generation(data, cleared_generation)? {
                 return Err("登录状态已改变，请重新检查。".into());
             }
-            Ok(DevifyAuthStatus { authenticated: false })
+            Ok(DevifyAuthStatus { authenticated: false, unavailable: false, error: String::new() })
         });
     }
     if desktop_credentials::generation()? != before {
         return Err("登录状态已改变，请重新检查。".into());
     }
-    Ok(DevifyAuthStatus { authenticated: false })
+    Ok(DevifyAuthStatus { authenticated: false, unavailable: false, error: String::new() })
 }
 
 /// Report whether usable desktop credentials exist. An expired access token is
@@ -3751,34 +3836,76 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
     let settings = settings::load(&data)?;
     let before = desktop_credentials::generation()?;
     let mut cleared_generation = None;
-    let Ok(token) = devify_access_token_with_cleanup(&data, &settings.devify.base_url, &mut cleared_generation).await else {
-        return auth_status_after_token_failure(&data, &settings.devify.base_url, before, cleared_generation);
+    let token = match devify_access_token_with_cleanup(&data, &settings.devify.base_url, &mut cleared_generation).await {
+        Ok(token) => token,
+        // A network problem says nothing about the stored session: keep it, and let the UI
+        // offer "retry later" instead of dropping the user back to the login gate.
+        Err(DevifyTokenError::Unavailable(message)) => {
+            if desktop_credentials::generation()? != before {
+                return Err("登录状态已改变，请重新检查。".into());
+            }
+            return Ok(DevifyAuthStatus { authenticated: false, unavailable: true, error: message });
+        }
+        Err(DevifyTokenError::Message(_)) => {
+            return auth_status_after_token_failure(&data, &settings.devify.base_url, before, cleared_generation);
+        }
     };
     let (credentials, generation) = desktop_credentials::load_with_generation(&data, &settings.devify.base_url)?;
     if credentials.access != token || settings::load(&data)?.devify.resolved_base_url()? != settings.devify.resolved_base_url()? {
         return Err("登录状态已改变，请重新检查。".into());
     }
-    let response = reqwest::Client::new()
+    match devify_client()
         .get(format!(
             "{}/api/v1/spaces",
             settings.devify.base_url.trim_end_matches('/')
         ))
         .bearer_auth(&token)
         .send()
-        .await;
-    match response {
+        .await
+    {
         Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
             if !desktop_credentials::clear_if_access(&data, &settings.devify.base_url, &token, generation)? {
                 return Err("登录状态已改变，请重新检查。".into());
             }
-            Ok(DevifyAuthStatus { authenticated: false })
+            Ok(DevifyAuthStatus { authenticated: false, unavailable: false, error: String::new() })
         }
-        _ => {
+        Ok(response) if response.status().is_server_error() => {
             if request_generation(&data, &settings.devify.base_url, &token)? != generation {
                 return Err("登录状态已改变，请重新检查。".into());
             }
-            Ok(DevifyAuthStatus { authenticated: true })
+            Ok(DevifyAuthStatus {
+                authenticated: false,
+                unavailable: true,
+                error: format!(
+                    "Devify 服务端异常（HTTP {}），请稍后重试。",
+                    response.status().as_u16()
+                ),
+            })
+        }
+        Ok(_) => {
+            if request_generation(&data, &settings.devify.base_url, &token)? != generation {
+                return Err("登录状态已改变，请重新检查。".into());
+            }
+            Ok(DevifyAuthStatus { authenticated: true, unavailable: false, error: String::new() })
         },
+        Err(error) if devify_unreachable(&error) => {
+            if request_generation(&data, &settings.devify.base_url, &token)? != generation {
+                return Err("登录状态已改变，请重新检查。".into());
+            }
+            Ok(DevifyAuthStatus {
+                authenticated: false,
+                unavailable: true,
+                error: devify_network_message("检查登录状态失败", &error),
+            })
+        }
+        // Unknown failures (TLS, proxy, body) keep the stored session: a local
+        // problem must not look like a logout.
+        Err(_) => {
+            if request_generation(&data, &settings.devify.base_url, &token)? != generation {
+                return Err("登录状态已改变，请重新检查。".into());
+            }
+            Ok(DevifyAuthStatus { authenticated: true, unavailable: false, error: String::new() })
+        }
     }
 }
 
@@ -3841,7 +3968,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
         }))
         .send()
         .await
-        .map_err(|e| format!("登记设备失败：{e}"))?;
+        .map_err(|e| devify_network_message("登记设备失败", &e))?;
     if !response.status().is_success() {
         return Err(format!("登记设备失败：{}", response.status()));
     }
@@ -3921,7 +4048,7 @@ async fn devify_login_password(
         .json(&serde_json::json!({ "username": username, "password": password }))
         .send()
         .await
-        .map_err(|e| format!("连接 Devify 登录服务失败：{e}"))?;
+        .map_err(|e| devify_network_message("连接 Devify 登录服务失败", &e))?;
     let status = response.status();
     let payload: serde_json::Value = response
         .json()
@@ -4168,7 +4295,6 @@ fn app_data(app: &AppHandle) -> PathBuf {
 struct AppInfo {
     name: String,
     version: String,
-    stage: String,
     platform: String,
     arch: String,
 }
@@ -4178,7 +4304,6 @@ fn app_info() -> AppInfo {
     AppInfo {
         name: "AIMyChats".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        stage: "Alpha".to_string(),
         platform: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
     }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AIMyChats",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "identifier": "local.wechat.devifybridge",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -45,9 +45,9 @@
       }
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCMzg3MjBGMUU1MUE1NTMKUldSVHBWRWVEM0k0cTVwY3FSdW5XeFhaY2JkdFBMeDVrWmpjN2lCRkx6R1ZjL1dkaU1IRmM3MVIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlEOTNEOTA4MjI3ODUwMjkKUldRcFVIZ2lDTm1UblV4cGM4UUh1QW1KY2hRbVRQZDA5ZGhSRU8vWWlPNzhLTC9ZYndFL1d1Y1cK",
       "endpoints": [
-        "https://github.com/oneprolabs/devify-desktop/releases/download/alpha/latest.json"
+        "https://github.com/oneprolabs/devify-desktop-releases/releases/download/alpha/latest.json"
       ]
     }
   },

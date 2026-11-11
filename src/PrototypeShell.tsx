@@ -89,31 +89,54 @@ export default function PrototypeShell() {
   const [eventFocusId, setEventFocusId] = useState<number | null>(null);
   const [chatReady, setChatReady] = useState(false);
   const [startTaskCreate, setStartTaskCreate] = useState(false);
-  const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous'>('checking');
+  const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous' | 'unavailable'>('checking');
   const authEpoch = useRef(0);
   const [authNotice, setAuthNotice] = useState('');
+  const [authError, setAuthError] = useState('');
   const [currentUser, setCurrentUser] = useState('');
   const [accountMenu, setAccountMenu] = useState(false);
+  const authMounted = useRef(true);
+  useEffect(() => { authMounted.current = true; return () => { authMounted.current = false; }; }, []);
   useEffect(() => {
     let active = true;
     setCurrentUser('');
     if (authState === 'authed') void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(user => { if (active) setCurrentUser(user.display_name || user.username || ''); }).catch(() => { if (active) setCurrentUser(''); });
     return () => { active = false; };
   }, [authState]);
-  const handleAuthenticated = useCallback(() => { authEpoch.current += 1; setAuthState('authed'); setAuthNotice(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
-  useEffect(() => {
-    let active = true;
-    let cleanExpired: (() => void) | undefined;
-    const initialEpoch = authEpoch.current;
-    void invoke<{ authenticated: boolean }>('devify_auth_status')
+  const handleAuthenticated = useCallback(() => { authEpoch.current += 1; setAuthState('authed'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
+  /**
+   * The backend caps every Devify request with a timeout, so this resolves even when the
+   * server is unreachable. `unavailable` is a separate state from "logged out": it must not
+   * drop the stored session, and the user gets an explicit "retry later" instead of a spinner.
+   * Every result is dropped once the epoch moved on, so a slow reply from a previous login
+   * cannot overwrite the current session state.
+   */
+  const checkAuth = useCallback(() => {
+    const requestEpoch = authEpoch.current;
+    setAuthState('checking');
+    setAuthError('');
+    void invoke<{ authenticated: boolean; unavailable?: boolean; error?: string }>('devify_auth_status')
       .then(status => {
-        if (!active || authEpoch.current !== initialEpoch) return;
+        if (!authMounted.current || authEpoch.current !== requestEpoch) return;
+        if (status.unavailable) {
+          setAuthError(status.error || 'Devify 服务端暂不可用，请稍后重试。');
+          setAuthState('unavailable');
+          return;
+        }
         setAuthState(status.authenticated ? 'authed' : 'anonymous');
         if (status.authenticated) {
           void registerDevifyDevice();
         }
       })
-      .catch(() => { if (active && authEpoch.current === initialEpoch) setAuthState('anonymous'); });
+      .catch(() => { if (authMounted.current && authEpoch.current === requestEpoch) setAuthState('anonymous'); });
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let cleanExpired: (() => void) | undefined;
+    checkAuth();
+    // The backend drops stale credentials and emits this when the server rejects
+    // the stored session (expired, revoked or deleted account), so the app falls
+    // back to the login gate instead of showing every Devify page as broken.
     // A queued expiry event may belong to a previous login. Recheck the current
     // credentials and discard the callback if another login finishes meanwhile.
     void listen<{ message?: string }>('devify-auth-expired', event => {
@@ -142,7 +165,7 @@ export default function PrototypeShell() {
       cleanExpired?.();
       window.removeEventListener('aimychats:auth-changed', onAuthChanged);
     };
-  }, []);
+  }, [checkAuth]);
   const openNewUpload = () => { setStartTaskCreate(true); setSection('tasks'); };
   // Entitlements are per account and per server, so every successful sign-in refreshes them
   // once. A server without the endpoint answers 404 and the app keeps its legacy behaviour.
@@ -188,6 +211,16 @@ export default function PrototypeShell() {
     <section className="prototype-content">
       {update.status === 'available' && <button type="button" className="update-available-notice" onClick={() => { setSettingsPage('about'); setWechatGuide(false); setSection('settings'); }}>发现新版本 {update.version}，查看更新</button>}
       {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
+      {authState === 'unavailable' && <div className="auth-gate">
+        <div className="auth-gate-card">
+          <span className="auth-gate-mark"><img src={appIcon} alt=""/></span>
+          <h1>服务端暂不可用</h1>
+          <p>{authError || 'Devify 服务端暂不可用，请稍后重试。'}</p>
+          <p className="auth-gate-hint">已保存的登录状态不会丢失，服务恢复后点「重试」即可。</p>
+          <button type="button" className="auth-gate-primary" onClick={checkAuth}>重试</button>
+          <button type="button" className="auth-gate-secondary" onClick={() => { setAuthNotice(''); setAuthState('anonymous'); }}>返回登录</button>
+        </div>
+      </div>}
       {authState === 'anonymous' && <LoginGate notice={authNotice} onAuthenticated={handleAuthenticated}/>}
       {authState === 'authed' && <>
       {section === 'chat' && <>

@@ -122,8 +122,6 @@
 .about-page .about-mark { width:60px; height:60px; border-radius:14px; }
 .about-page .about-lockup h2 { font-size:22px; }
 .about-page .about-tagline { flex:1 1 250px; color:#5f5f5a; }
-.about-page .about-version { white-space:nowrap; }
-.about-page .about-source { white-space:nowrap; }
 .about-details { display:grid; gap:14px; max-width:none; margin:0; }
 .about-details .panel { margin:0; padding:18px 20px; border:1px solid #e9e9e6; border-radius:12px; background:#fbfafe; }
 .about-details .panel h2 { margin:0 0 14px; color:#3a3a37; font-size:15px; }
@@ -477,10 +475,28 @@
 .chat-workbench-filters button { white-space: nowrap; }
 
 .update-available-notice { position:absolute; z-index:5; top:10px; right:18px; padding:8px 12px; border:1px solid #e6c9e2; border-radius:7px; background:#fff; color:#8e2187; cursor:pointer; }
-.about-update { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; }
-.about-update p { flex-basis:100%; margin:0; }
-.about-update-notes { white-space:pre-wrap; }
-.about-update button { padding:6px 10px; border:1px solid #d9d9d5; border-radius:6px; background:white; cursor:pointer; }
+.about-update { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin:12px 0 16px; padding:12px 14px; border:1px solid #ecece8; border-radius:10px; background:#fafaf8; }
+.about-update-status { display:flex; align-items:center; gap:10px; flex:1 1 260px; min-width:0; }
+.about-update-status-text { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.about-update-status-text strong { font-size:13px; font-weight:600; color:#34342f; }
+.about-update-sub { font-size:12px; line-height:1.5; color:#8a8a85; overflow-wrap:anywhere; }
+.about-update-sub.is-error { color:#b3261e; }
+.about-update-actions { display:flex; align-items:center; gap:6px; margin-left:auto; }
+.about-update button { padding:6px 12px; border:1px solid #d9d9d5; border-radius:7px; background:#fff; color:#3a3a37; font:inherit; font-size:12px; cursor:pointer; }
+.about-update button:hover { background:#f2f2ef; }
+.about-update button.update-primary { border-color:#8e2187; background:#8e2187; color:#fff; }
+.about-update button.update-primary:hover { background:#7a1b74; }
+.about-update button.update-link { border-color:transparent; background:transparent; color:#74746e; padding:6px 4px; }
+.about-update button.update-link:hover { color:#3a3a37; background:transparent; }
+.update-dot { width:8px; height:8px; flex:none; border-radius:50%; background:#c9c9c4; }
+.update-dot.is-ok { background:#2e9e63; }
+.update-dot.is-new { background:#8e2187; }
+.update-dot.is-error { background:#c0392b; }
+.update-spinner { width:13px; height:13px; flex:none; border-radius:50%; border:2px solid #e2e2de; border-top-color:#8e2187; animation:update-spin .7s linear infinite; }
+@keyframes update-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .update-spinner { animation-duration:2s; } }
+.about-update-progress { flex-basis:100%; height:4px; border-radius:2px; background:#ecece8; overflow:hidden; }
+.about-update-progress span { display:block; height:100%; background:#8e2187; transition:width .2s ease; }
 
 .analysis-save-row { display:flex; align-items:center; gap:10px; }
 .analysis-save-status { display:inline-flex; align-items:center; gap:5px; color:#25844a; font-size:12px; line-height:1.5; }

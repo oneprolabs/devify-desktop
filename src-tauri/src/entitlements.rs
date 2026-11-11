@@ -244,7 +244,11 @@ pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<Vie
     if base_url.is_empty() {
         return Err("请先在登录窗口填写 Devify 服务地址。".into());
     }
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
         .get(format!("{base_url}/api/v1/me/entitlements"))
         .bearer_auth(token)
         .send()

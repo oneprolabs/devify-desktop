@@ -95,6 +95,19 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [popup, busy]);
 
+  // The browser flow has no deadline of its own: when the server is unreachable the
+  // callback never arrives, so stop waiting instead of leaving the modal spinning.
+  useEffect(() => {
+    if (busy !== 'browser') return;
+    const timer = window.setTimeout(() => {
+      void invoke('devify_auth_cancel').catch(() => {});
+      setBusy('');
+      setInfo('');
+      setError('等待浏览器授权超时，请确认 Devify 服务端可访问后重试。');
+    }, 120_000);
+    return () => window.clearTimeout(timer);
+  }, [busy]);
+
   const idOk = /^[a-z0-9._-]{3,}$/i.test(username);
   const submitLogin = async () => {
     setBusy('password');
