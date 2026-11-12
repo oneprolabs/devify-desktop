@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import appIcon from './assets/app-icon.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from './Settings';
+import { apiBaseUrl, displayBaseUrl } from './serviceUrl.ts';
 
 type GateSettings = {
   user_settings_revision: number;
@@ -76,7 +77,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
         requireSettingsRevision(stored);
         settingsRef.current = stored;
         setSettingsLoaded(true);
-        const value = stored.devify?.base_url?.trim().replace(/\/+$/, '') || '';
+        const value = displayBaseUrl(stored.devify?.base_url?.trim().replace(/\/+$/, '') || '').replace(/\/+$/, '');
         draftRef.current = value;
         setBaseUrl(value);
         setServerDraft(value);
@@ -146,10 +147,10 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     const draftAtStart = draftRef.current;
     try {
       const stored = settingsRef.current;
-      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: value } };
+      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: displayBaseUrl(value) || value } };
       const saved = requireSettingsRevision(await invoke<GateSettings>('app_settings_save', { value: next }));
       settingsRef.current = saved;
-      const confirmed = saved.devify?.base_url?.trim().replace(/\/+$/, '') || '';
+      const confirmed = displayBaseUrl(saved.devify?.base_url?.trim().replace(/\/+$/, '') || '').replace(/\/+$/, '');
       setBaseUrl(confirmed);
       if (draftRef.current !== draftAtStart) {
         setServerStatus('之前的地址已保存，新的输入尚未保存，请确认后重试。');
@@ -240,7 +241,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     const server = await ensureServer();
     if (!server) return;
     try {
-      await invoke('devify_auth_open', { url: `${server}${path}` });
+      await invoke('devify_auth_open', { url: `${apiBaseUrl(server)}${path}` });
     } catch (reason) {
       setError(String(reason));
     }
@@ -302,7 +303,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
                 {baseUrl && <button type="button" onClick={() => { setServerOpen(false); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>取消</button>}
               </div>
             </>
-          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>服务地址 · {baseUrl.replace(/^https?:\/\//, '')}</button>}
+          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>服务地址 · {displayBaseUrl(baseUrl).replace(/^https?:\/\//, '').replace(/\/+$/, '')}</button>}
       </div>
       {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
     </div>

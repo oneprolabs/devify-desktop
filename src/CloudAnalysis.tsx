@@ -24,8 +24,8 @@ type Page<T> = { list: T[]; pagination?: { total?: number; page?: number; next?:
 type AppSettings = { devify?: { active_space_id: number | null } };
 
 const labels: Record<Kind, { title: string; empty: string }> = {
-  events: { title: '事件', empty: '当前空间还没有服务端事件。' },
-  reports: { title: '报告', empty: '当前空间还没有服务端报告。' },
+  events: { title: '事件', empty: '当前空间还没有事件。' },
+  reports: { title: '报告', empty: '当前空间还没有报告。' },
 };
 const REPORT_TYPES = [['all', '全部'], ['日报', '日报'], ['周报', '周报'], ['月报', '月报'], ['主题', '主题']];
 
@@ -194,7 +194,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
         if (!active) return;
         const id = settings.devify?.active_space_id ?? null;
         setSpaceId(id);
-        if (!id) throw new Error('请先在「设置 / 账户」中登录服务端并选择空间。');
+        if (!id) throw new Error('请先在「设置 / 账户」中登录并选择空间。');
         return invoke<Page<EventItem> | Page<ReportItem>>('devify_analysis_list', { kind, spaceId: id, page: 1 });
       })
       .then(result => {
@@ -489,10 +489,10 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     ? [['all', '全部', items.length], ['open', '未完成', counts.open], ['done', '已完成', counts.done]]
     : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportType(item as ReportItem) === value).length]);
 
-  if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>请在桌面应用中查看</h2><p>事件和报告由服务端生成，桌面端只负责同步并展示。</p></div></div>;
-  if (loading) return <div className="analysis-page"><div className="analysis-empty"><h2>正在同步{copy.title}…</h2><p>正在从服务端读取当前空间的最新结果。</p></div></div>;
+  if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>请在桌面应用中查看</h2><p>事件和报告在上传处理后生成，桌面端负责同步并展示。</p></div></div>;
+  if (loading) return <div className="analysis-page"><div className="analysis-empty"><h2>正在同步{copy.title}…</h2><p>正在读取当前空间的最新结果。</p></div></div>;
   if (error) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>同步失败</h2><p>{error}</p></div></div>;
-  if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{copy.empty}</h2><p>完成聊天采集并等待服务端处理后，结果会出现在这里。</p></div></div>;
+  if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{copy.empty}</h2><p>完成聊天采集并等待处理完成后，结果会出现在这里。</p></div></div>;
 
   return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
     <aside className="analysis-side" aria-label={`${copy.title}列表`}>
@@ -591,7 +591,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
           </div>
           {genError && <p className="analysis-empty error" role="alert">{genError}</p>}
           <button type="button" className="report-create-submit" disabled={generating} onClick={() => void generateReport()}>{generating ? '正在提交…' : '生成'}</button>
-          <p className="report-create-note">服务端会按所选区间重新汇总事件；生成完成后会出现在左侧列表，标题为「{genRange(genType).title}」。</p>
+          <p className="report-create-note">会按所选区间重新汇总事件；生成完成后会出现在左侧列表，标题为「{genRange(genType).title}」。</p>
         </div>}
 
         {!(kind === 'reports' && creating) && <>
@@ -627,7 +627,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
             <nav className="event-section-nav" aria-label="事件详情"><button type="button" onClick={() => document.getElementById('event-overview')?.scrollIntoView({ block: 'nearest' })}>概览</button><button type="button" onClick={() => document.getElementById('event-timeline')?.scrollIntoView({ block: 'start' })}>进展与原文</button></nav>
             <section className="analysis-current-state" aria-labelledby="analysis-current-title">
               <h2 id="analysis-current-title">事件概述</h2>
-              <p className="analysis-summary">{event.content || '服务端尚未返回事件内容。'}</p>
+              <p className="analysis-summary">{event.content || '尚未返回事件内容。'}</p>
             </section>
             <section className="event-overview" id="event-overview" aria-label="事件关键信息">
               <div><span className="event-stat-icon" aria-hidden="true">◉</span><div><span>当前状态</span><strong>{statusLabel(event.status)}</strong></div></div>
@@ -643,7 +643,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
 
           <section className="analysis-timeline" id="event-timeline">
             <div className="analysis-block-head"><span>时间线</span><span>原始记录按需展开</span></div>
-            {timelineRows.length === 0 && <p className="analysis-list-empty">服务端还没有为这个事件记录进展。</p>}
+            {timelineRows.length === 0 && <p className="analysis-list-empty">还没有为这个事件记录进展。</p>}
             {timelineRows.map((row, index) => {
               const last = index === timelineRows.length - 1;
               if (row.kind === 'link') {
@@ -723,7 +723,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
             <span className="report-badge">{reportBadge(report)}</span>
             <div>
               <h1>{report.title}</h1>
-              <p>{reportType(report)} · {report.generated_at ? `${date(report.generated_at)} 生成` : '服务端生成'}</p>
+              <p>{reportType(report)} · {report.generated_at ? `${date(report.generated_at)} 生成` : '正在生成'}</p>
             </div>
           </header>
 
@@ -733,7 +733,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
               <span>{report.sections?.length ?? 0} 个分类 · {sectionItems(report).length} 项</span>
             </div>
             {reportView.notice && <p role={report.status === 'failed' ? 'alert' : 'status'}>{reportView.notice}</p>}
-            {reportView.content ? <p>{reportView.content}</p> : !reportView.notice && <p>服务端尚未返回正文。</p>}
+            {reportView.content ? <p>{reportView.content}</p> : !reportView.notice && <p>尚未返回正文。</p>}
           </div>
 
           {(report.sections ?? []).map(section => <section className="report-section" key={section.id}>

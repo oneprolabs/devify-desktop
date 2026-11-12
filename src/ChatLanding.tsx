@@ -18,12 +18,12 @@ const connectors: Connector[] = [
 ];
 
 function steps(mode: HomeMode, sessions = 0, syncIntervalSeconds = 1800): Step[] {
-  const current = mode === 'new' ? 0 : 3;
+  const current = mode === 'new' ? 0 : sessions > 0 ? 3 : 1;
   const minutes = Math.max(1, Math.round(syncIntervalSeconds / 60));
   const step = (index: number): Step['state'] => index < current ? 'done' : index === current ? 'current' : 'next';
   return [
     { number: '1', title: '连接来源', description: mode === 'new' ? '选一个聊天来源，打开连接向导，按提示授权。会逐步检查权限。' : '已连接：微信', state: step(0) },
-    { number: '2', title: '选择要备份的会话', description: mode === 'new' ? '默认私聊和群聊都会导入，也可以自定义。' : sessions ? `已选 ${sessions.toLocaleString()} 个会话` : '连接后选择要备份的会话', state: step(1) },
+    { number: '2', title: '选择要备份的会话', description: mode === 'new' ? '在导入管理里勾选要备份的私聊和群聊，未勾选的不会导入。' : sessions ? `已选 ${sessions.toLocaleString()} 个会话` : '还没有选择会话，先去勾选要备份的聊天。', state: step(1) },
     { number: '3', title: '设置备份周期', description: mode === 'new' ? '每个平台单独设置，默认每 30 分钟。' : `微信：每 ${minutes} 分钟 · 仅 Wi-Fi`, state: step(2) },
     { number: '4', title: '第一次备份', description: mode === 'new' ? '把已选会话的记录加密上传，完成后就能看到事件、总结和报告。' : '完成后就能看到事件、总结和报告', state: step(3) },
   ];
@@ -33,13 +33,16 @@ export function ChatLanding({ mode, sessionCount, syncIntervalSeconds, onConnect
   const isNew = mode === 'new';
   const wechat = useConnectorDetect('wechat');
   const wechatMissing = !wechat.checking && !wechat.usable && wechat.detect;
-  const summary = `将备份微信的 ${sessionCount.toLocaleString()} 个会话。`;
+  const needsImport = !isNew && sessionCount === 0;
+  const summary = needsImport
+    ? '解密只是读出本机记录。备份哪些聊天，需要你在导入管理里勾选。'
+    : `将备份微信的 ${sessionCount.toLocaleString()} 个会话。`;
   return <div className="chat-landing">
     <div className="chat-landing-inner">
       <header className="chat-landing-head">
         <p className="chat-landing-eyebrow">{isNew ? '欢迎使用 AIMyChats' : '还差最后一步'}</p>
-        <h1>{isNew ? '先连接一个聊天来源' : '已连接，还没有备份过任何内容'}</h1>
-        <p>{isNew ? 'AIMyChats 在你的电脑上只读取聊天记录，加密备份后，再帮你整理成事件、总结和报告。数据留在本机，随时可以断开。' : '备份完成前，这里还没有可看的内容。现在做第一次备份，之后会按你设置的周期自动进行。'}</p>
+        <h1>{isNew ? '先连接一个聊天来源' : needsImport ? '已连接，还没有选择要备份的会话' : '已连接，还没有备份过任何内容'}</h1>
+        <p>{isNew ? 'AIMyChats 在你的电脑上只读取聊天记录，加密备份后，再帮你整理成事件、总结和报告。数据留在本机，随时可以断开。' : needsImport ? '未勾选的聊天不会导入，也不会出现在备份里。' : '备份完成前，这里还没有可看的内容。现在做第一次备份，之后会按你设置的周期自动进行。'}</p>
       </header>
 
       {isNew ? <section className="chat-landing-connectors" aria-label="连接聊天来源">
@@ -62,7 +65,9 @@ export function ChatLanding({ mode, sessionCount, syncIntervalSeconds, onConnect
         })}
       </section> : <section className="chat-landing-first-backup">
         <p>{summary}</p>
-        <div className="chat-landing-actions"><button type="button" className="chat-landing-primary" onClick={onBackup}>立即备份</button><button type="button" className="chat-landing-link" onClick={onImport}>调整导入范围</button><button type="button" className="chat-landing-link" onClick={onSchedule}>设置备份周期</button></div>
+        <div className="chat-landing-actions">{needsImport
+          ? <><button type="button" className="chat-landing-primary" onClick={onImport}>选择要备份的会话</button><button type="button" className="chat-landing-link" onClick={onSchedule}>设置备份周期</button></>
+          : <><button type="button" className="chat-landing-primary" onClick={onBackup}>立即备份</button><button type="button" className="chat-landing-link" onClick={onImport}>调整导入范围</button><button type="button" className="chat-landing-link" onClick={onSchedule}>设置备份周期</button></>}</div>
       </section>}
 
       <section className="chat-landing-steps" aria-labelledby="chat-landing-steps-title">

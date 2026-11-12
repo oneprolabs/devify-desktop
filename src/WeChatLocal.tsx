@@ -3005,6 +3005,7 @@ const checkMark = (value: boolean | undefined) =>
                 清理解密缓存
               </button>
             </div>
+            {wizard && notice && <div className="wxv-wizard-state">{notice}</div>}
             <p className="wxv-muted">
               解密副本保存在应用数据目录；清理后会回到未解密状态，聊天记录页在重新解密前不显示内容。
             </p>
@@ -3742,7 +3743,7 @@ const checkMark = (value: boolean | undefined) =>
             <p className="wxv-muted">首次解密需要读取整个数据库，请稍候。</p>
           </div>
         )}
-        {notice && <div className="wxv-toast">{notice}</div>}
+        {notice && !wizard && <div className="wxv-toast">{notice}</div>}
         {error && isTauri() && (
           <div className="wxv-toast error">
             <span>{error}</span>

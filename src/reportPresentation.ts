@@ -21,8 +21,8 @@ export function reportPresentation(report: ReportPresentationInput): { notice: s
   if (waiting) {
     return {
       notice: content
-        ? '服务端正在生成这份报告，以下展示已保存的内容。'
-        : '服务端正在生成这份报告，稍后刷新即可看到内容。',
+        ? '正在生成这份报告，以下展示已保存的内容。'
+        : '正在生成这份报告，稍后刷新即可看到内容。',
       content,
     };
   }

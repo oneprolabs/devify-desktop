@@ -92,8 +92,8 @@ const { CloudAnalysisPage } = load('../src/CloudAnalysis.tsx');
 
 const partialWith = '报告未完全生成，以下展示已保存的内容。';
 const partialWithout = '报告未完全生成，暂无已保存的正文。';
-const waitingWith = '服务端正在生成这份报告，以下展示已保存的内容。';
-const waitingWithout = '服务端正在生成这份报告，稍后刷新即可看到内容。';
+const waitingWith = '正在生成这份报告，以下展示已保存的内容。';
+const waitingWithout = '正在生成这份报告，稍后刷新即可看到内容。';
 const failedWith = '报告生成失败，以下展示已保存的内容。';
 const failedWithout = '报告生成失败，暂无已保存的正文。';
 const body = '  第一行\n第二行  \n';
@@ -147,7 +147,7 @@ invoke = command => {
 for (const [kind, label] of [['events', '事件'], ['reports', '报告']]) {
   const loading = render({ hooks: [] }, kind);
   assert.ok(text(loading).includes(`正在同步${label}…`));
-  assert.ok(text(loading).includes('正在从服务端读取当前空间的最新结果。'));
+  assert.ok(text(loading).includes('正在读取当前空间的最新结果。'));
   assert.ok(!text(loading).includes('Devify'));
 }
 
@@ -226,7 +226,7 @@ for (const status of ['partial', 'queued', 'processing']) {
   const { tree: noBody } = await mount(fixture({ status, body: '  \n', content: metadata }));
   assertNotice(noBody, 'status', status === 'partial' ? partialWithout : waitingWithout);
   assert.ok(!text(summaryOf(noBody)).includes(metadata.metadata), `${status} metadata rendered as body`);
-  assert.ok(!text(summaryOf(noBody)).includes('服务端尚未返回正文。'));
+  assert.ok(!text(summaryOf(noBody)).includes('尚未返回正文。'));
   const { tree: withBody } = await mount(fixture({ status, content }));
   assertNotice(withBody, 'status', status === 'partial' ? partialWith : waitingWith);
   assert.ok(text(summaryOf(withBody)).includes(content));
@@ -235,7 +235,7 @@ for (const [overrides, role, notice, expectedContent] of [
   [{ status: 'failed', content: metadata }, 'alert', failedWith, metadataJSON],
   [{ status: 'failed', content: null }, 'alert', failedWithout, null],
   [{ status: 'ready', content: metadata }, null, null, metadataJSON],
-  [{ status: 'ready', content: null }, null, null, '服务端尚未返回正文。'],
+  [{ status: 'ready', content: null }, null, null, '尚未返回正文。'],
   [{ status: 'legacy-status', content }, null, null, content],
 ]) {
   const { tree: rendered } = await mount(fixture(overrides));

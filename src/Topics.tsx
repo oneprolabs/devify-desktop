@@ -124,7 +124,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
     } catch (reason) { setError(String(reason)); }
   };
 
-  if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>主题订阅由服务端保存和执行，请在桌面应用中使用。</p></div>;
+  if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>主题订阅会按周期执行，请在桌面应用中使用。</p></div>;
   if (loading) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>正在同步主题订阅…</p></div>;
 
   return <div className="topic-page">
@@ -165,7 +165,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
         </div>
       </header>
 
-      {!spaceId && <div className="topic-empty"><h2>还没有选择 空间</h2><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
+      {!spaceId && <div className="topic-empty"><h2>还没有选择空间</h2><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
       {error && <p className="topic-error" role="alert">{error}</p>}
 
       {spaceId && creating && <div className="topic-create-wrap">
@@ -210,7 +210,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
 
       {spaceId && !creating && !topics.length && <div className="topic-empty">
         <h2>还没有主题订阅</h2>
-        <p>创建一个主题后，服务端会按周期回溯已生成的事件。</p>
+        <p>创建一个主题后，会按周期回溯已生成的事件。</p>
         <button type="button" className="topic-save" onClick={() => setCreating(true)}>创建第一个主题</button>
       </div>}
 
@@ -218,7 +218,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
         {detailLoading && <p className="topic-detail-loading">正在同步主题详情…</p>}
         <span className={`topic-state${detail.enabled ? ' on' : ''}`}>{detail.enabled ? '运行中' : '已暂停'}</span>
         <h1>{detail.title}</h1>
-        <div className="topic-meta">{periodLabel(detail.period)}{detail.time_local ? ` · ${detail.time_local.slice(0, 5)}` : ''} · 上次执行 {dateLabel(detail.last_run_at)} · 服务端执行</div>
+        <div className="topic-meta">{periodLabel(detail.period)}{detail.time_local ? ` · ${detail.time_local.slice(0, 5)}` : ''} · 上次执行 {dateLabel(detail.last_run_at)}</div>
         <div className="topic-instruction">{detail.instruction}</div>
         {detail.last_error && <p className="topic-error">上次执行失败：{detail.last_error}</p>}
 
@@ -237,7 +237,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
                 <small>{statusLabel(event.status)}{done ? '' : ''}</small>
               </button>;
             })}
-          </div> : <p className="topic-block-empty">服务端还没有为这个主题匹配到事件。</p>}
+          </div> : <p className="topic-block-empty">还没有匹配到事件。</p>}
         </section>
 
         <section className="topic-block">
@@ -248,7 +248,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
               <span className="topic-run-label">第 {runs.length - index} 期 · {dateLabel(run.completed_at || run.started_at || run.created_at)}</span>
               <span className="topic-run-count">{run.matched_count ?? 0} 个事件</span>
             </div>)}
-          </div> : <p className="topic-block-empty">服务端还没有执行记录。</p>}
+          </div> : <p className="topic-block-empty">还没有执行记录。</p>}
         </section>
       </div>}
     </main>

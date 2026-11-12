@@ -16,3 +16,18 @@ export function analysisSettingsError(reason: unknown): string {
   // username. Prefer a truthful generic error to a fabricated identifier.
   return /devify/i.test(translated) ? '服务端请求失败，请检查设置或网络。' : translated;
 }
+
+export function questionAnswerError(reason: unknown): string {
+  const message = (
+    reason instanceof Error ? reason.message : String(reason ?? '')
+  ).trim();
+  if (!message) return '回答失败，请重新提问。';
+  if (
+    /litellm|openai(?:exception)?|badrequesterror|invalid request parameters|the answer model request failed|traceback|provider_invalid_request/i.test(
+      message,
+    )
+  ) {
+    return '回答生成失败，请稍后重试。';
+  }
+  return message;
+}

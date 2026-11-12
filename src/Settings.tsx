@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { registerDevifyDevice } from './devifyDevice';
+import { displayBaseUrl } from './serviceUrl.ts';
 
 type SessionItem = {
   username: string;
@@ -616,7 +617,7 @@ export function DevifySettings() {
         setAuthenticated(true);
         await invoke<number | null>('devify_space_ensure').catch(() => null);
         acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
-        setAuthStatus(`服务端已登录，设备 ${result.device_id}`);
+        setAuthStatus('服务端已登录。');
         setSpacesStatus('正在读取可用空间…');
         const available = await invoke<DevifySpace[]>('devify_spaces');
         if (!active) return;
@@ -700,7 +701,7 @@ export function DevifySettings() {
     saveQueue.current = saveQueue.current.then(async () => {
       if (queueFailed.current || !confirmed.current) return;
       const base = confirmed.current;
-      const submitted = { ...base, devify: { ...base.devify, base_url: next.devify.base_url } };
+      const submitted = { ...base, devify: { ...base.devify, base_url: displayBaseUrl(next.devify.base_url) || next.devify.base_url } };
       try {
         const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: submitted })));
         confirmed.current = saved;
@@ -764,7 +765,7 @@ export function DevifySettings() {
           <small>正在使用的设备</small>
         </div>
         <div className="plan-row-control">
-          <span className="plan-kv">{settings.devify.device_label || '未命名设备'} · {platformName}{settings.devify.device_id ? ` · ${settings.devify.device_id.slice(0, 8)}` : ' · 未登记'}</span>
+          <span className="plan-kv">{[settings.devify.device_label || '本机', platformName].filter(Boolean).join(' · ')}</span>
         </div>
       </div>
 
