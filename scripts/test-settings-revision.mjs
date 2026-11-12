@@ -69,9 +69,19 @@ const mockedRequire = id => {
   if (id === './devifyDevice') return { registerDevifyDevice: async () => {} };
   if (id === './Settings') return module.exports;
   if (id === './connectorDetect') return { useConnectorDetect: () => connectorInstall, detectTitle: { not_installed: '未检测到微信', untrusted: '检测到的微信不是官方版本' } };
+  if (id === './serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
   if (id.endsWith('.svg') || id.endsWith('.png')) return id;
   throw Error(`unexpected import ${id}`);
 };
+const serviceUrlSource = fs.readFileSync(new URL('../src/serviceUrl.ts', import.meta.url), 'utf8');
+const serviceUrlCompiled = ts.transpileModule(serviceUrlSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText;
+const serviceUrlModule = { exports: {} };
+new Function('require', 'module', 'exports', serviceUrlCompiled)(
+  mockedRequire, serviceUrlModule, serviceUrlModule.exports,
+);
+const serviceUrl = serviceUrlModule.exports;
 const source = fs.readFileSync(new URL('../src/Settings.tsx', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
 const module = { exports: {} };

@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::io::Write;
 use std::sync::Mutex;
+use url::Url;
 
 const SETTINGS_FILE: &str = "app-settings.json";
 static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
@@ -288,7 +289,7 @@ impl UploadJob {
             .scope
             .as_ref()
             .ok_or("此旧任务没有保存原始范围，请重新创建采集任务。")?;
-        if scope.base_url.trim_end_matches('/') != settings.devify.base_url.trim_end_matches('/') {
+        if !same_service_url(&scope.base_url, &settings.devify.base_url) {
             return Err("服务地址已更改，请重新创建采集任务。".into());
         }
         if scope.usernames.is_empty()
@@ -392,6 +393,10 @@ pub struct DevifySettings {
     pub subject: String,
 }
 
+/// Official product hosts share one API origin. The homepage is not that API.
+const OFFICIAL_API_BASE: &str = "https://app.aimychats.com";
+const OFFICIAL_DISPLAY_BASE: &str = "https://aimychats.com/";
+
 /// Normalize a service address for request building.
 ///
 /// Reject an empty address instead of sending a request to a relative path.
@@ -403,9 +408,52 @@ pub fn normalize_base_url(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+fn official_host(value: &str) -> bool {
+    Url::parse(value)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| {
+            matches!(
+                host.as_str(),
+                "aimychats.com" | "www.aimychats.com" | "app.aimychats.com"
+            )
+        })
+}
+
+/// Address used for HTTP, credentials, and browser authorize/register links.
+pub fn canonical_api_base(value: &str) -> Result<String, String> {
+    let normalized = normalize_base_url(value)?;
+    if official_host(&normalized) {
+        Ok(OFFICIAL_API_BASE.to_string())
+    } else {
+        Ok(normalized)
+    }
+}
+
+/// Address shown in the login and settings UI.
+pub fn display_base_url(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if official_host(trimmed.trim_end_matches('/')) {
+        OFFICIAL_DISPLAY_BASE.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn same_service_url(left: &str, right: &str) -> bool {
+    match (canonical_api_base(left), canonical_api_base(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        (Err(_), Err(_)) => left.trim() == right.trim(),
+        _ => false,
+    }
+}
+
 impl DevifySettings {
     pub fn resolved_base_url(&self) -> Result<String, String> {
-        normalize_base_url(&self.base_url)
+        canonical_api_base(&self.base_url)
     }
 }
 
@@ -583,6 +631,7 @@ pub fn load(app_data: &Path) -> Result<AppSettings, String> {
     if settings.chat.sync_interval_seconds < 60 {
         settings.chat.sync_interval_seconds = 1800;
     }
+    settings.devify.base_url = display_base_url(&settings.devify.base_url);
     Ok(settings)
 }
 
@@ -594,6 +643,7 @@ pub fn save(app_data: &Path, settings: &AppSettings) -> Result<(), String> {
         return Err("应用策略已被其他操作修改，请重新加载后重试。".into());
     }
     let mut updated = settings.clone();
+    publicize_base_url(&mut updated);
     let _identity = identity_write_guard(&current, &updated)?;
     assign_revisions(&current, &mut updated)?;
     save_unlocked(app_data, &updated)?;
@@ -607,6 +657,7 @@ pub fn update(app_data: &Path, mutate: impl FnOnce(&mut AppSettings) -> Result<(
     let current = load(app_data)?;
     let mut updated = current.clone();
     mutate(&mut updated)?;
+    publicize_base_url(&mut updated);
     validate(&updated)?;
     let _identity = identity_write_guard(&current, &updated)?;
     assign_revisions(&current, &mut updated)?;
@@ -629,6 +680,7 @@ pub(crate) fn update_identity(app_data: &Path, mutate: impl FnOnce(&mut AppSetti
     let current = load(app_data)?;
     let mut updated = current.clone();
     mutate(&mut updated)?;
+    publicize_base_url(&mut updated);
     validate(&updated)?;
     let changed = identity_changed(&current, &updated);
     assign_revisions(&current, &mut updated)?;
@@ -639,7 +691,7 @@ pub(crate) fn update_identity(app_data: &Path, mutate: impl FnOnce(&mut AppSetti
 
 fn identity_changed(current: &AppSettings, next: &AppSettings) -> bool {
     current.active_account_id != next.active_account_id
-        || current.devify.base_url != next.devify.base_url
+        || !same_service_url(&current.devify.base_url, &next.devify.base_url)
         || current.devify.active_space_id != next.devify.active_space_id
         || current.devify.device_id != next.devify.device_id
         || current.automation.enabled != next.automation.enabled
@@ -673,6 +725,10 @@ fn assign_revisions(current: &AppSettings, updated: &mut AppSettings) -> Result<
         current.user_settings_revision.checked_add(1).ok_or("用户设置版本已耗尽。")?
     } else { current.user_settings_revision };
     Ok(())
+}
+
+fn publicize_base_url(settings: &mut AppSettings) {
+    settings.devify.base_url = display_base_url(&settings.devify.base_url);
 }
 
 fn save_unlocked(app_data: &Path, updated: &AppSettings) -> Result<(), String> {
@@ -870,6 +926,63 @@ mod tests {
             normalize_base_url(" https://example.test/ ").unwrap(),
             "https://example.test"
         );
+    }
+
+    #[test]
+    fn official_hosts_resolve_to_the_app_api() {
+        assert_eq!(
+            canonical_api_base("https://aimychats.com/").unwrap(),
+            "https://app.aimychats.com"
+        );
+        assert_eq!(
+            canonical_api_base("https://www.aimychats.com").unwrap(),
+            "https://app.aimychats.com"
+        );
+        assert_eq!(
+            canonical_api_base("https://app.aimychats.com/").unwrap(),
+            "https://app.aimychats.com"
+        );
+        assert_eq!(
+            canonical_api_base("http://127.0.0.1:18080").unwrap(),
+            "http://127.0.0.1:18080"
+        );
+        assert!(same_service_url(
+            "https://aimychats.com/",
+            "https://app.aimychats.com"
+        ));
+        assert_eq!(
+            display_base_url("https://app.aimychats.com/"),
+            "https://aimychats.com/"
+        );
+        assert_eq!(
+            AppSettings::default().devify.resolved_base_url().unwrap(),
+            "https://app.aimychats.com"
+        );
+        assert!(same_service_url("", ""));
+        let data = tempfile::tempdir().unwrap();
+        crate::desktop_credentials::save(
+            data.path(),
+            &crate::desktop_credentials::Credentials {
+                base_url: "https://app.aimychats.com".into(),
+                access: "access".into(),
+                refresh: "refresh".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            crate::desktop_credentials::load(data.path(), "https://aimychats.com/")
+                .unwrap()
+                .access,
+            "access"
+        );
+    }
+
+    #[test]
+    fn retry_treats_official_hosts_as_the_same_server() {
+        let (mut settings, mut job) = retry_fixture();
+        settings.devify.base_url = "https://aimychats.com/".into();
+        job.scope.as_mut().unwrap().base_url = "https://app.aimychats.com".into();
+        assert!(job.retry_scope(&settings).is_ok());
     }
 
     #[test]

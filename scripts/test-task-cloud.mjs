@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { advanceCloudRebuild, appendCloudPages, rebuildComplete, rebuildNextPages, refreshInterval, requestIsCurrent, sameCloudContext, sameCloudLayout, startCloudRebuild, validateCloudPrefixPage, analysisLabel, cloudNeedsPolling, cloudRetryCandidate, fetchCloudPages, hasCompleteOwner, jobInScope, linkedLocalJobs, localGroupKey, localQueueCounts, localUnbatched, visibleLocalJobs, ownerMatches, verifiedDevice, mergeCloudPages, pollPagePlan, retryCandidate, retryIdentityIsCurrent, sameRetryJob, settingsScope, triggerLabel, updateLoadedCloud, validateCloudPage } from '../src/taskCloud.ts';
+import { apiBaseUrl, displayBaseUrl, sameServiceUrl } from '../src/serviceUrl.ts';
 
 const scope = { base_url: 'https://example.test/', usernames: ['alice'], since: null, until: null };
 const owner = { base_url: 'https://example.test/', space_id: 2, account_id: 'wx-a', user_id: 42, device_id: 'device-a' };
@@ -12,6 +13,11 @@ assert.equal(jobInScope(job, settings), true);
 assert.equal(jobInScope({ ...job, scope: null }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { ...scope, base_url: '' } }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { ...scope, base_url: 'https://other.test' } }, settings), false);
+assert.equal(apiBaseUrl('https://aimychats.com/'), 'https://app.aimychats.com');
+assert.equal(displayBaseUrl('https://app.aimychats.com/'), 'https://aimychats.com/');
+assert.equal(sameServiceUrl('https://aimychats.com/', 'https://app.aimychats.com'), true);
+assert.equal(jobInScope({ ...job, scope: { ...scope, base_url: 'https://aimychats.com/' } }, { ...settings, devify: { ...settings.devify, base_url: 'https://app.aimychats.com' } }), true);
+assert.equal(settingsScope({ ...settings, devify: { ...settings.devify, base_url: 'https://aimychats.com/' } }), settingsScope({ ...settings, devify: { ...settings.devify, base_url: 'https://app.aimychats.com' } }));
 assert.equal(jobInScope({ ...job, space_id: 3 }, settings), false);
 assert.equal(jobInScope({ ...job, account_id: '' }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { base_url: scope.base_url, usernames: ['alice'] } }, settings), false);

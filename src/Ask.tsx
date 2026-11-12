@@ -2,6 +2,7 @@ import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
+import { questionAnswerError } from './analysisSettingsText';
 
 type Citation = { kind: string; id: number; title: string; excerpt: string; conversation_id?: number | null; event_id?: number | null; note_id?: number | null };
 type Question = { id: number; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };
@@ -50,7 +51,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       if (!id) { setQuestions([]); return; }
       const list = await invoke<Question[]>('devify_questions', { spaceId: id });
       setQuestions(list ?? []); setSelectedId(list?.[0]?.id ?? null);
-    } catch (reason) { setError(String(reason)); }
+    } catch (reason) { setError(questionAnswerError(reason)); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
@@ -76,9 +77,9 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           setQuestions(current => current.map(item => item.id === answer.id ? answer : item));
           if (answer.status !== 'queued') return;
         }
-        if (!cancelled) { timedOut.current.add(questionId); setError('服务端还没有返回回答，请稍后重试。'); }
+        if (!cancelled) { timedOut.current.add(questionId); setError('还没有返回回答，请稍后重试。'); }
       } catch (reason) {
-        if (!cancelled) setError(String(reason));
+        if (!cancelled) setError(questionAnswerError(reason));
       } finally {
         polling.current.delete(questionId);
       }
@@ -105,7 +106,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     try {
       const result = await invoke<Question>('devify_question_ask', { spaceId, question });
       setQuestions(current => [result, ...current]); setSelectedId(result.id);
-    } catch (reason) { setError(String(reason)); }
+    } catch (reason) { setError(questionAnswerError(reason)); }
     finally { setPending(''); setAsking(false); }
   };
 
@@ -122,9 +123,9 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
         <span className="ask-avatar" aria-hidden="true">a</span>
         <div className="ask-content">
           {status === 'failed'
-            ? <p className="ask-answer-text ask-error">{question.error || '服务端回答失败，请重新提问。'}</p>
+            ? <p className="ask-answer-text ask-error">{questionAnswerError(question.error)}</p>
             : status === 'queued'
-              ? <p className="ask-pending">服务端正在检索并生成回答…</p>
+              ? <p className="ask-pending">正在检索并生成回答…</p>
               : paragraphs.length
                 ? paragraphs.map((text, index) => <p className="ask-answer-text" key={index}>{text}</p>)
                 : <p className="ask-answer-text">这次回答没有内容，请重新提问。</p>}
@@ -173,7 +174,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     </div>;
   };
 
-  if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>问答由服务端基于已上传记录生成，请在桌面应用中使用。</p></div>;
+  if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>问答基于已上传记录生成，请在桌面应用中使用。</p></div>;
   if (loading) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>正在读取问答记录…</p></div>;
 
   return <div className="ask-page">
@@ -218,13 +219,13 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       </header>
 
       <div className="ask-scroll">
-        {!spaceId && <div className="ask-welcome"><h3>还没有选择 空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
+        {!spaceId && <div className="ask-welcome"><h3>还没有选择空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
         {error && <p className="ask-error" role="alert">{error}</p>}
 
         {spaceId && !selected && !pending && <>
           <div className="ask-welcome">
             <h3>问问你的聊天记录</h3>
-            <p>跨已上传的聊天、事件和笔记提问，答案由服务端生成，每条结论都附原文依据。</p>
+            <p>跨已上传的聊天、事件和笔记提问，每条结论都附原文依据。</p>
           </div>
           <div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div>
         </>}

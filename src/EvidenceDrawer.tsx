@@ -346,7 +346,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
 
       <footer className="evidence-foot">
         <span className="evidence-foot-hint">
-          {target.kind === 'message' ? '只读预览 · 展示引用消息前后的对话' : target.kind === 'note' ? '只读预览 · 服务端整理的记录' : '只读预览 · 编辑请到详情页'}
+          {target.kind === 'message' ? '只读预览 · 展示引用消息前后的对话' : target.kind === 'note' ? '只读预览 · 整理过的记录' : '只读预览 · 编辑请到详情页'}
         </span>
         {target.kind === 'event' && onOpenDetail && <button
           type="button"

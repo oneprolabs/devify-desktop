@@ -137,8 +137,7 @@ fn save(app_data: &Path, snapshot: &Snapshot) -> Result<(), String> {
 /// The cached snapshot, but only when it belongs to the configured server.
 pub fn effective(app_data: &Path, base_url: &str) -> Option<Snapshot> {
     let snapshot = load(app_data)?;
-    let configured = base_url.trim().trim_end_matches('/');
-    if snapshot.base_url.trim_end_matches('/') != configured {
+    if !crate::settings::same_service_url(&snapshot.base_url, base_url) {
         return None;
     }
     Some(snapshot)
@@ -240,10 +239,7 @@ pub fn require(app_data: &Path, base_url: &str, key: &str) -> Result<(), String>
 /// Ask the server what this account may use. A server that has not shipped the endpoint yet
 /// is a normal state: it is cached as `unsupported` and keeps the app wide open.
 pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<View, String> {
-    let base_url = base_url.trim().trim_end_matches('/');
-    if base_url.is_empty() {
-        return Err("请先在登录窗口填写服务端地址。".into());
-    }
+    let base_url = crate::settings::canonical_api_base(base_url)?;
     let response = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(20))
@@ -264,7 +260,7 @@ pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<Vie
             ..Snapshot::default()
         };
         save(app_data, &snapshot)?;
-        return Ok(view(app_data, base_url));
+        return Ok(view(app_data, &base_url));
     }
     if !status.is_success() {
         return Err(format!("读取订阅权益失败：服务端返回 {status}"));
@@ -292,7 +288,7 @@ pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<Vie
         expires_at: remote.expires_at,
     };
     save(app_data, &snapshot)?;
-    Ok(view(app_data, base_url))
+    Ok(view(app_data, &base_url))
 }
 
 #[cfg(test)]

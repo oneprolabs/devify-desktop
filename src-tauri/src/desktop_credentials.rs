@@ -30,7 +30,7 @@ fn load_unlocked(app_data: &Path, base_url: &str) -> Result<Credentials, String>
         .map_err(|_| "未找到服务端登录凭据，请重新登录。".to_string())?;
     let credentials: Credentials = serde_json::from_slice(&raw)
         .map_err(|_| "服务端登录凭据格式无效，请重新登录。".to_string())?;
-    if credentials.base_url != base_url.trim_end_matches('/') {
+    if !crate::settings::same_service_url(&credentials.base_url, base_url) {
         return Err("服务端地址已更改，请重新登录。".to_string());
     }
     Ok(credentials)

@@ -262,7 +262,7 @@ async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<St
 }
 
 async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, cleared_generation: &mut Option<u64>) -> Result<String, DevifyTokenError> {
-    let base_url = settings::normalize_base_url(base_url)?;
+    let base_url = settings::canonical_api_base(base_url)?;
     // Serialize refresh requests while allowing login/logout to invalidate their CAS.
     let _refresh_guard = CREDENTIAL_REFRESH_LOCK.lock().await;
     let (mut tokens, token_generation) = desktop_credentials::load_with_generation(app_data, &base_url)?;
@@ -357,12 +357,13 @@ struct DevifyUploadStatus {
 #[tauri::command]
 async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUploadStatus, String> {
     let settings = settings::load(&app_data(&app))?;
-    let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
-    let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
+    let api_base = settings.devify.resolved_base_url()?;
+    let token = devify_access_token_async(&app_data(&app), &api_base).await?;
+    let generation = request_generation(&app_data(&app), &api_base, &token)?;
     let response = devify_client()
         .get(format!(
             "{}/api/v1/chat/uploads/{batch_id}",
-            settings.devify.base_url.trim_end_matches('/')
+            api_base
         ))
         .bearer_auth(&token)
         .send()
@@ -553,11 +554,12 @@ async fn devify_space_takeover(
         return Err("请填写接管原因。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
+    let api_base = settings.devify.resolved_base_url()?;
+    let token = devify_access_token_async(&app_data(&app), &api_base).await?;
     let response = devify_client()
         .post(format!(
             "{}/api/v1/spaces/{space_id}/takeover",
-            settings.devify.base_url.trim_end_matches('/')
+            api_base
         ))
         .bearer_auth(token)
         .json(&serde_json::json!({"reason": reason.trim()}))
@@ -645,12 +647,13 @@ async fn devify_space_ensure(app: AppHandle) -> Result<Option<i64>, String> {
 #[tauri::command]
 async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
     let settings = settings::load(&app_data(&app))?;
-    let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
-    let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
+    let api_base = settings.devify.resolved_base_url()?;
+    let token = devify_access_token_async(&app_data(&app), &api_base).await?;
+    let generation = request_generation(&app_data(&app), &api_base, &token)?;
     let response = devify_client()
         .get(format!(
             "{}/api/v1/spaces",
-            settings.devify.base_url.trim_end_matches('/')
+            api_base
         ))
         .bearer_auth(&token)
         .send()
@@ -750,7 +753,7 @@ async fn devify_analysis_list(
     for _ in 0..100 {
         let mut url = format!(
             "{}/api/v1/spaces/{space_id}/{resource}?page={current_page}&page_size=100",
-            settings.devify.base_url.trim_end_matches('/')
+            settings.devify.resolved_base_url()?
         );
         if let Some(id) = conversation_id {
             url.push_str(&format!("&conversation_id={id}"));
@@ -905,7 +908,7 @@ async fn devify_json_request(
     let mut request = client
         .request(
             method,
-            format!("{}{}", settings.devify.base_url.trim_end_matches('/'), path),
+            format!("{}{}", settings.devify.resolved_base_url()?, path),
         )
         .bearer_auth(&token);
     if let Some(body) = body {
@@ -2588,7 +2591,9 @@ async fn submit_manual_batch(app: &AppHandle, job_id: &str) -> Result<DevifyUplo
     let job = value.upload_queue.iter().find(|job| job.id == job_id).cloned().ok_or("找不到上传任务。")?;
     let scope = job.scope.clone().ok_or("找不到上传范围。")?;
     validate_upload_scope(&value, &job.account_id, job.space_id, &scope.usernames)?;
-    if scope.base_url.trim_end_matches('/') != value.devify.base_url.trim_end_matches('/') { return Err("服务地址已更改，无法继续原上传任务。".into()); }
+    if !settings::same_service_url(&scope.base_url, &value.devify.base_url) {
+        return Err("服务地址已更改，无法继续原上传任务。".into());
+    }
     let (owner, token) = verified_upload_identity(&data, &job.account_id, job.space_id).await?;
     validate_owned_job(&value, &job, &owner, &token, &scope)?;
     if !matches!(job.status.as_str(), "queued" | "running") || job.batch_id.is_some() || job.create_started != Some(false) {
@@ -2910,7 +2915,8 @@ async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) 
 fn validate_owner_state(settings: &settings::AppSettings, owner: &settings::UploadOwner, token: &str) -> Result<(), String> {
     if owner.user_id <= 0 || owner.device_id.is_empty() || owner.device_id.trim() != owner.device_id
         || owner.account_id.is_empty() || settings.active_account_id != owner.account_id
-        || upload_list_base_url(settings, owner.space_id).ok().as_deref() != Some(owner.base_url.as_str())
+        || upload_list_base_url(settings, owner.space_id).ok().as_ref()
+            .is_none_or(|base| !settings::same_service_url(base, &owner.base_url))
         || cloud_retry_device_id(&settings.devify.device_id, token).ok().as_deref() != Some(owner.device_id.as_str()) {
         return Err("任务的登录状态、服务、空间、微信账号或设备已改变。".into());
     }
@@ -2931,7 +2937,7 @@ fn validate_owned_job(settings: &settings::AppSettings, job: &settings::UploadJo
     validate_owner_state(settings, owner, token)?;
     if job.owner.as_ref() != Some(owner) || job.account_id != owner.account_id
         || job.space_id != owner.space_id || job.scope.as_ref() != Some(scope)
-        || settings::normalize_base_url(&scope.base_url)? != owner.base_url {
+        || !settings::same_service_url(&scope.base_url, &owner.base_url) {
         return Err("任务身份或上传范围已改变，请重新创建采集任务。".into());
     }
     validate_upload_scope(settings, &owner.account_id, owner.space_id, &scope.usernames)
@@ -2959,7 +2965,8 @@ fn validate_cloud_retry_context(
         || job.id != auth.job_id || job.batch_id != Some(auth.batch_id)
         || job.space_id != auth.space_id || job.account_id != auth.account_id
         || settings.active_account_id != auth.account_id
-        || upload_list_base_url(settings, auth.space_id).ok().as_deref() != Some(auth.base_url.as_str())
+        || upload_list_base_url(settings, auth.space_id).ok().as_ref()
+            .is_none_or(|base| !settings::same_service_url(base, &auth.base_url))
         || cloud_retry_device_id(&settings.devify.device_id, current_token).ok().as_deref() != Some(auth.device_id.as_str())
     {
         return Err(invalid());
@@ -3230,7 +3237,7 @@ async fn devify_upload_wechat(
     let base_url = expected_base_url
         .clone()
         .unwrap_or_else(|| current_settings.devify.base_url.clone());
-    if base_url.trim_end_matches('/') != current_settings.devify.base_url.trim_end_matches('/') {
+    if !settings::same_service_url(&base_url, &current_settings.devify.base_url) {
         return Err("服务地址已更改，无法安全匹配旧消息。".into());
     }
     let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
@@ -3335,7 +3342,7 @@ async fn devify_upload_wechat(
     let body = archive.into_inner();
     let settings = settings::load(&data)?;
     if expected_base_url.as_deref().is_some_and(|url| {
-        url.trim_end_matches('/') != settings.devify.base_url.trim_end_matches('/')
+        !settings::same_service_url(url, &settings.devify.base_url)
     }) {
         return Err("服务地址已更改，上传已取消，请重新创建采集任务。".into());
     }
@@ -3783,7 +3790,7 @@ struct DevifyAuthStatus {
 fn auth_status_after_token_failure(data: &Path, base: &str, before: u64, cleared_generation: Option<u64>) -> Result<DevifyAuthStatus, String> {
     if let Some(cleared_generation) = cleared_generation {
         return settings::with_identity(data, |current| {
-            if current.devify.resolved_base_url()? != settings::normalize_base_url(base)?
+            if current.devify.resolved_base_url()? != settings::canonical_api_base(base)?
                 || !desktop_credentials::absent_at_generation(data, cleared_generation)? {
                 return Err("登录状态已改变，请重新检查。".into());
             }
@@ -3857,7 +3864,7 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
     match devify_client()
         .get(format!(
             "{}/api/v1/spaces",
-            settings.devify.base_url.trim_end_matches('/')
+            settings.devify.resolved_base_url()?
         ))
         .bearer_auth(&token)
         .send()
@@ -4658,13 +4665,13 @@ async fn devify_daily_schedule_sync(
 /// run is due (interval elapsed, scheduled time reached, and the window allows it).
 fn continuation_sessions(value: &settings::AppSettings, account_id: &str) -> Vec<String> {
     let allowed = value.chat.allowed_usernames.get(account_id);
-    let mut names: Vec<_> = value.sync.continuation.get(account_id).into_iter().flat_map(|items| items.iter()).filter(|(name, scope)| (scope.manual == Some(true) || value.sync.enabled) && Some(scope.space_id) == value.devify.active_space_id && scope.base_url.trim_end_matches('/') == value.devify.base_url.trim_end_matches('/') && allowed.is_some_and(|list| list.contains(name))).map(|(name, _)| name.clone()).collect();
+    let mut names: Vec<_> = value.sync.continuation.get(account_id).into_iter().flat_map(|items| items.iter()).filter(|(name, scope)| (scope.manual == Some(true) || value.sync.enabled) && Some(scope.space_id) == value.devify.active_space_id && settings::same_service_url(&scope.base_url, &value.devify.base_url) && allowed.is_some_and(|list| list.contains(name))).map(|(name, _)| name.clone()).collect();
     names.sort();
     names
 }
 
 fn initial_progress_matches(chunk: &settings::InitialChunk, space_id: i64, base_url: &str) -> bool {
-    chunk.space_id == space_id && chunk.base_url.trim_end_matches('/') == base_url.trim_end_matches('/')
+    chunk.space_id == space_id && settings::same_service_url(&chunk.base_url, base_url)
 }
 
 async fn backup_tick(app: &AppHandle) {
@@ -4846,7 +4853,7 @@ fn upload_completion_digest(job: &settings::UploadJob) -> Option<String> {
         || job.account_id != owner.account_id || job.space_id != owner.space_id
         || owner.user_id <= 0 || owner.space_id <= 0 || owner.account_id.is_empty()
         || owner.device_id.is_empty() || owner.device_id.trim() != owner.device_id
-        || settings::normalize_base_url(&scope.base_url).ok().as_deref() != Some(owner.base_url.as_str()) {
+        || !settings::same_service_url(&scope.base_url, &owner.base_url) {
         return None;
     }
     let bytes = serde_json::to_vec(&("verified-completion-v1", &job.id, job.batch_id, owner,
@@ -4944,7 +4951,7 @@ async fn reconcile_owned_job(data: &Path, owner: &settings::UploadOwner, token: 
     if snapshot.id.is_empty() || snapshot.owner.as_ref() != Some(owner)
         || snapshot.account_id != owner.account_id || snapshot.space_id != owner.space_id
         || !upload_job_needs_reconciliation(snapshot)
-        || snapshot.scope.as_ref().and_then(|scope| settings::normalize_base_url(&scope.base_url).ok()).as_deref() != Some(owner.base_url.as_str()) {
+        || !snapshot.scope.as_ref().is_some_and(|scope| settings::same_service_url(&scope.base_url, &owner.base_url)) {
         return Err("任务归属不完整或已改变。".into());
     }
     let batch = fixed_identity_get(&owner.base_url, token, &format!("/api/v1/chat/uploads/{batch_id}")).await?;
@@ -7080,8 +7087,7 @@ fn legacy_adoption_candidate(job: &settings::UploadJob, owner: &settings::Upload
     (unowned || adopted_failure) && !job.id.is_empty() && job.batch_id.is_some_and(|id| id > 0)
         && job.account_id == owner.account_id && job.space_id == owner.space_id
         && matches!(job.status.as_str(), "completed" | "failed" | "cancelled")
-        && job.scope.as_ref().and_then(|scope| settings::normalize_base_url(&scope.base_url).ok())
-            .as_deref() == Some(owner.base_url.as_str())
+        && job.scope.as_ref().is_some_and(|scope| settings::same_service_url(&scope.base_url, &owner.base_url))
 }
 
 /// A non-completed job that does not stop a conversation from syncing: it either never
@@ -7193,13 +7199,13 @@ fn legacy_uncertain_coverage(value: &settings::AppSettings, owner: &settings::Up
             || job.space_id != owner.space_id { continue; }
         match job.scope.as_ref() {
             Some(scope) => {
-                let base = settings::normalize_base_url(&scope.base_url).ok().filter(|base| {
+                let base = settings::canonical_api_base(&scope.base_url).ok().filter(|base| {
                     Url::parse(base).is_ok_and(|url| matches!(url.scheme(), "http" | "https")
                         && url.host_str().is_some() && url.username().is_empty()
                         && url.password().is_none() && url.query().is_none() && url.fragment().is_none())
                 });
                 match base {
-                    Some(base) if base == owner.base_url => {
+                    Some(base) if settings::same_service_url(&base, &owner.base_url) => {
                         if scope.usernames.is_empty() { uncertain_all = true; }
                         else { uncertain.extend(scope.usernames.iter().cloned()); }
                     }
@@ -7225,7 +7231,7 @@ async fn verified_coverage_settings(data: &Path, owner: &settings::UploadOwner, 
     for job in &current.upload_queue { *counts.entry(job.id.clone()).or_insert(0usize) += 1; }
     current.upload_queue.retain(|job| {
         let same_owner = job.owner.as_ref() == Some(owner) && job.account_id == owner.account_id && job.space_id == owner.space_id;
-        let scope_ok = job.scope.as_ref().and_then(|scope| settings::normalize_base_url(&scope.base_url).ok()).as_deref() == Some(owner.base_url.as_str());
+        let scope_ok = job.scope.as_ref().is_some_and(|scope| settings::same_service_url(&scope.base_url, &owner.base_url));
         let checked = same_owner && !job.id.is_empty() && counts.get(&job.id) == Some(&1) && scope_ok
             && (job.status != "completed" || upload_completion_is_verified(job));
         if !checked && same_owner && job.status == "completed" {
@@ -7254,7 +7260,7 @@ fn upload_coverage(
             continue;
         }
         let Some(scope) = job.scope.as_ref() else { continue; };
-        if settings::normalize_base_url(&scope.base_url).ok().as_deref() != Some(owner.base_url.as_str()) { continue; }
+        if !settings::same_service_url(&scope.base_url, &owner.base_url) { continue; }
         for username in &scope.usernames {
             let Some(position) = job.covered.get(username).copied() else { continue; };
             let newer = coverage.get(username).map_or(true, |current| {
@@ -7269,7 +7275,7 @@ fn upload_coverage(
 }
 
 fn conversation_job_state<'a>(value: &'a settings::AppSettings, owner: &settings::UploadOwner, username: &str) -> Option<&'a str> {
-    let matches = |job: &&settings::UploadJob| job.owner.as_ref() == Some(owner) && job.account_id == owner.account_id && job.space_id == owner.space_id && (job.status != "completed" || upload_completion_is_verified(job)) && job.scope.as_ref().is_some_and(|scope| settings::normalize_base_url(&scope.base_url).ok().as_deref() == Some(owner.base_url.as_str()) && scope.usernames.iter().any(|name| name == username));
+    let matches = |job: &&settings::UploadJob| job.owner.as_ref() == Some(owner) && job.account_id == owner.account_id && job.space_id == owner.space_id && (job.status != "completed" || upload_completion_is_verified(job)) && job.scope.as_ref().is_some_and(|scope| settings::same_service_url(&scope.base_url, &owner.base_url) && scope.usernames.iter().any(|name| name == username));
     if value.upload_queue.iter().filter(matches).any(|job| matches!(job.status.as_str(), "queued" | "running" | "uploading" | "processing")) { return Some("processing"); }
     let latest = value.upload_queue.iter().filter(matches).max_by(|a, b| a.created_at.cmp(&b.created_at));
     if value.upload_queue.iter().filter(matches).any(|job| job.status == "failed" && job.batch_id.is_some()) {

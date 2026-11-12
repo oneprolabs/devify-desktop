@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { analysisSettingsError } from '../src/analysisSettingsText.ts';
+import {
+  analysisSettingsError,
+  questionAnswerError,
+} from '../src/analysisSettingsText.ts';
 
 assert.equal(analysisSettingsError('当前 Devify 服务端不可用'), '当前服务端不可用');
 assert.equal(analysisSettingsError('Devify 请求失败：无权访问'), '服务端请求失败：无权访问');
@@ -29,4 +32,16 @@ for (const value of [
 ]) {
   assert.equal(analysisSettingsError(value), '服务端请求失败，请检查设置或网络。');
 }
+assert.equal(questionAnswerError(''), '回答失败，请重新提问。');
+assert.equal(
+  questionAnswerError(
+    'litellm.BadRequestError: OpenAIException - Invalid request parameters.',
+  ),
+  '回答生成失败，请稍后重试。',
+);
+assert.equal(
+  questionAnswerError('The answer model request failed. Please try again later.'),
+  '回答生成失败，请稍后重试。',
+);
+assert.equal(questionAnswerError('请先选择空间'), '请先选择空间');
 console.log('analysis settings text checks passed');

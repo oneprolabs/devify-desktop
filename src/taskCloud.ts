@@ -1,3 +1,5 @@
+import { apiBaseUrl } from './serviceUrl.ts';
+
 export type UploadScope = { usernames: string[]; since: number | null; until: number | null; base_url: string; message_selection?: Record<string, unknown[]> };
 export type UploadOwner = { base_url: string; space_id: number; account_id: string; user_id: number; device_id: string };
 export type UploadJob = { id: string; account_id: string; space_id: number; batch_id: number | null; status: string; message: string; created_at: string; updated_at: string; scope?: UploadScope | null; owner?: UploadOwner | null; create_started?: boolean | null; manual_group?: string | null; manual_index?: number; manual_total?: number };
@@ -7,10 +9,11 @@ export type CloudBatch = { id: number; uuid: string; space_id: number; uploaded_
 export type CloudPage = { list: CloudBatch[]; pagination: { total: number; page: number; page_size: number; next: string | null; previous: string | null } };
 
 export function settingsScope(settings: TaskSettings): string {
-  return JSON.stringify([settings.devify?.base_url ?? '', settings.devify?.active_space_id ?? null, settings.devify?.device_id ?? '', settings.active_account_id ?? '']);
+  return JSON.stringify([apiBaseUrl(settings.devify?.base_url ?? ''), settings.devify?.active_space_id ?? null, settings.devify?.device_id ?? '', settings.active_account_id ?? '']);
 }
 function normalizedBase(value: unknown): string {
-  return typeof value === 'string' && value === value.trim() ? value.replace(/\/+$/, '') : '';
+  if (typeof value !== 'string' || value !== value.trim()) return '';
+  return apiBaseUrl(value);
 }
 export function jobInScope(job: UploadJob, settings: TaskSettings): boolean {
   const base = normalizedBase(settings.devify?.base_url);

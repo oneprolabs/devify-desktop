@@ -151,7 +151,7 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
       setNotice(result.error
         ? `同步未完成：${result.error}`
         : result.message_count
-          ? `已上传 ${result.message_count} 条消息，等待服务端解析`
+          ? `已上传 ${result.message_count} 条消息，等待解析`
           : '没有需要同步的新消息');
       await loadConversations(1);
     } catch (reason) {
@@ -162,9 +162,9 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
   if (!isTauri()) return null;
   if (!spaceId) {
     return <div className="cloud-records cloud-records-blank">
-      <h2>还没有选择 空间</h2>
-      <p>云端记录来自已上传到服务端的聊天。登录并选择空间后，这里会显示服务端保存的会话和消息。</p>
-      {onOpenSettings && <button type="button" onClick={onOpenSettings}>打开服务端配置</button>}
+      <h2>还没有选择空间</h2>
+      <p>云端记录来自已上传的聊天。登录并选择空间后，这里会显示已保存的会话和消息。</p>
+      {onOpenSettings && <button type="button" onClick={onOpenSettings}>打开账户设置</button>}
     </div>;
   }
 
@@ -174,12 +174,12 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
   return <div className="cloud-records">
     <aside className="cloud-records-sidebar">
       <header>
-        <div><strong>云端记录</strong><small>{conversationTotal} 个会话 · 服务端</small></div>
+        <div><strong>云端记录</strong><small>{conversationTotal} 个会话</small></div>
         <button type="button" className="cloud-icon" onClick={() => void loadConversations(conversationPage)} title="刷新" aria-label="刷新云端记录">↻</button>
       </header>
-      <input className="cloud-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索服务端会话" />
+      <input className="cloud-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索已上传的会话" />
       <div className="cloud-sync-bar">
-        <span>{syncing ? '正在读取本机记录并上传…' : notice || '服务端保存的会话与消息'}</span>
+        <span>{syncing ? '正在读取本机记录并上传…' : notice || '已上传的会话与消息'}</span>
         <button type="button" onClick={() => void syncNow()} disabled={syncing}>{syncing ? '同步中…' : '同步本机记录'}</button>
       </div>
       {conversationsError && <p className="cloud-error">{conversationsError}</p>}
@@ -197,7 +197,7 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
           </span>
         </button>)}
         {!conversations.length && !conversationsLoading && <div className="cloud-empty">
-          <h3>服务端还没有聊天记录</h3>
+          <h3>还没有聊天记录</h3>
           <p>打开「自动化策略」启用自动同步，或在这里点「同步本机记录」上传白名单会话。</p>
         </div>}
       </div>
@@ -233,13 +233,13 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
           </article>)}
           {!messages.length && !messagesLoading && !messagesError && <div className="cloud-empty">
             <h3>这个会话还没有消息</h3>
-            <p>服务端解析完成后消息会出现在这里。</p>
+            <p>解析完成后消息会出现在这里。</p>
           </div>}
-          {messagesLoading && <p className="cloud-loading">正在读取服务端消息…</p>}
+          {messagesLoading && <p className="cloud-loading">正在读取消息…</p>}
         </div>
       </> : <div className="cloud-empty cloud-empty-main">
         <h3>选择一个会话</h3>
-        <p>左侧列出服务端保存的会话，选择后可以在这里查看已上传的消息。</p>
+        <p>左侧列出已上传的会话，选择后可以在这里查看消息。</p>
       </div>}
     </section>
   </div>;
