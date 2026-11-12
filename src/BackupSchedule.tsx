@@ -104,7 +104,7 @@ function formatInterval(seconds: number): string {
   return `每 ${Math.round(seconds / 60)} 分钟`;
 }
 
-export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => void }) {
+export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnectors?: () => void; onContinue?: () => void }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [connected, setConnected] = useState(false);
   // The plan opens expanded, matching the settings screen the design was drawn for; the
@@ -116,6 +116,7 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [blocked, setBlocked] = useState(false);
+  const [savePending, setSavePending] = useState(false);
   const queue = useRef<SettingsSaveQueue<AppSettings> | null>(null);
   const unsubscribe = useRef<(() => void) | null>(null);
   const active = useRef(false);
@@ -141,6 +142,7 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
         if (!active.current) return;
         setSettings(state.draft);
         setBlocked(state.blocked);
+        setSavePending(state.saving || state.pending > 0);
         if (state.error) setError(`保存失败，修改尚未确认：${String(state.error)}`);
       });
       setConnected((scan.accounts ?? []).length > 0);
@@ -363,6 +365,7 @@ export function BackupSchedule({ onOpenConnectors }: { onOpenConnectors?: () => 
     </div>
 
     </fieldset>
+    {onContinue && <div className="page-actions"><button type="button" className="primary" disabled={!connected || !settings.sync.enabled || plan.mode === 'manual' || blocked || savePending} onClick={onContinue}>保存并继续</button>{(!settings.sync.enabled || plan.mode === 'manual') && <span>请开启自动备份并选择备份周期。</span>}</div>}
     {error && <div className="error" role="alert">{error}</div>}
     {blocked && <div><p>当前修改未确认保存；重新加载会放弃这些修改。</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? '正在加载…' : '放弃未保存修改并重新加载'}</button></div>}
   </div>;

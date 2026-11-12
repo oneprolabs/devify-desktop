@@ -245,7 +245,7 @@ export function mergeSettings(stored: AppSettings): AppSettings {
   };
 }
 
-export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
+export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => void } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
   const saveLock = useRef(false);
@@ -408,7 +408,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: () => void } = {}) {
       confirmedRevision.current = saved.user_settings_revision;
       setSettings(current => mergeSavedSettings(saved, settings, current));
       setNotice('微信导入范围已保存，重新打开聊天记录页面后立即生效。');
-      onSaved?.();
+      onSaved?.((keep ?? []).length);
     } catch (e) {
       setSaveError(settingsSaveError(e));
     } finally {

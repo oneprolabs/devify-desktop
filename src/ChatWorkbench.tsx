@@ -1,5 +1,5 @@
 import { SidebarResizeHandle } from './SidebarResizeHandle';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import WeChatLocal from './WeChatLocal';
@@ -11,7 +11,7 @@ import wechatIcon from './assets/connectors/wechat.svg';
 import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null };
-type Settings = { active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
+type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
 type SyncResult = { uploaded: number; message_count: number; batch_ids?: number[]; error?: string | null };
 type Scan = { accounts?: Array<{ id: string; modified_at?: number | null }> };
 type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
@@ -53,7 +53,7 @@ function StateDot({ done }: { done: boolean }) {
   </svg>;
 }
 
-export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSchedule, onOpenAccount, onOpenEvent }: { onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
+export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onSchedule, onOpenAccount, onOpenEvent }: { startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
   const [view, setView] = useState<View>('raw');
   const [addingSession, setAddingSession] = useState(false);
   const [sessionRevision, setSessionRevision] = useState(0);
@@ -200,7 +200,7 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
       setSyncBatchIds(result.error ? [] : ids);
       setSyncNoticePending(!result.error && ids.length > 0);
       setSyncNotice(result.error
-        ? `已提交 ${result.message_count} 条记录；部分同步未完成：${result.error}`
+        ? `已提交 ${result.message_count} 条记录；部分会话未完成，请查看任务。`
         : result.message_count
           ? ids.length ? `已提交 ${result.message_count} 条记录，等待服务端处理。` : `已提交 ${result.message_count} 条记录，请在任务中查看状态。`
           : '没有需要提交的新记录。');
@@ -208,6 +208,14 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
     } catch (reason) { setSyncNoticeError(true); setSyncNotice(`同步未完成：${String(reason)}`); }
     finally { setSyncing(false); }
   };
+
+  const firstBackupStarted = useRef(false);
+  useEffect(() => {
+    if (!startFirstBackup || firstBackupStarted.current) return;
+    firstBackupStarted.current = true;
+    onFirstBackupStarted?.();
+    void syncNow();
+  }, [startFirstBackup]);
 
   useEffect(() => {
     if (!syncBatchIds.length) return;
@@ -399,13 +407,12 @@ export function ChatWorkbench({ onOpenData, onOpenWhitelist, onNewUpload, onSche
 
       {rawMounted && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
         {selectedPending.length > 0 && <div className="chat-workbench-banner">
-          <span><i/>已选择的聊天中有 {selectedPending.length} 个会话{selectedPendingMessages ? `、${selectedPendingMessages} 条` : ''}新增记录待上传，将在下次自动备份时同步。</span>
+          <span><i/>已选择的聊天中有 {selectedPending.length} 个会话{selectedPendingMessages ? `、${selectedPendingMessages} 条` : ''}新增记录待上传，{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? '将在满足条件时自动备份。' : '自动备份未开启，请点击立即上传。'}</span>
           <div>
             <button type="button" disabled={syncing} onClick={() => void syncNow()}>{syncing ? '正在提交…' : '立即上传'}</button>
             <button type="button" className="primary" onClick={onSchedule}>备份周期</button>
           </div>
         </div>}
-        {syncNotice && <p className={`sync-inline-notice${syncNoticeError ? ' is-error' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>{syncNotice}</p>}
         {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
           <span className={`sync-feedback-icon${syncing || syncNoticePending ? ' is-loading' : ''}`} aria-hidden="true">{syncing || syncNoticePending ? '' : syncNoticeError ? '!' : '✓'}</span>
           <span className="sync-feedback-text">{syncing ? '正在提交记录…' : syncNotice}</span>
