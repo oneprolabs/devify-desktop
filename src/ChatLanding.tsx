@@ -7,7 +7,7 @@ type HomeMode = 'new' | 'connected';
 type Account = { id: string; modified_at?: number | null; encrypted_count?: number };
 type KeyStatus = { keys?: Array<{ account: string }> };
 type ScanResult = { accounts?: Account[] };
-type Settings = { active_account_id?: string; chat?: { allowed_usernames?: Record<string, string[]>; sync_interval_seconds?: number }; devify?: { active_space_id?: number | null } };
+type Settings = { connectors?: { wechat_enabled?: boolean }; active_account_id?: string; chat?: { allowed_usernames?: Record<string, string[]>; sync_interval_seconds?: number }; devify?: { active_space_id?: number | null } };
 
 type Step = { number: string; title: string; description: string; state: 'current' | 'next' | 'done' };
 type Connector = { name: string; description: string };
@@ -95,6 +95,7 @@ export function ChatEntry({ onConnect, onImport, onBackup, onSchedule, onReady, 
           invoke<KeyStatus>('wechat_key_status'),
         ]);
         const accounts = scan.accounts ?? [];
+        if (active && settings.connectors?.wechat_enabled === false) { setMode('new'); return; }
         const remembered = settings.active_account_id;
         const account = accounts.find(item => item.id === remembered) ?? [...accounts].sort((a, b) => (b.modified_at ?? 0) - (a.modified_at ?? 0))[0];
         const interval = settings.chat?.sync_interval_seconds ?? 1800;

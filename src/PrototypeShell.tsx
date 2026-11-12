@@ -7,7 +7,7 @@ import { AgentHub } from './AgentHub';
 import { About } from './About';
 import { checkForUpdates, useUpdater } from './updater';
 import { HistoryPage } from './History';
-import { DevifySettings, WhitelistSettings } from './Settings';
+import { DevifySettings, WhitelistSettings, type AppSettings } from './Settings';
 import { BackupSchedule } from './BackupSchedule';
 import { AnalysisSettings } from './AnalysisSettings';
 import { LanguageSettings } from './LanguageSettings';
@@ -88,6 +88,18 @@ export default function PrototypeShell() {
   useEffect(() => { void checkForUpdates(true); }, []);
   const [eventFocusId, setEventFocusId] = useState<number | null>(null);
   const [chatReady, setChatReady] = useState(false);
+  const [firstBackupStep, setFirstBackupStep] = useState<'none' | 'select' | 'schedule' | 'confirm'>('none');
+  const [startFirstBackup, setStartFirstBackup] = useState(false);
+  const [backupPreview, setBackupPreview] = useState<AppSettings | null>(null);
+  useEffect(() => {
+    if (firstBackupStep !== 'confirm') return;
+    let active = true;
+    setBackupPreview(null);
+    void invoke<AppSettings>('app_settings_get').then(value => { if (active) setBackupPreview(value); }).catch(() => {});
+    return () => { active = false; };
+  }, [firstBackupStep]);
+  const [connectionFinishError, setConnectionFinishError] = useState('');
+  const [connectionFinishing, setConnectionFinishing] = useState(false);
   const [startTaskCreate, setStartTaskCreate] = useState(false);
   const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous' | 'unavailable'>('checking');
   const authEpoch = useRef(0);
@@ -166,6 +178,20 @@ export default function PrototypeShell() {
     };
   }, [checkAuth]);
   const openNewUpload = () => { setStartTaskCreate(true); setSection('tasks'); };
+  const finishWechatGuide = async (skipBackup = false) => {
+    if (connectionFinishing) return;
+    setConnectionFinishing(true); setConnectionFinishError('');
+    try {
+      const current = await invoke<Record<string, unknown>>('app_settings_get');
+      const connectors = (current.connectors ?? {}) as Record<string, unknown>;
+      const sync = (current.sync ?? {}) as Record<string, unknown>;
+      await invoke('app_settings_save', { value: { ...current, connectors: { ...connectors, wechat_enabled: true }, ...(skipBackup ? { sync: { ...sync, enabled: false } } : {}) } });
+      setWechatGuide(false);
+      if (skipBackup) { setFirstBackupStep('none'); setChatReady(true); setSection('chat'); }
+      else { setFirstBackupStep('select'); setSettingsPage('imports'); }
+    } catch (error) { setConnectionFinishError(`无法启用微信连接：${String(error)}`); }
+    finally { setConnectionFinishing(false); }
+  };
   // Entitlements are per account and per server, so every successful sign-in refreshes them
   // once. A server without the endpoint answers 404 and the app keeps its legacy behaviour.
   useEffect(() => {
@@ -224,15 +250,23 @@ export default function PrototypeShell() {
       {authState === 'authed' && <>
       {section === 'chat' && <>
         {chatReady && !wechatInstall.checking && !wechatInstall.usable && wechatInstall.detect && <div className="chat-install-banner" role="status"><span className="connector-install-icon" aria-hidden="true">!</span><span><strong>{detectTitle[wechatInstall.detect.state]}，已停止读取新消息。</strong>已有记录仍可查看，重新安装后到「设置 › 连接器」点「重新检查」。</span><button type="button" onClick={() => openSettings('connectors')}>去检查</button></div>}
-        {!chatReady && <ChatEntry
+        {!chatReady && firstBackupStep !== 'confirm' && <ChatEntry
           onConnect={(connector) => connector && connector !== '微信' ? openSettings('connectors') : openSettings('connectors', true, false)}
-          onImport={() => openSettings('imports')}
+          onImport={() => { setFirstBackupStep('select'); openSettings('imports'); }}
           onBackup={openNewUpload}
           onSchedule={() => openSettings('backup')}
           onReady={handleChatReady}
           onUnlock={() => openSettings('connectors', true, true)}
         />}
-        {chatReady && <ChatWorkbench onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
+        {firstBackupStep === 'confirm' && <div className="chat-landing"><div className="chat-landing-inner first-backup-inner">
+          <header className="chat-landing-head"><p className="chat-landing-eyebrow">首次备份　·　最后一步</p><h1>准备好首次备份</h1><p>设置已保存，确认后就可以开始备份聊天记录。</p></header>
+          <section className="first-backup-card" aria-label="备份设置">
+            <div className="first-backup-card-head"><span className="first-backup-icon" aria-hidden="true">✓</span><div><strong>备份设置已就绪</strong><p>备份将在后台进行，你可以继续使用客户端。</p></div></div>
+            <div className="first-backup-details"><div><span>备份会话</span><strong>{backupPreview ? `已选择 ${(backupPreview.chat.allowed_usernames[backupPreview.active_account_id] ?? []).length} 个会话` : '正在读取…'}</strong></div><div><span>自动备份</span><strong>{!backupPreview ? '正在读取…' : !backupPreview.sync.enabled ? '已关闭' : backupPreview.backup.mode === 'times' ? `每天 ${backupPreview.backup.times.join('、') || '未设置时间'}` : backupPreview.backup.mode === 'manual' ? '仅手动' : `每 ${Math.round(backupPreview.chat.sync_interval_seconds / 60)} 分钟`}</strong></div><div><span>网络条件</span><strong>{backupPreview ? (backupPreview.backup.wifi_only ? '仅 Wi-Fi 或有线网络' : '不限网络') : '正在读取…'}</strong></div></div>
+            <div className="first-backup-actions"><button className="chat-landing-primary" onClick={() => { setStartFirstBackup(true); setFirstBackupStep('none'); setChatReady(true); }}>立即开始首次备份 <span aria-hidden="true">→</span></button><button className="first-backup-later" onClick={() => { setFirstBackupStep('none'); setChatReady(true); }}>稍后自动备份</button></div>
+          </section><p className="first-backup-note">备份进度可以在「任务」中查看，首次备份时间取决于记录数量和网络情况。</p>
+        </div></div>}
+        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
       </>}
       {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
       {section === 'settings' && <div className="prototype-settings-layout">
@@ -259,10 +293,10 @@ export default function PrototypeShell() {
             <section id="wizard-method" className="wizard-method"><div><h2>选择接入方式</h2><p>微信的数据库是加密的。两种方式都只读，不会改动微信，也不需要你的微信密码。</p></div>{wizardBlocked && wechatInstall.detect && <div className="wizard-install-block" role="alert"><span className="connector-install-icon" aria-hidden="true">!</span><div><strong>{detectTitle[wechatInstall.detect.state]}，暂时无法继续</strong><p>{wechatInstall.detect.message}</p><div className="wizard-install-actions"><button type="button" className="connector-quiet" onClick={() => void wechatInstall.recheck()} disabled={wechatInstall.checking}>重新检测</button>{wechatInstall.detect.state === 'not_installed' && <a className="connector-link" href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">前往下载微信 ↗</a>}</div></div></div>}{!wizardBlocked && wechatInstall.detect?.version && <p className="wizard-install-ok"><span className="good" />已检测到微信 {wechatInstall.detect.version} · 官方签名</p>}<div className="wizard-method-options"><button type="button" className="wizard-method-option selected" disabled={wizardBlocked} onClick={() => setWizard('wizard-permission')}><strong>自动读取本机数据库 <em>推荐</em></strong><span>持续读取本机数据库；只需完成系统授权，再按原有引导获取并校验密钥。整个流程不需要修改系统完整性保护。</span></button><button type="button" className="wizard-method-option" disabled={wizardBlocked} onClick={() => setWizard('wizard-key')}><strong>导入可信密钥文件 <em>无需改系统设置</em></strong><span>不动系统设置、不捕获微信进程；选择可信密钥文件后逐库校验，再解密聊天记录。</span></button></div><p className="wizard-method-note">仅用于读取与校验，不会修改微信数据库。</p><div className="wizard-method-footer"><span className="wizard-next-hint">{wizardBlocked ? '安装并检测通过后才能继续' : '接下来：系统授权'}</span><button type="button" className="wizard-next" disabled={wizardBlocked} onClick={() => setWizard('wizard-permission')}>下一步</button></div></section>
             )}
             <div id="wizard-permission" className="wizard-anchor" /><div id="wizard-account" className="wizard-anchor" /><div id="wizard-key" className="wizard-anchor" /><div id="wizard-import" className="wizard-anchor" /><div id="wizard-done" className="wizard-anchor" />
-            {wizardStep === 'wizard-done' ? <section className="wizard-complete"><div className="wizard-complete-mark">✓</div><h2>连接向导完成</h2><p>接下来请勾选要备份的会话。未勾选的聊天不会导入，也不会出现在备份里。</p><button type="button" className="wizard-next" onClick={() => { setWechatGuide(false); setSettingsPage('imports'); }}>选择要备份的会话</button></section> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
+            {wizardStep === 'wizard-done' ? <section className="wizard-complete"><div className="wizard-complete-mark">✓</div><h2>连接向导完成</h2><p>接下来请勾选要备份的会话。未勾选的聊天不会导入，也不会出现在备份里。</p><button type="button" className="wizard-next" disabled={connectionFinishing} onClick={() => void finishWechatGuide()}>{connectionFinishing ? '正在保存…' : '选择要备份的会话'}</button><button type="button" className="wizard-skip" disabled={connectionFinishing} onClick={() => void finishWechatGuide(true)}>跳过，暂不备份</button>{connectionFinishError && <p role="alert">{connectionFinishError}</p>}</section> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
           </div> : <Connectors onOpenWechat={(configured) => { setWechatGuide(true); setWechatGuideEdit(configured); setWizardStep('wizard-method'); }} />)}
-          {settingsPage === 'imports' && <WhitelistSettings />}
-          {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} />}
+          {settingsPage === 'imports' && <WhitelistSettings onSaved={count => { if (firstBackupStep === 'select' && count > 0) { setFirstBackupStep('schedule'); setSettingsPage('backup'); } }} />}
+          {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
           {settingsPage === 'analysis' && <AnalysisSettings />}
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings />}

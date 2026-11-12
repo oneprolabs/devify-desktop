@@ -1239,3 +1239,25 @@
 .chat-landing-install-actions button { padding: 0; border: 0; background: none; color: #6b4510; font: inherit; text-decoration: underline; cursor: pointer; }
 .chat-landing-install-actions a { color: var(--accent-magenta, #a3279a); text-decoration: none; }
 .chat-landing-connector .chat-landing-primary:disabled { opacity: 1; background: #dcb3d7; color: #fff; box-shadow: none; cursor: not-allowed; }
+
+.first-backup-inner { max-width: 720px; padding-top: 68px; }
+.first-backup-card { margin-top: 30px; border: 1px solid #e7e5e7; border-radius: 14px; background: #fff; overflow: hidden; }
+.first-backup-card-head { display: flex; align-items: center; gap: 14px; padding: 23px 24px; background: #faf9fa; border-bottom: 1px solid #efedef; }
+.first-backup-icon { width: 38px; height: 38px; display: grid; place-items: center; flex: none; border-radius: 12px; background: #f5e8f5; color: #a1239f; font-size: 19px; font-weight: 600; }
+.first-backup-card-head strong { font-size: 15px; color: #242324; }
+.first-backup-card-head p { margin: 5px 0 0; font-size: 13px; color: #858188; line-height: 1.5; }
+.first-backup-details { padding: 3px 24px; }
+.first-backup-details > div { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 15px 0; border-bottom: 1px solid #f0eef0; font-size: 14px; }
+.first-backup-details > div:last-child { border-bottom: 0; }
+.first-backup-details span { color: #817d82; }
+.first-backup-details strong { color: #333035; font-size: 14px; font-weight: 500; text-align: right; }
+.first-backup-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 17px 24px 24px; }
+.first-backup-actions .chat-landing-primary { display: inline-flex; align-items: center; gap: 12px; }
+.first-backup-later { padding: 10px 16px; border: 1px solid #e5e2e5; border-radius: 9px; background: #fff; color: #625e63; font: inherit; font-size: 14px; cursor: pointer; }
+.first-backup-later:hover { background: #f8f7f8; }
+.first-backup-later:focus-visible { outline: 2px solid #a1239f; outline-offset: 2px; }
+.first-backup-note { margin: 15px 2px 0; color: #939095; font-size: 12px; line-height: 1.7; }
+.wizard-skip { display:block; margin:16px auto 0; padding:4px 6px; border:0; background:transparent; color:#858085; font:inherit; font-size:13px; cursor:pointer; }
+.wizard-skip:hover { color:#a1239f; }
+.wizard-skip:focus-visible { outline:2px solid #a1239f; outline-offset:3px; }
+.wizard-skip:disabled { opacity:.5; cursor:default; }
