@@ -28,6 +28,8 @@ pub mod backup;
 pub mod capabilities;
 pub mod connectors;
 mod desktop_credentials;
+mod diagnostics;
+mod feedback;
 pub mod entitlements;
 pub mod history;
 pub mod perm;
@@ -5207,6 +5209,19 @@ fn validate_sync_owner(value: &settings::AppSettings, owner: &settings::UploadOw
 /// Decrypt the local cache, then upload every allowlisted conversation that has messages
 /// newer than its cursor. The first run of a conversation uploads its full local history.
 async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: bool) -> Result<ChatSyncSummary, String> {
+    let started = std::time::Instant::now();
+    let result = perform_chat_sync_inner(app, manual, continuation_only).await;
+    let _ = diagnostics::record(&app_data(app), diagnostics::EventInput {
+        module: diagnostics::Module::Upload,
+        operation: if result.is_ok() { diagnostics::Operation::Success } else { diagnostics::Operation::Failure },
+        code: if result.is_err() { Some(diagnostics::Code::CommandFailed) } else { None },
+        batch_id: None,
+        duration_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+    });
+    result
+}
+
+async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_only: bool) -> Result<ChatSyncSummary, String> {
     let data = app_data(app);
     let mut value = settings::load(&data)?;
     ensure_wechat_connected(app)?;
@@ -7764,6 +7779,13 @@ pub fn run() {
         .manage(DevifyAuthState::default())
         .manage(McpState::default())
         .setup(|app| {
+            let diagnostics_root = app_data(app.handle());
+            let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Start, code: None, batch_id: None, duration_ms: None });
+            let previous_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Panic, code: Some(diagnostics::Code::RustPanic), batch_id: None, duration_ms: None });
+                previous_hook(info);
+            }));
             #[cfg(desktop)]
             {
                 app.handle().plugin(tauri_plugin_deep_link::init())?;
@@ -7813,6 +7835,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            feedback::feedback_draft_get,
+            feedback::feedback_draft_save,
+            feedback::feedback_draft_discard,
+            feedback::feedback_diagnostics,
+            feedback::diagnostic_record,
+            feedback::feedback_submit,
+            feedback::feedback_list,
+            feedback::feedback_export,
             connector_detect,
             update_begin_install,
             update_cancel_install,
