@@ -38,6 +38,10 @@ pub enum Code {
     RenderError,
     UnhandledRejection,
     RustPanic,
+    HttpError,
+    NetworkTimeout,
+    NetworkConnect,
+    NetworkRequest,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -51,6 +55,12 @@ pub struct EventInput {
     pub batch_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<crate::devify_http::RequestId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_request_id: Option<crate::devify_http::RequestId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -154,6 +164,9 @@ mod tests {
                 code: Some(Code::CommandFailed),
                 batch_id: Some(42),
                 duration_ms: Some(10),
+                request_id: None,
+                server_request_id: None,
+                http_status: None,
             },
         )
         .unwrap();

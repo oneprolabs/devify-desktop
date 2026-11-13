@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
+use crate::devify_http::RequestTrace;
 use crate::{desktop_credentials, diagnostics, settings};
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -324,7 +325,7 @@ pub async fn feedback_submit(
         .post(format!("{base}/api/v1/feedbacks"))
         .bearer_auth(token)
         .multipart(form)
-        .send()
+        .send_traced(&root, diagnostics::Module::Feedback)
         .await
         .map_err(|e| crate::devify_network_message("提交反馈失败，草稿已保留", &e))?;
     let result = response_data(response).await?;
@@ -346,7 +347,7 @@ pub async fn feedback_list(app: AppHandle, page: u32) -> Result<serde_json::Valu
             page.clamp(1, 10000)
         ))
         .bearer_auth(token)
-        .send()
+        .send_traced(&root, diagnostics::Module::Feedback)
         .await
         .map_err(|e| crate::devify_network_message("读取反馈失败", &e))?;
     response_data(response).await
@@ -471,6 +472,13 @@ mod tests {
                 code: Some(diagnostics::Code::CommandFailed),
                 batch_id: Some(42),
                 duration_ms: Some(7),
+                request_id: Some(
+                    crate::devify_http::RequestId::try_from("desktop-123".to_string()).unwrap(),
+                ),
+                server_request_id: Some(
+                    crate::devify_http::RequestId::try_from("server-456".to_string()).unwrap(),
+                ),
+                http_status: Some(503),
             },
         )
         .unwrap();
@@ -491,5 +499,9 @@ mod tests {
         };
         assert!(save_edit(root.path(), &draft).is_ok());
         assert_eq!(payload(&draft)["diagnostics"]["events"][0]["batch_id"], 42);
+        assert_eq!(
+            payload(&draft)["diagnostics"]["events"][0]["request_id"],
+            "desktop-123"
+        );
     }
 }

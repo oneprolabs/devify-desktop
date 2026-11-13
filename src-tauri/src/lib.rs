@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Local, Utc};
+use devify_http::RequestTrace;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -29,6 +30,7 @@ pub mod capabilities;
 pub mod connectors;
 mod desktop_credentials;
 mod diagnostics;
+mod devify_http;
 mod feedback;
 pub mod entitlements;
 pub mod history;
@@ -218,12 +220,13 @@ fn auth_http_client() -> Result<reqwest::Client, String> {
 }
 
 async fn devify_auth_config(
+    data: &Path,
     settings: &settings::DevifySettings,
 ) -> Result<DevifyAuthConfig, String> {
     let base_url = settings.resolved_base_url()?;
     let response = auth_http_client()?
         .get(format!("{}/api/v1/auth/desktop/config", base_url))
-        .send()
+        .send_traced(data, diagnostics::Module::Auth)
         .await
         .map_err(|e| devify_network_message("读取服务端登录配置失败", &e))?;
     if !response.status().is_success() {
@@ -298,7 +301,7 @@ async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_ge
             base_url.trim_end_matches('/')
         ))
         .json(&serde_json::json!({"refresh": refresh}))
-        .send()
+        .send_traced(app_data, diagnostics::Module::Auth)
         .await
         .map_err(|e| {
             DevifyTokenError::Unavailable(devify_network_message("刷新服务端登录令牌失败", &e))
@@ -374,7 +377,7 @@ async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUpl
             api_base
         ))
         .bearer_auth(&token)
-        .send()
+        .send_traced(&app_data(&app), diagnostics::Module::Upload)
         .await
         .map_err(|e| devify_network_message("读取上传状态失败", &e))?;
     let status = response.status();
@@ -463,6 +466,7 @@ fn parse_upload_list(payload: serde_json::Value) -> Result<serde_json::Value, St
 }
 
 async fn fetch_upload_list(
+    data: &Path,
     base_url: &str,
     space_id: i64,
     page: u32,
@@ -479,7 +483,7 @@ async fn fetch_upload_list(
         .get(format!("{base_url}/api/v1/spaces/{space_id}/chat/uploads"))
         .query(&[("page", page), ("page_size", page_size)])
         .bearer_auth(token)
-        .send()
+        .send_traced(data, diagnostics::Module::Upload)
         .await
         .map_err(|_| "读取服务端上传列表失败，请检查网络连接。")?;
     let status = response.status();
@@ -520,7 +524,7 @@ async fn devify_upload_list(
         return Err("服务端登录状态已改变，请重新读取上传列表。".into());
     }
     let generation = request_generation(&data, &base_url, &token)?;
-    let (status, body) = fetch_upload_list(&base_url, space_id, page, page_size, &token).await?;
+    let (status, body) = fetch_upload_list(&data, &base_url, space_id, page, page_size, &token).await?;
     // A response for an old selection must not overwrite the new space or service.
     let current = settings::load(&data)?;
     if upload_list_base_url(&current, space_id)? != base_url {
@@ -571,7 +575,7 @@ async fn devify_space_takeover(
         ))
         .bearer_auth(token)
         .json(&serde_json::json!({"reason": reason.trim()}))
-        .send()
+        .send_traced(&app_data(&app), diagnostics::Module::App)
         .await
         .map_err(|e| devify_network_message("接管空间失败", &e))?;
     if !response.status().is_success() {
@@ -620,7 +624,7 @@ async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_cre
         || current.devify.active_space_id != settings.devify.active_space_id
         || current.devify.device_id != settings.devify.device_id
         || current.active_account_id != settings.active_account_id { return None; }
-    let payload = fixed_identity_get(&base, &token, "/api/v1/spaces").await.ok()?;
+    let payload = fixed_identity_get(&data, &base, &token, "/api/v1/spaces").await.ok()?;
     let spaces: Vec<DevifySpace> = serde_json::from_value(payload).ok()?;
     let known = |id: i64| spaces.iter().any(|space| space.id == id);
     let chosen = settings.devify.active_space_id.filter(|id| known(*id))
@@ -664,7 +668,7 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
             api_base
         ))
         .bearer_auth(&token)
-        .send()
+        .send_traced(&app_data(&app), diagnostics::Module::App)
         .await
         .map_err(|e| devify_network_message("读取 空间失败", &e))?;
     let status = response.status();
@@ -769,7 +773,7 @@ async fn devify_analysis_list(
         let response = client
             .get(url)
             .bearer_auth(&token)
-            .send()
+            .send_traced(&app_data(&app), diagnostics::Module::App)
             .await
             .map_err(|e| devify_network_message(&format!("同步服务端{kind}失败"), &e))?;
         let status = response.status();
@@ -920,7 +924,7 @@ async fn devify_json_request(
         request = request.json(&body);
     }
     let response = request
-        .send()
+        .send_traced(&app_data(app), diagnostics::Module::App)
         .await
         .map_err(|e| devify_network_message("访问服务端失败", &e))?;
     let status = response.status();
@@ -1673,11 +1677,11 @@ struct ExistingUploadKeys {
 }
 type LegacyUploadKeys = HashMap<String, ExistingUploadKeys>;
 
-async fn fixed_identity_get(base: &str, token: &str, path: &str) -> Result<serde_json::Value, String> {
+async fn fixed_identity_get(data: &Path, base: &str, token: &str, path: &str) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建云端请求。")?;
     let mut response = client.get(format!("{base}{path}")).bearer_auth(token)
-        .send().await.map_err(|_| "无法读取云端数据，请检查网络连接。")?;
+        .send_traced(data, diagnostics::Module::Upload).await.map_err(|_| "无法读取云端数据，请检查网络连接。")?;
     if !response.status().is_success() { return Err(format!("无法读取云端数据：HTTP {}。", response.status().as_u16())); }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端响应。")? {
@@ -1696,7 +1700,7 @@ async fn load_legacy_upload_keys(app: &AppHandle, space_id: i64, account_id: &st
         let mut conversation = None;
         for page in 1..=100 {
             let path = format!("/api/v1/spaces/{space_id}/conversations?search={encoded}&page={page}&page_size=100");
-            let data = if let Some((base, token)) = fixed { fixed_identity_get(base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
+            let data = if let Some((base, token)) = fixed { fixed_identity_get(&app_data(app), base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
             let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端会话列表。")?;
             for item in items {
                 if item.get("platform").and_then(|v| v.as_str()) == Some("wechat")
@@ -1714,7 +1718,7 @@ async fn load_legacy_upload_keys(app: &AppHandle, space_id: i64, account_id: &st
         if let Some(id) = conversation {
             for page in 1..=10000 {
                 let path = format!("/api/v1/spaces/{space_id}/conversations/{id}/messages?page={page}&page_size=100");
-                let data = if let Some((base, token)) = fixed { fixed_identity_get(base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
+                let data = if let Some((base, token)) = fixed { fixed_identity_get(&app_data(app), base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
                 let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端消息列表。")?;
                 for item in items {
                     let key = item.get("message_key").and_then(|v| v.as_str()).unwrap_or_default();
@@ -2911,7 +2915,7 @@ async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) 
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建身份请求。")?;
     let mut response = client.get(format!("{base_url}/api/v1/auth/user"))
-        .bearer_auth(&token).send().await.map_err(|_| "无法确认云端登录用户。")?;
+        .bearer_auth(&token).send_traced(data, diagnostics::Module::Auth).await.map_err(|_| "无法确认云端登录用户。")?;
     if !response.status().is_success() { return Err("无法确认云端登录用户。".into()); }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端用户。")? {
@@ -2923,7 +2927,7 @@ async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) 
         .ok_or("无法确认云端用户标识。")?;
     // A configured device without a JWT claim is not proof of ownership. Verify its
     // active registration using the very same authenticated token as the user lookup.
-    let devices = fixed_identity_get(&base_url, &token, "/api/v1/auth/desktop/devices").await?;
+    let devices = fixed_identity_get(data, &base_url, &token, "/api/v1/auth/desktop/devices").await?;
     let items = devices.as_array().or_else(|| devices.get("list").and_then(serde_json::Value::as_array))
         .ok_or("无法确认当前设备登记。")?;
     if items.iter().filter(|item| item.get("device_id").and_then(serde_json::Value::as_str) == Some(device_id.as_str())
@@ -3068,9 +3072,9 @@ fn append_retry_identity_body(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), St
     Ok(())
 }
 
-async fn retry_identity_get(client: &reqwest::Client, auth: &CloudRetryAuth, path: &str) -> Result<serde_json::Value, String> {
+async fn retry_identity_get(data: &Path, client: &reqwest::Client, auth: &CloudRetryAuth, path: &str) -> Result<serde_json::Value, String> {
     let mut response = client.get(format!("{}{path}", auth.base_url))
-        .bearer_auth(&auth.token).send().await
+        .bearer_auth(&auth.token).send_traced(data, diagnostics::Module::Upload).await
         .map_err(|_| "无法读取云端重试身份，请检查网络连接。")?;
     if !response.status().is_success() {
         return Err(format!("无法确认云端重试身份：HTTP {}。", response.status().as_u16()));
@@ -3084,11 +3088,11 @@ async fn retry_identity_get(client: &reqwest::Client, auth: &CloudRetryAuth, pat
     Ok(payload.get("data").cloned().unwrap_or(payload))
 }
 
-async fn verify_cloud_retry_remote(auth: &CloudRetryAuth) -> Result<(i64, String), String> {
+async fn verify_cloud_retry_remote(data: &Path, auth: &CloudRetryAuth) -> Result<(i64, String), String> {
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建云端重试身份请求。")?;
-    let user = retry_identity_get(&client, auth, "/api/v1/auth/user").await?;
-    let batch = retry_identity_get(&client, auth, &format!("/api/v1/chat/uploads/{}", auth.batch_id)).await?;
+    let user = retry_identity_get(data, &client, auth, "/api/v1/auth/user").await?;
+    let batch = retry_identity_get(data, &client, auth, &format!("/api/v1/chat/uploads/{}", auth.batch_id)).await?;
     validate_cloud_retry_remote(auth, &user, &batch)
 }
 
@@ -3133,7 +3137,7 @@ async fn devify_upload_retry(
             device_id: owner.device_id.clone(), user_id: 0, idempotency_key: String::new(), scope: scope.clone(),
         };
         validate_live_cloud_retry(&data, &auth)?;
-        let (user_id, key) = verify_cloud_retry_remote(&auth).await?;
+        let (user_id, key) = verify_cloud_retry_remote(&data, &auth).await?;
         if user_id != owner.user_id { return Err("云端上传者与原任务账号不一致，不能重试。".into()); }
         auth.user_id = user_id;
         auth.idempotency_key = key;
@@ -3388,7 +3392,7 @@ async fn devify_upload_wechat(
         }
         validate_cloud_retry_package(auth, space_id, &account_id, &key)?;
         validate_live_cloud_retry(&data, auth)?;
-        let (user_id, remote_key) = verify_cloud_retry_remote(auth).await?;
+        let (user_id, remote_key) = verify_cloud_retry_remote(&data, auth).await?;
         if user_id != auth.user_id || remote_key != auth.idempotency_key {
             return Err("云端批次或用户已变化，请重新确认重试任务。".into());
         }
@@ -3436,7 +3440,7 @@ async fn devify_upload_wechat(
     if let Some(auth) = &cloud_retry {
         validate_live_cloud_retry(&data, auth)?;
     }
-    let created = request.send().await.map_err(|error| {
+    let created = request.send_traced(&data, diagnostics::Module::Upload).await.map_err(|error| {
         if cloud_retry.is_some() { "创建上传批次失败，请检查网络连接。".to_string() }
         else { format!("创建上传批次失败：{error}") }
     })?;
@@ -3467,7 +3471,7 @@ async fn devify_upload_wechat(
         Ok(())
     })?;
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
-    let remote = fixed_identity_get(upload_base_url, &token, &format!("/api/v1/chat/uploads/{batch_id}")).await?;
+    let remote = fixed_identity_get(&data, upload_base_url, &token, &format!("/api/v1/chat/uploads/{batch_id}")).await?;
     validate_remote_owner(&owner, batch_id, &remote, Some(&key))?;
     let batch_status = remote.get("status").and_then(|v| v.as_str()).unwrap_or("");
     if matches!(batch_status, "processing" | "completed") {
@@ -3501,7 +3505,7 @@ async fn devify_upload_wechat(
         .put(format!("{upload_base_url}/api/v1/chat/uploads/{batch_id}/archive"))
         .bearer_auth(&token)
         .multipart(form)
-        .send()
+        .send_traced(&data, diagnostics::Module::Upload)
         .await
         .map_err(|e| {
             let reason = if e.is_timeout() {
@@ -3523,7 +3527,7 @@ async fn devify_upload_wechat(
     let completed = client
         .post(format!("{upload_base_url}/api/v1/chat/uploads/{batch_id}/complete"))
         .bearer_auth(&token)
-        .send()
+        .send_traced(&data, diagnostics::Module::Upload)
         .await
         .map_err(|e| devify_network_message("提交解析失败", &e))?;
     if !completed.status().is_success() {
@@ -3560,7 +3564,7 @@ async fn devify_auth_start(
                 && value != "AIMyChats Desktop"
         })
         .unwrap_or_else(settings::device_default_label);
-    let auth_config = devify_auth_config(&settings.devify).await?;
+    let auth_config = devify_auth_config(&app_data(&app), &settings.devify).await?;
     if desktop_credentials::generation()? != auth_generation {
         return Err("登录状态已改变，请重新登录。".into());
     }
@@ -3705,7 +3709,7 @@ async fn devify_auth_callback(
         || desktop_credentials::generation()? != pending.generation {
         return Err("登录状态已改变，请重新登录。".into());
     }
-    let auth_config = devify_auth_config(&settings.devify).await?;
+    let auth_config = devify_auth_config(&app_data(&app), &settings.devify).await?;
     let platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
     } else {
@@ -3728,7 +3732,7 @@ async fn devify_auth_callback(
             "device_id": settings.devify.device_id.clone(),
             "platform": platform.clone(),
         }))
-        .send()
+        .send_traced(&app_data(&app), diagnostics::Module::Auth)
         .await
         .map_err(|e| devify_network_message("换取服务端登录令牌失败", &e))?;
     if !response.status().is_success() {
@@ -3904,7 +3908,7 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
             settings.devify.resolved_base_url()?
         ))
         .bearer_auth(&token)
-        .send()
+        .send_traced(&data, diagnostics::Module::Auth)
         .await
     {
         Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
@@ -4027,7 +4031,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
             "label": device_label.clone(),
             "platform": platform.clone(),
         }))
-        .send()
+        .send_traced(&data, diagnostics::Module::Auth)
         .await
         .map_err(|e| devify_network_message("登记设备失败", &e))?;
     if !response.status().is_success() {
@@ -4047,7 +4051,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
     if access_token_claim(&token, "device_id").is_some_and(|claim| claim != device_id) {
         return Err("登记设备与登录设备不匹配。".into());
     }
-    let devices = fixed_identity_get(&base, &token, "/api/v1/auth/desktop/devices").await?;
+    let devices = fixed_identity_get(&data, &base, &token, "/api/v1/auth/desktop/devices").await?;
     let items = devices.as_array().or_else(|| devices.get("list").and_then(serde_json::Value::as_array))
         .ok_or("无法确认当前设备登记。")?;
     if items.iter().filter(|item| item.get("device_id").and_then(serde_json::Value::as_str) == Some(device_id.as_str())
@@ -4131,7 +4135,7 @@ async fn devify_login_password(
     let response = auth_http_client()?
         .post(format!("{base_url}/api/v1/auth/login"))
         .json(&serde_json::json!({ "username": username, "password": password }))
-        .send()
+        .send_traced(&data, diagnostics::Module::Auth)
         .await
         .map_err(|e| devify_network_message("连接服务端登录服务失败", &e))?;
     let status = response.status();
@@ -4502,7 +4506,7 @@ async fn daily_request(context: &DailyIdentity, method: reqwest::Method, path: S
         .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建日报请求。")?;
     let mut request = client.request(method, format!("{}{path}", context.base)).bearer_auth(&context.credentials.access);
     if let Some(body) = body { request = request.json(&body); }
-    let response = request.send().await;
+    let response = request.send_traced(&context.data, diagnostics::Module::App).await;
     context.validate()?;
     let mut response = response.map_err(|_| "日报请求失败，请检查网络连接。")?;
     if !response.status().is_success() { return Err(format!("日报请求失败：HTTP {}。", response.status().as_u16())); }
@@ -5032,7 +5036,7 @@ async fn reconcile_owned_job(data: &Path, owner: &settings::UploadOwner, token: 
         || !snapshot.scope.as_ref().is_some_and(|scope| settings::same_service_url(&scope.base_url, &owner.base_url)) {
         return Err("任务归属不完整或已改变。".into());
     }
-    let batch = fixed_identity_get(&owner.base_url, token, &format!("/api/v1/chat/uploads/{batch_id}")).await?;
+    let batch = fixed_identity_get(data, &owner.base_url, token, &format!("/api/v1/chat/uploads/{batch_id}")).await?;
     validate_remote_owner(owner, batch_id, &batch, None)?;
     let (state, message) = match batch.get("status").and_then(serde_json::Value::as_str) {
         Some("completed") => ("completed", format!("服务端解析完成，共 {} 条消息", batch.get("message_count").and_then(serde_json::Value::as_i64).unwrap_or_default())),
@@ -5216,7 +5220,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
         operation: if result.is_ok() { diagnostics::Operation::Success } else { diagnostics::Operation::Failure },
         code: if result.is_err() { Some(diagnostics::Code::CommandFailed) } else { None },
         batch_id: None,
-        duration_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        duration_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64), request_id: None, server_request_id: None, http_status: None,
     });
     result
 }
@@ -7230,8 +7234,9 @@ async fn adopt_legacy_upload_history(data: &Path, owner: &settings::UploadOwner,
         let handles: Vec<_> = chunk.iter().map(|(job_id, batch_id, status)| {
             let (base, token, path) = (owner.base_url.clone(), token.to_string(), format!("/api/v1/chat/uploads/{batch_id}"));
             let (job_id, batch_id, status) = (job_id.clone(), *batch_id, status.clone());
+            let data = data.to_path_buf();
             tauri::async_runtime::spawn(async move {
-                let batch = tokio::time::timeout_at(deadline, fixed_identity_get(&base, &token, &path)).await.ok()?.ok()?;
+                let batch = tokio::time::timeout_at(deadline, fixed_identity_get(&data, &base, &token, &path)).await.ok()?.ok()?;
                 Some((job_id, batch_id, status, batch))
             })
         }).collect();
@@ -7780,10 +7785,10 @@ pub fn run() {
         .manage(McpState::default())
         .setup(|app| {
             let diagnostics_root = app_data(app.handle());
-            let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Start, code: None, batch_id: None, duration_ms: None });
+            let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Start, code: None, batch_id: None, duration_ms: None, request_id: None, server_request_id: None, http_status: None });
             let previous_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Panic, code: Some(diagnostics::Code::RustPanic), batch_id: None, duration_ms: None });
+                let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Panic, code: Some(diagnostics::Code::RustPanic), batch_id: None, duration_ms: None, request_id: None, server_request_id: None, http_status: None });
                 previous_hook(info);
             }));
             #[cfg(desktop)]
@@ -8144,7 +8149,7 @@ mod upload_list_tests {
             String::from_utf8(request).unwrap()
         });
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let (status, body) = runtime.block_on(fetch_upload_list(&format!("http://{address}"), 42, 2, 30, "test-token")).unwrap();
+        let (status, body) = runtime.block_on(fetch_upload_list(tempfile::tempdir().unwrap().path(), &format!("http://{address}"), 42, 2, 30, "test-token")).unwrap();
         assert_eq!(status, reqwest::StatusCode::FOUND);
         assert!(body.is_empty());
         let request = server.join().unwrap().to_ascii_lowercase();
