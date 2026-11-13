@@ -388,26 +388,11 @@ export function SummaryDetail({
     </header>
 
     <section className="history-sources">
-      <h4>整理来源</h4>
-      {record.sessions.length ? (
-        <ul>
-          {record.sessions.map(session => (
-            <li key={session.username}>
-              <span className={`history-source-kind ${session.is_group ? 'group' : 'direct'}`}>
-                {session.is_group ? '群聊' : '单聊'}
-              </span>
-              <strong>{session.display}</strong>
-              {session.messages > 0 && <small>{session.messages} 条消息</small>}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="history-empty-line">这条记录没有保存来源会话。</p>
-      )}
-      <p className="history-stats">
-        {record.messages} 条消息 · 约 {record.characters} 字
-        {record.truncated ? ' · 生成时已截断' : ''}
-      </p>
+      {record.sessions.length ? <ul>{record.sessions.map(session => <li key={session.username}>
+        <span className="history-source-icon" aria-hidden="true">◌</span>
+        <span className="history-source-info"><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'}{session.messages > 0 ? ` · ${session.messages} 条消息` : ''}</small></span>
+      </li>)}</ul> : <p className="history-empty-line">这条记录没有保存来源会话。</p>}
+      <p className="history-stats">共 {record.messages} 条消息 · 约 {record.characters} 字{record.truncated ? ' · 生成时已截断' : ''}</p>
     </section>
 
     {record.note && <div className="config warn">{record.note}</div>}
@@ -418,16 +403,14 @@ export function SummaryDetail({
 
     {record.insights && (
       <section className="history-insights">
-        {record.insights.terms.length > 0 && (
-          <p className="history-terms">探索词：{record.insights.terms.join('、')}</p>
-        )}
-        <h4>项目重点</h4>
+        <div className="history-focus-heading"><h4>项目重点</h4><span>共 {record.insights.focus.length} 条</span></div>
+        <p className="history-insight-hint">根据消息内容自动提取，结果仅供参考</p>
         {record.insights.focus.length ? (
           record.insights.focus.slice(0, 30).map((item, index) => (
             <article key={`focus-${index}`} className="history-focus">
-              <span className={`wxv-insight-tag ${item.category}`}>{item.category}</span>
+              <span className="history-focus-marker" aria-hidden="true"/>
               <div>
-                <small>{item.session} · {item.day}</small>
+                <small><span className={`wxv-insight-tag ${item.category}`}>{item.category}</span> {item.session} · {item.day}</small>
                 <p>{item.text}</p>
               </div>
             </article>
@@ -435,7 +418,7 @@ export function SummaryDetail({
         ) : (
           <p className="history-empty-line">当时没有识别到待办、决定、风险、问题或数据线索。</p>
         )}
-        <h4>时间线</h4>
+        <div className="history-related-grid"><section><h4>时间线</h4>
         {record.insights.timeline.length ? (
           record.insights.timeline.map(day => (
             <div key={`day-${day.day}`} className="history-timeline-row">
@@ -446,7 +429,7 @@ export function SummaryDetail({
         ) : (
           <p className="history-empty-line">没有可展示的时间线。</p>
         )}
-        <h4>相关会话</h4>
+        </section><section><h4>相关会话</h4>
         {record.insights.related.length ? (
           record.insights.related.map(item => (
             <div key={`related-${item.username}`} className="history-timeline-row">
@@ -456,7 +439,8 @@ export function SummaryDetail({
           ))
         ) : (
           <p className="history-empty-line">当时没有发现其他相关会话。</p>
-        )}
+        )}</section></div>
+        {record.insights.terms.length > 0 && <p className="history-terms">探索词：{record.insights.terms.join('、')}</p>}
       </section>
     )}
   </article>;

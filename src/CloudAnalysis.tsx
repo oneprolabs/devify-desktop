@@ -1,3 +1,4 @@
+import { LoadingPage, LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -265,8 +266,9 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     return () => { active = false; };
   }, [kind, spaceId, reloadKey]);
 
-  const report = kind === 'reports' && (detail || selected) ? (detail || selected) as ReportItem : null;
-  const event = kind === 'events' && (detail || selected) ? (detail || selected) as EventDetail : null;
+  const currentDetail = detail?.id === selectedId ? detail : null;
+  const report = !detailLoading && kind === 'reports' && (currentDetail || selected) ? (currentDetail || selected) as ReportItem : null;
+  const event = !detailLoading && kind === 'events' && (currentDetail || selected) ? (currentDetail || selected) as EventDetail : null;
   const relatedEvents = useMemo(() => {
     if (!event) return [];
     const byId = new Map<number, RelatedEvent>();
@@ -490,7 +492,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportType(item as ReportItem) === value).length]);
 
   if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>请在桌面应用中查看</h2><p>事件和报告在上传处理后生成，桌面端负责同步并展示。</p></div></div>;
-  if (loading) return <div className="analysis-page"><div className="analysis-empty"><h2>正在同步{copy.title}…</h2><p>正在读取当前空间的最新结果。</p></div></div>;
+  if (loading) return <LoadingPage title={copy.title} />;
   if (error) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>同步失败</h2><p>{error}</p></div></div>;
   if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{copy.empty}</h2><p>完成聊天采集并等待处理完成后，结果会出现在这里。</p></div></div>;
 
@@ -595,7 +597,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
         </div>}
 
         {!(kind === 'reports' && creating) && <>
-        {detailLoading && !detail && <p className="analysis-loading">正在读取详情…</p>}
+        {detailLoading && <LoadingSkeleton label="正在加载详情" kind="detail" />}
 
         {event && <article className="analysis-doc">
           {editing ? <div className="analysis-edit">

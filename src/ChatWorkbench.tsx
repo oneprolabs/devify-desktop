@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -313,7 +314,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
       <header className="chat-workbench-sidebar-head">
         <h1>聊天</h1>
         <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)} aria-label="添加会话" title="添加会话"><span aria-hidden="true">＋</span></button></div>
-        <p>{sessions.length} 个会话 · {pendingCount} 个有新增待上传</p>
+        <p>{loading && !sessions.length ? '正在读取会话…' : `${sessions.length} 个会话 · ${pendingCount} 个有新增待上传`}</p>
       </header>
       <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话与聊天记录"/>
       <div className="chat-workbench-filters">
@@ -323,6 +324,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
       </div>
       <div className="chat-workbench-session-label"><span>会话 · {visibleSessions.length}</span><span className="chat-workbench-list-tools">按最后更新 <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label="刷新会话" title="刷新会话">↻</button></span></div>
       <div className="chat-workbench-sessions">
+        {loading && !sessions.length && <LoadingSkeleton label="正在加载会话" />}
         {visibleSessions.map(session => {
           const meta = sessionMeta(session);
           const avatar = avatars[session.username];
@@ -338,7 +340,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
             </span>
           </button>;
         })}
-        {!visibleSessions.length && <p className="chat-workbench-empty">没有符合条件的会话。</p>}
+        {!loading && !visibleSessions.length && <p className="chat-workbench-empty">没有符合条件的会话。</p>}
       </div>
       <SidebarResizeHandle/>
     </aside>
@@ -374,6 +376,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
           <span>{eventsLoading ? '正在同步事件…' : `${scopedEvents.length} 条事件`} · {sessions.length} 个会话 · 云端整理，可人工修改</span>
         </div>
         <div className="chat-workbench-feed">
+          {eventsLoading && <LoadingSkeleton label="正在加载事件" kind="detail" />}
           {(error || eventsError) && <p className="chat-workbench-error">{error || eventsError}</p>}
           {!eventsLoading && !visibleEvents.length && <div className="chat-workbench-empty-panel">
             <h2>当前会话暂无事件</h2>
@@ -405,6 +408,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
         </div>
       </div>
 
+      {!rawMounted && view === 'raw' && <LoadingSkeleton label="正在加载聊天记录" kind="messages" />}
       {rawMounted && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
         {selectedPending.length > 0 && <div className="chat-workbench-banner">
           <span><i/>已选择的聊天中有 {selectedPending.length} 个会话{selectedPendingMessages ? `、${selectedPendingMessages} 条` : ''}新增记录待上传，{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? '将在满足条件时自动备份。' : '自动备份未开启，请点击立即上传。'}</span>

@@ -499,3 +499,47 @@
 .analysis-save-status { display:inline-flex; align-items:center; gap:5px; color:#25844a; font-size:13px; line-height:1.5; }
 .analysis-save-status svg { width:15px; height:15px; flex:none; }
 .analysis-save-hint { margin:6px 0 0; color:#74746e; font-size:13px; line-height:1.5; }
+/* Summary history: keep rule-based highlights compact and readable. */
+.history-page .history-detail-pane { background:#fff; }
+.history-detail .history-sources { padding:12px; border:1px solid #f0eef0; border-radius:9px; background:#faf9fa; }
+.history-detail .history-sources li { align-items:center; gap:10px; }
+.history-source-icon { display:grid; place-items:center; flex:none; width:32px; height:32px; border-radius:8px; color:#a326a6; background:#f1e8f2; }
+.history-source-info { display:flex; flex-direction:column; min-width:0; gap:3px; }
+.history-source-info small { font-family:inherit; font-size:12px; }
+.history-detail .history-stats { margin:8px 0 0 42px; font-family:inherit; font-size:12px; }
+.history-focus-heading { display:flex; justify-content:space-between; align-items:baseline; }
+.history-focus-heading h4 { color:#29272b; margin-bottom:4px; }
+.history-focus-heading > span, .history-insight-hint { font-size:12px; color:#9d9aa1; }
+.history-insight-hint { margin:0 0 8px; }
+.history-focus { gap:10px; padding:10px 0; margin:0; border-bottom:1px solid #f1eff1; align-items:flex-start; }
+.history-focus-marker { flex:none; width:4px; height:29px; margin-top:3px; border-radius:4px; background:#dcc3df; }
+.history-focus > div { flex:1; }
+.history-focus .wxv-insight-tag { display:inline-block; white-space:nowrap; margin:0 6px 0 0; padding:2px 6px; background:#f5eff6; color:#806785; font-family:inherit; }
+.history-focus p { color:#414047; font-size:13px; }
+.history-related-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:16px; }
+.history-related-grid section { min-width:0; background:#faf9fa; border-radius:8px; padding:10px 11px; }
+.history-related-grid h4 { margin:0 0 5px; font-size:12px; }
+.history-related-grid .history-timeline-row { display:block; border:0; padding:4px 0; overflow-wrap:anywhere; font-size:12px; }
+.history-related-grid .history-timeline-row span { display:block; margin-top:3px; }
+.history-terms { margin:14px 0 0; color:#9d9aa1; font-size:12px; }
+@media (max-width:1100px) { .history-related-grid { grid-template-columns:1fr; } }
+.daily-time-editor { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.daily-time-editor .daily-time-save { padding:7px 12px; border:1px solid #e4d3e5; border-radius:7px; background:#fff; color:#96259a; font-size:13px; cursor:pointer; }
+.daily-time-editor .daily-time-save:disabled { opacity:.45; cursor:default; }
+.daily-time-editor small { color:#8b888e; }
+.daily-picker-wrap { position:relative; }
+.daily-picker-trigger { display:flex; align-items:center; gap:10px; min-width:130px; padding:8px 11px; background:#fff; border:1px solid #e2e0e3; border-radius:7px; color:#333; cursor:pointer; }
+.daily-picker-trigger strong { font-size:14px; font-weight:500; font-variant-numeric:tabular-nums; }
+.daily-picker-trigger:disabled { opacity:.5; cursor:default; }
+.daily-picker-chevron { margin-left:auto; color:#999; }
+.daily-picker-panel { width:236px; margin-top:8px; padding:12px; border:1px solid #e9e6e9; border-radius:10px; background:#fff; box-shadow:0 5px 20px #0000000e; }
+.daily-picker-title { color:#444; font-size:13px; font-weight:600; }
+.daily-picker-title span { display:block; margin-top:4px; color:#a09da1; font-size:11px; font-weight:400; }
+.daily-picker-wheels { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:9px; }
+.daily-wheel-column { text-align:center; }
+.daily-wheel-label { display:block; margin-bottom:3px; color:#a09da1; font-size:11px; }
+.daily-wheel { width:68px; overflow:hidden; border:1px solid #f0eef0; border-radius:8px; }
+.daily-wheel button { display:block; width:100%; height:31px; border:0; background:#fff; color:#aaa; font-size:14px; font-variant-numeric:tabular-nums; cursor:pointer; }
+.daily-wheel button.daily-wheel-current { background:#f8eef9; color:#98259c; font-weight:600; }
+.daily-picker-colon { margin-top:17px; color:#999; }
+.daily-picker-done { display:block; margin:9px 0 0 auto; padding:4px 10px; border:0; background:transparent; color:#a126a5; font-size:12px; cursor:pointer; }

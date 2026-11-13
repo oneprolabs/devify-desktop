@@ -331,14 +331,7 @@ fn wxam_decode(payload: &[u8], codec: &str, max_width: u32) -> Result<Vec<u8>, S
     if !(payload.starts_with(b"wxgf") || payload.starts_with(b"WXGF")) {
         return Err("不是 WxAM 图片。".into());
     }
-    let start = payload
-        .windows(4)
-        .position(|window| window == [0, 0, 0, 1])
-        .or_else(|| {
-            payload
-                .windows(3)
-                .position(|window| window == [0, 0, 1])
-        })
+    let start = wxam_image_stream_start(payload)
         .ok_or_else(|| "WxAM 中没有找到 HEVC 码流。".to_string())?;
     let bitstream = &payload[start..];
 
@@ -390,6 +383,24 @@ fn wxam_decode(payload: &[u8], codec: &str, max_width: u32) -> Result<Vec<u8>, S
     Ok(output.stdout)
 }
 
+fn wxam_image_stream_start(payload: &[u8]) -> Option<usize> {
+    // WxAM may store an alpha stream before the actual image stream.
+    // Each independent HEVC stream starts with a VPS NAL unit (type 32).
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    while offset + 4 < payload.len() {
+        let size = if payload[offset..].starts_with(&[0, 0, 0, 1]) { 4 }
+            else if payload[offset..].starts_with(&[0, 0, 1]) { 3 }
+            else { offset += 1; continue };
+        if let Some(&header) = payload.get(offset + size) {
+            if (header >> 1) & 0x3f == 32 { starts.push(offset); }
+        }
+        offset += size;
+    }
+    starts.last().copied().or_else(|| payload.windows(4).position(|w| w == [0, 0, 0, 1]))
+        .or_else(|| payload.windows(3).position(|w| w == [0, 0, 1]))
+}
+
 fn ffmpeg_path() -> Option<PathBuf> {
     for candidate in [
         "/opt/homebrew/bin/ffmpeg",
@@ -414,6 +425,12 @@ fn ffmpeg_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wxam_prefers_image_stream_after_alpha_stream() {
+        let payload = b"wxgf\0\0\0\x01\x40alpha\0\0\0\x01\x40image";
+        assert_eq!(&payload[wxam_image_stream_start(payload).unwrap()..], b"\0\0\0\x01\x40image");
+    }
 
     #[test]
     fn derives_keys_from_code_and_wxid() {

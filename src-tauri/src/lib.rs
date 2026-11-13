@@ -1536,6 +1536,27 @@ async fn devify_topic_update(
 }
 
 #[tauri::command]
+async fn devify_daily_plan_update(
+    app: AppHandle, space_id: i64, topic_id: i64, enabled: Option<bool>, time_local: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if enabled.is_none() && time_local.is_none() { return Err("没有要修改的日报设置。".into()); }
+    let topic = devify_topic_detail(app.clone(), space_id, topic_id).await?;
+    if !matches!(topic.get("title").and_then(|v| v.as_str()), Some(DAILY_TOPIC_TITLE | "每日报告"))
+        || topic.get("period").and_then(|v| v.as_str()) != Some("day") {
+        return Err("无法确认日报计划，请刷新后重试。".into());
+    }
+    let mut body = serde_json::json!({});
+    if let Some(enabled) = enabled { body["enabled"] = enabled.into(); }
+    if let Some(time) = time_local {
+        if !settings::is_valid_time(&time) { return Err("日报时间必须使用 HH:MM 格式。".into()); }
+        body["time_local"] = time.into();
+    }
+    let current = settings::load(&app_data(&app))?;
+    validate_devify_space(&current, space_id)?;
+    devify_json_request(&app, reqwest::Method::PATCH, format!("/api/v1/topics/{topic_id}"), Some(body)).await
+}
+
+#[tauri::command]
 async fn devify_topic_delete(app: AppHandle, topic_id: i64) -> Result<(), String> {
     if topic_id <= 0 {
         return Err("主题标识无效。".into());
@@ -7725,13 +7746,6 @@ pub fn run() {
                     }
                 }
             });
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    daily_schedule_tick(&handle).await;
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                }
-            });
             let sync_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -7784,6 +7798,7 @@ pub fn run() {
             devify_topic_create,
             devify_topic_detail,
             devify_topic_update,
+            devify_daily_plan_update,
             devify_topic_delete,
             devify_questions,
             devify_question_detail,

@@ -1,3 +1,4 @@
+import { LoadingPage } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -175,7 +176,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   };
 
   if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>问答基于已上传记录生成，请在桌面应用中使用。</p></div>;
-  if (loading) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>正在读取问答记录…</p></div>;
+  if (loading) return <LoadingPage title={'问答'} />;
 
   return <div className="ask-page">
     <aside className="ask-side">
