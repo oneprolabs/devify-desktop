@@ -257,7 +257,7 @@ pub fn make_preview(
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     }
-    let target = dir.join(format!("preview_{local_id}_{size}.{kind}"));
+    let target = dir.join(format!("preview_v2_{local_id}_{size}.{kind}"));
     if !target.is_file() {
         write_private(&target, &bytes)?;
     }

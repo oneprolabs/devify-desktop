@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -3079,6 +3080,7 @@ const checkMark = (value: boolean | undefined) =>
 
   const renderMessages = () => (
     <div className="wxv-messages" ref={messageRef}>
+      {busy === 'messages' && !messages.length && <LoadingSkeleton label="正在加载聊天记录" kind="messages" />}
       {hasMore && (
         <button type="button" className="wxv-more" onClick={() => void loadOlder()} disabled={busy === 'messages'}>
           {busy === 'messages' ? '加载中…' : '加载更早的消息'}

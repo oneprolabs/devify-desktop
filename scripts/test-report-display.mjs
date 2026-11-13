@@ -70,6 +70,7 @@ const mocks = {
   'react/jsx-runtime': jsx,
   '@tauri-apps/api/core': { invoke: (...args) => invoke(...args), isTauri: () => true },
   './SidebarResizeHandle': { SidebarResizeHandle: () => null },
+  './LoadingSkeleton': { LoadingPage: () => null, LoadingSkeleton: () => null },
   './EvidenceDrawer': { EvidenceDrawer },
   './toast': { exportNotSupported: () => {} },
 };
@@ -146,9 +147,8 @@ invoke = command => {
 };
 for (const [kind, label] of [['events', '事件'], ['reports', '报告']]) {
   const loading = render({ hooks: [] }, kind);
-  assert.ok(text(loading).includes(`正在同步${label}…`));
-  assert.ok(text(loading).includes('正在读取当前空间的最新结果。'));
-  assert.ok(!text(loading).includes('Devify'));
+  assert.equal(loading.type, mocks['./LoadingSkeleton'].LoadingPage);
+  assert.equal(loading.props.title, label);
 }
 
 async function mount(report, failDetail = false) {

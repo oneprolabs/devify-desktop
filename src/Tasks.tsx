@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { Collection } from './Collection';
@@ -378,7 +379,7 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
       <header className="task-list-head"><div><h1>任务</h1><p>当前空间的云端记录与本机队列</p></div></header>
       <div className="task-list-tools"><button type="button" className="task-new" onClick={() => { retryPause.current = false; setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); setCreating(true); }} disabled={retrying}><span aria-hidden="true">＋</span>新建采集</button></div>
       <div className="task-list-label"><span>云端任务{pagination ? ` · 共 ${pagination.total} 条` : ''}</span><button type="button" className="task-refresh" onClick={alignLoaded} disabled={loading || retrying || !!selectedRetry || !isTauri()} aria-label="刷新任务" title="刷新任务">↻</button></div>
-      {loading && <p className="task-list-empty">正在读取任务…</p>}
+      {loading && <LoadingSkeleton label="正在加载任务" />}
       {!isTauri() && <p className="task-list-empty">请在桌面应用中查看任务。</p>}
       {!loading && settings && !settings.devify?.active_space_id && <p className="task-list-empty">请先选择上传空间。</p>}
       {!loading && settings?.devify?.active_space_id && !settings.devify.base_url && <p className="task-list-empty">请先设置服务地址。</p>}

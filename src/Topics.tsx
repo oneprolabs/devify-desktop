@@ -1,3 +1,4 @@
+import { LoadingPage, LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -83,7 +84,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
     return () => { active = false; };
   }, [spaceId, selectedId]);
 
-  const detail = topicDetail ?? selected;
+  const detail = topicDetail?.id === selectedId ? topicDetail : selected;
   const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: `事件 #${id}` } as TopicEvent));
   const openCount = matchedEvents.filter(event => event.status !== 'done').length;
   const runs = detail?.execution_history ?? detail?.runs ?? detail?.execution_records ?? [];
@@ -125,7 +126,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
   };
 
   if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>主题订阅会按周期执行，请在桌面应用中使用。</p></div>;
-  if (loading) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>正在同步主题订阅…</p></div>;
+  if (loading) return <LoadingPage title={'主题订阅'} />;
 
   return <div className="topic-page">
     <aside className="topic-side">
@@ -214,8 +215,8 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
         <button type="button" className="topic-save" onClick={() => setCreating(true)}>创建第一个主题</button>
       </div>}
 
-      {spaceId && !creating && detail && <div className="topic-detail-wrap">
-        {detailLoading && <p className="topic-detail-loading">正在同步主题详情…</p>}
+      {spaceId && !creating && detailLoading && <LoadingSkeleton label="正在加载主题详情" kind="detail" />}
+      {spaceId && !creating && detail && !detailLoading && <div className="topic-detail-wrap">
         <span className={`topic-state${detail.enabled ? ' on' : ''}`}>{detail.enabled ? '运行中' : '已暂停'}</span>
         <h1>{detail.title}</h1>
         <div className="topic-meta">{periodLabel(detail.period)}{detail.time_local ? ` · ${detail.time_local.slice(0, 5)}` : ''} · 上次执行 {dateLabel(detail.last_run_at)}</div>

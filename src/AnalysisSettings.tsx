@@ -1,3 +1,5 @@
+import { DailyTimePicker } from './DailyTimePicker';
+import { enableDailyPlan, findDailyPlan, type DailyPlan } from './dailyPlan';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
@@ -21,7 +23,7 @@ type Task = {
   name: string;
   desc: string;
   summary: string;
-  control?: { checked: boolean; onChange: (next: boolean) => void; label: string };
+  control?: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean };
   badge?: string;
   rows: Row[];
 };
@@ -49,6 +51,12 @@ export function AnalysisSettings() {
   const [loading, setLoading] = useState(true);
   const [blocked, setBlocked] = useState(false);
   const [scheduleError, setScheduleError] = useState('');
+  const [dailyPlan, setDailyPlan] = useState<DailyPlan | null>(null);
+  const [dailyTimeDraft, setDailyTimeDraft] = useState('08:30');
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyAlternatives, setDailyAlternatives] = useState(0);
+  const [dailySaving, setDailySaving] = useState(false);
+  const [dailyRefresh, setDailyRefresh] = useState(0);
   const queue = useRef<SettingsSaveQueue<AppSettings> | null>(null);
   const unsubscribe = useRef<(() => void) | null>(null);
   const active = useRef(false);
@@ -64,10 +72,6 @@ export function AnalysisSettings() {
       const next = createSettingsSaveQueue({
         initial: mergeSettings(stored),
         save: value => invoke<AppSettings>('app_settings_save', { value }),
-        afterSave: async () => { await invoke('devify_daily_schedule_sync'); },
-        onAfterSaveError: reason => {
-          if (active.current) setScheduleError(`设置已保存，但日报计划同步失败：${analysisSettingsError(reason)}`);
-        },
       });
       unsubscribe.current?.();
       queue.current = next;
@@ -112,6 +116,43 @@ export function AnalysisSettings() {
   }, [ready, blocked, settings.devify.active_space_id]);
 
   useEffect(() => {
+    let current = true;
+    const spaceId = settings.devify.active_space_id;
+    setDailyPlan(null); setDailyAlternatives(0); setScheduleError('');
+    if (!ready || !spaceId) { setDailyLoading(false); return; }
+    setDailyLoading(true);
+    void invoke<unknown>('devify_topics', { spaceId }).then(value => {
+      if (current) {
+        const plan = findDailyPlan(value);
+        setDailyPlan(plan);
+        setDailyTimeDraft(plan?.time_local?.slice(0, 5) || '08:30');
+        if (Array.isArray(value)) setDailyAlternatives(value.filter(item => item?.period === 'day' && ['每日报告', '微信工作日报'].includes(item?.title) && item?.id !== plan?.id && item?.enabled).length);
+      }
+    }).catch(reason => { if (current) setScheduleError(`无法读取服务端日报计划：${analysisSettingsError(reason)}`); })
+      .finally(() => { if (current) setDailyLoading(false); });
+    return () => { current = false; };
+  }, [ready, settings.devify.active_space_id, dailyRefresh]);
+
+  const changeDailyPlan = async (patch: { enabled?: boolean; timeLocal?: string }) => {
+    const spaceId = settings.devify.active_space_id;
+    if (!spaceId || dailySaving) return;
+    setDailySaving(true); setScheduleError('');
+    try {
+      if (!dailyPlan && patch.enabled === true) {
+        await enableDailyPlan({
+          list: () => invoke('devify_topics', { spaceId }),
+          create: time => invoke('devify_topic_create', { spaceId, title: '微信工作日报', instruction: '根据已上传的微信聊天记录生成每日工作日报，汇总当天进展、待办和风险。', period: 'day', timeLocal: time, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }),
+          enable: topicId => invoke('devify_daily_plan_update', { spaceId, topicId, enabled: true, timeLocal: null }),
+        }, dailyTimeDraft);
+      } else if (dailyPlan) {
+        await invoke('devify_daily_plan_update', { spaceId, topicId: dailyPlan.id, enabled: patch.enabled ?? null, timeLocal: patch.timeLocal ?? null });
+      } else return;
+      setDailyRefresh(value => value + 1);
+    } catch (reason) { setScheduleError(`日报设置保存失败：${analysisSettingsError(reason)}`); }
+    finally { setDailySaving(false); }
+  };
+
+  useEffect(() => {
     if (!preferencesNotice) return;
     const timer = window.setTimeout(() => setPreferencesNotice(''), 4000);
     return () => window.clearTimeout(timer);
@@ -142,13 +183,11 @@ export function AnalysisSettings() {
   const automation = settings.automation;
   const agent = settings.agent;
 
-  const dailyOn = automation.enabled && automation.daily_summary_enabled;
+  const dailyOn = dailyPlan?.enabled ?? false;
   const agentLabel = agent.provider_id.trim()
     ? `本地 Agent · ${agent.provider_id}${agent.model.trim() ? ` · ${agent.model}` : ''}`
     : '本地规则整理（未配置 Agent）';
-  const lastDaily = automation.last_daily_run
-    ? `${automation.last_daily_run} · ${DAILY_STATUS_LABEL[automation.last_daily_status ?? ''] ?? '未知'}`
-    : '还没有运行过';
+  const lastDaily = dailyPlan?.last_run_at ? `${dailyPlan.last_run_at}${dailyPlan.last_error ? ` · ${dailyPlan.last_error}` : ''}` : '还没有运行过';
 
   const tasks: Array<{ title: string; items: Task[] }> = [
     {
@@ -189,32 +228,31 @@ export function AnalysisSettings() {
           id: 'daily',
           name: '日报',
           desc: '每天由服务端汇总已上传记录',
-          summary: dailyOn ? `每天 ${automation.daily_time} · 服务端生成` : '已关闭',
+          summary: dailyLoading ? '正在读取服务端设置' : scheduleError ? '无法读取或保存服务端设置' : !dailyPlan ? '开启后将自动创建日报计划' : dailyOn ? `每天 ${dailyPlan.time_local?.slice(0, 5) ?? '未设置时间'} · 服务端生成` : '已关闭',
           control: {
             label: '每日日报',
             checked: dailyOn,
-            onChange: next => update(current => ({
-              ...current,
-              automation: { ...current.automation, enabled: next ? true : current.automation.enabled, daily_summary_enabled: next },
-            })),
+            disabled: !settings.devify.active_space_id || dailyLoading || dailySaving || !!scheduleError,
+            onChange: next => void changeDailyPlan({ enabled: next }),
           },
           rows: [
             { label: '触发方式', value: '每天定点（服务端任务，应用关闭也执行）' },
             {
               label: '时间',
-              control: <input
-                type="time"
-                aria-label="日报时间"
-                value={automation.daily_time}
-                onChange={event => {
-                  const value = event.target.value;
-                  if (value) update(current => ({ ...current, automation: { ...current.automation, daily_time: value } }));
-                }}
-              />,
+              control: <div className="daily-time-editor">
+                <DailyTimePicker value={dailyTimeDraft} onChange={setDailyTimeDraft}
+                  onConfirm={() => { if (dailyPlan && dailyTimeDraft !== dailyPlan.time_local?.slice(0, 5)) void changeDailyPlan({ timeLocal: dailyTimeDraft }); }}
+                  onCancel={() => { if (dailyPlan) setDailyTimeDraft(dailyPlan.time_local?.slice(0, 5) || '08:30'); }}
+                  disabled={!settings.devify.active_space_id || dailyLoading || dailySaving || !!scheduleError} />
+                {dailySaving && <small role="status">正在同步…</small>}
+                {!dailyPlan && <small>开启日报后按此时间创建计划</small>}
+              </div>,
             },
-            { label: '统计范围', value: '已上传的记录；未上传的本机记录不参与' },
+            { label: '服务端计划', value: dailyPlan?.title || '未获取' },
+            { label: '时区', value: dailyPlan?.timezone || '未获取' },
+            { label: '统计范围', value: '计划时间前 24 小时内已上传并整理的事件与记录' },
             { label: '查看位置', value: '报告页面 · 日报' },
-            { label: '最近执行', value: lastDaily },
+            { label: '最近触发', value: lastDaily },
           ],
         },
         {
@@ -293,7 +331,7 @@ export function AnalysisSettings() {
       {tasks.map(group => <section className="analysis-group" key={group.title}>
         <h3>{group.title}</h3>
         {group.items.map(task => <div className="analysis-task" key={task.id}>
-          <div className="analysis-task-head"><div><strong>{task.name}</strong><small>{task.desc} · {task.summary}</small></div>{task.control ? <Switch checked={task.control.checked} onChange={task.control.onChange} label={task.control.label}/> : <span className="analysis-badge">{task.badge}</span>}</div>
+          <div className="analysis-task-head"><div><strong>{task.name}</strong><small>{task.desc} · {task.summary}</small></div>{task.control ? <Switch checked={task.control.checked} onChange={task.control.onChange} label={task.control.label} disabled={task.control.disabled}/> : <span className="analysis-badge">{task.badge}</span>}</div>
           <div className="analysis-rows">{task.rows.map(row => <div className="analysis-row" key={row.label}><div><span>{row.label}</span>{row.desc && <small>{row.desc}</small>}</div><div>{row.control ?? row.value}</div></div>)}</div>
         </div>)}
       </section>)}
@@ -301,7 +339,9 @@ export function AnalysisSettings() {
 
     </fieldset>
     {error && <div className="error" role="alert">{error}</div>}
-    {scheduleError && <div className="error" role="alert">{scheduleError}</div>}
+    {dailyAlternatives > 0 && <p className="analysis-save-hint">服务端还有 {dailyAlternatives} 个已开启的日报计划，可能分别生成报告；请在主题订阅中核对。</p>}
+    {scheduleError && <div className="error" role="alert">{scheduleError} <button type="button" onClick={() => setDailyRefresh(value => value + 1)}>重试</button></div>}
+
     {blocked && <div><p>当前修改未确认保存；重新加载会放弃这些修改。</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? '正在加载…' : '放弃未保存修改并重新加载'}</button></div>}
   </div>;
 }
