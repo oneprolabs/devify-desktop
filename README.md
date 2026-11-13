@@ -243,6 +243,20 @@ Not guaranteed:
 
 The desktop uploads chat archives through Devify's HTTP API; it does not send the daily report by SMTP. Report generation and any notification delivery happen on the server.
 
+## 问题反馈
+
+从侧栏「反馈」或「设置 → 问题反馈」打开，也可从登录、上传失败提示进入。
+填写问题描述，粘贴、拖入或选择最多 3 张截图；提交前可裁剪和实心遮盖敏感信息。
+诊断日志默认不附带，勾选后可预览最近 30 分钟或 24 小时的运行记录。
+诊断采集不读取聊天正文、数据库、密钥或登录凭据。
+
+草稿按服务端和登录用户保存在本机。提交失败可重试原反馈；也可「保存诊断包」
+导出 ZIP 到下载目录。在线反馈发送至界面显示的当前 Devify 实例，需登录且服务端
+已部署反馈模块；处理状态与回复在「我的反馈」查看。
+
+Devify 管理端入口为 `/management/feedback`；部署需运行数据库迁移、挂载私有
+附件目录并登记附件清理任务，详见 Devify 仓库 `docs/feedback.md`。
+
 ## Sync chat records to a Devify space
 
 Settings → 备份周期 owns the upload plan: one card per connected platform with its own switch, schedule (every N minutes, at fixed times, or manual only), optional upload window (allow or deny, with the weekday list) and a **立即备份一次** action. Settings → 本地自动化 syncs the daily report time to a Devify topic. Both require a configured Devify account and a selected space; the whitelist still decides what is sent.

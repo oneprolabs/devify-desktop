@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { desktopInvoke as invoke } from './desktopInvoke';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
@@ -21,6 +22,8 @@ import { Tasks } from './Tasks';
 import { ChatEntry } from './ChatLanding';
 import { ChatWorkbench } from './ChatWorkbench';
 import { LoginGate } from './LoginGate';
+import { Feedback } from './Feedback';
+import { requestFeedback } from './desktopInvoke';
 import { registerDevifyDevice } from './devifyDevice';
 import { refreshEntitlements } from './entitlements';
 import { shouldApplyAuthExpired } from './authEvents';
@@ -31,7 +34,7 @@ import appIcon from './assets/app-icon.png';
 import wechatLogo from './assets/connectors/wechat.svg';
 
 type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
-type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'about';
+type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'feedback' | 'about';
 
 function handleWindowDrag(event: MouseEvent<HTMLElement>) {
   if (!isTauri() || event.button !== 0 || event.clientY - event.currentTarget.getBoundingClientRect().top >= 72) return;
@@ -66,6 +69,7 @@ const settingsPages: { id: SettingsPage; label: string; group?: 'main' | 'local'
   // them, but without this entry the records are unreachable from settings.
   { id: 'history', label: '总结记录', group: 'local' },
   { id: 'agent', label: 'Agent 集成', group: 'local' },
+  { id: 'feedback', label: '问题反馈', group: 'local' },
   { id: 'about', label: '关于', group: 'local' },
 ];
 const wizardSettingsPages: Array<{ id: SettingsPage; label: string; group?: 'main' | 'local' }> = [
@@ -79,11 +83,20 @@ const wizardSettingsPages: Array<{ id: SettingsPage; label: string; group?: 'mai
 const settingsIcons: Record<SettingsPage, ReactNode> = {
   connectors: Icons.key, imports: Icons.download, backup: Icons.clock,
   analysis: Icons.agent, language: Icons.list, account: Icons.allow,
-  history: Icons.history, agent: Icons.agent, about: Icons.info,
+  history: Icons.history, agent: Icons.agent, feedback: Icons.chat, about: Icons.info,
 };
 
 export default function PrototypeShell() {
   const [section, setSection] = useState<Section>('chat');
+  const [feedbackRequest, setFeedbackRequest] = useState<{ category: string; page: string; relatedBatchIds: number[] } | null>(null);
+  useEffect(() => {
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      setFeedbackRequest({ category: detail?.category || 'other', page: detail?.page || 'app', relatedBatchIds: detail?.relatedBatchIds || [] });
+    };
+    window.addEventListener('app:feedback', open);
+    return () => window.removeEventListener('app:feedback', open);
+  }, []);
   const update = useUpdater();
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   useEffect(() => {
@@ -266,6 +279,7 @@ export default function PrototypeShell() {
       <nav className="prototype-nav">{sections.map(navButton)}</nav>
       <div className="prototype-spacer" />
       <nav className="prototype-nav">
+        <button type="button" className="prototype-nav-item" onClick={() => requestFeedback(authState === 'authed' ? 'other' : 'login', authState === 'authed' ? section : 'login')}><span>{Icons.chat}</span><small>反馈</small></button>
         {navButton({ id: 'tasks', label: '任务', icon: RailIcons.tasks })}
         {navButton({ id: 'settings', label: '设置', icon: RailIcons.settings })}
       </nav>
@@ -288,6 +302,7 @@ export default function PrototypeShell() {
           <p className="auth-gate-hint">已保存的登录状态不会丢失，服务恢复后点「重试」即可。</p>
           <button type="button" className="auth-gate-primary" onClick={checkAuth}>重试</button>
           <button type="button" className="auth-gate-secondary" onClick={() => { setAuthNotice(''); setAuthState('anonymous'); }}>返回登录</button>
+          <button type="button" className="auth-gate-secondary" onClick={() => requestFeedback('login', 'login')}>反馈此问题</button>
         </div>
       </div>}
       {authState === 'anonymous' && <LoginGate notice={authNotice} onAuthenticated={handleAuthenticated}/>}
@@ -346,6 +361,7 @@ export default function PrototypeShell() {
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && <HistoryPage />}
           {settingsPage === 'agent' && <AgentHub />}
+          {settingsPage === 'feedback' && <div className="feedback-entry"><div><strong>遇到问题或有改进建议？</strong><p>添加截图与诊断信息，并查看反馈处理进度。</p></div><button type="button" onClick={() => requestFeedback('other', 'settings')}>打开问题反馈</button></div>}
           {settingsPage === 'about' && <About />}
         </div>
         </div>
@@ -356,5 +372,6 @@ export default function PrototypeShell() {
       {section === 'ask' && <AskPage onOpenEvent={openEvent} />}
       </>}
     </section>
+    {feedbackRequest && <Feedback category={feedbackRequest.category} page={feedbackRequest.page} relatedBatchIds={feedbackRequest.relatedBatchIds} onClose={() => setFeedbackRequest(null)} />}
   </main>;
 }
