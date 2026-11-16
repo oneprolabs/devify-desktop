@@ -215,3 +215,72 @@ fn daily_request_uses_fixed_identity_and_merge_preserves_unrelated_settings() {
     settings::update(dir.path(), |s| { s.devify.active_space_id = Some(8); Ok(()) }).unwrap();
     assert!(context.validate().is_err());
 }
+
+#[test]
+fn refresh_server_error_keeps_credentials_and_reports_unavailable() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    settings_for(dir.path(), &base);
+    let original = credentials(&base, "synthetic-expired");
+    desktop_credentials::save(dir.path(), &original).unwrap();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        socket.read(&mut request).unwrap();
+        socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut cleared = None;
+    let error = runtime.block_on(devify_access_token_with_cleanup(dir.path(), &base, &mut cleared)).unwrap_err();
+    assert!(matches!(error, DevifyTokenError::Unavailable(_)));
+    assert!(cleared.is_none());
+    assert!(desktop_credentials::load(dir.path(), &base).unwrap() == original);
+    server.join().unwrap();
+}
+
+#[test]
+fn rejected_access_can_force_refresh_before_its_local_expiry() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    settings_for(dir.path(), &base);
+    let payload = URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{}}}", chrono::Utc::now().timestamp() + 3600));
+    desktop_credentials::save(dir.path(), &credentials(&base, &format!("x.{payload}.x"))).unwrap();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        let size = socket.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..size]).starts_with("POST /api/v1/auth/token/refresh "));
+        let body = r#"{"access":"refreshed-token"}"#;
+        write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut cleared = None;
+    assert_eq!(runtime.block_on(devify_access_token_resolve(dir.path(), &base, &mut cleared, true)).unwrap(), "refreshed-token");
+    assert_eq!(desktop_credentials::load(dir.path(), &base).unwrap().access, "refreshed-token");
+    server.join().unwrap();
+}
+
+#[test]
+fn desktop_login_config_reports_html_as_service_configuration_error() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let settings = settings_for(dir.path(), &base);
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        let size = socket.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /api/v1/auth/desktop/config "));
+        let body = "<html>not the login API</html>";
+        write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let error = match runtime.block_on(devify_auth_config(&settings.devify)) {
+        Ok(_) => panic!("HTML cannot be a login configuration"),
+        Err(error) => error,
+    };
+    assert!(error.contains("服务端登录配置响应无效"));
+    server.join().unwrap();
+}

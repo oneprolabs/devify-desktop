@@ -42,7 +42,7 @@ const deferred = () => {
 const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
 const render = (instance, component) => {
   current = instance; instance.index = 0; instance.effects = [];
-  const tree = component();
+  const tree = component({});
   for (const effect of instance.effects) effect();
   current = undefined;
   return tree;

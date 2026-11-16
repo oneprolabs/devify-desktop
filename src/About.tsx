@@ -37,17 +37,9 @@ function platformLabel(platform: string, arch: string): string {
   return `${name} · ${chip}`;
 }
 
-export function About() {
+export function UpdatePanel() {
   const update = useUpdater();
-  const [info, setInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    invoke<AppInfo>('app_info')
-      .then(setInfo)
-      .catch(value => setError(`读取版本信息失败：${String(value)}`));
-  }, []);
-
   const busyUpdate = ['checking', 'downloading', 'installing'].includes(update.status);
   const updateStatus = update.status === 'checking' ? '正在检查更新…'
     : update.status === 'latest' ? '当前已是最新版本'
@@ -59,21 +51,8 @@ export function About() {
     : update.status === 'error' ? '检查更新失败'
     : '检查软件更新';
 
-  return <div className="settings-page about-page">
-    <header className="page-head"><h2>关于</h2><p className="help">了解 AIMyChats 应用和版本信息。</p></header>
-    <div className="about-hero">
-      <div className="about-lockup">
-        <img className="about-mark" src={appIcon} alt="" width={44} height={44} />
-        <h2>{info?.name ?? 'AIMyChats'}</h2>
-      </div>
-      <p className="about-tagline">查看和备份微信聊天记录，整理事件与总结。</p>
-      {error && <div className="error" role="alert">{error}</div>}
-    </div>
-
-    <div className="about-details">
-    <section className="panel">
-      <h2>版本信息</h2>
-      <div className="about-update" aria-live="polite" aria-busy={busyUpdate}>
+  return <>{error && <p role="alert">{error}</p>}
+<div className="about-update" aria-live="polite" aria-busy={busyUpdate}>
         <div className="about-update-status">
           {busyUpdate
             ? <span className="update-spinner" aria-hidden="true"/>
@@ -92,7 +71,35 @@ export function About() {
           <button type="button" className="update-link" onClick={() => void invoke('devify_auth_open', { url: RELEASE_URL }).catch(value => setError(`打开下载页面失败：${String(value)}`))}>手动下载</button>
         </div>
         {update.status === 'downloading' && update.progress != null && <div className="about-update-progress" role="progressbar" aria-valuenow={update.progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${update.progress}%` }}/></div>}
+      </div></>;
+}
+
+export function About() {
+  const [info, setInfo] = useState<AppInfo | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    invoke<AppInfo>('app_info')
+      .then(setInfo)
+      .catch(value => setError(`读取版本信息失败：${String(value)}`));
+  }, []);
+
+
+  return <div className="settings-page about-page">
+    <header className="page-head"><h2>关于</h2><p className="help">了解 AIMyChats 应用和版本信息。</p></header>
+    <div className="about-hero">
+      <div className="about-lockup">
+        <img className="about-mark" src={appIcon} alt="" width={44} height={44} />
+        <h2>{info?.name ?? 'AIMyChats'}</h2>
       </div>
+      <p className="about-tagline">查看和备份微信聊天记录，整理事件与总结。</p>
+      {error && <div className="error" role="alert">{error}</div>}
+    </div>
+
+    <div className="about-details">
+    <section className="panel">
+      <h2>版本信息</h2>
+      <UpdatePanel />
       <dl className="about-meta">
         <div>
           <dt>版本</dt>

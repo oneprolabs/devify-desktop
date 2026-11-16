@@ -662,8 +662,30 @@ fn reconcile_round_caps_requests_and_rotates_without_starvation() {
 }
 
 #[test]
+fn reconcile_accepts_slow_completed_batch_response() {
+    let listener = StdListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+        account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
+    let snapshot = job("current", Some(owner), &base);
+    let (data, _, fixed_token) = fixture(&base, vec![snapshot.clone()]);
+    let server = serve(listener, fixed_token, batch(), || {
+        std::thread::sleep(Duration::from_millis(2200));
+    });
+    runtime().block_on(async {
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let _lease = UPLOAD_IDENTITY_LOCK.read().await;
+        let deadline = tokio::time::Instant::now() + RECONCILE_TOTAL_BUDGET;
+        let last = std::sync::Mutex::new(None);
+        assert_eq!(reconcile_owned_round(data.path(), &verified, &token, &[snapshot], &last, deadline).await, 1);
+    });
+    server.join().unwrap();
+    assert_eq!(settings::load(data.path()).unwrap().upload_queue[0].status, "completed");
+}
+
+#[test]
 fn cancelled_reconcile_get_preserves_state_and_releases_identity_lease() {
-    for (deadline_ms, server_delay_ms, limit_ms) in [(50, 200, 500), (3000, 2200, 1800)] {
+    for (deadline_ms, server_delay_ms, limit_ms) in [(50, 200, 500), (300, 500, 1000)] {
         let listener = StdListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,

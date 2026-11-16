@@ -230,7 +230,7 @@ async fn devify_auth_config(
     let payload: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("读取服务端登录配置响应失败：{e}"))?;
+        .map_err(|_| "服务端登录配置响应无效，请检查服务地址并稍后重试。".to_string())?;
     serde_json::from_value(payload.get("data").unwrap_or(&payload).clone())
         .map_err(|e| format!("服务端登录配置格式无效：{e}"))
 }
@@ -262,6 +262,10 @@ async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<St
 }
 
 async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, cleared_generation: &mut Option<u64>) -> Result<String, DevifyTokenError> {
+    devify_access_token_resolve(app_data, base_url, cleared_generation, false).await
+}
+
+async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_generation: &mut Option<u64>, force_refresh: bool) -> Result<String, DevifyTokenError> {
     let base_url = settings::canonical_api_base(base_url)?;
     // Serialize refresh requests while allowing login/logout to invalidate their CAS.
     let _refresh_guard = CREDENTIAL_REFRESH_LOCK.lock().await;
@@ -274,7 +278,7 @@ async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, clear
         .and_then(|part| URL_SAFE_NO_PAD.decode(part).ok())
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .and_then(|payload| payload.get("exp").and_then(|v| v.as_i64()));
-    if !access.is_empty()
+    if !force_refresh && !access.is_empty()
         && exp
             .map(|value| value > chrono::Utc::now().timestamp() + 60)
             .unwrap_or(false)
@@ -302,11 +306,13 @@ async fn devify_access_token_with_cleanup(app_data: &Path, base_url: &str, clear
         if status == reqwest::StatusCode::UNAUTHORIZED {
             // The refresh token was revoked or its account no longer exists.
             // Keep trying it forever would only hide the real problem.
-            if desktop_credentials::clear_if_current(app_data, token_generation, &original_tokens).unwrap_or(false) {
-                *cleared_generation = Some(token_generation.wrapping_add(1));
+            match desktop_credentials::clear_if_current(app_data, token_generation, &original_tokens) {
+                Ok(true) => *cleared_generation = Some(token_generation.wrapping_add(1)),
+                _ => return Err(DevifyTokenError::Unavailable("登录状态正在变更，请稍后重试。".into())),
             }
+            return Err("服务端登录令牌已失效，请重新登录。".into());
         }
-        return Err("服务端登录令牌已失效，请重新登录。".into());
+        return Err(DevifyTokenError::Unavailable(format!("刷新登录状态失败（HTTP {}），请稍后重试。", status.as_u16())));
     }
     let payload: serde_json::Value = response
         .json()
@@ -859,15 +865,12 @@ fn request_generation(data: &Path, base_url: &str, token: &str) -> Result<u64, S
 }
 
 fn forget_devify_session(app: &AppHandle, payload: &serde_json::Value, base_url: &str, token: &str, generation: u64) -> String {
-    let Ok(_identity) = UPLOAD_IDENTITY_LOCK.try_write() else {
-        return "服务端登录状态正在使用，请重新操作。".into();
-    };
-    if !desktop_credentials::clear_if_access_locked(&app_data(app), base_url, token, generation).unwrap_or(false) {
+    if request_generation(&app_data(app), base_url, token).ok() != Some(generation) {
         return "服务端登录状态已改变，请重新操作。".into();
     }
-    let message = devify_error_message(payload).unwrap_or_else(|| "登录状态已失效，请重新登录。".to_string());
+    let message = devify_error_message(payload).unwrap_or_else(|| "正在检查登录状态。".to_string());
     let _ = app.emit("devify-auth-expired", serde_json::json!({ "message": message }));
-    "登录状态已失效，请重新登录服务端。".to_string()
+    "服务端需要重新验证登录，请稍后重试。".to_string()
 }
 
 fn devify_response_error(
@@ -3479,6 +3482,7 @@ async fn devify_upload_wechat(
             voice_processed,
         });
     }
+    let archive_size = body.len();
     let form = reqwest::multipart::Form::new().part(
         "archive",
         reqwest::multipart::Part::bytes(body)
@@ -3490,15 +3494,25 @@ async fn devify_upload_wechat(
     if let Some(auth) = &cloud_retry {
         validate_live_cloud_retry(&data, auth)?;
     }
+    let started = std::time::Instant::now();
     let uploaded = client
         .put(format!("{upload_base_url}/api/v1/chat/uploads/{batch_id}/archive"))
         .bearer_auth(&token)
         .multipart(form)
         .send()
         .await
-        .map_err(|e| devify_network_message("上传归档失败", &e))?;
+        .map_err(|e| {
+            let reason = if e.is_timeout() {
+                "传输或等待服务端响应超时，上传结果需要核对"
+            } else if e.is_connect() {
+                "无法连接服务端，上传结果需要核对"
+            } else {
+                "上传请求中断，上传结果需要核对"
+            };
+            format!("{reason}（归档 {archive_size} 字节，耗时 {:.1} 秒）", started.elapsed().as_secs_f64())
+        })?;
     if !uploaded.status().is_success() {
-        return Err(format!("上传归档失败：{}", uploaded.status()));
+        return Err(format!("上传归档失败：HTTP {}（归档 {archive_size} 字节，耗时 {:.1} 秒）", uploaded.status().as_u16(), started.elapsed().as_secs_f64()));
     }
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
     if let Some(auth) = &cloud_retry {
@@ -3892,12 +3906,29 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
         .await
     {
         Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
-            if !desktop_credentials::clear_if_access(&data, &settings.devify.base_url, &token, generation)? {
+            if request_generation(&data, &settings.devify.base_url, &token)? != generation {
                 return Err("登录状态已改变，请重新检查。".into());
             }
-            Ok(DevifyAuthStatus { authenticated: false, unavailable: false, error: String::new() })
+            let mut cleared = None;
+            match devify_access_token_resolve(&data, &settings.devify.base_url, &mut cleared, true).await {
+                Ok(refreshed) => {
+                    let refreshed_generation = request_generation(&data, &settings.devify.base_url, &refreshed)?;
+                    let response = devify_client().get(format!("{}/api/v1/spaces", settings.devify.resolved_base_url()?))
+                        .bearer_auth(&refreshed).send().await;
+                    if request_generation(&data, &settings.devify.base_url, &refreshed)? != refreshed_generation {
+                        return Err("登录状态已改变，请重新检查。".into());
+                    }
+                    match response {
+                        Ok(value) if value.status().is_success() => Ok(DevifyAuthStatus { authenticated: true, unavailable: false, error: String::new() }),
+                        Ok(value) => Ok(DevifyAuthStatus { authenticated: false, unavailable: true, error: format!("登录验证失败（HTTP {}），请稍后重试。", value.status().as_u16()) }),
+                        Err(error) => Ok(DevifyAuthStatus { authenticated: false, unavailable: true, error: devify_network_message("检查登录状态失败", &error) }),
+                    }
+                }
+                Err(DevifyTokenError::Unavailable(error)) => Ok(DevifyAuthStatus { authenticated: false, unavailable: true, error }),
+                Err(DevifyTokenError::Message(_)) => auth_status_after_token_failure(&data, &settings.devify.base_url, generation, cleared),
+            }
         }
-        Ok(response) if response.status().is_server_error() => {
+        Ok(response) if !response.status().is_success() => {
             if request_generation(&data, &settings.devify.base_url, &token)? != generation {
                 return Err("登录状态已改变，请重新检查。".into());
             }
@@ -3928,11 +3959,11 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
         }
         // Unknown failures (TLS, proxy, body) keep the stored session: a local
         // problem must not look like a logout.
-        Err(_) => {
+        Err(error) => {
             if request_generation(&data, &settings.devify.base_url, &token)? != generation {
                 return Err("登录状态已改变，请重新检查。".into());
             }
-            Ok(DevifyAuthStatus { authenticated: true, unavailable: false, error: String::new() })
+            Ok(DevifyAuthStatus { authenticated: false, unavailable: true, error: devify_network_message("检查登录状态失败", &error) })
         }
     }
 }
@@ -4020,6 +4051,30 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
     if items.iter().filter(|item| item.get("device_id").and_then(serde_json::Value::as_str) == Some(device_id.as_str())
         && item.get("status").and_then(serde_json::Value::as_str) == Some("active")).count() != 1 {
         return Err("当前设备不属于该用户或已停用。".into());
+    }
+    // A heartbeat for an already registered device must not take the exclusive
+    // identity lock: an upload can legitimately hold its read lease for minutes.
+    if device_id == settings.devify.device_id
+        && platform == settings.devify.platform
+        && device_label == settings.devify.device_label
+    {
+        let (stored, current_generation) = desktop_credentials::load_with_generation(&data, &base)?;
+        let current = settings::load(&data)?;
+        if stored != credentials || current_generation != generation
+            || current.devify.resolved_base_url()? != base
+            || current.devify.device_id != device_id
+            || current.devify.active_space_id != settings.devify.active_space_id
+            || current.active_account_id != settings.active_account_id {
+            return Err("设备登记的登录状态已改变。".into());
+        }
+        return Ok(DevifyDeviceResult {
+            device_id,
+            label: device.get("label").and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty()).unwrap_or(device_label.as_str()).to_string(),
+            platform,
+            status: device.get("status").and_then(|value| value.as_str()).unwrap_or("active").to_string(),
+            generation,
+        });
     }
     drop(identity);
     let device_changed = device_id != settings.devify.device_id;
@@ -4897,8 +4952,8 @@ fn upload_job_needs_reconciliation(job: &settings::UploadJob) -> bool {
 }
 
 const RECONCILE_MAX_BATCH_CHECKS: usize = 8;
-const RECONCILE_TOTAL_BUDGET: Duration = Duration::from_secs(5);
-const RECONCILE_BATCH_TIMEOUT: Duration = Duration::from_secs(1);
+const RECONCILE_TOTAL_BUDGET: Duration = Duration::from_secs(20);
+const RECONCILE_BATCH_TIMEOUT: Duration = Duration::from_secs(8);
 
 // Advance by the last *attempted* ID, not a fixed page size: a timed-out round may
 // manage only one request. With a stable pending set every job eventually gets a turn.
