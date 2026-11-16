@@ -527,20 +527,28 @@ WX_PASS='<64 hex>' cargo run --quiet --example probe -- 会议 200
 
 ### Alpha updater releases
 
-The updater reads `latest.json` from the fixed `alpha` Release in
+Each version gets its own Release in
 [`oneprolabs/devify-desktop-releases`](https://github.com/oneprolabs/devify-desktop-releases),
-which is public so anonymous update checks work. The source repository stays private; only build
-artifacts are published. The first updater-enabled version still requires one manual installation.
+tagged `v<version>` (for example `v0.1.3`). The release repository is public so anonymous update
+checks work; the source repository stays private and only build artifacts are published. The first
+updater-enabled version still requires one manual installation.
+
+The Tauri updater needs one stable URL, so `latest.json` lives in a separate **manifest-only**
+Release tagged `alpha`. That Release never holds versioned installers: it only carries the current
+manifest, whose download URL points at the matching `v<version>` Release.
 
 GitHub Actions workflow `.github/workflows/release-macos.yml` builds and publishes every release:
 
-1. Run **Actions → Release macOS → Run workflow** and pick the release tag (default `alpha`).
+1. Run **Actions → Release macOS → Run workflow**. Leave the tag input empty to publish
+   `v<version>` for the version in `src-tauri/tauri.conf.json`; override it only for a deliberate
+   re-tag.
 2. The job runs on `macos-15` (Apple Silicon), imports the self-signed macOS identity, runs
-   `scripts/prepare-alpha-update.sh` (version check → build → `macos-build.sh --no-install` →
-   updater archive → Tauri signature → `latest.json`), then uploads the DMG, `.app.tar.gz`, `.sig`
-   and finally `latest.json` to the releases repository. Uploading the manifest last means a
-   published manifest never points at an asset that has not landed yet.
-3. The run page links to the release; the same files are attached to the workflow run as artifacts.
+   `scripts/prepare-release.sh` (version check → build → `macos-build.sh --no-install` →
+   updater archive → Tauri signature → `latest.json`), then:
+   - creates or updates the versioned Release with the DMG, `.app.tar.gz` and `.sig`;
+   - creates or updates the `alpha` manifest Release and uploads `latest.json` last.
+3. The run page links to both Releases; the same files are attached to the workflow run as
+   artifacts.
 
 Required repository secrets (Settings → Secrets and variables → Actions):
 
@@ -563,12 +571,14 @@ Publishing by hand (same result, useful when Actions is unavailable):
    `src-tauri/Cargo.toml`. Alpha prereleases must compare newer than the installed version:
    `0.0.1-alpha.1` is older than `0.0.1`.
 2. Set `TAURI_SIGNING_PRIVATE_KEY_PATH`, optionally `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
-   `AIMYCHATS_RELEASE_NOTES`. `RELEASES_REPO` / `RELEASES_TAG` default to
-   `oneprolabs/devify-desktop-releases` / `alpha`.
-3. Run `scripts/prepare-alpha-update.sh`. It builds and signs without installing or publishing.
-4. Upload the DMG, the archive and signature first, then `latest.json` last:
-   `gh release upload alpha -R oneprolabs/devify-desktop-releases --clobber <files>`.
-5. Install an updater-enabled baseline manually, then test check → download → install → restart,
+   `AIMYCHATS_RELEASE_NOTES`. `RELEASES_REPO` defaults to `oneprolabs/devify-desktop-releases` and
+   `RELEASES_TAG` to `v<version>`.
+3. Run `scripts/prepare-release.sh`. It builds and signs without installing or publishing.
+4. Upload the DMG, the archive and signature to the versioned Release:
+   `gh release upload "v<version>" -R oneprolabs/devify-desktop-releases --clobber <files>`.
+5. Upload `latest.json` to the manifest Release last:
+   `gh release upload alpha -R oneprolabs/devify-desktop-releases --clobber latest.json`.
+6. Install an updater-enabled baseline manually, then test check → download → install → restart,
    preserved data and login, and macOS Full Disk Access before relying on updates.
 
 The generated manifest currently includes only the architecture built on this Mac; merge valid

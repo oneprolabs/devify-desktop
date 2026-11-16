@@ -3,6 +3,10 @@ name: Release macOS
 # Builds the signed macOS app, the updater archive and latest.json, then publishes
 # them to oneprolabs/devify-desktop-releases.
 #
+# Every version gets its own Release tagged `v<version>` (DMG + updater archive +
+# signature). The Tauri updater needs a stable URL, so `latest.json` lives in a
+# separate manifest-only Release (`alpha`) that never holds versioned assets.
+#
 # Required repository secrets:
 #   RELEASES_TOKEN                       PAT with "Contents: read and write" on the releases repo
 #   MACOS_SIGNING_P12                    base64 of the "AIMyChats Local Signing" identity .p12
@@ -14,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag in oneprolabs/devify-desktop-releases
-        required: true
-        default: alpha
+        description: Release tag override (leave empty to use v<version>)
+        required: false
+        default: ''
       notes:
         description: Release notes (Markdown)
         required: false
@@ -34,7 +38,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-macos-${{ github.event.inputs.tag }}
+  # The empty tag input falls back to the ref, so reruns of the same branch queue
+  # instead of clobbering each other.
+  group: release-macos-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -44,11 +50,27 @@ jobs:
     timeout-minutes: 90
     env:
       RELEASES_REPO: oneprolabs/devify-desktop-releases
-      RELEASES_TAG: ${{ github.event.inputs.tag }}
+      # Fixed Release that only carries latest.json. Existing installs point their
+      # updater at this tag, so it must not change.
+      MANIFEST_TAG: alpha
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="v${VERSION}"
+          fi
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          printf 'manifest_tag=%s\n' "$MANIFEST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG (version $VERSION), manifest tag: $MANIFEST_TAG"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -133,9 +155,10 @@ jobs:
       - name: Build, sign, and create updater artifacts
         env:
           AIMYCHATS_RELEASE_NOTES: ${{ inputs.notes }}
+          RELEASES_TAG: ${{ steps.release.outputs.tag }}
           TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ runner.temp }}/updater.key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: scripts/prepare-alpha-update.sh
+        run: scripts/prepare-release.sh
 
       - name: Inspect artifacts
         run: |
@@ -174,7 +197,7 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: aimychats-macos-${{ inputs.tag }}
+          name: aimychats-macos-${{ steps.release.outputs.tag }}
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/dmg/AIMyChats_*_aarch64.dmg
@@ -182,12 +205,13 @@ jobs:
             src-tauri/target/release/bundle/macos/AIMyChats_*_aarch64.app.tar.gz.sig
             src-tauri/target/release/bundle/macos/latest.json
 
-      - name: Publish to releases repository
+      - name: Publish versioned release
         if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           NOTES: ${{ inputs.notes }}
           PRERELEASE: ${{ inputs.prerelease }}
+          RELEASES_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
@@ -195,8 +219,7 @@ jobs:
           DMG="$BUNDLE/dmg/AIMyChats_${VERSION}_aarch64.dmg"
           ARCHIVE="$BUNDLE/macos/AIMyChats_${VERSION}_aarch64.app.tar.gz"
           SIG="$ARCHIVE.sig"
-          MANIFEST="$BUNDLE/macos/latest.json"
-          for file in "$DMG" "$ARCHIVE" "$SIG" "$MANIFEST"; do
+          for file in "$DMG" "$ARCHIVE" "$SIG"; do
             test -s "$file"
           done
 
@@ -205,20 +228,48 @@ jobs:
           PRERELEASE_FLAG=""
           if [ "$PRERELEASE" = "true" ]; then PRERELEASE_FLAG="--prerelease"; fi
 
+          # Each version owns its tag: re-running the same version replaces that
+          # release's assets, while a new version never lands in an older release.
           if gh release view "$RELEASES_TAG" -R "$RELEASES_REPO" >/dev/null 2>&1; then
             gh release edit "$RELEASES_TAG" -R "$RELEASES_REPO" --title "$TITLE" --notes "$BODY" $PRERELEASE_FLAG
           else
             gh release create "$RELEASES_TAG" -R "$RELEASES_REPO" --title "$TITLE" --notes "$BODY" $PRERELEASE_FLAG
           fi
 
-          # Updater payload first, manifest last: never publish a manifest that
-          # points at an asset which has not landed yet.
           gh release upload "$RELEASES_TAG" -R "$RELEASES_REPO" --clobber "$DMG" "$ARCHIVE" "$SIG"
-          gh release upload "$RELEASES_TAG" -R "$RELEASES_REPO" --clobber "$MANIFEST"
+
+      - name: Publish updater manifest
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          RELEASES_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          MANIFEST=src-tauri/target/release/bundle/macos/latest.json
+          test -s "$MANIFEST"
+
+          # The manifest release is a pointer, not a version: create it once, keep it
+          # prerelease, and never upload versioned assets here.
+          if gh release view "$MANIFEST_TAG" -R "$RELEASES_REPO" >/dev/null 2>&1; then
+            gh release edit "$MANIFEST_TAG" -R "$RELEASES_REPO" \
+              --title "AIMyChats updater manifest" \
+              --notes "Stable updater endpoint. \`latest.json\` points at the newest versioned release; download installers from that release." \
+              --prerelease
+          else
+            gh release create "$MANIFEST_TAG" -R "$RELEASES_REPO" \
+              --title "AIMyChats updater manifest" \
+              --notes "Stable updater endpoint. \`latest.json\` points at the newest versioned release; download installers from that release." \
+              --prerelease
+          fi
+
+          # Manifest last: never publish a manifest that points at an asset which has
+          # not landed yet.
+          gh release upload "$MANIFEST_TAG" -R "$RELEASES_REPO" --clobber "$MANIFEST"
 
       - name: Summarise publish
         env:
           PUBLISH: ${{ inputs.publish }}
+          RELEASES_TAG: ${{ steps.release.outputs.tag }}
         run: |
           {
             echo "### AIMyChats release"
@@ -228,6 +279,7 @@ jobs:
             echo "- Version: \`$(node -p "require('./src-tauri/tauri.conf.json').version")\`"
             if [ "$PUBLISH" = "true" ]; then
               echo "- Release: https://github.com/$RELEASES_REPO/releases/tag/$RELEASES_TAG"
+              echo "- Updater manifest: https://github.com/$RELEASES_REPO/releases/download/$MANIFEST_TAG/latest.json"
             else
               echo "- Publish: **skipped** (build-only run); artifacts are attached to this workflow run"
             fi

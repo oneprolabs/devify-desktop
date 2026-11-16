@@ -6,8 +6,10 @@ cd "$ROOT"
 : "${TAURI_SIGNING_PRIVATE_KEY_PATH:?Set TAURI_SIGNING_PRIVATE_KEY_PATH to the updater private key file}"
 test -r "$TAURI_SIGNING_PRIVATE_KEY_PATH"
 RELEASES_REPO="${RELEASES_REPO:-oneprolabs/devify-desktop-releases}"
-RELEASES_TAG="${RELEASES_TAG:-alpha}"
 VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+# One Release per version. The manifest lives in a separate fixed Release (`alpha`),
+# which the installed apps already point at.
+RELEASES_TAG="${RELEASES_TAG:-v${VERSION}}"
 node - "$VERSION" <<'NODE'
 const fs = require('fs');
 const version = process.argv[2];
@@ -39,4 +41,5 @@ const manifest = {version, notes: process.env.AIMYCHATS_RELEASE_NOTES || '', pub
 fs.writeFileSync(`${archive.slice(0, archive.lastIndexOf('/'))}/latest.json`, JSON.stringify(manifest, null, 2) + '\n');
 NODE
 printf 'Update artifacts: %s, %s.sig, %s/latest.json\n' "$ARCHIVE" "$ARCHIVE" "$BUNDLE"
-printf 'Manifest target: https://github.com/%s/releases/download/%s\n' "$RELEASES_REPO" "$RELEASES_TAG"
+printf 'Version release: https://github.com/%s/releases/tag/%s\n' "$RELEASES_REPO" "$RELEASES_TAG"
+printf 'Manifest release: %s (upload latest.json with --clobber)\n' "${MANIFEST_TAG:-alpha}"
