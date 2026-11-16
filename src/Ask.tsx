@@ -7,7 +7,7 @@ import { questionAnswerError } from './analysisSettingsText';
 
 type Citation = { kind: string; id: number; title: string; excerpt: string; conversation_id?: number | null; event_id?: number | null; note_id?: number | null };
 type Question = { id: number; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };
-type Settings = { devify?: { active_space_id: number | null } };
+type Settings = { devify?: { active_space_id: string | null } };
 
 const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
 const rangerOptions = ['全部', '近 7 天', '今天'];
@@ -32,7 +32,7 @@ function inRange(question: Question, range: string): boolean {
 }
 
 export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => void }) {
-  const [spaceId, setSpaceId] = useState<number | null>(null);
+  const [spaceId, setSpaceId] = useState<string | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [draft, setDraft] = useState('');

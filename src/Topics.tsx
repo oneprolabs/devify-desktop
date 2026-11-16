@@ -25,7 +25,7 @@ type Topic = {
   execution_records?: TopicRun[];
   matched_event_ids?: number[];
 };
-type Settings = { devify?: { active_space_id: number | null } };
+type Settings = { devify?: { active_space_id: string | null } };
 
 const periods = [{ value: 'day', label: '每天' }, { value: 'week', label: '每周' }, { value: 'month', label: '每月' }];
 const periodLabel = (value: string) => periods.find(item => item.value === value)?.label ?? value;
@@ -40,7 +40,7 @@ function StateDot({ done }: { done: boolean }) {
 }
 
 export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => void }) {
-  const [spaceId, setSpaceId] = useState<number | null>(null);
+  const [spaceId, setSpaceId] = useState<string | null>(null);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);

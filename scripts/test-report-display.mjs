@@ -155,15 +155,15 @@ async function mount(report, failDetail = false) {
   const calls = [];
   invoke = (command, args) => {
     calls.push({ command, args });
-    if (command === 'app_settings_get') return Promise.resolve({ devify: { active_space_id: 999 } });
+    if (command === 'app_settings_get') return Promise.resolve({ devify: { active_space_id: "999" } });
     if (command === 'devify_analysis_list') {
-      assert.deepEqual(args, { kind: 'reports', spaceId: 999, page: 1 });
+      assert.deepEqual(args, { kind: 'reports', spaceId: "999", page: 1 });
       // List payload intentionally omits the body and sections: assertions below
       // must exercise the separate detail response, not merely a list row.
       return Promise.resolve({ list: [{ id: report.id, title: report.title, status: report.status }], pagination: { total: 1 } });
     }
     if (command === 'devify_analysis_detail') {
-      assert.deepEqual(args, { kind: 'reports', spaceId: 999, itemId: report.id });
+      assert.deepEqual(args, { kind: 'reports', spaceId: "999", itemId: report.id });
       return failDetail ? Promise.reject('虚构详情错误') : Promise.resolve(report);
     }
     throw Error(`unexpected IPC: ${command}`);
@@ -206,7 +206,7 @@ buttons[0].props.onClick();
 tree = render(partial.instance);
 let drawer = find(tree, node => node.type === EvidenceDrawer, 'event source did not open evidence');
 assert.deepEqual(drawer.props.target, { kind: 'event', id: 601 }, 'event source takes priority over note source');
-assert.equal(drawer.props.spaceId, 999);
+assert.equal(drawer.props.spaceId, "999");
 drawer.props.onClose();
 tree = render(partial.instance);
 assert.ok(!elements(tree).some(node => node.type === EvidenceDrawer), 'evidence should close');

@@ -7,7 +7,7 @@ type HomeMode = 'new' | 'connected';
 type Account = { id: string; modified_at?: number | null; encrypted_count?: number };
 type KeyStatus = { keys?: Array<{ account: string }> };
 type ScanResult = { accounts?: Account[] };
-type Settings = { connectors?: { wechat_enabled?: boolean }; active_account_id?: string; chat?: { allowed_usernames?: Record<string, string[]>; sync_interval_seconds?: number }; devify?: { active_space_id?: number | null } };
+type Settings = { connectors?: { wechat_enabled?: boolean }; active_account_id?: string; chat?: { allowed_usernames?: Record<string, string[]>; sync_interval_seconds?: number }; devify?: { active_space_id?: string | null } };
 
 type Step = { number: string; title: string; description: string; state: 'current' | 'next' | 'done' };
 type Connector = { name: string; description: string };

@@ -5,7 +5,7 @@ import { useSyncExternalStore } from 'react';
 
 export const RELEASE_URL = 'https://github.com/oneprolabs/devify-desktop-releases/releases/tag/alpha';
 type Status = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'installed' | 'error';
-type Snapshot = { status: Status; version?: string; notes?: string; progress?: number; error?: string };
+type Snapshot = { status: Status; version?: string; notes?: string; progress?: number; error?: string; blockers?: string[] };
 let snapshot: Snapshot = { status: 'idle' };
 let update: Update | null = null;
 const listeners = new Set<() => void>();
@@ -61,16 +61,30 @@ export async function downloadUpdate() {
   }
 }
 
-export async function installUpdate() {
+/**
+ * Install the downloaded update. The app restarts, so it refuses while an upload is in
+ * flight: the in-flight request is dropped and its batch has to be retried afterwards.
+ * Instead of dead-ending on an opaque error, the first attempt reports the busy accounts
+ * (`blockers`) and the caller can confirm with `installUpdate(true)`.
+ */
+export async function installUpdate(force = false) {
   if (!update || !['downloaded', 'installed'].includes(snapshot.status)) return;
   const selected = update;
   const base = { version: selected.version, notes: selected.body, progress: 100 };
   const alreadyInstalled = snapshot.status === 'installed';
+  if (!force) {
+    try {
+      const accounts = await invoke<string[]>('update_upload_accounts');
+      if (accounts.length) { setSnapshot({ status: snapshot.status, ...base, blockers: accounts }); return; }
+    } catch {
+      // The install command re-checks the gate, so a failed probe is not fatal.
+    }
+  }
   let locked = false;
   let installed = alreadyInstalled;
   setSnapshot({ status: 'installing', ...base });
   try {
-    await invoke('update_begin_install');
+    await invoke('update_begin_install', { force });
     locked = true;
     if (!alreadyInstalled) { await selected.install(); installed = true; }
     await relaunch();
@@ -78,4 +92,9 @@ export async function installUpdate() {
     if (locked) await invoke('update_cancel_install').catch(() => {});
     setSnapshot({ status: installed ? 'installed' : 'downloaded', ...base, error: `${installed ? '重启失败' : '安装失败'}：${String(error)}` });
   }
+}
+
+/** Keep the downloaded update but hide the "upload in progress" confirmation. */
+export function dismissInstallBlockers() {
+  if (snapshot.blockers) setSnapshot({ ...snapshot, blockers: undefined });
 }

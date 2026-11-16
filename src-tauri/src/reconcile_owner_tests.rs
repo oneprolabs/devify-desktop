@@ -19,7 +19,7 @@ fn cursor(time: i64) -> settings::SyncCursor {
 
 fn job(id: &str, owner: Option<settings::UploadOwner>, base: &str) -> settings::UploadJob {
     let mut item = settings::UploadJob {
-        id: id.into(), account_id: "wechat-a".into(), space_id: 7, batch_id: Some(42),
+        id: id.into(), account_id: "wechat-a".into(), space_id: "7".into(), batch_id: Some(42),
         owner, status: "processing".into(), create_started: Some(false),
         scope: Some(settings::UploadScope { usernames: vec!["chat".into()], since: None,
             until: None, base_url: base.into(), message_selection: BTreeMap::new() }),
@@ -30,19 +30,19 @@ fn job(id: &str, owner: Option<settings::UploadOwner>, base: &str) -> settings::
 }
 
 fn batch() -> serde_json::Value {
-    serde_json::json!({"id": 42, "space_id": 7, "uploaded_by_id": 9,
+    serde_json::json!({"id": 42, "space_id": "7", "uploaded_by_id": 9,
         "source_type": "wechat", "source_account_id": "wechat-a", "device_id": "device-a",
         "status": "completed", "message_count": 1})
 }
 
 fn fixture(base: &str, jobs: Vec<settings::UploadJob>) -> (tempfile::TempDir, settings::UploadOwner, String) {
     let data = tempfile::tempdir().unwrap();
-    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut value = settings::AppSettings::default();
     value.active_account_id = owner.account_id.clone();
     value.devify.base_url = base.into();
-    value.devify.active_space_id = Some(7);
+    value.devify.active_space_id = Some("7".into());
     value.devify.device_id = owner.device_id.clone();
     value.upload_queue = jobs;
     settings::save(data.path(), &value).unwrap();
@@ -93,7 +93,7 @@ fn same_batch_on_another_server_and_ownerless_jobs_are_never_completed() {
     let other = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let other_base = format!("http://{}", other.local_addr().unwrap());
-    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7, account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(), account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let foreign_owner = settings::UploadOwner { base_url: other_base.clone(), ..owner.clone() };
     let current = job("current", Some(owner.clone()), &base);
     let foreign = job("foreign", Some(foreign_owner), &other_base);
@@ -106,7 +106,7 @@ fn same_batch_on_another_server_and_ownerless_jobs_are_never_completed() {
     let server = serve(listener, fixed_token.clone(), batch(), move || {
         // The read lease must reject service and credential changes mid-request, while an
         // unrelated transaction can safely persist durable create metadata.
-        assert!(settings::update(&data_path, |s| { s.devify.active_space_id = Some(8); Ok(()) }).is_err());
+        assert!(settings::update(&data_path, |s| { s.devify.active_space_id = Some("8".into()); Ok(()) }).is_err());
         assert!(desktop_credentials::clear(&data_path).is_err());
         settings::update(&data_path, |s| {
             s.upload_queue[0].create_started = Some(true);
@@ -115,7 +115,7 @@ fn same_batch_on_another_server_and_ownerless_jobs_are_never_completed() {
         }).unwrap();
     });
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         assert_eq!(verified, owner);
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         assert!(reconcile_owned_job(data.path(), &verified, &token, &foreign).await.is_err());
@@ -139,9 +139,9 @@ fn same_batch_on_another_server_and_ownerless_jobs_are_never_completed() {
 #[test]
 fn remote_identity_and_concurrent_cursor_changes_fail_closed() {
     // Validate every required remote attribute, including same-space different user/device.
-    let owner = settings::UploadOwner { base_url: "https://example.test".into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: "https://example.test".into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
-    for (field, wrong) in [("id", serde_json::json!(43)), ("space_id", serde_json::json!(8)),
+    for (field, wrong) in [("id", serde_json::json!(43)), ("space_id", serde_json::json!("8")),
         ("uploaded_by_id", serde_json::json!(10)), ("source_type", serde_json::json!("other")),
         ("source_account_id", serde_json::json!("wechat-b")), ("device_id", serde_json::json!("device-b"))] {
         let mut invalid = batch();
@@ -160,7 +160,7 @@ fn remote_identity_and_concurrent_cursor_changes_fail_closed() {
         settings::update(&data_path, |s| { s.upload_queue[0].covered.insert("chat".into(), cursor(200)); Ok(()) }).unwrap();
     });
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         assert!(reconcile_owned_job(data.path(), &verified, &token, &snapshot).await.is_err());
     });
@@ -176,7 +176,7 @@ fn remote_wrong_user_or_device_never_advances_the_job() {
     for field in ["uploaded_by_id", "device_id"] {
         let listener = StdListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+        let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
             account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
         let snapshot = job("current", Some(owner), &base);
         let (data, _, fixed_token) = fixture(&base, vec![snapshot.clone()]);
@@ -184,7 +184,7 @@ fn remote_wrong_user_or_device_never_advances_the_job() {
         remote[field] = if field == "uploaded_by_id" { serde_json::json!(10) } else { serde_json::json!("device-b") };
         let server = serve(listener, fixed_token, remote, || {});
         runtime().block_on(async {
-            let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+            let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
             let _lease = UPLOAD_IDENTITY_LOCK.read().await;
             assert!(reconcile_owned_job(data.path(), &verified, &token, &snapshot).await.is_err());
         });
@@ -199,14 +199,14 @@ fn remote_wrong_user_or_device_never_advances_the_job() {
 fn old_ownerless_cursor_blocks_completed_job_advancement() {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let snapshot = job("current", Some(owner), &base);
     let (data, _, fixed_token) = fixture(&base, vec![snapshot.clone()]);
     settings::update(data.path(), |s| { s.sync.cursors.entry("wechat-a".into()).or_default().insert("chat".into(), cursor(900)); Ok(()) }).unwrap();
     let server = serve(listener, fixed_token, batch(), || {});
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         reconcile_owned_job(data.path(), &verified, &token, &snapshot).await.unwrap();
     });
@@ -223,7 +223,7 @@ fn old_ownerless_cursor_blocks_completed_job_advancement() {
 fn foreign_cursor_owner_does_not_block_plain_manual_completion() {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner_b = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner_b = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut owner_a = owner_b.clone(); owner_a.user_id = 10;
     let mut snapshot = job("manual", Some(owner_b.clone()), &base);
@@ -236,7 +236,7 @@ fn foreign_cursor_owner_does_not_block_plain_manual_completion() {
     }).unwrap();
     let server = serve(listener, fixed_token, batch(), || {});
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         reconcile_owned_job(data.path(), &verified, &token, &snapshot).await.unwrap();
     });
@@ -253,14 +253,14 @@ fn foreign_cursor_owner_does_not_block_plain_manual_completion() {
 fn conflicting_sync_and_voice_effects_are_preserved_and_reverified_before_retry() {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner_b = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner_b = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut owner_a = owner_b.clone(); owner_a.user_id = 10;
     let mut snapshot = job("deferred", Some(owner_b.clone()), &base);
     snapshot.initial_baselines.insert("chat".into(), cursor(100));
     snapshot.initial_chunks.insert("chat".into(), settings::InitialChunk {
         since: None, until: None, baseline: cursor(100), position: cursor(100),
-        final_chunk: true, space_id: 7, base_url: base.clone(),
+        final_chunk: true, space_id: "7".into(), base_url: base.clone(),
     });
     snapshot.continue_sync = true;
     let processed = settings::VoiceRef { local_id: 1, time: 10, server_id: 11, source_shard: "a".into() };
@@ -275,7 +275,7 @@ fn conflicting_sync_and_voice_effects_are_preserved_and_reverified_before_retry(
     }).unwrap();
     let first = serve(listener.try_clone().unwrap(), fixed_token.clone(), batch(), || {});
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         reconcile_owned_job(data.path(), &verified, &token, &snapshot).await.unwrap();
     });
@@ -303,7 +303,7 @@ fn conflicting_sync_and_voice_effects_are_preserved_and_reverified_before_retry(
     let mut changed_remote = batch(); changed_remote["status"] = serde_json::json!("failed");
     let second = serve(listener.try_clone().unwrap(), fixed_token.clone(), changed_remote, || {});
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         assert!(reconcile_owned_job(data.path(), &verified, &token, &deferred).await.is_err());
     });
@@ -316,7 +316,7 @@ fn conflicting_sync_and_voice_effects_are_preserved_and_reverified_before_retry(
 
     let third = serve(listener, fixed_token, batch(), || {});
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         reconcile_owned_job(data.path(), &verified, &token, &deferred).await.unwrap();
     });
@@ -332,7 +332,7 @@ fn conflicting_sync_and_voice_effects_are_preserved_and_reverified_before_retry(
 #[test]
 fn coverage_does_not_infer_owner_from_old_jobs_or_cursors() {
     let base = "https://example.test";
-    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut value = settings::AppSettings::default();
     value.sync.cursors.entry("wechat-a".into()).or_default().insert("chat".into(), cursor(900));
@@ -364,10 +364,10 @@ fn legacy_sync_and_job_history_are_uncertain_without_becoming_coverage() {
         s.sync.cursors.entry(owner.account_id.clone()).or_default().insert("cursor-chat".into(), cursor(100));
         s.sync.initial_progress.entry(owner.account_id.clone()).or_default().insert("initial-chat".into(), settings::InitialChunk {
             since: None, until: None, baseline: cursor(100), position: cursor(100),
-            final_chunk: false, space_id: 7, base_url: base.clone(),
+            final_chunk: false, space_id: "7".into(), base_url: base.clone(),
         });
         s.sync.continuation.entry(owner.account_id.clone()).or_default().insert("continuation-chat".into(), settings::ContinuationScope {
-            space_id: 7, base_url: base.clone(), manual: None,
+            space_id: "7".into(), base_url: base.clone(), manual: None,
         });
         s.sync.pending_voice.entry(owner.account_id.clone()).or_default().insert("voice-chat".into(), vec![]);
         s.sync.cursors.entry("other-account".into()).or_default().insert("other-chat".into(), cursor(100));
@@ -398,7 +398,7 @@ fn legacy_sync_and_job_history_are_uncertain_without_becoming_coverage() {
 #[test]
 fn legacy_unknown_scope_fails_closed_without_inheriting_other_services() {
     let base = "https://example.test";
-    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut no_scope = job("none", None, base); no_scope.scope = None;
     let mut empty_scope = job("empty", None, base); empty_scope.scope.as_mut().unwrap().usernames.clear();
@@ -420,21 +420,21 @@ fn legacy_unknown_scope_fails_closed_without_inheriting_other_services() {
 #[test]
 fn legacy_history_does_not_cross_account_space_service_or_explicit_owner() {
     let base = "https://example.test";
-    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut foreign_owner = owner.clone(); foreign_owner.user_id += 1;
     let mut value = settings::AppSettings::default();
     value.sync.cursors.entry(owner.account_id.clone()).or_default().insert("cursor-chat".into(), cursor(100));
     value.sync.initial_progress.entry(owner.account_id.clone()).or_default().insert("initial-chat".into(), settings::InitialChunk {
         since: None, until: None, baseline: cursor(100), position: cursor(100),
-        final_chunk: false, space_id: 7, base_url: base.into(),
+        final_chunk: false, space_id: "7".into(), base_url: base.into(),
     });
     value.sync.continuation.entry(owner.account_id.clone()).or_default().insert("continuation-chat".into(), settings::ContinuationScope {
-        space_id: 7, base_url: base.into(), manual: None,
+        space_id: "7".into(), base_url: base.into(), manual: None,
     });
     value.sync.pending_voice.entry(owner.account_id.clone()).or_default().insert("voice-chat".into(), vec![]);
     let mut other_account = job("account", None, base); other_account.account_id = "wechat-b".into(); other_account.scope = None;
-    let mut other_space = job("space", None, base); other_space.space_id = 8; other_space.scope = None;
+    let mut other_space = job("space", None, base); other_space.space_id = "8".into(); other_space.scope = None;
     let other_service = job("service", None, "https://other.test");
     let mut other_user = job("owner", Some(foreign_owner.clone()), base); other_user.scope = None;
     let mut other_device = owner.clone(); other_device.device_id = "device-b".into();
@@ -450,7 +450,7 @@ fn legacy_history_does_not_cross_account_space_service_or_explicit_owner() {
 #[test]
 fn no_history_and_verified_history_are_not_legacy_uncertainty() {
     let base = "https://example.test";
-    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut value = settings::AppSettings::default();
     let (names, all) = legacy_uncertain_coverage(&value, &owner);
@@ -471,7 +471,7 @@ fn no_history_and_verified_history_are_not_legacy_uncertainty() {
 fn integrated_coverage_preserves_same_owner_unverified_uncertainty() {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut unverified = job("unverified", Some(owner.clone()), &base);
     unverified.status = "completed".into();
@@ -494,7 +494,7 @@ fn integrated_coverage_preserves_same_owner_unverified_uncertainty() {
 
 #[test]
 fn completion_marker_binds_owner_batch_scope_and_coverage() {
-    let owner = settings::UploadOwner { base_url: "https://example.test".into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: "https://example.test".into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut original = job("job", Some(owner.clone()), &owner.base_url);
     original.status = "completed".into();
@@ -528,7 +528,7 @@ fn completion_marker_binds_owner_batch_scope_and_coverage() {
 fn forty_completed_jobs_in_one_chat_converge_over_bounded_rounds() {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let jobs: Vec<_> = (0..40).map(|i| {
         let mut item = job(&format!("job-{i:02}"), Some(owner.clone()), &base);
@@ -576,7 +576,7 @@ fn forty_completed_jobs_in_one_chat_converge_over_bounded_rounds() {
     });
     let cursor = std::sync::Mutex::new(None);
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         let (_, initial_uncertain, _) = verified_coverage_settings(data.path(), &verified, &token).await.unwrap();
         assert!(initial_uncertain.contains("chat"));
@@ -600,7 +600,7 @@ fn forty_completed_jobs_in_one_chat_converge_over_bounded_rounds() {
 fn reconcile_round_caps_requests_and_rotates_without_starvation() {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let jobs: Vec<_> = (0..21).rev().map(|i| {
         let mut item = job(&format!("job-{i:02}"), Some(owner.clone()), &base);
@@ -647,7 +647,7 @@ fn reconcile_round_caps_requests_and_rotates_without_starvation() {
     });
     let cursor = std::sync::Mutex::new(None);
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         for _ in 0..3 {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
@@ -665,7 +665,7 @@ fn reconcile_round_caps_requests_and_rotates_without_starvation() {
 fn reconcile_accepts_slow_completed_batch_response() {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let snapshot = job("current", Some(owner), &base);
     let (data, _, fixed_token) = fixture(&base, vec![snapshot.clone()]);
@@ -673,7 +673,7 @@ fn reconcile_accepts_slow_completed_batch_response() {
         std::thread::sleep(Duration::from_millis(2200));
     });
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         let deadline = tokio::time::Instant::now() + RECONCILE_TOTAL_BUDGET;
         let last = std::sync::Mutex::new(None);
@@ -688,7 +688,7 @@ fn cancelled_reconcile_get_preserves_state_and_releases_identity_lease() {
     for (deadline_ms, server_delay_ms, limit_ms) in [(50, 200, 500), (300, 500, 1000)] {
         let listener = StdListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+        let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
             account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
         let snapshot = job("current", Some(owner), &base);
         let (data, _, fixed_token) = fixture(&base, vec![snapshot.clone()]);
@@ -697,7 +697,7 @@ fn cancelled_reconcile_get_preserves_state_and_releases_identity_lease() {
         });
         let cursor = std::sync::Mutex::new(None);
         let elapsed = runtime().block_on(async {
-            let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+            let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
             let lease = UPLOAD_IDENTITY_LOCK.read().await;
             let started = std::time::Instant::now();
             let deadline = tokio::time::Instant::now() + Duration::from_millis(deadline_ms);
@@ -758,7 +758,7 @@ fn adopt_with_remote(remote: serde_json::Value, cursor_time: i64) -> (settings::
     }).unwrap();
     let server = serve(listener, fixed_token, remote, || {});
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         adopt_legacy_upload_history(data.path(), &verified, &token, deadline).await.unwrap();
@@ -810,14 +810,14 @@ fn adopted_legacy_failure(base: &str, owner: &settings::UploadOwner) -> settings
 fn confirm_adopted_failure(remote_status: &str) -> settings::UploadJob {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let owner = settings::UploadOwner { base_url: base.clone(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.clone(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let (data, _, fixed_token) = fixture(&base, vec![adopted_legacy_failure(&base, &owner)]);
     let mut remote = batch();
     remote["status"] = serde_json::json!(remote_status);
     let server = serve(listener, fixed_token, remote, || {});
     runtime().block_on(async {
-        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", 7).await.unwrap();
+        let (verified, token) = verified_upload_identity(data.path(), "wechat-a", "7").await.unwrap();
         let _lease = UPLOAD_IDENTITY_LOCK.read().await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         adopt_legacy_upload_history(data.path(), &verified, &token, deadline).await.unwrap();
@@ -843,7 +843,7 @@ fn legacy_failure_that_completed_remotely_keeps_blocking_sync() {
 #[test]
 fn only_batchless_or_confirmed_legacy_failures_skip_the_sync_gate() {
     let base = "https://example.test";
-    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     assert!(job_never_blocks_sync(&inert_failed("sync-never-sent", base)));
     let mut current_failure = adopted_legacy_failure(base, &owner);
@@ -863,7 +863,7 @@ fn only_batchless_or_confirmed_legacy_failures_skip_the_sync_gate() {
 #[test]
 fn inert_legacy_failure_is_not_uncertain_and_fresh_accounts_are_not_pinned() {
     let base = "https://example.test";
-    let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
+    let owner = settings::UploadOwner { base_url: base.into(), space_id: "7".into(),
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     let mut value = settings::AppSettings::default();
     value.upload_queue = vec![inert_failed("sync-never-sent", base)];

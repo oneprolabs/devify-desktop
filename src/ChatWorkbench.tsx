@@ -1,7 +1,8 @@
 import { LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { desktopInvoke as invoke } from './desktopInvoke';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import WeChatLocal from './WeChatLocal';
 import { ChatSummary } from './ChatSummary';
@@ -10,9 +11,10 @@ import { exportNotSupported } from './toast';
 import { WhitelistSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
 import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
+import { requestFeedback } from './desktopInvoke';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null };
-type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
+type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: string | null }; upload_queue?: Array<{ status?: string }> };
 type SyncResult = { uploaded: number; message_count: number; batch_ids?: number[]; error?: string | null };
 type Scan = { accounts?: Array<{ id: string; modified_at?: number | null }> };
 type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
@@ -420,6 +422,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
         {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
           <span className={`sync-feedback-icon${syncing || syncNoticePending ? ' is-loading' : ''}`} aria-hidden="true">{syncing || syncNoticePending ? '' : syncNoticeError ? '!' : '✓'}</span>
           <span className="sync-feedback-text">{syncing ? '正在提交记录…' : syncNotice}</span>
+          {syncNoticeError && <button type="button" onClick={() => requestFeedback('upload', 'chat', syncBatchIds.slice(0, 20))}>反馈此问题</button>}
           <button type="button" onClick={() => setSyncToastVisible(false)} aria-label="关闭提示">×</button>
         </div>}
         <WeChatLocal

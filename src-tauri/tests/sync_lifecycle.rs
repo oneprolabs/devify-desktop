@@ -8,7 +8,7 @@ mod sync_lifecycle_regression {
 
     fn owner() -> settings::UploadOwner {
         settings::UploadOwner {
-            base_url: "https://example.invalid".into(), space_id: 1,
+            base_url: "https://example.invalid".into(), space_id: "1".into(),
             account_id: "test-account".into(), user_id: 42, device_id: "device".into(),
         }
     }
@@ -23,7 +23,7 @@ mod sync_lifecycle_regression {
             )]),
         };
         settings::UploadJob {
-            id: "fixture-id".into(), space_id: 1, account_id: "test-account".into(),
+            id: "fixture-id".into(), space_id: "1".into(), account_id: "test-account".into(),
             owner: Some(owner()), create_started: Some(false), status: "running".into(),
             scope: Some(scope), ..Default::default()
         }
@@ -64,7 +64,7 @@ mod chrono {
 mod settings {
     use super::BTreeMap;
     #[derive(Clone, Debug, PartialEq)] pub struct UploadOwner {
-        pub base_url: String, pub space_id: i64, pub account_id: String,
+        pub base_url: String, pub space_id: String, pub account_id: String,
         pub user_id: i64, pub device_id: String,
     }
     #[derive(Clone, Debug, PartialEq)] pub struct UploadScope {
@@ -72,7 +72,7 @@ mod settings {
         pub base_url: String, pub message_selection: BTreeMap<String, Vec<i64>>,
     }
     pub struct UploadJob {
-        pub id: String, pub space_id: i64, pub account_id: String, pub batch_id: Option<i64>,
+        pub id: String, pub space_id: String, pub account_id: String, pub batch_id: Option<i64>,
         pub owner: Option<UploadOwner>, pub create_started: Option<bool>, pub package_digest: Option<String>,
         pub verified_completion_digest: Option<String>, pub legacy_failure_confirmed: bool,
         pub status: String, pub message: String, pub created_at: String, pub updated_at: String,
@@ -86,7 +86,7 @@ mod settings {
 }
 SYNC_JOB
 fn main() {
-    let owner = settings::UploadOwner { base_url: "https://example.invalid".into(), space_id: 1,
+    let owner = settings::UploadOwner { base_url: "https://example.invalid".into(), space_id: "1".into(),
         account_id: "account".into(), user_id: 42, device_id: "device".into() };
     let scope = settings::UploadScope { usernames: vec!["alice".into()], since: Some(1), until: Some(5),
         base_url: owner.base_url.clone(), message_selection: BTreeMap::from([("alice".into(), vec![3])]) };

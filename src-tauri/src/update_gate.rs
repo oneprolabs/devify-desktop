@@ -22,12 +22,25 @@ impl UpdateGate {
         Ok(UploadGuard { gate: self, account: account.to_string() })
     }
 
-    pub fn begin_install(&self) -> Result<(), String> {
+    pub fn begin_install(&self, force: bool) -> Result<(), String> {
         let mut state = self.0.lock().map_err(|_| "无法检查上传状态。")?;
         if state.installing { return Err("正在安装更新。".into()); }
-        if !state.accounts.is_empty() { return Err("正在上传，请等待上传完成后再安装更新。".into()); }
+        if !force && !state.accounts.is_empty() {
+            return Err("正在上传，请等待上传完成后再安装更新。".into());
+        }
         state.installing = true;
         Ok(())
+    }
+
+    /// Accounts with an upload in flight, sorted so the confirmation is stable.
+    ///
+    /// Installing restarts the app and drops the in-flight request; the prompt names these
+    /// accounts so the user can decide instead of being blocked by an opaque error.
+    pub fn uploading_accounts(&self) -> Result<Vec<String>, String> {
+        let state = self.0.lock().map_err(|_| "无法检查上传状态。")?;
+        let mut accounts: Vec<String> = state.accounts.iter().cloned().collect();
+        accounts.sort();
+        Ok(accounts)
     }
 
     pub fn cancel_install(&self) {
@@ -42,12 +55,22 @@ mod tests {
     fn installing_and_uploading_cannot_overlap() {
         let gate = UpdateGate::default();
         let upload = gate.begin_upload("first").unwrap();
-        assert!(gate.begin_install().is_err());
+        assert!(gate.begin_install(false).is_err());
+        assert_eq!(gate.uploading_accounts().unwrap(), vec!["first".to_string()]);
         drop(upload);
-        gate.begin_install().unwrap();
+        assert!(gate.uploading_accounts().unwrap().is_empty());
+        gate.begin_install(false).unwrap();
         assert!(gate.begin_upload("first").is_err());
         gate.cancel_install();
         assert!(gate.begin_upload("first").is_ok());
+    }
+    #[test]
+    fn a_confirmed_install_interrupts_an_upload() {
+        let gate = UpdateGate::default();
+        let _upload = gate.begin_upload("first").unwrap();
+        gate.begin_install(true).unwrap();
+        assert!(gate.begin_install(false).is_err());
+        assert!(gate.begin_upload("second").is_err());
     }
     #[test]
     fn account_uploads_are_unique_and_release_on_drop() {

@@ -239,15 +239,16 @@ pub fn require(app_data: &Path, base_url: &str, key: &str) -> Result<(), String>
 /// Ask the server what this account may use. A server that has not shipped the endpoint yet
 /// is a normal state: it is cached as `unsupported` and keeps the app wide open.
 pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<View, String> {
+    use crate::devify_http::RequestTrace;
     let base_url = crate::settings::canonical_api_base(base_url)?;
-    let response = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+    let response = crate::http_client::api()
         .get(format!("{base_url}/api/v1/me/entitlements"))
         .bearer_auth(token)
-        .send()
+        .send_traced_retrying(
+            app_data,
+            crate::diagnostics::Module::App,
+            crate::devify_http::RetryPolicy::READ,
+        )
         .await
         .map_err(|error| format!("读取订阅权益失败：{error}"))?;
     let status = response.status();

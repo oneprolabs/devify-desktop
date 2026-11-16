@@ -10,7 +10,7 @@ type Kind = 'events' | 'reports';
 type EventItem = { id: number; title: string; content: string; status?: string | null; tags?: Array<{ label?: string }>; last_activity_at?: string | null; opened_at?: string | null; updated_at?: string | null };
 type RelatedEvent = { id: number; title?: string; status?: string | null; relation_type?: string; type?: string; label?: string; relation_id?: number };
 type EventRelation = Omit<RelatedEvent, 'id'> & { id?: number; event_id?: number; related_event_id?: number; source_event_id?: number; target_event_id?: number };
-type EventRelationRecord = { id: number; space_id: number; left_event_id: number; right_event_id: number; relation_kind: string; decision: string; reason?: string };
+type EventRelationRecord = { id: number; space_id: string; left_event_id: number; right_event_id: number; relation_kind: string; decision: string; reason?: string };
 type ReportSection = { id: number; title: string; position: number; items?: Array<{ id: number; title: string; summary: string; label?: string; time_text?: string; contact_text?: string; followup_text?: string; sources?: Array<{ display_text?: string; event_id?: number | null; note_id?: number | null }> }> };
 type ReportItem = { id: number; title: string; body?: string; content?: unknown; status: string; period_start?: string | null; period_end?: string | null; generated_at?: string | null; updated_at?: string | null; sections?: ReportSection[] };
 type EventNote = { id: number; title: string; content: string; start_at?: string | null; end_at?: string | null; origin?: string | null };
@@ -22,7 +22,7 @@ type EventDetail = EventItem & {
   related_events?: EventRelation[];
 };
 type Page<T> = { list: T[]; pagination?: { total?: number; page?: number; next?: string | null } };
-type AppSettings = { devify?: { active_space_id: number | null } };
+type AppSettings = { devify?: { active_space_id: string | null } };
 
 const labels: Record<Kind, { title: string; empty: string }> = {
   events: { title: '事件', empty: '当前空间还没有事件。' },
@@ -151,7 +151,7 @@ function sectionItems(report: ReportItem): string[] {
 }
 
 export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; focusId?: number | null; onOpenEvent?: (eventId: number) => void }) {
-  const [spaceId, setSpaceId] = useState<number | null>(null);
+  const [spaceId, setSpaceId] = useState<string | null>(null);
   const [items, setItems] = useState<Array<EventItem | ReportItem>>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(isTauri());

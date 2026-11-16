@@ -471,7 +471,9 @@
 .sidebar-resize-handle:focus-visible { outline: 2px solid #74746e; outline-offset: -2px; }
 .chat-workbench-filters button { white-space: nowrap; }
 
-.update-available-notice { position:absolute; z-index:5; top:10px; right:18px; padding:8px 12px; border:1px solid #e6c9e2; border-radius:7px; background:#fff; color:#8e2187; cursor:pointer; }
+/* Sits inside the 49px page header row. `top:10px` put the 38px pill's bottom border exactly on
+   the header's border-bottom, so the two lines collided; 6px keeps a clear gap above it. */
+.update-available-notice { position:absolute; z-index:5; top:6px; right:18px; padding:8px 12px; border:1px solid #e6c9e2; border-radius:7px; background:#fff; color:#8e2187; cursor:pointer; }
 .about-update { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin:12px 0 16px; padding:12px 14px; border:1px solid #ecece8; border-radius:10px; background:#fafaf8; }
 .about-update-status { display:flex; align-items:center; gap:10px; flex:1 1 260px; min-width:0; }
 .about-update-status-text { display:flex; flex-direction:column; gap:2px; min-width:0; }
@@ -494,6 +496,8 @@
 @media (prefers-reduced-motion: reduce) { .update-spinner { animation-duration:2s; } }
 .about-update-progress { flex-basis:100%; height:4px; border-radius:2px; background:#ecece8; overflow:hidden; }
 .about-update-progress span { display:block; height:100%; background:#8e2187; transition:width .2s ease; }
+.about-update-blocked { flex-basis:100%; display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:8px 10px; border:1px solid #f0d9a8; border-radius:8px; background:#fff8e8; }
+.about-update-blocked span { flex:1 1 260px; min-width:0; font-size:13px; line-height:1.5; color:#7a5a12; overflow-wrap:anywhere; }
 
 .analysis-save-row { display:flex; align-items:center; gap:10px; }
 .analysis-save-status { display:inline-flex; align-items:center; gap:5px; color:#25844a; font-size:13px; line-height:1.5; }

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { desktopInvoke as invoke } from './desktopInvoke';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import appIcon from './assets/app-icon.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from './Settings';
-import { apiBaseUrl, displayBaseUrl } from './serviceUrl.ts';
+import { apiBaseUrl, storedBaseUrl } from './serviceUrl.ts';
+import { requestFeedback } from './desktopInvoke';
 
 type GateSettings = {
   user_settings_revision: number;
@@ -77,7 +78,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
         requireSettingsRevision(stored);
         settingsRef.current = stored;
         setSettingsLoaded(true);
-        const value = displayBaseUrl(stored.devify?.base_url?.trim().replace(/\/+$/, '') || '').replace(/\/+$/, '');
+        const value = storedBaseUrl(stored.devify?.base_url ?? '').replace(/\/+$/, '');
         draftRef.current = value;
         setBaseUrl(value);
         setServerDraft(value);
@@ -147,10 +148,10 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     const draftAtStart = draftRef.current;
     try {
       const stored = settingsRef.current;
-      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: displayBaseUrl(value) || value } };
+      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: storedBaseUrl(value) } };
       const saved = requireSettingsRevision(await invoke<GateSettings>('app_settings_save', { value: next }));
       settingsRef.current = saved;
-      const confirmed = displayBaseUrl(saved.devify?.base_url?.trim().replace(/\/+$/, '') || '').replace(/\/+$/, '');
+      const confirmed = storedBaseUrl(saved.devify?.base_url ?? '').replace(/\/+$/, '');
       setBaseUrl(confirmed);
       if (draftRef.current !== draftAtStart) {
         setServerStatus('之前的地址已保存，新的输入尚未保存，请确认后重试。');
@@ -282,7 +283,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
             setPopup(true); setError(''); setInfo('');
           }}>登录…</button>}
       {busy === 'browser' && <button type="button" className="auth-gate-secondary" onClick={() => void cancelBrowserLogin()}>取消</button>}
-      {error && <p className="auth-gate-error" role="alert">{error}</p>}
+      {error && <p className="auth-gate-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>反馈此问题</button></p>}
       <div className="auth-gate-server">
         {serverOpen || !baseUrl
           ? <>
@@ -303,7 +304,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
                 {baseUrl && <button type="button" onClick={() => { setServerOpen(false); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>取消</button>}
               </div>
             </>
-          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>服务地址 · {displayBaseUrl(baseUrl).replace(/^https?:\/\//, '').replace(/\/+$/, '')}</button>}
+          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>服务地址 · {storedBaseUrl(baseUrl).replace(/^https?:\/\//, '').replace(/\/+$/, '')}</button>}
       </div>
       {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
     </div>
@@ -341,7 +342,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
               </span>
             </label>
             <div className="auth-forgot"><button type="button" onClick={() => void openExternal('/login?forgot=1')}>忘记密码？</button></div>
-            {error && <p className="auth-error" role="alert">{error}</p>}
+            {error && <p className="auth-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>反馈此问题</button></p>}
             {info && <p className="auth-info" role="status">{info}</p>}
             {busy === 'browser' && <div className="auth-waiting"><span className="auth-gate-pulse"/><span>正在等待浏览器完成授权…</span><button type="button" onClick={() => void cancelBrowserLogin()}>取消</button></div>}
             <button type="button" className="auth-submit" disabled={busy !== ''} onClick={() => void submitPassword()}>{busy === 'password' ? '正在登录…' : '登录'}</button>

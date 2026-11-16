@@ -1,5 +1,4 @@
 const OFFICIAL_API_BASE = 'https://app.aimychats.com';
-const OFFICIAL_DISPLAY_BASE = 'https://aimychats.com/';
 const OFFICIAL_HOSTS = new Set(['aimychats.com', 'www.aimychats.com', 'app.aimychats.com']);
 
 function parsedHost(value: string): string {
@@ -16,10 +15,13 @@ export function apiBaseUrl(value: string): string {
   return OFFICIAL_HOSTS.has(parsedHost(trimmed)) ? OFFICIAL_API_BASE : trimmed;
 }
 
-export function displayBaseUrl(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-  return OFFICIAL_HOSTS.has(parsedHost(trimmed.replace(/\/+$/, ''))) ? OFFICIAL_DISPLAY_BASE : trimmed;
+/**
+ * The value shown in the address field and persisted in settings. It is exactly what the
+ * user typed, only trimmed: mapping the official product hosts onto the API origin happens
+ * while building requests, so saving `https://app.aimychats.com/` must not change it.
+ */
+export function storedBaseUrl(value: string): string {
+  return value.trim();
 }
 
 export function sameServiceUrl(left: string, right: string): boolean {

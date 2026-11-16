@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import appIcon from './assets/app-icon.png';
-import { checkForUpdates, downloadUpdate, installUpdate, RELEASE_URL, useUpdater } from './updater';
+import { checkForUpdates, dismissInstallBlockers, downloadUpdate, installUpdate, RELEASE_URL, useUpdater } from './updater';
 
 type AppInfo = {
   name: string;
@@ -67,9 +67,14 @@ export function UpdatePanel() {
         <div className="about-update-actions">
           {['idle', 'latest', 'error'].includes(update.status) && <button type="button" onClick={() => void checkForUpdates()}>检查更新</button>}
           {update.status === 'available' && <button type="button" className="update-primary" onClick={() => void downloadUpdate()}>下载更新</button>}
-          {['downloaded', 'installed'].includes(update.status) && <button type="button" className="update-primary" onClick={() => void installUpdate()}>{update.status === 'installed' ? '重新启动' : '安装并重启'}</button>}
+          {['downloaded', 'installed'].includes(update.status) && !update.blockers?.length && <button type="button" className="update-primary" onClick={() => void installUpdate()}>{update.status === 'installed' ? '重新启动' : '安装并重启'}</button>}
           <button type="button" className="update-link" onClick={() => void invoke('devify_auth_open', { url: RELEASE_URL }).catch(value => setError(`打开下载页面失败：${String(value)}`))}>手动下载</button>
         </div>
+        {update.blockers?.length ? <div className="about-update-blocked" role="alert">
+          <span>正在上传（{update.blockers.join('、')}）。现在安装会中断这次上传，重启后可在「任务」页重试。</span>
+          <button type="button" className="update-primary" onClick={() => void installUpdate(true)}>仍然安装</button>
+          <button type="button" onClick={dismissInstallBlockers}>稍后</button>
+        </div> : null}
         {update.status === 'downloading' && update.progress != null && <div className="about-update-progress" role="progressbar" aria-valuenow={update.progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${update.progress}%` }}/></div>}
       </div></>;
 }
