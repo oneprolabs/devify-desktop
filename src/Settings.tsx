@@ -526,7 +526,7 @@ export function StrategySettings({ title = '本地自动化', description = '每
   </div>;
 }
 
-export function DevifySettings() {
+export function DevifySettings({ initialUser = '', initialAuthenticated = false, connection = 'unavailable' }: { initialUser?: string; initialAuthenticated?: boolean; connection?: 'connected' | 'unavailable' }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
   const confirmed = useRef<AppSettings | null>(null);
@@ -551,7 +551,7 @@ export function DevifySettings() {
     setSettings(next);
     setLoaded(true);
   };
-  const [profile, setProfile] = useState<{ display_name?: string; username?: string } | null>(null);
+  const [profile, setProfile] = useState<{ display_name?: string; username?: string } | null>(initialUser ? { display_name: initialUser } : null);
   const [wechatStatus, setWechatStatus] = useState('正在检查…');
   const [wechatAccounts, setWechatAccounts] = useState<Account[]>([]);
   const wechatProfiles = useWechatProfiles(wechatAccounts);
@@ -560,7 +560,7 @@ export function DevifySettings() {
   const [error, setError] = useState('');
   const [saveError, setSaveError] = useState('');
   const [authStatus, setAuthStatus] = useState('');
-  const [authenticated, setAuthenticated] = useState(false);
+  const [authenticated, setAuthenticated] = useState(initialAuthenticated);
   const [spaces, setSpaces] = useState<DevifySpace[]>([]);
   const [takeoverReason, setTakeoverReason] = useState('');
   const [spacesStatus, setSpacesStatus] = useState('');
@@ -575,7 +575,7 @@ export function DevifySettings() {
 
   useEffect(() => {
     let active = true;
-    if (authenticated) void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(value => { if (active) setProfile(value); }).catch(() => { if (active) setProfile(null); });
+    if (authenticated) void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(value => { if (active) setProfile(value); }).catch(() => {});
     else setProfile(null);
     return () => { active = false; };
   }, [authenticated]);
@@ -588,21 +588,12 @@ export function DevifySettings() {
 
   useEffect(() => {
     let active = true;
-    void invoke<{ authenticated: boolean }>('devify_auth_status')
-      .then(status => {
-        if (!active) return;
-        setAuthenticated(status.authenticated);
-        if (!status.authenticated) return;
-        void (async () => {
-          await registerDevifyDevice();
-          if (!active) return;
-          await invoke<number | null>('devify_space_ensure').catch(() => null);
-          if (!active) return;
-          acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
-          await loadSpaces();
-        })();
-      })
-      .catch(() => {});
+    if (initialAuthenticated) void (async () => {
+      await invoke<number | null>('devify_space_ensure').catch(() => null);
+      if (!active) return;
+      acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
+      if (active) await loadSpaces();
+    })().catch(() => {});
     return () => { active = false; };
   }, []);
 
@@ -727,7 +718,7 @@ export function DevifySettings() {
     <section className="account-profile-card account-identity"><h3>AIMyChats 账户</h3><div className="account-profile-content">
       <span className="account-profile-avatar">{(profile?.display_name || profile?.username || '账').slice(0, 1)}</span>
       <span className="account-profile-info"><strong>{authenticated ? (profile?.display_name || profile?.username || '账号信息暂不可用') : '未登录'}</strong><small>{profile?.username ? `@${profile.username}` : 'AIMyChats 账号'}</small></span>
-      <span className={`account-login-status${authenticated ? ' is-active' : ''}`}><i/>{authenticated ? '已登录' : '未登录'}</span>
+      <span className={`account-login-status${connection === 'connected' ? ' is-active' : ''}`}><i/>{!authenticated ? '未登录' : connection === 'connected' ? '已登录 · 已连接' : '服务连接异常'}</span>
       {authenticated ? <button type="button" className="plan-button account-auth-action" onClick={() => void logoutDevify()}>退出登录</button> : <button type="button" className="plan-button primary account-auth-action" onClick={() => void loginDevify()}>登录</button>}
     </div>{authStatus && <p className="account-auth-notice" role="status">{authStatus}</p>}</section>
     <section className="account-service-card"><h3>服务与空间</h3><div className="plan-items">

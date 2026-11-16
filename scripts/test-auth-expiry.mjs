@@ -8,6 +8,7 @@ const { shouldApplyAuthExpired } = await import(`data:text/javascript,${encodeUR
 
 assert.equal(await shouldApplyAuthExpired(async () => ({ authenticated: false }), () => true), true);
 assert.equal(await shouldApplyAuthExpired(async () => ({ authenticated: true }), () => true), false);
+assert.equal(await shouldApplyAuthExpired(async () => ({ authenticated: false, unavailable: true }), () => true), false);
 assert.equal(await shouldApplyAuthExpired(async () => { throw new Error('unknown'); }, () => true), false);
 let epoch = 1;
 let resolveStatus;

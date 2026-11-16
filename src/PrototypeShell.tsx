@@ -4,7 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
 import { AgentHub } from './AgentHub';
-import { About } from './About';
+import { About, UpdatePanel } from './About';
 import { checkForUpdates, useUpdater } from './updater';
 import { HistoryPage } from './History';
 import { DevifySettings, WhitelistSettings, type AppSettings } from './Settings';
@@ -85,6 +85,13 @@ const settingsIcons: Record<SettingsPage, ReactNode> = {
 export default function PrototypeShell() {
   const [section, setSection] = useState<Section>('chat');
   const update = useUpdater();
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  useEffect(() => {
+    if (!updateDialogOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setUpdateDialogOpen(false); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [updateDialogOpen]);
   useEffect(() => { void checkForUpdates(true); }, []);
   const [eventFocusId, setEventFocusId] = useState<number | null>(null);
   const [chatReady, setChatReady] = useState(false);
@@ -106,6 +113,7 @@ export default function PrototypeShell() {
   const [authNotice, setAuthNotice] = useState('');
   const [authError, setAuthError] = useState('');
   const [currentUser, setCurrentUser] = useState('');
+  const [connectionState, setConnectionState] = useState<'connected' | 'unavailable'>('unavailable');
   const authMounted = useRef(true);
   useEffect(() => { authMounted.current = true; return () => { authMounted.current = false; }; }, []);
   useEffect(() => {
@@ -114,7 +122,7 @@ export default function PrototypeShell() {
     if (authState === 'authed') void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(user => { if (active) setCurrentUser(user.display_name || user.username || ''); }).catch(() => { if (active) setCurrentUser(''); });
     return () => { active = false; };
   }, [authState]);
-  const handleAuthenticated = useCallback(() => { authEpoch.current += 1; setAuthState('authed'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
+  const handleAuthenticated = useCallback(() => { authEpoch.current += 1; setAuthState('authed'); setConnectionState('connected'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
   /**
    * The backend caps every Devify request with a timeout, so this resolves even when the
    * server is unreachable. `unavailable` is a separate state from "logged out": it must not
@@ -135,11 +143,12 @@ export default function PrototypeShell() {
           return;
         }
         setAuthState(status.authenticated ? 'authed' : 'anonymous');
+        if (status.authenticated) setConnectionState('connected');
         if (status.authenticated) {
           void registerDevifyDevice();
         }
       })
-      .catch(() => { if (authMounted.current && authEpoch.current === requestEpoch) setAuthState('anonymous'); });
+      .catch(() => { if (authMounted.current && authEpoch.current === requestEpoch) { setAuthError('暂时无法检查服务连接，请稍后重试。'); setAuthState('unavailable'); } });
   }, []);
   useEffect(() => {
     let active = true;
@@ -177,6 +186,13 @@ export default function PrototypeShell() {
       window.removeEventListener('aimychats:auth-changed', onAuthChanged);
     };
   }, [checkAuth]);
+  useEffect(() => {
+    if (authState !== 'unavailable') return;
+    const retry = () => checkAuth();
+    const timer = window.setInterval(retry, 30000);
+    window.addEventListener('online', retry);
+    return () => { window.clearInterval(timer); window.removeEventListener('online', retry); };
+  }, [authState, checkAuth]);
   const openNewUpload = () => { setStartTaskCreate(true); setSection('tasks'); };
   const finishWechatGuide = async (skipBackup = false) => {
     if (connectionFinishing) return;
@@ -192,6 +208,28 @@ export default function PrototypeShell() {
     } catch (error) { setConnectionFinishError(`无法启用微信连接：${String(error)}`); }
     finally { setConnectionFinishing(false); }
   };
+  // Keep the server's last-seen time fresh while this logged-in client is running.
+  useEffect(() => {
+    if (authState !== 'authed') return;
+    const heartbeat = () => {
+      const epoch = authEpoch.current;
+      void registerDevifyDevice().then(async device => {
+        if (!authMounted.current || epoch !== authEpoch.current) return;
+        if (device) { setConnectionState('connected'); return; }
+        setConnectionState('unavailable');
+        try {
+          const status = await invoke<{ authenticated: boolean; unavailable?: boolean }>('devify_auth_status');
+          if (authMounted.current && epoch === authEpoch.current && !status.authenticated && !status.unavailable) {
+            window.dispatchEvent(new CustomEvent('aimychats:auth-changed', { detail: { authenticated: false } }));
+          }
+        } catch { /* Retry on the next heartbeat. */ }
+      });
+    };
+    heartbeat();
+    const timer = window.setInterval(heartbeat, 2 * 60 * 1000);
+    window.addEventListener('focus', heartbeat);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', heartbeat); };
+  }, [authState]);
   // Entitlements are per account and per server, so every successful sign-in refreshes them
   // once. A server without the endpoint answers 404 and the app keeps its legacy behaviour.
   useEffect(() => {
@@ -234,7 +272,13 @@ export default function PrototypeShell() {
       <div className="prototype-rail-brand"><img src={appIcon} alt=""/><strong>AIMyChats</strong></div>
     </aside>
     <section className="prototype-content">
-      {update.status === 'available' && <button type="button" className="update-available-notice" onClick={() => { setSettingsPage('about'); setWechatGuide(false); setSection('settings'); }}>发现新版本 {update.version}，查看更新</button>}
+      {update.status === 'available' && <button type="button" className="update-available-notice" onClick={() => { if (authState === 'authed') { setSettingsPage('about'); setWechatGuide(false); setSection('settings'); } else setUpdateDialogOpen(true); }}>发现新版本 {update.version}，查看更新</button>}
+      {updateDialogOpen && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setUpdateDialogOpen(false); }}>
+        <section className="auth-modal update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+          <header className="auth-modal-head"><span id="update-dialog-title">软件更新</span><button type="button" aria-label="关闭更新" autoFocus onClick={() => setUpdateDialogOpen(false)}>×</button></header>
+          <div className="auth-modal-body"><UpdatePanel /></div>
+        </section>
+      </div>}
       {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
       {authState === 'unavailable' && <div className="auth-gate">
         <div className="auth-gate-card">
@@ -299,7 +343,7 @@ export default function PrototypeShell() {
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
           {settingsPage === 'analysis' && <AnalysisSettings />}
           {settingsPage === 'language' && <LanguageSettings />}
-          {settingsPage === 'account' && <DevifySettings />}
+          {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && <HistoryPage />}
           {settingsPage === 'agent' && <AgentHub />}
           {settingsPage === 'about' && <About />}

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 let pending: Promise<unknown> | null = null
 
 /**
- * Register this machine with Devify once per app session.
+ * Register this machine with Devify, deduplicating simultaneous requests.
  *
  * Both the shell startup path and the account settings page ask for a device
  * binding. Sharing one promise keeps a first launch from creating two device
@@ -11,7 +11,7 @@ let pending: Promise<unknown> | null = null
  */
 export function registerDevifyDevice() {
   if (!pending) {
-    pending = invoke('devify_device_register').catch(() => null)
+    pending = invoke('devify_device_register').catch(() => null).finally(() => { pending = null })
   }
   return pending
 }

@@ -340,7 +340,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
                 <button type="button" className="auth-show" onClick={() => setShowPassword(value => !value)}>{showPassword ? '隐藏' : '显示'}</button>
               </span>
             </label>
-            <div className="auth-forgot"><button type="button" onClick={() => void openExternal('/login')}>忘记密码？</button></div>
+            <div className="auth-forgot"><button type="button" onClick={() => void openExternal('/login?forgot=1')}>忘记密码？</button></div>
             {error && <p className="auth-error" role="alert">{error}</p>}
             {info && <p className="auth-info" role="status">{info}</p>}
             {busy === 'browser' && <div className="auth-waiting"><span className="auth-gate-pulse"/><span>正在等待浏览器完成授权…</span><button type="button" onClick={() => void cancelBrowserLogin()}>取消</button></div>}

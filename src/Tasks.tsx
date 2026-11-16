@@ -6,7 +6,7 @@ import { advanceCloudRebuild, appendCloudPages, analysisLabel, cloudNeedsPolling
 
 type RetryPreview = { fingerprint: string; message_count: number; sessions: Array<{ username: string; display: string; message_count: number }> };
 const PAGE_SIZE = 20;
-const statusLabels: Record<string, string> = { created: '待上传', queued: '等待中', pending: '等待中', running: '上传中', uploading: '上传中', processing: '处理中', completed: '已完成', submitted: '已提交', failed: '失败', cancelled: '已取消' };
+const statusLabels: Record<string, string> = { created: '待上传', queued: '等待中', pending: '等待中', running: '上传中', uploading: '上传中', processing: '已上传 · 服务端处理中', completed: '已完成', submitted: '已提交', failed: '失败', cancelled: '已取消' };
 function statusLabel(status: string): string { return statusLabels[status] ?? (status || '未知'); }
 function TaskStatus({ value, label }: { value: string; label?: string }) {
   const tone = value === 'completed' ? 'done' : value === 'failed' ? 'failed' : value === 'cancelled' ? 'muted' : 'pending';
