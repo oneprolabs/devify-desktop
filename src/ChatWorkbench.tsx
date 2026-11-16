@@ -1,4 +1,5 @@
 import { LoadingSkeleton } from './LoadingSkeleton';
+import { eventViewState, syncErrorMessage } from './chatPresentation';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -12,7 +13,7 @@ import wechatIcon from './assets/connectors/wechat.svg';
 import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null };
-type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
+type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null; base_url?: string }; upload_queue?: Array<{ status?: string }> };
 type SyncResult = { uploaded: number; message_count: number; batch_ids?: number[]; error?: string | null };
 type Scan = { accounts?: Array<{ id: string; modified_at?: number | null }> };
 type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
@@ -54,7 +55,7 @@ function StateDot({ done }: { done: boolean }) {
   </svg>;
 }
 
-export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onSchedule, onOpenAccount, onOpenEvent }: { startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
+export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent }: { startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
   const [view, setView] = useState<View>('raw');
   const [addingSession, setAddingSession] = useState(false);
   const [sessionRevision, setSessionRevision] = useState(0);
@@ -118,8 +119,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
     let cancelled = false;
     const spaceId = settings?.devify?.active_space_id;
     const username = selectedSession?.username;
-    const requestScope = JSON.stringify([spaceId, accountId, username]);
-    setEvents([]);
+    const requestScope = JSON.stringify([settings?.devify?.base_url, spaceId, accountId, username]);
     setEventsError('');
     if (!isTauri() || !spaceId || !username || !accountId) {
       setEventsLoading(false);
@@ -139,7 +139,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
           if (conversation || !result.pagination?.next) break;
           if (page === 100) throw new Error('云端会话过多，无法完整筛选事件。');
         }
-        if (!conversation) return;
+        if (!conversation) { setEventsScope(requestScope); setEvents([]); return; }
         const result = await invoke<Page<EventItem>>('devify_analysis_list', { kind: 'events', spaceId, page: 1, conversationId: conversation.id });
         if (!cancelled) { setEventsScope(requestScope); setEvents(result.list ?? []); }
       } catch (reason) {
@@ -149,7 +149,15 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
       }
     })();
     return () => { cancelled = true; };
-  }, [settings?.devify?.active_space_id, accountId, selectedSession?.username, eventRefresh]);
+  }, [settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username, eventRefresh]);
+
+  useEffect(() => {
+    if (!eventsError) return;
+    const retry = () => setEventRefresh(value => value + 1);
+    const timer = window.setTimeout(retry, 30000);
+    window.addEventListener('online', retry);
+    return () => { window.clearTimeout(timer); window.removeEventListener('online', retry); };
+  }, [eventsError]);
 
   const reloadSummaries = useCallback(async () => {
     try { setSummaries(await invoke<SummaryRecord[]>('summary_history_list')); } catch { /* keep the last list */ }
@@ -206,7 +214,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
           ? ids.length ? `已提交 ${result.message_count} 条记录，等待服务端处理。` : `已提交 ${result.message_count} 条记录，请在任务中查看状态。`
           : '没有需要提交的新记录。');
       await refreshUploadState();
-    } catch (reason) { setSyncNoticeError(true); setSyncNotice(`同步未完成：${String(reason)}`); }
+    } catch (reason) { setSyncNoticeError(!String(reason).includes('该账号正在上传')); setSyncNotice(syncErrorMessage(reason)); }
     finally { setSyncing(false); }
   };
 
@@ -259,7 +267,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
     const keyword = view === 'raw' ? '' : query.trim().toLowerCase();
     return sessions.filter(session => (!keyword || `${session.display} ${session.username}`.toLowerCase().includes(keyword)) && (filter === 'all' || (filter === 'pending' ? uploadState.pending.has(session.username) : uploadState.local.has(session.username))));
   }, [sessions, query, filter, uploadState, view]);
-  const scopedEvents = eventsScope === JSON.stringify([settings?.devify?.active_space_id, accountId, selectedSession?.username]) ? events : [];
+  const scopedEvents = eventsScope === JSON.stringify([settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username]) ? events : [];
   const visibleEvents = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     return scopedEvents.filter(event => (!keyword || `${event.title} ${event.content ?? ''}`.toLowerCase().includes(keyword)) && (filter !== 'pending' || event.status !== 'done'));
@@ -377,8 +385,8 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
         </div>
         <div className="chat-workbench-feed">
           {eventsLoading && <LoadingSkeleton label="正在加载事件" kind="detail" />}
-          {(error || eventsError) && <p className="chat-workbench-error">{error || eventsError}</p>}
-          {!eventsLoading && !visibleEvents.length && <div className="chat-workbench-empty-panel">
+          {(error || eventsError) && <div className="chat-workbench-error" role="alert"><span>{scopedEvents.length ? '事件刷新失败，显示的是上次读取结果。' : '暂时无法读取事件，请检查网络或稍后重试。'}</span> <button type="button" onClick={() => { if (error) void load(); else setEventRefresh(value => value + 1); }}>重试</button></div>}
+          {eventViewState(eventsLoading, error || eventsError, visibleEvents.length) === 'empty' && <div className="chat-workbench-empty-panel">
             <h2>当前会话暂无事件</h2>
             <p>上传当前会话并等待服务端分析后，相关事件会出现在这里。</p>
             <button type="button" onClick={onNewUpload}>开始第一次上传</button>
@@ -420,6 +428,7 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
         {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
           <span className={`sync-feedback-icon${syncing || syncNoticePending ? ' is-loading' : ''}`} aria-hidden="true">{syncing || syncNoticePending ? '' : syncNoticeError ? '!' : '✓'}</span>
           <span className="sync-feedback-text">{syncing ? '正在提交记录…' : syncNotice}</span>
+          {!syncing && (syncNoticeError || syncNotice.includes('后台上传')) && <button type="button" onClick={onOpenTasks}>查看任务</button>}
           <button type="button" onClick={() => setSyncToastVisible(false)} aria-label="关闭提示">×</button>
         </div>}
         <WeChatLocal

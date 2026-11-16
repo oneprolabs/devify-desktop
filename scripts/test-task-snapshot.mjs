@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { saveTaskSnapshot, readTaskSnapshot, clearTaskSnapshot } from '../src/taskSnapshot.ts';
+const settings = { active_account_id: 'wechat-a', devify: { base_url: 'https://example.test', active_space_id: 3, device_id: 'device-a' } };
+const page = { list: [], pagination: { total: 0, page: 1, page_size: 20, next: null, previous: null } };
+saveTaskSnapshot(settings, 9, 'device-a', page);
+assert.ok(readTaskSnapshot(settings, 9, 'device-a'));
+assert.equal(readTaskSnapshot(settings, 10, 'device-a'), null);
+assert.equal(readTaskSnapshot(settings, 9, 'device-b'), null);
+assert.equal(readTaskSnapshot({ ...settings, active_account_id: 'wechat-b' }, 9, 'device-a'), null);
+assert.equal(readTaskSnapshot({ ...settings, devify: { ...settings.devify, active_space_id: 4 } }, 9, 'device-a'), null);
+clearTaskSnapshot();
+assert.equal(readTaskSnapshot(settings, 9, 'device-a'), null);
+console.log('task snapshot isolation passed');

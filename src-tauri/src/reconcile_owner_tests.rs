@@ -846,6 +846,11 @@ fn only_batchless_or_confirmed_legacy_failures_skip_the_sync_gate() {
     let owner = settings::UploadOwner { base_url: base.into(), space_id: 7,
         account_id: "wechat-a".into(), user_id: 9, device_id: "device-a".into() };
     assert!(job_never_blocks_sync(&inert_failed("sync-never-sent", base)));
+    let mut ambiguous = inert_failed("sync-unknown", base);
+    ambiguous.create_started = Some(true);
+    assert!(!job_never_blocks_sync(&ambiguous));
+    ambiguous.create_started = None;
+    assert!(!job_never_blocks_sync(&ambiguous));
     let mut current_failure = adopted_legacy_failure(base, &owner);
     current_failure.create_started = Some(true);
     assert!(!job_never_blocks_sync(&current_failure));

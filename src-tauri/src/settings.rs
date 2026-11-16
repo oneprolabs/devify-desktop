@@ -805,12 +805,11 @@ pub fn validate(settings: &AppSettings) -> Result<(), String> {
         return Err("首次上传日期范围无效。".into());
     }
     for usernames in settings.chat.allowed_usernames.values() {
-        if usernames.len() > 1000
-            || usernames
-                .iter()
-                .any(|username| username.is_empty() || username.len() > 512)
-        {
-            return Err("单个账号最多配置 1000 个会话，且会话 ID 长度不能超过 512。".into());
+        if usernames.len() > 1000 {
+            return Err(format!("单个账号最多配置 1000 个会话，当前选择了 {} 个。", usernames.len()));
+        }
+        if usernames.iter().any(|username| username.is_empty() || username.len() > 512) {
+            return Err("存在空的会话 ID 或超过 512 字节的会话 ID，请检查会话数据。".into());
         }
     }
     validate_agent(&settings.agent)?;
@@ -1069,6 +1068,15 @@ mod tests {
         let mut disconnected = AppSettings::default();
         disconnected.connectors.wechat_enabled = false;
         assert!(validate(&disconnected).is_ok());
+    }
+
+    #[test]
+    fn conversation_validation_distinguishes_count_and_id() {
+        let mut settings = AppSettings::default();
+        settings.chat.allowed_usernames.insert("account".into(), (0..1001).map(|i| format!("chat{i}")).collect());
+        assert!(validate(&settings).unwrap_err().contains("1001"));
+        settings.chat.allowed_usernames.insert("account".into(), vec!["x".repeat(513)]);
+        assert!(validate(&settings).unwrap_err().contains("512 字节"));
     }
 
     #[test]

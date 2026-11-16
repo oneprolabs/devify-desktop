@@ -186,6 +186,7 @@ struct PendingDevifyAuth {
     verifier: String,
     base_url: String,
     generation: u64,
+    config: DevifyAuthConfig,
 }
 
 #[derive(Default)]
@@ -202,7 +203,7 @@ struct DevifyAuthResult {
     expires_in: u64,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 struct DevifyAuthConfig {
     client_id: String,
     browser_authorize_path: String,
@@ -3558,7 +3559,10 @@ async fn devify_auth_start(
                 && value != "AIMyChats Desktop"
         })
         .unwrap_or_else(settings::device_default_label);
-    let auth_config = devify_auth_config(&settings.devify).await?;
+    let config_started = std::time::Instant::now();
+    let config_result = devify_auth_config(&settings.devify).await;
+    eprintln!("桌面授权：读取登录配置耗时 {} 毫秒", config_started.elapsed().as_millis());
+    let auth_config = config_result?;
     if desktop_credentials::generation()? != auth_generation {
         return Err("登录状态已改变，请重新登录。".into());
     }
@@ -3631,7 +3635,7 @@ async fn devify_auth_start(
             || settings::load(&app_data(&app))?.devify.resolved_base_url()? != base_url {
             return Err("登录状态已改变，请重新登录。".into());
         }
-        pending.replace(PendingDevifyAuth { state: oauth_state.clone(), verifier, base_url: base_url.clone(), generation: auth_generation });
+        pending.replace(PendingDevifyAuth { state: oauth_state.clone(), verifier, base_url: base_url.clone(), generation: auth_generation, config: auth_config.clone() });
     }
     let mut url = Url::parse(&format!(
         "{}{}",
@@ -3703,14 +3707,15 @@ async fn devify_auth_callback(
         || desktop_credentials::generation()? != pending.generation {
         return Err("登录状态已改变，请重新登录。".into());
     }
-    let auth_config = devify_auth_config(&settings.devify).await?;
+    let auth_config = &pending.config;
     let platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
     } else {
         settings.devify.platform.clone()
     };
     let device_label = settings::resolved_device_label(&settings.devify);
-    let response = auth_http_client()?
+    let exchange_started = std::time::Instant::now();
+    let exchange_result = auth_http_client()?
         .post(format!(
             "{}{}",
             pending.base_url,
@@ -3727,8 +3732,9 @@ async fn devify_auth_callback(
             "platform": platform.clone(),
         }))
         .send()
-        .await
-        .map_err(|e| devify_network_message("换取服务端登录令牌失败", &e))?;
+        .await;
+    eprintln!("桌面授权：换取登录令牌耗时 {} 毫秒", exchange_started.elapsed().as_millis());
+    let response = exchange_result.map_err(|e| devify_network_message("换取服务端登录令牌失败", &e))?;
     if !response.status().is_success() {
         return Err(format!("服务端登录失败：{}", response.status()));
     }
@@ -6863,7 +6869,7 @@ async fn wechat_sync(
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct VoiceRequest {
     local_id: i64,
-    server_id: i64,
+    server_id: String,
 }
 
 #[derive(Serialize)]
@@ -6930,7 +6936,7 @@ async fn wechat_media_preview(
     }
 }
 
-/// Decode one encrypted image offline and open it in the system viewer.
+/// Decode one encrypted image offline for the in-app viewer.
 #[tauri::command]
 async fn wechat_media_open_image(
     app: AppHandle,
@@ -7016,9 +7022,26 @@ async fn wechat_voice_settings_save(
 }
 
 /// Decode and transcribe selected voice messages. Results are cached by `account|server_id`.
+async fn voice_blobs_with_refresh(
+    app: &AppHandle,
+    state: State<'_, SyncState>,
+    account_id: &str,
+    ids: &[i64],
+) -> Result<std::collections::BTreeMap<i64, Vec<u8>>, String> {
+    let cache = decrypt::cache_dir(&app_data(app), account_id);
+    let cached = voice::read_voice_blobs(&cache, ids).unwrap_or_default();
+    if ids.iter().all(|id| cached.contains_key(id)) {
+        return Ok(cached);
+    }
+    wechat_sync(app.clone(), state, account_id.to_string()).await
+        .map_err(|error| format!("无法刷新语音数据：{error}"))?;
+    voice::read_voice_blobs(&cache, ids)
+}
+
 #[tauri::command]
 async fn wechat_voice_transcribe(
     app: AppHandle,
+    state: State<'_, SyncState>,
     account_id: String,
     username: String,
     items: Vec<VoiceRequest>,
@@ -7027,7 +7050,7 @@ async fn wechat_voice_transcribe(
     if items.is_empty() {
         return Ok(Vec::new());
     }
-    let ids: Vec<i64> = items.iter().map(|item| item.server_id).collect();
+    let ids: Vec<i64> = items.iter().map(|item| item.server_id.parse().map_err(|_| "无效的语音标识。".to_string())).collect::<Result<_, _>>()?;
     let data_dir = app_data(&app);
     let settings = settings::load(&data_dir)?;
     entitlements::require(
@@ -7035,8 +7058,7 @@ async fn wechat_voice_transcribe(
         &settings.devify.base_url,
         capabilities::LOCAL_VOICE_TRANSCRIBE,
     )?;
-    let cache = decrypt::cache_dir(&data_dir, &account_id);
-    let blobs = voice::read_voice_blobs(&cache, &ids)?;
+    let blobs = voice_blobs_with_refresh(&app, state, &account_id, &ids).await?;
     let view = voice::view(&data_dir);
     if view.selected.is_none() {
         return Err(
@@ -7047,10 +7069,10 @@ async fn wechat_voice_transcribe(
 
     let mut transcripts = voice::load_transcripts(&data_dir);
     let mut results = Vec::new();
-    for item in items {
-        let key = voice::transcript_key(&account_id, item.server_id);
+    for (item, server_id) in items.into_iter().zip(ids) {
+        let key = voice::transcript_key(&account_id, server_id);
         let mut result = voice::VoiceResult {
-            server_id: item.server_id,
+            server_id,
             local_id: item.local_id,
             wav: None,
             duration_secs: 0.0,
@@ -7058,12 +7080,12 @@ async fn wechat_voice_transcribe(
             cached: false,
             error: None,
         };
-        let Some(blob) = blobs.get(&item.server_id) else {
-            result.error = Some("media_0.db 中没有这条语音。".into());
+        let Some(blob) = blobs.get(&server_id) else {
+            result.error = Some("本地暂未找到这条语音，请刷新微信数据后重试。".into());
             results.push(result);
             continue;
         };
-        match voice::ensure_wav(&data_dir, &account_id, item.server_id, blob) {
+        match voice::ensure_wav(&data_dir, &account_id, server_id, blob) {
             Ok((wav, duration)) => {
                 result.wav = Some(wav.to_string_lossy().to_string());
                 result.duration_secs = duration;
@@ -7100,17 +7122,18 @@ async fn wechat_voice_transcribe(
 #[tauri::command]
 async fn wechat_voice_audio(
     app: AppHandle,
+    state: State<'_, SyncState>,
     account_id: String,
     username: String,
-    server_id: i64,
+    server_id: String,
 ) -> Result<VoiceAudio, String> {
     require_visible_session(&app, &account_id, &username)?;
+    let server_id: i64 = server_id.parse().map_err(|_| "无效的语音标识。".to_string())?;
     let data_dir = app_data(&app);
-    let cache = decrypt::cache_dir(&data_dir, &account_id);
-    let blobs = voice::read_voice_blobs(&cache, &[server_id])?;
+    let blobs = voice_blobs_with_refresh(&app, state, &account_id, &[server_id]).await?;
     let blob = blobs
         .get(&server_id)
-        .ok_or_else(|| "media_0.db 中没有这条语音。".to_string())?;
+        .ok_or_else(|| "本地暂未找到这条语音，请刷新微信数据后重试。".to_string())?;
     let (wav, duration) = voice::ensure_wav(&data_dir, &account_id, server_id, blob)?;
     Ok(VoiceAudio {
         data_uri: voice::audio_data_uri(&wav)?,
@@ -7146,10 +7169,10 @@ struct SessionUploadState {
     new_messages: usize,
 }
 
-/// A pre-ownership job that never obtained a cloud batch and carries no deferred local
-/// effects. Nothing of it exists remotely, so it cannot hide uploaded coverage.
+/// Only a recorded pre-create failure is known not to have reached the server.
 fn legacy_job_is_inert(job: &settings::UploadJob) -> bool {
     job.owner.is_none() && job.batch_id.is_none()
+        && job.create_started == Some(false)
         && matches!(job.status.as_str(), "failed" | "cancelled")
         && !upload_job_has_pending_sync(job)
 }

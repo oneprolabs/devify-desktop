@@ -295,10 +295,8 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
 
   const matchedCatalog = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    if (!keyword) return catalog;
-    return catalog.filter(session =>
-      session.display.toLowerCase().includes(keyword) || session.username.toLowerCase().includes(keyword),
-    );
+    return catalog.filter(session => !keyword || session.display.toLowerCase().includes(keyword) || session.username.toLowerCase().includes(keyword))
+      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0));
   }, [catalog, search]);
   const groupCount = useMemo(() => matchedCatalog.filter(session => session.is_group).length, [matchedCatalog]);
   // Official accounts / service sessions are filtered out of the catalog, so a whitelist
@@ -361,6 +359,11 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
   }, [accountId]);
 
   const setVisibleSelection = (selected: boolean) => {
+    if (selected && new Set([...allowed, ...visibleCatalog.map(session => session.username)]).size > 1000) {
+      setSaveError('选择后将超过 1000 个会话上限，请缩小筛选范围或手动选择。');
+      return;
+    }
+    setSaveError('');
     setSettings(current => {
       const next = new Set(current.chat.allowed_usernames[accountId] ?? []);
       visibleCatalog.forEach(session => selected ? next.add(session.username) : next.delete(session.username));
@@ -369,6 +372,8 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
   };
 
   const toggleUsername = (username: string) => {
+    if (!allowed.has(username) && allowedCount >= 1000) { setSaveError('每个账号最多选择 1000 个会话，请先取消其他会话。'); return; }
+    setSaveError('');
     if (!allowed.has(username)) setFocusedSession(username);
     setSettings(current => {
       const next = new Set(current.chat.allowed_usernames[accountId] ?? []);
@@ -395,6 +400,8 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
       const keep = catalog.length
         ? (settings.chat.allowed_usernames[accountId] ?? []).filter(username => catalogUsernames.has(username))
         : settings.chat.allowed_usernames[accountId];
+      const invalidId = (keep ?? []).find(username => !username || new TextEncoder().encode(username).length > 512);
+      if (invalidId !== undefined) throw new Error(`会话 ID 无效或超过 512 字节：${invalidId.slice(0, 60) || '空 ID'}`);
       const submitted: AppSettings = {
         ...settings,
         user_settings_revision: confirmedRevision.current,
@@ -436,19 +443,20 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
     <p className="imports-hint">首次历史日期范围仅用于第一次上传；后续自动备份会继续同步新增消息。选择的微信账号和范围在保存成功后才生效。</p>
     <div className="imports-workspace">
       <div className="imports-choices"><input className="plan-input imports-search" type="search" value={search} placeholder="搜索会话名或 wxid" aria-label="搜索会话" onChange={event => setSearch(event.target.value)}/>
+        <div className="imports-activity">按最近活跃排序</div>
         <div className="plan-pills" role="group" aria-label="按会话类型筛选">
           <button type="button" aria-pressed={kind === 'all'} className={kind === 'all' ? 'on' : ''} onClick={() => setKind('all')}>全部 {matchedCatalog.length}</button>
           <button type="button" aria-pressed={kind === 'group'} className={kind === 'group' ? 'on' : ''} onClick={() => setKind('group')}>群聊 {groupCount}</button>
           <button type="button" aria-pressed={kind === 'direct'} className={kind === 'direct' ? 'on' : ''} onClick={() => setKind('direct')}>单聊 {matchedCatalog.length - groupCount}</button>
         </div>
         <div className="imports-bulk"><button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(true)}>全部导入</button><button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(false)}>全部忽略</button></div>
-        <div className="imports-list">{visibleCatalog.map(session => <div key={session.username} className={`imports-choice${focused?.username === session.username ? ' selected' : ''}`}><input type="checkbox" aria-label={`导入 ${session.display}`} checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><button type="button" onClick={() => setFocusedSession(session.username)}><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></button></div>)}
+        <div className="imports-list">{visibleCatalog.map(session => <div key={session.username} className={`imports-choice${focused?.username === session.username ? ' selected' : ''}`}><input type="checkbox" aria-label={`导入 ${session.display}`} checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><button type="button" onClick={() => setFocusedSession(session.username)}><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></button><time className="imports-last-active">{session.last_time ? new Date(session.last_time * 1000).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) : '无记录'}</time></div>)}
         {!accountId && <p className="plan-empty">未发现微信账号，请先完成连接。</p>}{accountId && catalogLoading && <p className="plan-empty">正在加载会话…</p>}{accountId && !catalogLoading && !visibleCatalog.length && <p className="plan-empty">没有符合条件的会话。</p>}</div>
       </div>
       <section className="imports-detail">{focused ? <><header><h3>{focused.display}</h3><p>{focused.is_group ? '群聊' : '单聊'} · {focused.username}</p></header>{!allowed.has(focused.username) ? <p className="help">勾选此会话后，可以设置首次上传的历史范围。</p> : alreadySynced ? <p className="help">此会话已有同步进度，首次历史范围不再生效。</p> : <><h3>首次上传范围</h3><label className="imports-all-history"><input type="checkbox" checked={!isCustomRange} onChange={e => setUploadAllHistory(e.target.checked)}/><span><strong>上传全部历史记录</strong><small>首次上传该会话的全部本机历史记录。</small></span></label>{isCustomRange && <><p className="help">选择首次上传的历史日期范围；可只填写开始日期或结束日期。</p><div className="imports-dates"><label>开始日期<input type="date" value={dateText(focusedRange?.since)} onChange={e => setDate(focused.username, 'since', e.target.value)}/></label><span>至</span><label>结束日期<input type="date" value={dateText(focusedRange?.until, true)} onChange={e => setDate(focused.username, 'until', e.target.value)}/></label></div><div className="imports-available"><strong>有记录的日期</strong><button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(focused.username)}>{dateLoading === focused.username ? '正在读取…' : '查看日期'}</button>{dateDetails[focused.username] && (dateDetails[focused.username].length ? <><p className="imports-date-hint">选择日期作为开始日期，结束日期保持不变。</p><div className="imports-date-list" aria-label="选择有记录的开始日期">{dateDetails[focused.username].map(([day]) => <button type="button" key={day} className={dateText(focusedRange?.since) === day ? 'selected' : ''} aria-pressed={dateText(focusedRange?.since) === day} onClick={() => setDate(focused.username, 'since', day)}>{day}</button>)}</div></> : <p>没有可用记录</p>)}</div></>}</>}</> : <p className="help">选择一个会话，查看并设置首次上传的日期范围。</p>}</section>
     </div>
-    {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}
-    <div className="page-actions"><button className="primary" disabled={saving || !accountId || catalogLoading} onClick={() => void save()}>{saving ? '正在保存…' : '保存所选会话'}</button><span>已选 {allowedCount} 个会话</span></div>
+    {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}{allowedCount > 1000 && <div className="error" role="alert">已超出 {allowedCount - 1000} 个会话，请取消选择后保存。</div>}
+    <div className="page-actions"><button className="primary" disabled={saving || !accountId || catalogLoading || allowedCount > 1000} onClick={() => void save()}>{saving ? '正在保存…' : '保存所选会话'}</button><span>已选 {allowedCount} / 1000 个会话</span></div>
   </div>;
 }
 

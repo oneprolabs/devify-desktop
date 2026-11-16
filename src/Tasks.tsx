@@ -2,6 +2,7 @@ import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { Collection } from './Collection';
+import { readTaskSnapshot, saveTaskSnapshot } from './taskSnapshot';
 import { advanceCloudRebuild, appendCloudPages, analysisLabel, cloudNeedsPolling, cloudRetryCandidate, fetchCloudPages, linkedLocalJobs, localGroupKey, localQueueCounts, visibleLocalJobs, pollPagePlan, rebuildComplete, rebuildNextPages, refreshInterval, requestIsCurrent, retryCandidate, retryIdentityIsCurrent, sameCloudContext, sameCloudLayout, sameRetryJob, settingsScope, startCloudRebuild, triggerLabel, validateCloudPrefixPage, verifiedDevice, type CloudBatch, type CloudPage, type CloudRebuild, type TaskSettings, type UploadJob } from './taskCloud';
 
 type RetryPreview = { fingerprint: string; message_count: number; sessions: Array<{ username: string; display: string; message_count: number }> };
@@ -110,11 +111,24 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
       if (!spaceId || !stored.devify?.base_url) { setSettings(stored); return; }
       const userBefore = await currentUserId();
       if (!userBefore) throw new Error('无法验证当前云端登录用户');
-      const deviceBefore = await deviceForUser(userBefore);
-      const page = await invoke<CloudPage>('devify_upload_list', { spaceId, page: 1, pageSize: PAGE_SIZE });
-      const deviceAfter = await deviceForUser(userBefore);
-      const userAfter = await currentUserId();
-      const latest = await invoke<TaskSettings>('app_settings_get');
+      const pageRequest = invoke<CloudPage>('devify_upload_list', { spaceId, page: 1, pageSize: PAGE_SIZE });
+      void pageRequest.catch(() => {});
+      const [deviceBefore, cachedUser, cachedSettings] = await Promise.all([
+        deviceForUser(userBefore), currentUserId(), invoke<TaskSettings>('app_settings_get'),
+      ]);
+      if (request !== generation.current) return;
+      if (userBefore === cachedUser && settingsScope(stored) === settingsScope(cachedSettings)) {
+        const cached = readTaskSnapshot(cachedSettings, userBefore, deviceBefore);
+        if (cached) {
+          setUserId(userBefore); setDeviceId(deviceBefore); setSettings(cachedSettings);
+          setCloud(cached.list); setPagination(cached.pagination);
+          setPollError('正在更新，当前显示的是上次读取的任务。');
+        }
+      }
+      const page = await pageRequest;
+      const [deviceAfter, userAfter, latest] = await Promise.all([
+        deviceForUser(userBefore), currentUserId(), invoke<TaskSettings>('app_settings_get'),
+      ]);
       if (request !== generation.current) return;
       if (settingsScope(stored) !== settingsScope(latest) || userBefore !== userAfter) {
         setSettings(null); setError('服务、空间或登录用户已变化，将自动重试。'); return;
@@ -124,6 +138,8 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
       setUserId(userBefore);
       setDeviceId(deviceBefore && deviceBefore === deviceAfter ? deviceBefore : null);
       setSettings(latest); setCloud(page.list); setPagination(page.pagination);
+      saveTaskSnapshot(latest, userBefore, deviceBefore && deviceBefore === deviceAfter ? deviceBefore : null, page);
+      setPollError('');
     } catch (e) {
       // An offline cloud request may still leave a usable local queue, but never expose
       // a queue captured before a concurrent server/space change.
@@ -379,7 +395,7 @@ export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () 
       <header className="task-list-head"><div><h1>任务</h1><p>当前空间的云端记录与本机队列</p></div></header>
       <div className="task-list-tools"><button type="button" className="task-new" onClick={() => { retryPause.current = false; setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); setCreating(true); }} disabled={retrying}><span aria-hidden="true">＋</span>新建采集</button></div>
       <div className="task-list-label"><span>云端任务{pagination ? ` · 共 ${pagination.total} 条` : ''}</span><button type="button" className="task-refresh" onClick={alignLoaded} disabled={loading || retrying || !!selectedRetry || !isTauri()} aria-label="刷新任务" title="刷新任务">↻</button></div>
-      {loading && <LoadingSkeleton label="正在加载任务" />}
+      {loading && !cloud.length && <LoadingSkeleton label="正在加载任务" />}
       {!isTauri() && <p className="task-list-empty">请在桌面应用中查看任务。</p>}
       {!loading && settings && !settings.devify?.active_space_id && <p className="task-list-empty">请先选择上传空间。</p>}
       {!loading && settings?.devify?.active_space_id && !settings.devify.base_url && <p className="task-list-empty">请先设置服务地址。</p>}

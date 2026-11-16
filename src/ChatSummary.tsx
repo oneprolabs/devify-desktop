@@ -7,6 +7,7 @@ import {
   type SummaryRecord,
 } from './summary';
 import { classifyWorkText, extractWorkTerms } from './workInsights';
+import { currentSessionSummaries } from './chatPresentation';
 
 /** Minimal conversation shape shared with the chat page. */
 export type SummarySession = {
@@ -24,11 +25,6 @@ type MessageItem = {
   kind: number;
   text: string;
   is_self: boolean;
-};
-
-type SearchReport = {
-  keyword: string;
-  hits: Array<{ username: string; display: string; is_group: boolean; hits: number; truncated: boolean }>;
 };
 
 type AgentCurrent = {
@@ -61,7 +57,6 @@ const RANGES: Array<{ id: RangeId; label: string }> = [
 
 const WORK_PAGE = 500;
 const WORK_MAX_MESSAGES_PER_SESSION = 5000;
-const MAX_EXTRA_CHATS = 20;
 
 const pad = (value: number) => (value < 10 ? `0${value}` : String(value));
 const dayKey = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
@@ -231,7 +226,7 @@ function cardContent(record: SummaryRecord) {
 
 /** Empty-state copy that names the scope that produced no records. */
 function summaryScopeEmpty(scopedToSession: boolean, total: number): string {
-  if (scopedToSession && total > 0) return '这个会话还没有保存过总结，切到「全部会话」能看到其他聊天的记录。';
+  if (scopedToSession && total > 0) return '当前会话暂无总结。';
   return '还没有保存过总结记录。';
 }
 
@@ -257,19 +252,12 @@ export function ChatSummary({
   const [open, setOpen] = useState(false);
   const [range, setRange] = useState<RangeId>('today');
   const [mode, setMode] = useState<SummaryMode>('local');
-  const [extras, setExtras] = useState<string[]>([]);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerQuery, setPickerQuery] = useState('');
   const [agent, setAgent] = useState<AgentCurrent | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [confirmAi, setConfirmAi] = useState(false);
   const [reader, setReader] = useState<SummaryRecord | null>(null);
-  // The tab opens on the selected conversation, but records saved for other chats
-  // (daily reports, summaries made before switching away) must stay reachable now
-  // that the standalone archive page is gone.
-  const [scope, setScope] = useState<'session' | 'all'>('session');
   const pageRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -279,60 +267,23 @@ export function ChatSummary({
   useEffect(() => {
     setNotice('');
     setError('');
-    if (session) setExtras(current => current.filter(username => username !== session.username));
-  }, [session?.username]);
-
-  // Never show an empty tab while the local archive still has records: a chat with
-  // no summaries of its own opens on the whole archive instead.
-  useEffect(() => {
-    if (!session) return;
-    const hasOwn = summaries.some(record => record.sessions.some(item => item.username === session.username));
-    if (!hasOwn && summaries.length) setScope('all');
-  }, [session?.username, summaries]);
+    setReader(null);
+  }, [accountId, session?.username]);
 
   useEffect(() => {
     onBusyChange?.(busy);
   }, [busy, onBusyChange]);
 
-  // The tab lists the selected conversation's records by default; the scope switch
-  // (and the absence of a selection) falls back to the whole local archive.
   const scoped = useMemo(() => {
-    const bySession = session && scope === 'session'
-      ? summaries.filter(record => record.sessions.some(item => item.username === session.username))
-      : summaries;
+    const bySession = currentSessionSummaries(summaries, accountId, session?.username);
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return bySession;
-    return bySession.filter(record => {
-      const text = [record.range_label, record.output ?? '', ...record.sessions.map(item => item.display)]
-        .join(' ')
-        .toLowerCase();
-      return text.includes(keyword);
-    });
-  }, [summaries, session, scope, query]);
+    return keyword ? bySession.filter(record => [record.range_label, record.output ?? '', ...record.sessions.map(item => item.display)].join(' ').toLowerCase().includes(keyword)) : bySession;
+  }, [summaries, accountId, session, query]);
 
   const bounds = rangeBounds(range);
-  const chatUsernames = useMemo(() => {
-    const list = session ? [session.username] : [];
-    extras.forEach(username => { if (!list.includes(username)) list.push(username); });
-    return list;
-  }, [session, extras]);
+  const chatUsernames = useMemo(() => session ? [session.username] : [], [session]);
 
   const agentReady = Boolean(agent?.configured && agent.available);
-  const chatOptions = useMemo(() => {
-    const keyword = pickerQuery.trim().toLowerCase();
-    return sessions
-      .filter(item => !chatUsernames.includes(item.username))
-      .filter(item => !keyword || `${item.display} ${item.username}`.toLowerCase().includes(keyword))
-      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0));
-  }, [sessions, chatUsernames, pickerQuery]);
-
-  const toggleExtra = (username: string) => {
-    setError('');
-    setExtras(current => current.includes(username)
-      ? current.filter(item => item !== username)
-      : current.length >= MAX_EXTRA_CHATS ? current : [...current, username]);
-  };
-
   const buildLocal = async (usernames: string[]): Promise<NewSummaryRecord> => {
     if (!accountId) throw new Error('还没有可用的微信账号。');
     const selected = usernames
@@ -373,30 +324,7 @@ export function ChatSummary({
     });
 
     const terms = extractWorkTerms(flat);
-    let related: NonNullable<NewSummaryRecord['insights']>['related'] = [];
-    let note: string | null = null;
-    if (terms.length) {
-      try {
-        const reports = await Promise.all(terms.map(term => invoke<SearchReport>('wechat_search', {
-          accountId,
-          keyword: term,
-          groupsOnly: false,
-          maxSessions: 200,
-        })));
-        const chosen = new Set(usernames);
-        const merged = new Map<string, { username: string; display: string; hits: number; truncated: boolean }>();
-        reports.forEach(report => report.hits.forEach(hit => {
-          if (chosen.has(hit.username)) return;
-          const previous = merged.get(hit.username);
-          merged.set(hit.username, previous
-            ? { ...previous, hits: previous.hits + hit.hits, truncated: previous.truncated || hit.truncated }
-            : { username: hit.username, display: hit.display, hits: hit.hits, truncated: hit.truncated });
-        }));
-        related = [...merged.values()].sort((a, b) => b.hits - a.hits).slice(0, 20);
-      } catch {
-        note = '相关会话探索失败，记录里只有项目重点与时间线。';
-      }
-    }
+    const related: NonNullable<NewSummaryRecord['insights']>['related'] = [];
 
     return {
       kind: 'local',
@@ -427,7 +355,7 @@ export function ChatSummary({
         related,
         terms,
       },
-      note,
+      note: null,
     };
   };
 
@@ -484,7 +412,6 @@ export function ChatSummary({
       await invoke<SummaryRecord[]>('summary_history_add', { record });
       await onReload();
       setOpen(false);
-      setExtras([]);
       setNotice(mode === 'ai' ? '已用本地 Agent 生成总结并保存。' : '已在本机整理并保存。');
       pageRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (reason) {
@@ -514,7 +441,7 @@ export function ChatSummary({
   };
 
   const openRaw = (record: SummaryRecord) => {
-    const username = record.sessions[0]?.username ?? session?.username;
+    const username = session?.username ?? record.sessions[0]?.username;
     if (username) onOpenRaw(username);
   };
 
@@ -539,22 +466,6 @@ export function ChatSummary({
         </button>
       </div>
 
-      {summaries.length > 0 && (session || scope === 'all') && <div className="chat-summary-scope">
-        <div className="chat-summary-pills">
-          {session && <button
-            type="button"
-            className={scope === 'session' ? 'on' : ''}
-            onClick={() => setScope('session')}
-          >当前会话</button>}
-          <button
-            type="button"
-            className={!session || scope === 'all' ? 'on' : ''}
-            onClick={() => setScope('all')}
-          >全部会话 · {summaries.length}</button>
-        </div>
-        <span className="chat-summary-hint">共 {summaries.length} 条本机记录，最近 50 条保留</span>
-      </div>}
-
       {open && <section className="chat-summary-panel" aria-label="生成聊天总结">
         <div className="chat-summary-row">
           <span className="chat-summary-label">时间</span>
@@ -568,54 +479,6 @@ export function ChatSummary({
               >{item.label}</button>)}
             </div>
             <span className="chat-summary-hint">{bounds.hint} · 最长一周，更长的范围请分多次</span>
-          </div>
-        </div>
-
-        <div className="chat-summary-row">
-          <span className="chat-summary-label">一起总结</span>
-          <div className="chat-summary-chatcol">
-            <div className="chat-summary-chips">
-              {session && <span className="chat-summary-chip current"><i/>{session.display}</span>}
-              {extras.map(username => {
-                const item = sessions.find(candidate => candidate.username === username);
-                return <span key={username} className="chat-summary-chip extra">
-                  {item?.display ?? username}
-                  <button type="button" aria-label={`移除 ${item?.display ?? username}`} onClick={() => toggleExtra(username)}>×</button>
-                </span>;
-              })}
-              <button type="button" className="chat-summary-add" onClick={() => setPickerOpen(value => !value)}>
-                {pickerOpen ? '收起列表' : `＋ 添加聊天（共 ${sessions.length} 个）`}
-              </button>
-            </div>
-            {pickerOpen && <div className="chat-summary-picker">
-              <div className="chat-summary-picker-head">
-                <input
-                  value={pickerQuery}
-                  onChange={event => setPickerQuery(event.target.value)}
-                  placeholder="搜索聊天名称"
-                  aria-label="搜索聊天名称"
-                />
-                <span>{extras.length} / {MAX_EXTRA_CHATS}</span>
-              </div>
-              <div className="chat-summary-picker-list">
-                {chatOptions.map(item => <button
-                  key={item.username}
-                  type="button"
-                  className={extras.includes(item.username) ? 'on' : ''}
-                  onClick={() => toggleExtra(item.username)}
-                >
-                  <span className="chat-summary-check">{extras.includes(item.username) ? '✓' : ''}</span>
-                  <strong>{item.display}</strong>
-                  <small>{item.is_group ? '群聊' : '单聊'}</small>
-                </button>)}
-                {!chatOptions.length && <p className="chat-summary-picker-empty">没有匹配的聊天。</p>}
-              </div>
-              <div className="chat-summary-picker-foot">
-                <span>已选 {extras.length} 个 · 不含当前会话</span>
-                <button type="button" onClick={() => setExtras([])} disabled={!extras.length}>清空</button>
-                <button type="button" className="primary" onClick={() => setPickerOpen(false)}>完成</button>
-              </div>
-            </div>}
           </div>
         </div>
 
@@ -679,6 +542,7 @@ export function ChatSummary({
           <header className="chat-summary-card-head">
             <strong>{record.range_label || '聊天总结'}</strong>
             <span className="chat-summary-kind">{HISTORY_KIND_LABEL[record.kind] ?? record.kind}</span>
+            {record.sessions.length > 1 && <span className="chat-summary-kind">历史跨会话总结 · {record.sessions.length} 个会话</span>}
             {record.agent_name && <span className="chat-summary-kind">{record.agent_name}{record.model ? ` · ${record.model}` : ''}</span>}
             <span className="chat-summary-card-meta">{record.messages} 条消息 · {record.created_at}</span>
           </header>
@@ -708,7 +572,7 @@ export function ChatSummary({
       {!busy && !scoped.length && <div className="chat-summary-empty">
         {query.trim()
           ? `没有匹配「${query.trim()}」的总结记录。`
-          : summaryScopeEmpty(Boolean(session) && scope === 'session', summaries.length)}<br/>
+          : summaryScopeEmpty(Boolean(session), summaries.length)}<br/>
         选好范围后在本机生成，结果只保存在本机。
       </div>}
     </div>

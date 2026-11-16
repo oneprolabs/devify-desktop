@@ -99,6 +99,8 @@
 .language-explanation { padding:15px 18px; border:1px solid #e9e9e6; border-radius:10px; background:#f5f5f3; color:#5f5f5a; line-height:1.6; }.language-heading { margin:24px 0 12px; font-size:15px; }.language-cards { display:grid; gap:10px; }.language-cards button { display:flex; align-items:center; gap:15px; width:100%; padding:15px; border:1px solid #e9e9e6; border-radius:11px; background:#fbfafe; text-align:left; color:#1a1a19; cursor:pointer; }.language-cards button.selected { border-color:#b85aae; background:#ede9f9; }.language-cards button:disabled { opacity:.58; cursor:not-allowed; }.language-cards button>span:nth-child(2) { display:flex; flex:1; flex-direction:column; gap:4px; }.language-cards small { color:#74746e; }.language-mark { display:grid; place-items:center; width:42px; height:42px; border-radius:10px; background:#e9e9e6; color:#76216f; font-weight:600; }.language-check { color:#a3279a; font-size:20px; }
 .account-profile-card, .account-service-card { overflow:hidden; margin-bottom:15px; border:1px solid #e9e9e6; border-radius:11px; background:#fbfafe; }.account-profile-card h3, .account-service-card h3 { margin:0; padding:11px 16px; background:#f5f5f3; color:#3a3a37; font-size:15px; }.account-profile-card>div { display:flex; align-items:center; gap:16px; padding:20px; }.account-profile-card>div>span:last-child { display:flex; flex-direction:column; gap:5px; }.account-profile-card small { color:#74746e; }.account-profile-avatar { display:grid; place-items:center; width:55px; height:55px; border-radius:50%; background:#e9e9e6; color:#76216f; font-size:22px; font-weight:700; }.account-service-card .plan-items { border:0; border-radius:0; box-shadow:none; }
 .imports-choice input[type=checkbox] { appearance:auto; -webkit-appearance:checkbox; display:block; flex:none; width:16px; height:16px; min-width:16px; margin:0; padding:0; }
+.imports-activity { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; color:#74746e; font-size:13px; }
+.imports-last-active { flex:none; color:#858581; font-size:12px; white-space:nowrap; }
 .imports-dates input[type=date] { height:36px; padding:4px 8px; border:1px solid #e9e9e6; border-radius:7px; background:#fff; }
 /* Compact, expanded analysis groups: the settings shown are the ones this client supports. */
 .analysis-service { display:flex; align-items:flex-start; gap:14px; margin:20px 0; padding:18px; border:1px solid #e9e9e6; border-radius:11px; background:#f5f5f3; }
@@ -139,6 +141,10 @@
 .chat-workbench-embedded .wxv-msg.self .wxv-avatar { grid-column:3; grid-row:1; }
 .chat-workbench-embedded .wxv-msg.self .wxv-msg-body { grid-column:2; grid-row:1; justify-self:end; align-items:flex-end; }
 .chat-workbench-embedded .wxv-msg.self .wxv-bubble { background:#f5f5f3; border-color:#e9e9e6; }
+.chat-workbench-embedded .wxv-msg .wxv-bubble.image-only,
+.chat-workbench-embedded .wxv-msg.self .wxv-bubble.image-only { padding:0; border:0; background:transparent; box-shadow:none; }
+.chat-workbench-embedded .wxv-msg .wxv-bubble.voice-only,
+.chat-workbench-embedded .wxv-msg.self .wxv-bubble.voice-only { padding:0; border:0; background:transparent; box-shadow:none; }
 
 .analysis-options { display:flex; flex-wrap:wrap; gap:10px 18px; }.analysis-options label { display:inline-flex; align-items:center; gap:7px; color:#5f5f5a; }.analysis-options input[type=radio] { appearance:auto; -webkit-appearance:radio; flex:none; width:15px; height:15px; margin:0; padding:0; accent-color:#a3279a; }
 .analysis-preferences { margin-bottom:14px; }.analysis-preferences .analysis-task { padding-bottom:16px; }.analysis-preferences select { max-width:340px; }
