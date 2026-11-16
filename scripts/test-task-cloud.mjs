@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { advanceCloudRebuild, appendCloudPages, rebuildComplete, rebuildNextPages, refreshInterval, requestIsCurrent, sameCloudContext, sameCloudLayout, startCloudRebuild, validateCloudPrefixPage, analysisLabel, cloudNeedsPolling, cloudRetryCandidate, fetchCloudPages, hasCompleteOwner, jobInScope, linkedLocalJobs, localGroupKey, localQueueCounts, localUnbatched, visibleLocalJobs, ownerMatches, verifiedDevice, mergeCloudPages, pollPagePlan, retryCandidate, retryIdentityIsCurrent, sameRetryJob, settingsScope, triggerLabel, updateLoadedCloud, validateCloudPage } from '../src/taskCloud.ts';
-import { apiBaseUrl, displayBaseUrl, sameServiceUrl } from '../src/serviceUrl.ts';
+import { apiBaseUrl, sameServiceUrl, storedBaseUrl } from '../src/serviceUrl.ts';
 
 const scope = { base_url: 'https://example.test/', usernames: ['alice'], since: null, until: null };
-const owner = { base_url: 'https://example.test/', space_id: 2, account_id: 'wx-a', user_id: 42, device_id: 'device-a' };
-const job = { id: 'local', account_id: 'wx-a', space_id: 2, batch_id: null, status: 'failed', message: 'offline', created_at: '', updated_at: '', scope, owner, create_started: false };
-const settings = { active_account_id: 'wx-a', devify: { base_url: 'https://example.test', active_space_id: 2, device_id: 'device-a' }, upload_queue: [job] };
-const batch = (id, changes = {}) => ({ id, space_id: 2, source_account_id: 'wx-a', device_id: 'device-a', status: 'completed', ...changes });
+const owner = { base_url: 'https://example.test/', space_id: 'space-2', account_id: 'wx-a', user_id: 42, device_id: 'device-a' };
+const job = { id: 'local', account_id: 'wx-a', space_id: 'space-2', batch_id: null, status: 'failed', message: 'offline', created_at: '', updated_at: '', scope, owner, create_started: false };
+const settings = { active_account_id: 'wx-a', devify: { base_url: 'https://example.test', active_space_id: 'space-2', device_id: 'device-a' }, upload_queue: [job] };
+const batch = (id, changes = {}) => ({ id, space_id: 'space-2', source_account_id: 'wx-a', device_id: 'device-a', status: 'completed', ...changes });
 const page = (list, number = 1, total = 2, next = null) => ({ list, pagination: { total, page: number, page_size: 20, next, previous: null } });
 
 assert.equal(jobInScope(job, settings), true);
@@ -14,23 +14,24 @@ assert.equal(jobInScope({ ...job, scope: null }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { ...scope, base_url: '' } }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { ...scope, base_url: 'https://other.test' } }, settings), false);
 assert.equal(apiBaseUrl('https://aimychats.com/'), 'https://app.aimychats.com');
-assert.equal(displayBaseUrl('https://app.aimychats.com/'), 'https://aimychats.com/');
+assert.equal(storedBaseUrl('  https://app.aimychats.com/  '), 'https://app.aimychats.com/');
+assert.equal(apiBaseUrl('https://app.aimychats.com/'), 'https://app.aimychats.com');
 assert.equal(sameServiceUrl('https://aimychats.com/', 'https://app.aimychats.com'), true);
 assert.equal(jobInScope({ ...job, scope: { ...scope, base_url: 'https://aimychats.com/' } }, { ...settings, devify: { ...settings.devify, base_url: 'https://app.aimychats.com' } }), true);
 assert.equal(settingsScope({ ...settings, devify: { ...settings.devify, base_url: 'https://aimychats.com/' } }), settingsScope({ ...settings, devify: { ...settings.devify, base_url: 'https://app.aimychats.com' } }));
-assert.equal(jobInScope({ ...job, space_id: 3 }, settings), false);
+assert.equal(jobInScope({ ...job, space_id: 'space-3' }, settings), false);
 assert.equal(jobInScope({ ...job, account_id: '' }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { base_url: scope.base_url, usernames: ['alice'] } }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { ...scope, usernames: [] } }, settings), false);
 assert.equal(jobInScope({ ...job, scope: { ...scope, since: 4, until: 4 } }, settings), false);
 assert.equal(jobInScope(job, { ...settings, devify: { ...settings.devify, active_space_id: null } }), false);
-assert.notEqual(settingsScope(settings), settingsScope({ ...settings, devify: { ...settings.devify, active_space_id: 3 } }));
+assert.notEqual(settingsScope(settings), settingsScope({ ...settings, devify: { ...settings.devify, active_space_id: 'space-3' } }));
 assert.notEqual(settingsScope(settings), settingsScope({ ...settings, devify: { ...settings.devify, base_url: 'https://other.test' } }));
 
 const grouped1 = { ...job, id: 'g1', manual_group: 'g', manual_index: 0, manual_total: 3 };
 const grouped2 = { ...job, id: 'g2', manual_group: 'g', manual_index: 1, manual_total: 3, status: 'queued' };
 const grouped3 = { ...job, id: 'g3', manual_group: 'g', manual_index: 2, manual_total: 3, batch_id: 5 };
-const mixed = { ...settings, upload_queue: [job, grouped1, grouped2, grouped3, { ...job, id: 'legacy', scope: null }, { ...job, id: 'other-space', space_id: 3 }] };
+const mixed = { ...settings, upload_queue: [job, grouped1, grouped2, grouped3, { ...job, id: 'legacy', scope: null }, { ...job, id: 'other-space', space_id: 'space-3' }] };
 assert.deepEqual(localUnbatched(mixed).map(item => item.id).sort(), ['g1', 'g2', 'local']);
 assert.equal(localGroupKey(grouped1), localGroupKey(grouped2));
 assert.notEqual(localGroupKey(grouped1), localGroupKey({ ...grouped2, account_id: 'wx-b' }));
@@ -66,7 +67,7 @@ for (const changedOwner of [
   { ...owner, user_id: 43 },
   { ...owner, device_id: 'device-b' },
   { ...owner, account_id: 'wx-b' },
-  { ...owner, space_id: 3 },
+  { ...owner, space_id: 'space-3' },
   { ...owner, base_url: 'https://other.test' },
   { ...owner, device_id: '' },
 ]) {
@@ -77,7 +78,7 @@ for (const changedOwner of [
 for (const changedSettings of [
   { ...settings, active_account_id: 'wx-b' },
   { ...settings, active_account_id: '' },
-  { ...settings, devify: { ...settings.devify, active_space_id: 3 } },
+  { ...settings, devify: { ...settings.devify, active_space_id: 'space-3' } },
   { ...settings, devify: { ...settings.devify, base_url: 'https://other.test' } },
 ]) assert.equal(retryCandidate(changedSettings, job.id, 42, 'device-a'), undefined);
 // The backend has authenticated the JWT claim; an empty configured device is not
@@ -133,7 +134,7 @@ assert.equal(linkedLocalJobs(legacyBatch, legacyLinkedSettings, 'device-a').leng
 assert.equal(cloudRetryCandidate(legacyLinkedSettings, legacyBatch, 42, 'device-a', 'linked-old'), undefined);
 for (const badOwner of [
   undefined, { ...owner, user_id: 99 }, { ...owner, device_id: 'device-b' },
-  { ...owner, account_id: 'wx-b' }, { ...owner, space_id: 3 },
+  { ...owner, account_id: 'wx-b' }, { ...owner, space_id: 'space-3' },
   { ...owner, base_url: 'https://other.test' }, { ...owner, device_id: '' },
 ]) {
   const oldSettings = { ...settings, upload_queue: [{ ...legacyLinked, owner: badOwner }] };
@@ -144,7 +145,7 @@ assert.equal(cloudRetryCandidate({ ...settings, upload_queue: [{ ...legacyLinked
 const linked = { ...settings, upload_queue: [grouped3] };
 assert.equal(linkedLocalJobs(batch(5), linked, 'device-a').length, 1);
 assert.equal(linkedLocalJobs(batch(5, { source_account_id: 'wx-b' }), linked, 'device-a').length, 0);
-assert.equal(linkedLocalJobs(batch(5, { space_id: 3 }), linked, 'device-a').length, 0);
+assert.equal(linkedLocalJobs(batch(5, { space_id: 'space-3' }), linked, 'device-a').length, 0);
 assert.equal(linkedLocalJobs(batch(5, { device_id: 'device-b' }), linked, 'device-a').length, 0);
 assert.equal(linkedLocalJobs(batch(6), linked, 'device-a').length, 0);
 assert.equal(linkedLocalJobs(batch(5), linked, null).length, 0);
@@ -167,12 +168,12 @@ assert.equal(cloudRetryCandidate({ ...linked, upload_queue: [{ ...grouped3, stat
 assert.equal(cloudRetryCandidate({ ...linked, upload_queue: [{ ...grouped3, scope: null }] }, failedBatch, 42, 'device-a', 'g3'), undefined);
 
 const first = page([batch(5), batch(4)], 1, 3, '?page=2');
-validateCloudPage(first, 1, 2);
-assert.throws(() => validateCloudPage(first, 2, 2));
-assert.throws(() => validateCloudPage(page([batch(9, { space_id: 3 })]), 1, 2));
-assert.throws(() => validateCloudPage(page([batch(0)]), 1, 2));
-assert.throws(() => validateCloudPage({ list: [], pagination: { total: -1, page: 1, page_size: 20 } }, 1, 2));
-const merged = mergeCloudPages(first.list, [batch(4, { status: 'failed' }), batch(3, { device_id: 'device-b' }), batch(10, { space_id: 3 })], 2);
+validateCloudPage(first, 1, 'space-2');
+assert.throws(() => validateCloudPage(first, 2, 'space-2'));
+assert.throws(() => validateCloudPage(page([batch(9, { space_id: 'space-3' })]), 1, 'space-2'));
+assert.throws(() => validateCloudPage(page([batch(0)]), 1, 'space-2'));
+assert.throws(() => validateCloudPage({ list: [], pagination: { total: -1, page: 1, page_size: 20 } }, 1, 'space-2'));
+const merged = mergeCloudPages(first.list, [batch(4, { status: 'failed' }), batch(3, { device_id: 'device-b' }), batch(10, { space_id: 'space-3' })], 'space-2');
 assert.deepEqual(merged.map(item => item.id), [5, 4, 3]);
 assert.equal(merged[1].status, 'failed');
 assert.deepEqual(merged.map(item => item.device_id), ['device-a', 'device-a', 'device-b']);
@@ -199,7 +200,7 @@ assert.equal(covered.size, 26);
 assert.ok(pollPagePlan(26, 23, [7, 15, 24], 0).includes(7));
 assert.ok(pollPagePlan(26, 23, [7, 15, 24], 2).includes(15));
 let calls = [];
-const refreshed = await fetchCloudPages([1, 2], 2, async number => {
+const refreshed = await fetchCloudPages([1, 2], 'space-2', async number => {
   calls.push(number);
   return number === 1 ? page([batch(5, { status: 'completed' }), batch(4)], 1, 3, '?page=2') : page([batch(4), batch(3)], 2, 3, null);
 });
@@ -209,9 +210,9 @@ assert.deepEqual(updates.list.map(item => item.id), [5, 4, 99]);
 assert.equal(updates.list[0].status, 'completed');
 assert.deepEqual(updates.missing, []);
 assert.deepEqual(updateLoadedCloud([batch(5), batch(99)], [], [5]).missing, [5]);
-await assert.rejects(() => fetchCloudPages([1, 2], 2, async number => number === 1 ? first : Promise.reject(new Error('offline'))), /offline/);
-await assert.rejects(() => fetchCloudPages([1], 2, async () => page([batch(1, { space_id: 3 })])), /当前空间/);
-await assert.rejects(() => fetchCloudPages([1, 2, 3, 4], 2, async number => page([], number)), /分页范围无效/);
+await assert.rejects(() => fetchCloudPages([1, 2], 'space-2', async number => number === 1 ? first : Promise.reject(new Error('offline'))), /offline/);
+await assert.rejects(() => fetchCloudPages([1], 'space-2', async () => page([batch(1, { space_id: 'space-3' })])), /当前空间/);
+await assert.rejects(() => fetchCloudPages([1, 2, 3, 4], 'space-2', async number => page([], number)), /分页范围无效/);
 // Mock a real offset-paginated service, including mutation between calls.
 const makeServer = initial => {
   let rows = initial;
@@ -237,7 +238,7 @@ const runRebuild = async (server, wanted) => {
     assert.ok(++ticks < 100, 'rebuild must converge with a bounded number of batches');
     const numbers = rebuildNextPages(state);
     assert.ok(numbers.length >= 1 && numbers.length <= 3);
-    state = advanceCloudRebuild(state, await fetchCloudPages(numbers, 2, n => server.fetch(n)), 2);
+    state = advanceCloudRebuild(state, await fetchCloudPages(numbers, 'space-2', n => server.fetch(n)), 'space-2');
   }
   return state.verified;
 };
@@ -259,7 +260,7 @@ let prefix = [await many.fetch(1)];
 for (let wanted = 2; wanted <= 26; wanted++) {
   const plan = [...new Set([1, prefix.length, prefix.length + 1])];
   assert.ok(plan.length <= 3);
-  const next = appendCloudPages(prefix, await fetchCloudPages(plan, 2, n => many.fetch(n)), 2);
+  const next = appendCloudPages(prefix, await fetchCloudPages(plan, 'space-2', n => many.fetch(n)), 'space-2');
   assert.ok(next); prefix = next;
 }
 assert.equal(prefix.length, 26);
@@ -268,7 +269,7 @@ assert.ok(many.calls.length <= 76, 'normal load-more should not rescan the entir
 const beforeDrift = prefix;
 many.rows = [batch(1001), ...many.rows];
 const planAfterInsert = [...new Set([1, prefix.length, prefix.length + 1])];
-assert.equal(appendCloudPages(prefix, await fetchCloudPages(planAfterInsert, 2, n => many.fetch(n)), 2), null);
+assert.equal(appendCloudPages(prefix, await fetchCloudPages(planAfterInsert, 'space-2', n => many.fetch(n)), 'space-2'), null);
 assert.equal(prefix, beforeDrift, 'drift must preserve the displayed prefix until reconstruction');
 const repaired = await runRebuild(many, 27);
 assert.equal(repaired.length, 27);
@@ -277,7 +278,7 @@ assert.equal(ids(repaired)[0], 1001);
 const dupServer = makeServer(Array.from({ length: 60 }, (_, i) => batch(500 - i)));
 const prefix2 = [await dupServer.fetch(1), await dupServer.fetch(2)];
 dupServer.rows[40] = dupServer.rows[0];
-assert.equal(appendCloudPages(prefix2, await fetchCloudPages([1, 2, 3], 2, n => dupServer.fetch(n)), 2), null);
+assert.equal(appendCloudPages(prefix2, await fetchCloudPages([1, 2, 3], 'space-2', n => dupServer.fetch(n)), 'space-2'), null);
 // Deletion shrinks three pages to one: never request an invalid former page.
 server.rows = server.rows.slice(0, 17);
 server.calls.length = 0;
@@ -306,16 +307,16 @@ assert.deepEqual(ids(await runRebuild(server, 2)), ids(committed));
 // A changed total between requests invalidates the whole attempted prefix.
 server.rows = Array.from({ length: 42 }, (_, i) => batch(200 - i));
 let rebuilding = startCloudRebuild(3);
-rebuilding = advanceCloudRebuild(rebuilding, [await server.fetch(1)], 2);
+rebuilding = advanceCloudRebuild(rebuilding, [await server.fetch(1)], 'space-2');
 server.rows.unshift(batch(201));
-await assert.rejects(async () => advanceCloudRebuild(rebuilding, await fetchCloudPages(rebuildNextPages(rebuilding), 2, n => server.fetch(n)), 2), /变化/);
+await assert.rejects(async () => advanceCloudRebuild(rebuilding, await fetchCloudPages(rebuildNextPages(rebuilding), 'space-2', n => server.fetch(n)), 'space-2'), /变化/);
 // Equal totals are insufficient: a changed membership during verification fails.
 rebuilding = startCloudRebuild(2);
-rebuilding = advanceCloudRebuild(rebuilding, [await server.fetch(1)], 2);
-rebuilding = advanceCloudRebuild(rebuilding, [await server.fetch(2)], 2);
+rebuilding = advanceCloudRebuild(rebuilding, [await server.fetch(1)], 'space-2');
+rebuilding = advanceCloudRebuild(rebuilding, [await server.fetch(2)], 'space-2');
 assert.equal(rebuilding.phase, 'verify');
 server.rows = [batch(202), ...server.rows.slice(0, -1)];
-await assert.rejects(async () => advanceCloudRebuild(rebuilding, await fetchCloudPages(rebuildNextPages(rebuilding), 2, n => server.fetch(n)), 2), /变化/);
+await assert.rejects(async () => advanceCloudRebuild(rebuilding, await fetchCloudPages(rebuildNextPages(rebuilding), 'space-2', n => server.fetch(n)), 'space-2'), /变化/);
 // Duplicate IDs within or across pages must never be committed.
 const duplicateRows = Array.from({ length: 40 }, (_, i) => batch(300 - i));
 duplicateRows[1] = duplicateRows[0];
@@ -323,14 +324,14 @@ server.rows = duplicateRows;
 await assert.rejects(runRebuild(server, 2), /重复/);
 duplicateRows[1] = batch(299); duplicateRows[20] = duplicateRows[0];
 await assert.rejects(runRebuild(server, 2), /重复/);
-assert.throws(() => validateCloudPrefixPage(page([batch(1), batch(1)], 1, 2), 1, 2), /重复/);
+assert.throws(() => validateCloudPrefixPage(page([batch(1), batch(1)], 1, 2), 1, 'space-2'), /重复/);
 // Scope, identity, request generation and retry/load-more revisions guard results.
 const origin = settingsScope(settings);
 assert.equal(sameCloudContext(origin, 42, origin, 42), true);
 assert.equal(sameCloudContext(origin, 42, origin, 43), false);
 assert.equal(sameCloudContext(origin, 42, origin, null), false);
 assert.equal(sameCloudContext(origin, null, origin, null), false);
-assert.equal(sameCloudContext(origin, 42, settingsScope({ ...settings, devify: { ...settings.devify, active_space_id: 3 } }), 42), false);
+assert.equal(sameCloudContext(origin, 42, settingsScope({ ...settings, devify: { ...settings.devify, active_space_id: 'space-3' } }), 42), false);
 assert.equal(sameCloudContext(origin, 42, settingsScope({ ...settings, devify: { ...settings.devify, base_url: 'https://other.test' } }), 42), false);
 assert.equal(sameCloudContext(origin, 42, settingsScope({ ...settings, active_account_id: 'other' }), 42), false);
 assert.equal(requestIsCurrent(1, 1, 1, 1, false), true);
@@ -341,7 +342,7 @@ assert.equal(requestIsCurrent(1, 1, 1, 1, true), false);
 let release;
 const slow = new Promise(resolve => { release = resolve; });
 let finished = false;
-const failedFetchBatch = fetchCloudPages([1, 2], 2, n => n === 1 ? Promise.reject(new Error('offline')) : slow)
+const failedFetchBatch = fetchCloudPages([1, 2], 'space-2', n => n === 1 ? Promise.reject(new Error('offline')) : slow)
   .catch(() => { finished = true; });
 await Promise.resolve(); await Promise.resolve();
 assert.equal(finished, false);

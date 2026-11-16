@@ -1,11 +1,11 @@
 import { apiBaseUrl } from './serviceUrl.ts';
 
 export type UploadScope = { usernames: string[]; since: number | null; until: number | null; base_url: string; message_selection?: Record<string, unknown[]> };
-export type UploadOwner = { base_url: string; space_id: number; account_id: string; user_id: number; device_id: string };
-export type UploadJob = { id: string; account_id: string; space_id: number; batch_id: number | null; status: string; message: string; created_at: string; updated_at: string; scope?: UploadScope | null; owner?: UploadOwner | null; create_started?: boolean | null; manual_group?: string | null; manual_index?: number; manual_total?: number };
-export type TaskSettings = { active_account_id?: string; devify?: { base_url?: string; active_space_id?: number | null; device_id?: string; device_label?: string }; upload_queue?: UploadJob[] };
+export type UploadOwner = { base_url: string; space_id: string; account_id: string; user_id: number; device_id: string };
+export type UploadJob = { id: string; account_id: string; space_id: string; batch_id: number | null; status: string; message: string; created_at: string; updated_at: string; scope?: UploadScope | null; owner?: UploadOwner | null; create_started?: boolean | null; manual_group?: string | null; manual_index?: number; manual_total?: number };
+export type TaskSettings = { active_account_id?: string; devify?: { base_url?: string; active_space_id?: string | null; device_id?: string; device_label?: string }; upload_queue?: UploadJob[] };
 export type AnalysisSummary = { state?: string; job_count?: number; event_count?: number; running?: boolean; failed?: boolean; partial?: boolean; retried?: boolean; duration_seconds?: number | null };
-export type CloudBatch = { id: number; uuid: string; space_id: number; uploaded_by_id: number | null; source_account_id: string; device_id: string; platform: string; trigger: string; status: string; error_message: string; message_count: number; duplicate_count: number; conversation_count: number; image_count: number; analysis_summary: AnalysisSummary | null; created_at: string; updated_at: string; archive_received_at: string | null; parse_started_at: string | null; completed_at: string | null };
+export type CloudBatch = { id: number; uuid: string; space_id: string; uploaded_by_id: number | null; source_account_id: string; device_id: string; platform: string; trigger: string; status: string; error_message: string; message_count: number; duplicate_count: number; conversation_count: number; image_count: number; analysis_summary: AnalysisSummary | null; created_at: string; updated_at: string; archive_received_at: string | null; parse_started_at: string | null; completed_at: string | null };
 export type CloudPage = { list: CloudBatch[]; pagination: { total: number; page: number; page_size: number; next: string | null; previous: string | null } };
 
 export function settingsScope(settings: TaskSettings): string {
@@ -29,7 +29,7 @@ export function jobInScope(job: UploadJob, settings: TaskSettings): boolean {
 }
 export function hasCompleteOwner(job: UploadJob): boolean {
   const owner = job.owner;
-  return !!owner && !!normalizedBase(owner.base_url) && Number.isSafeInteger(owner.space_id) && owner.space_id > 0 &&
+  return !!owner && !!normalizedBase(owner.base_url) && typeof owner.space_id === 'string' && !!owner.space_id.trim() && owner.space_id === owner.space_id.trim() &&
     typeof owner.account_id === 'string' && !!owner.account_id && owner.account_id === owner.account_id.trim() &&
     Number.isSafeInteger(owner.user_id) && owner.user_id > 0 && typeof owner.device_id === 'string' &&
     !!owner.device_id && owner.device_id === owner.device_id.trim();
@@ -81,7 +81,7 @@ export function linkedLocalJobs(batch: CloudBatch, settings: TaskSettings, devic
   return (settings.upload_queue ?? []).filter(job => jobInScope(job, settings) && job.batch_id === batch.id &&
     job.space_id === batch.space_id && job.account_id === batch.source_account_id);
 }
-export function mergeCloudPages(current: CloudBatch[], incoming: CloudBatch[], spaceId: number): CloudBatch[] {
+export function mergeCloudPages(current: CloudBatch[], incoming: CloudBatch[], spaceId: string): CloudBatch[] {
   const byId = new Map(current.filter(batch => batch.space_id === spaceId).map(batch => [batch.id, batch]));
   for (const batch of incoming) if (batch.space_id === spaceId && Number.isSafeInteger(batch.id) && batch.id > 0) byId.set(batch.id, batch);
   return [...byId.values()];
@@ -90,7 +90,7 @@ export function updateLoadedCloud(current: CloudBatch[], refreshed: CloudBatch[]
   const latest = new Map(refreshed.map(batch => [batch.id, batch]));
   return { list: current.map(batch => latest.get(batch.id) ?? batch), missing: expected.filter(id => !latest.has(id)) };
 }
-export function validateCloudPage(page: CloudPage, pageNumber: number, spaceId: number): void {
+export function validateCloudPage(page: CloudPage, pageNumber: number, spaceId: string): void {
   if (!Array.isArray(page?.list) || !page.pagination || page.pagination.page !== pageNumber ||
     !Number.isSafeInteger(page.pagination.total) || page.pagination.total < 0 ||
     !Number.isSafeInteger(page.pagination.page_size) || page.pagination.page_size < 1 ||
@@ -109,7 +109,7 @@ export function pollPagePlan(pageCount: number, selectedPage: number | undefined
   for (let n = 0; n < Math.min(pageCount, 3); n += 1) add((rotation + n) % pageCount + 1);
   return pages;
 }
-export async function fetchCloudPages(numbers: number[], spaceId: number, fetchPage: (page: number) => Promise<CloudPage>): Promise<CloudPage[]> {
+export async function fetchCloudPages(numbers: number[], spaceId: string, fetchPage: (page: number) => Promise<CloudPage>): Promise<CloudPage[]> {
   if (numbers.length > 3 || numbers.some(number => !Number.isSafeInteger(number) || number < 1) || new Set(numbers).size !== numbers.length) throw new Error('分页范围无效');
   // Wait for every request even when one fails; a new poll must not overlap
   // surviving requests from a failed Promise.all batch.
@@ -135,7 +135,7 @@ export function sameCloudLayout(a: CloudPage, b: CloudPage): boolean {
     a.pagination.page_size === b.pagination.page_size && !!a.pagination.next === !!b.pagination.next &&
     a.list.length === b.list.length && a.list.every((item, index) => item.id === b.list[index]?.id);
 }
-export function validateCloudPrefixPage(page: CloudPage, number: number, spaceId: number): void {
+export function validateCloudPrefixPage(page: CloudPage, number: number, spaceId: string): void {
   validateCloudPage(page, number, spaceId);
   const { total, page_size: size, next } = page.pagination;
   const last = Math.max(1, Math.ceil(total / size));
@@ -147,7 +147,7 @@ export function validateCloudPrefixPage(page: CloudPage, number: number, spaceId
 }
 // Fast append only when both boundaries still match the displayed prefix.
 // A changed boundary, total, or any duplicate falls back to full reconstruction.
-export function appendCloudPages(snapshot: CloudPage[], incoming: CloudPage[], spaceId: number): CloudPage[] | null {
+export function appendCloudPages(snapshot: CloudPage[], incoming: CloudPage[], spaceId: string): CloudPage[] | null {
   if (!snapshot.length) return null;
   const last = snapshot.length;
   const byPage = new Map(incoming.map(page => [page.pagination.page, page]));
@@ -171,7 +171,7 @@ export function rebuildNextPages(state: CloudRebuild): number[] {
   const target = state.target || 1; // Determine the last valid page from page one first.
   return Array.from({ length: Math.min(3, target - done) }, (_, index) => done + index + 1);
 }
-export function advanceCloudRebuild(state: CloudRebuild, incoming: CloudPage[], spaceId: number): CloudRebuild {
+export function advanceCloudRebuild(state: CloudRebuild, incoming: CloudPage[], spaceId: string): CloudRebuild {
   const numbers = rebuildNextPages(state);
   if (incoming.length !== numbers.length) throw new Error('分页重建响应不完整');
   const next = { ...state, pages: [...state.pages], verified: [...state.verified] };

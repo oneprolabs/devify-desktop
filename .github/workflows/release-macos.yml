@@ -22,7 +22,7 @@ on:
         required: false
         default: ''
       notes:
-        description: Release notes (Markdown)
+        description: Release notes (Markdown, English only — the same text also shows in the app's update panel)
         required: false
         default: ''
       prerelease:
@@ -77,6 +77,24 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      # The releases repository is public and its notes are read outside the Chinese
+      # UI, so the published note is English-only. Fail before the ten-minute build
+      # rather than after it.
+      - name: Check release note language
+        if: ${{ inputs.notes != '' }}
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const text = process.env.NOTES || "";
+            const cjk = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]/;
+            if (cjk.test(text)) {
+              console.error("::error::Release notes must be written in English (CJK characters found).");
+              process.exit(1);
+            }
+          '
 
       - name: Set up Rust
         # `@stable` has no per-version refs (the repo only tags `v1`), and the runner
@@ -224,7 +242,7 @@ jobs:
           done
 
           TITLE="AIMyChats ${VERSION}"
-          BODY="${NOTES:-AIMyChats ${VERSION} (${GITHUB_SHA:0:7})}"
+          BODY="${NOTES:-AIMyChats ${VERSION} for macOS Apple Silicon (build ${GITHUB_SHA:0:7}).}"
           PRERELEASE_FLAG=""
           if [ "$PRERELEASE" = "true" ]; then PRERELEASE_FLAG="--prerelease"; fi
 

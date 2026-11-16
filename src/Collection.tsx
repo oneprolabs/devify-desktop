@@ -7,8 +7,8 @@ import './collection.css';
 type Account = { id: string; modified_at: number | null };
 type Scan = { accounts: Account[] };
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null };
-type Settings = { active_account_id: string; devify: { active_space_id: number | null; base_url: string } };
-type Space = { id: number; name: string; is_global_admin: boolean; admin_takeover_active: boolean };
+type Settings = { active_account_id: string; devify: { active_space_id: string | null; base_url: string } };
+type Space = { id: string; name: string; is_global_admin: boolean; admin_takeover_active: boolean };
 type Preview = { fingerprint: string; sessions: Array<{ username: string; display: string; message_count: number }>; message_count: number };
 function boundary(value: string, nextDay: boolean): number | null {
   if (!value) return null;

@@ -6,6 +6,38 @@ use std::io::Write;
 use std::sync::Mutex;
 use url::Url;
 
+
+/// Accept both the current UUID string and the legacy numeric value. Legacy numbers point
+/// at spaces that no longer exist; they become ``None`` so login can select the new space.
+fn deserialize_optional_space_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::String(value)) => {
+            let value = value.trim().to_string();
+            (!value.is_empty()).then_some(value)
+        }
+        _ => None,
+    })
+}
+
+/// Legacy numeric space ids are unverifiable after the UUID migration, so they become
+/// empty and the surrounding loader drops the dependent job or sync state.
+fn deserialize_space_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
+            value.trim().to_string()
+        }
+        _ => String::new(),
+    })
+}
+
 const SETTINGS_FILE: &str = "app-settings.json";
 static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
@@ -189,7 +221,8 @@ impl Default for SyncSettings {
 #[serde(default)]
 pub struct UploadJob {
     pub id: String,
-    pub space_id: i64,
+    #[serde(default, deserialize_with = "deserialize_space_id")]
+    pub space_id: String,
     pub account_id: String,
     pub batch_id: Option<i64>,
     /// Verified cloud identity at task creation; legacy tasks have no owner.
@@ -237,7 +270,8 @@ pub struct UploadJob {
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct UploadOwner {
     pub base_url: String,
-    pub space_id: i64,
+    #[serde(default, deserialize_with = "deserialize_space_id")]
+    pub space_id: String,
     pub account_id: String,
     pub user_id: i64,
     pub device_id: String,
@@ -250,13 +284,15 @@ pub struct InitialChunk {
     pub baseline: SyncCursor,
     pub position: SyncCursor,
     pub final_chunk: bool,
-    pub space_id: i64,
+    #[serde(default, deserialize_with = "deserialize_space_id")]
+    pub space_id: String,
     pub base_url: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ContinuationScope {
-    pub space_id: i64,
+    #[serde(default, deserialize_with = "deserialize_space_id")]
+    pub space_id: String,
     pub base_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual: Option<bool>,
@@ -316,7 +352,7 @@ impl Default for UploadJob {
     fn default() -> Self {
         Self {
             id: String::new(),
-            space_id: 0,
+            space_id: String::new(),
             account_id: String::new(),
             batch_id: None,
             owner: None,
@@ -388,14 +424,15 @@ pub struct DevifySettings {
     pub device_label: String,
     pub device_id: String,
     pub platform: String,
-    pub active_space_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_space_id")]
+    pub active_space_id: Option<String>,
     pub recipient: String,
     pub subject: String,
 }
 
-/// Official product hosts share one API origin. The homepage is not that API.
+/// Official product hosts share one API origin. The homepage is not that API, so requests
+/// always go to [`OFFICIAL_API_BASE`]; the stored address itself is never rewritten.
 const OFFICIAL_API_BASE: &str = "https://app.aimychats.com";
-const OFFICIAL_DISPLAY_BASE: &str = "https://aimychats.com/";
 
 /// Normalize a service address for request building.
 ///
@@ -430,17 +467,13 @@ pub fn canonical_api_base(value: &str) -> Result<String, String> {
     }
 }
 
-/// Address shown in the login and settings UI.
-pub fn display_base_url(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    if official_host(trimmed.trim_end_matches('/')) {
-        OFFICIAL_DISPLAY_BASE.to_string()
-    } else {
-        trimmed.to_string()
-    }
+/// Address kept in the settings file and shown in the login and settings UI.
+///
+/// It is exactly what the user entered, only trimmed: the official host is mapped onto the
+/// API origin while requests are built, so saving `https://app.aimychats.com/` must keep that
+/// value instead of replacing it with the product homepage.
+pub fn stored_base_url(value: &str) -> String {
+    value.trim().to_string()
 }
 
 pub fn same_service_url(left: &str, right: &str) -> bool {
@@ -469,7 +502,8 @@ pub struct AutomationSettings {
     /// Server-side TopicSubscription that owns the daily report schedule.
     pub daily_topic_id: Option<i64>,
     /// Space that owns `daily_topic_id`; an unverified old topic requires manual review.
-    pub daily_topic_space_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_space_id")]
+    pub daily_topic_space_id: Option<String>,
     /// Last successful (or attempted) sync of the schedule to Devify.
     pub last_schedule_sync_at: Option<String>,
     /// Signature of the schedule that was last synced, used to avoid polling.
@@ -631,7 +665,30 @@ pub fn load(app_data: &Path) -> Result<AppSettings, String> {
     if settings.chat.sync_interval_seconds < 60 {
         settings.chat.sync_interval_seconds = 1800;
     }
-    settings.devify.base_url = display_base_url(&settings.devify.base_url);
+    settings.devify.base_url = stored_base_url(&settings.devify.base_url);
+    settings.devify.active_space_id = settings
+        .devify
+        .active_space_id
+        .filter(|space_id| !space_id.trim().is_empty());
+    settings.automation.daily_topic_space_id = settings
+        .automation
+        .daily_topic_space_id
+        .filter(|space_id| !space_id.trim().is_empty());
+    settings
+        .upload_queue
+        .retain(|job| !job.space_id.trim().is_empty());
+    settings
+        .sync
+        .owners
+        .retain(|_, owner| !owner.space_id.trim().is_empty());
+    settings.sync.initial_progress.retain(|_, chunks| {
+        chunks.retain(|_, chunk| !chunk.space_id.trim().is_empty());
+        !chunks.is_empty()
+    });
+    settings.sync.continuation.retain(|_, scopes| {
+        scopes.retain(|_, scope| !scope.space_id.trim().is_empty());
+        !scopes.is_empty()
+    });
     Ok(settings)
 }
 
@@ -643,7 +700,7 @@ pub fn save(app_data: &Path, settings: &AppSettings) -> Result<(), String> {
         return Err("应用策略已被其他操作修改，请重新加载后重试。".into());
     }
     let mut updated = settings.clone();
-    publicize_base_url(&mut updated);
+    store_base_url(&mut updated);
     let _identity = identity_write_guard(&current, &updated)?;
     assign_revisions(&current, &mut updated)?;
     save_unlocked(app_data, &updated)?;
@@ -657,7 +714,7 @@ pub fn update(app_data: &Path, mutate: impl FnOnce(&mut AppSettings) -> Result<(
     let current = load(app_data)?;
     let mut updated = current.clone();
     mutate(&mut updated)?;
-    publicize_base_url(&mut updated);
+    store_base_url(&mut updated);
     validate(&updated)?;
     let _identity = identity_write_guard(&current, &updated)?;
     assign_revisions(&current, &mut updated)?;
@@ -680,7 +737,7 @@ pub(crate) fn update_identity(app_data: &Path, mutate: impl FnOnce(&mut AppSetti
     let current = load(app_data)?;
     let mut updated = current.clone();
     mutate(&mut updated)?;
-    publicize_base_url(&mut updated);
+    store_base_url(&mut updated);
     validate(&updated)?;
     let changed = identity_changed(&current, &updated);
     assign_revisions(&current, &mut updated)?;
@@ -727,8 +784,8 @@ fn assign_revisions(current: &AppSettings, updated: &mut AppSettings) -> Result<
     Ok(())
 }
 
-fn publicize_base_url(settings: &mut AppSettings) {
-    settings.devify.base_url = display_base_url(&settings.devify.base_url);
+fn store_base_url(settings: &mut AppSettings) {
+    settings.devify.base_url = stored_base_url(&settings.devify.base_url);
 }
 
 fn save_unlocked(app_data: &Path, updated: &AppSettings) -> Result<(), String> {
@@ -878,6 +935,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_numeric_space_ids_are_dropped_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = r#"{
+            "devify": {"active_space_id": 7},
+            "automation": {"daily_topic_id": 123, "daily_topic_space_id": 8},
+            "upload_queue": [{
+                "id": "job", "space_id": 7, "status": "failed",
+                "owner": {"base_url": "https://example.test", "space_id": 7,
+                          "account_id": "a", "user_id": 1, "device_id": "d"}
+            }],
+            "sync": {
+                "owners": {"a": {"base_url": "https://example.test", "space_id": 7,
+                                 "account_id": "a", "user_id": 1, "device_id": "d"}},
+                "continuation": {"a": {"chat": {"space_id": 7, "base_url": "https://example.test"}}},
+                "initial_progress": {"a": {"chat": {
+                    "space_id": 7, "base_url": "https://example.test",
+                    "since": null, "until": null, "final_chunk": false,
+                    "baseline": {"time": 0, "local_id": 0},
+                    "position": {"time": 0, "local_id": 0}
+                }}}
+            }
+        }"#;
+        fs::write(dir.path().join(SETTINGS_FILE), content).unwrap();
+
+        let settings = load(dir.path()).unwrap();
+
+        assert_eq!(settings.devify.active_space_id, None);
+        assert_eq!(settings.automation.daily_topic_space_id, None);
+        assert_eq!(settings.automation.daily_topic_id, Some(123));
+        assert!(settings.upload_queue.is_empty());
+        assert!(settings.sync.owners.is_empty());
+        assert!(settings.sync.continuation.is_empty());
+        assert!(settings.sync.initial_progress.is_empty());
+    }
+
+    #[test]
+    fn uuid_space_ids_round_trip() {
+        let mut settings = AppSettings::default();
+        settings.devify.active_space_id =
+            Some("38c08ab4-799f-4389-bc5b-10018ddb0e4e".into());
+        let restored: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            restored.devify.active_space_id.as_deref(),
+            Some("38c08ab4-799f-4389-bc5b-10018ddb0e4e")
+        );
+    }
+
+    #[test]
     fn initial_history_ranges_round_trip_and_reject_reversed_dates() {
         let mut settings = AppSettings::default();
         settings.chat.initial_ranges.entry("acct".into()).or_default().insert("chat".into(), InitialRange { since: Some(100), until: Some(200) });
@@ -897,7 +1003,7 @@ mod tests {
         let job = UploadJob {
             account_id: "account".into(),
             status: "failed".into(),
-            space_id: 7,
+            space_id: "7".into(),
             scope: Some(UploadScope {
                 usernames: vec!["one".into(), "two".into()],
                 since: Some(100),
@@ -915,6 +1021,26 @@ mod tests {
         assert_eq!(DevifySettings::default().base_url, "https://aimychats.com/");
         let saved: DevifySettings = serde_json::from_str(r#"{"base_url":"https://custom.example"}"#).unwrap();
         assert_eq!(saved.base_url, "https://custom.example");
+    }
+
+    #[test]
+    fn saved_server_address_is_never_rewritten() {
+        let data = tempfile::tempdir().unwrap();
+        let mut settings = AppSettings::default();
+        settings.devify.base_url = "  https://app.aimychats.com/  ".into();
+        save(data.path(), &settings).unwrap();
+
+        let loaded = load(data.path()).unwrap();
+        assert_eq!(loaded.devify.base_url, "https://app.aimychats.com/");
+        assert_eq!(loaded.devify.resolved_base_url().unwrap(), "https://app.aimychats.com");
+
+        let mut settings = loaded.clone();
+        settings.devify.base_url = "https://aimychats.com/".into();
+        save(data.path(), &settings).unwrap();
+
+        let loaded = load(data.path()).unwrap();
+        assert_eq!(loaded.devify.base_url, "https://aimychats.com/");
+        assert_eq!(loaded.devify.resolved_base_url().unwrap(), "https://app.aimychats.com");
     }
 
     #[test]
@@ -949,10 +1075,8 @@ mod tests {
             "https://aimychats.com/",
             "https://app.aimychats.com"
         ));
-        assert_eq!(
-            display_base_url("https://app.aimychats.com/"),
-            "https://aimychats.com/"
-        );
+        assert_eq!(stored_base_url("  https://app.aimychats.com/  "), "https://app.aimychats.com/");
+        assert_eq!(stored_base_url("https://aimychats.com/"), "https://aimychats.com/");
         assert_eq!(
             AppSettings::default().devify.resolved_base_url().unwrap(),
             "https://app.aimychats.com"

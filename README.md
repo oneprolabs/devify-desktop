@@ -243,6 +243,28 @@ Not guaranteed:
 
 The desktop uploads chat archives through Devify's HTTP API; it does not send the daily report by SMTP. Report generation and any notification delivery happen on the server.
 
+## 问题反馈
+
+从「设置 → 问题反馈」打开，也可从登录、上传失败提示进入。
+填写问题描述，粘贴、拖入或选择最多 3 张截图；提交前可裁剪和实心遮盖敏感信息。
+诊断日志默认不附带，勾选后可预览最近 30 分钟或 24 小时的运行记录。
+诊断采集不读取聊天正文、数据库、密钥或登录凭据。
+
+反馈不再要求填写联系方式：提交人就是当前登录账号。客户端会自动附带客户端版本、
+操作系统版本（如 `macOS 14.5 (23F79)`）和已安装的微信版本，便于定位环境差异。
+
+客户端访问 Devify 时，每次 HTTP 请求会携带独立的 `X-Request-ID`。
+诊断记录包含同一 ID 的请求开始、HTTP 状态或网络错误、耗时；Devify 的响应头
+和请求期间的服务端日志携带该 ID，可据此关联排查。重试会生成新请求 ID，
+反馈编号等业务幂等键保持不变。
+
+草稿按服务端和登录用户保存在本机。提交失败可重试原反馈；也可「保存诊断包」
+导出 ZIP 到下载目录。在线反馈发送至界面显示的当前 Devify 实例，需登录且服务端
+已部署反馈模块；处理状态与回复在「我的反馈」查看。
+
+Devify 管理端入口为 `/management/feedback`；部署需运行数据库迁移、挂载私有
+附件目录并登记附件清理任务，详见 Devify 仓库 `docs/feedback.md`。
+
 ## Sync chat records to a Devify space
 
 Settings → 备份周期 owns the upload plan: one card per connected platform with its own switch, schedule (every N minutes, at fixed times, or manual only), optional upload window (allow or deny, with the weekday list) and a **立即备份一次** action. Settings → 本地自动化 syncs the daily report time to a Devify topic. Both require a configured Devify account and a selected space; the whitelist still decides what is sent.
@@ -542,12 +564,16 @@ GitHub Actions workflow `.github/workflows/release-macos.yml` builds and publish
 1. Run **Actions → Release macOS → Run workflow**. Leave the tag input empty to publish
    `v<version>` for the version in `src-tauri/tauri.conf.json`; override it only for a deliberate
    re-tag.
-2. The job runs on `macos-15` (Apple Silicon), imports the self-signed macOS identity, runs
+2. Write the `notes` input in **English**. The workflow rejects a note containing CJK
+   characters before it starts building, because the same text is published on the public
+   releases page and rendered as the update line in **设置 › 关于**. With no note the job falls
+   back to `AIMyChats <version> for macOS Apple Silicon (build <sha>)`.
+3. The job runs on `macos-15` (Apple Silicon), imports the self-signed macOS identity, runs
    `scripts/prepare-release.sh` (version check → build → `macos-build.sh --no-install` →
    updater archive → Tauri signature → `latest.json`), then:
    - creates or updates the versioned Release with the DMG, `.app.tar.gz` and `.sig`;
    - creates or updates the `alpha` manifest Release and uploads `latest.json` last.
-3. The run page links to both Releases; the same files are attached to the workflow run as
+4. The run page links to both Releases; the same files are attached to the workflow run as
    artifacts.
 
 Required repository secrets (Settings → Secrets and variables → Actions):
@@ -571,7 +597,8 @@ Publishing by hand (same result, useful when Actions is unavailable):
    `src-tauri/Cargo.toml`. Alpha prereleases must compare newer than the installed version:
    `0.0.1-alpha.1` is older than `0.0.1`.
 2. Set `TAURI_SIGNING_PRIVATE_KEY_PATH`, optionally `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
-   `AIMYCHATS_RELEASE_NOTES`. `RELEASES_REPO` defaults to `oneprolabs/devify-desktop-releases` and
+   `AIMYCHATS_RELEASE_NOTES` (English only, same text as the workflow's `notes` input).
+   `RELEASES_REPO` defaults to `oneprolabs/devify-desktop-releases` and
    `RELEASES_TAG` to `v<version>`.
 3. Run `scripts/prepare-release.sh`. It builds and signs without installing or publishing.
 4. Upload the DMG, the archive and signature to the versioned Release:

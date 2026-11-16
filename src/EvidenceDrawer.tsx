@@ -74,7 +74,7 @@ function statusLabel(value?: string | null): string {
 }
 
 export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDetail }: {
-  spaceId: number | null;
+  spaceId: string | null;
   target: EvidenceTarget;
   onClose: () => void;
   onNavigate: (target: EvidenceTarget) => void;
