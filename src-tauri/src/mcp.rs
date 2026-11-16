@@ -20,6 +20,7 @@ use tokio_stream::StreamExt;
 use crate::settings::{self, AppSettings};
 use crate::wechat::{decrypt, query};
 use crate::access;
+use crate::entitlements;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 pub const DEFAULT_BIND: &str = "127.0.0.1:18765";
@@ -530,9 +531,26 @@ fn agent_unavailable(message: &str) -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": message }))).into_response()
 }
 
+fn agent_forbidden() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": "「工具接入」仅对内部账号开放，请联系管理员。" })),
+    )
+        .into_response()
+}
+
+/// The access kit is reserved for accounts on the internal plan, so the loopback routes
+/// enforce the same rule as the Tauri commands instead of relying on the UI hiding them.
+fn internal_agent_allowed(state: &AppState) -> bool {
+    entitlements::is_internal(&state.app_data, &state.base_url)
+}
+
 async fn agent_manifest(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
+    }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
     }
     let wxq = access::resolve_wxq(&state.app_data);
     let skills: Vec<Value> = access::SKILLS
@@ -569,6 +587,9 @@ async fn agent_wxq(State(state): State<AppState>, headers: HeaderMap) -> Respons
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
     }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
+    }
     let Some(path) = access::resolve_wxq(&state.app_data) else {
         return agent_unavailable("没有可下载的 wxq。请在 AIMyChats 源码目录构建后重启应用。");
     };
@@ -595,6 +616,9 @@ async fn agent_skills(State(state): State<AppState>, headers: HeaderMap) -> Resp
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
     }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
+    }
     let skills: Vec<Value> = access::SKILLS
         .iter()
         .map(|skill| {
@@ -615,6 +639,9 @@ async fn agent_skill(
 ) -> Response {
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
+    }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
     }
     let Some(skill) = access::SKILLS.iter().find(|skill| skill.name == name) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "未知的 Skill。" }))).into_response();
@@ -637,6 +664,9 @@ async fn agent_install_script(
 ) -> Response {
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
+    }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
     }
     let Some(bin_dir) = access::expand_path(args.bin.as_deref().unwrap_or("~/.local/bin")) else {
         return (

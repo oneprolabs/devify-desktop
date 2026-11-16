@@ -37,6 +37,8 @@ export type Entitlements = {
   grace_expired: boolean;
   fallback_features: string[];
   free_keys: string[];
+  /** The account holds an active subscription to the operator's internal plan. */
+  internal: boolean;
 };
 
 let cached: Entitlements | null = null;
