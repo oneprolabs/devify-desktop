@@ -22,7 +22,7 @@ import { Tasks } from './Tasks';
 import { ChatEntry } from './ChatLanding';
 import { ChatWorkbench } from './ChatWorkbench';
 import { LoginGate } from './LoginGate';
-import { Feedback } from './Feedback';
+import { Feedback, FeedbackSettings } from './Feedback';
 import { requestFeedback } from './desktopInvoke';
 import { registerDevifyDevice } from './devifyDevice';
 import { refreshEntitlements } from './entitlements';
@@ -279,7 +279,6 @@ export default function PrototypeShell() {
       <nav className="prototype-nav">{sections.map(navButton)}</nav>
       <div className="prototype-spacer" />
       <nav className="prototype-nav">
-        <button type="button" className="prototype-nav-item" onClick={() => requestFeedback(authState === 'authed' ? 'other' : 'login', authState === 'authed' ? section : 'login')}><span>{Icons.chat}</span><small>反馈</small></button>
         {navButton({ id: 'tasks', label: '任务', icon: RailIcons.tasks })}
         {navButton({ id: 'settings', label: '设置', icon: RailIcons.settings })}
       </nav>
@@ -361,7 +360,7 @@ export default function PrototypeShell() {
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && <HistoryPage />}
           {settingsPage === 'agent' && <AgentHub />}
-          {settingsPage === 'feedback' && <div className="feedback-entry"><div><strong>遇到问题或有改进建议？</strong><p>添加截图与诊断信息，并查看反馈处理进度。</p></div><button type="button" onClick={() => requestFeedback('other', 'settings')}>打开问题反馈</button></div>}
+          {settingsPage === 'feedback' && <FeedbackSettings />}
           {settingsPage === 'about' && <About />}
         </div>
         </div>

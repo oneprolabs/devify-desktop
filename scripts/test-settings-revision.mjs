@@ -67,6 +67,7 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/event') return { listen: async () => () => {} };
   if (id === '@tauri-apps/plugin-deep-link') return { onOpenUrl: async () => () => {} };
   if (id === './devifyDevice') return { registerDevifyDevice: async () => {} };
+  if (id === './desktopInvoke') return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
   if (id === './Settings') return module.exports;
   if (id === './connectorDetect') return { useConnectorDetect: () => connectorInstall, detectTitle: { not_installed: '未检测到微信', untrusted: '检测到的微信不是官方版本' } };
   if (id === './serviceUrl.ts' || id === './serviceUrl') return serviceUrl;

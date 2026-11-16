@@ -40,7 +40,7 @@ const timeLabel = (value?: string | null) => value
 const pageCount = (total: number, size: number) => Math.max(1, Math.ceil(total / Math.max(1, size)));
 
 export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }: {
-  spaceId: number | null;
+  spaceId: string | null;
   focus?: CloudFocus | null;
   onFocusHandled?: () => void;
   onOpenSettings?: () => void;

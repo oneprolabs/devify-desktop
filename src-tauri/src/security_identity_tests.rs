@@ -13,7 +13,7 @@ fn credentials(base: &str, access: &str) -> desktop_credentials::Credentials {
 fn settings_for(data: &Path, base: &str) -> settings::AppSettings {
     settings::update(data, |value| {
         value.devify.base_url = base.into();
-        value.devify.active_space_id = Some(7);
+        value.devify.active_space_id = Some("7".into());
         value.devify.device_id = "device-1".into();
         value.active_account_id = "account-1".into();
         value.automation.enabled = true;
@@ -27,10 +27,10 @@ fn daily_identity(data: &Path, base: &str, value: &settings::AppSettings) -> Dai
     let (credentials, generation) = desktop_credentials::load_with_generation(data, base).unwrap();
     DailyIdentity {
         data: data.to_path_buf(), base: base.into(), credentials, generation,
-        space_id: value.devify.active_space_id.unwrap(), account_id: value.active_account_id.clone(),
+        space_id: value.devify.active_space_id.clone().unwrap(), account_id: value.active_account_id.clone(),
         device_id: value.devify.device_id.clone(), enabled: value.automation.enabled && value.automation.daily_summary_enabled,
         time_local: value.automation.daily_time.trim().into(), topic_id: value.automation.daily_topic_id,
-        topic_space_id: value.automation.daily_topic_space_id,
+        topic_space_id: value.automation.daily_topic_space_id.clone(),
     }
 }
 
@@ -133,7 +133,7 @@ fn identity_changes_invalidate_pending_auth_even_after_aba() {
         settings::update(dir.path(), |s| {
             match field {
                 "base" => s.devify.base_url = "https://other.invalid".into(),
-                "space" => s.devify.active_space_id = Some(8),
+                "space" => s.devify.active_space_id = Some("8".into()),
                 "device" => s.devify.device_id = "device-2".into(),
                 _ => s.active_account_id = "account-2".into(),
             }
@@ -155,11 +155,11 @@ fn daily_stale_topic_warns_without_overwriting_old_topic() {
     desktop_credentials::save(dir.path(), &credentials(base, "synthetic-token")).unwrap();
     let value = settings::update(dir.path(), |s| {
         s.automation.daily_topic_id = Some(123);
-        s.automation.daily_topic_space_id = Some(8);
+        s.automation.daily_topic_space_id = Some("8".into());
         Ok(())
     }).unwrap();
     let context = daily_identity(dir.path(), base, &value);
-    let warning = daily_stale_topic_warning(&value, 7).unwrap();
+    let warning = daily_stale_topic_warning(&value, "7").unwrap();
     settings::update(dir.path(), |s| {
         context.validate_settings(s)?;
         s.automation.last_schedule_error = Some(warning.into());
@@ -167,12 +167,12 @@ fn daily_stale_topic_warns_without_overwriting_old_topic() {
     }).unwrap();
     let stored = settings::load(dir.path()).unwrap();
     assert_eq!(stored.automation.daily_topic_id, Some(123));
-    assert_eq!(stored.automation.daily_topic_space_id, Some(8));
+    assert_eq!(stored.automation.daily_topic_space_id, Some("8".into()));
     assert_eq!(stored.automation.last_schedule_error.as_deref(), Some(warning));
-    assert!(daily_stale_topic_warning(&stored, 8).is_none());
+    assert!(daily_stale_topic_warning(&stored, "8").is_none());
     let mut no_topic = stored.clone();
     no_topic.automation.daily_topic_id = None;
-    assert!(daily_stale_topic_warning(&no_topic, 7).is_none());
+    assert!(daily_stale_topic_warning(&no_topic, "7").is_none());
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn daily_request_uses_fixed_identity_and_merge_preserves_unrelated_settings() {
     });
     server.join().unwrap();
     assert_eq!(settings::load(dir.path()).unwrap().devify.subject, "unrelated edit");
-    settings::update(dir.path(), |s| { s.devify.active_space_id = Some(8); Ok(()) }).unwrap();
+    settings::update(dir.path(), |s| { s.devify.active_space_id = Some("8".into()); Ok(()) }).unwrap();
     assert!(context.validate().is_err());
 }
 
@@ -277,7 +277,7 @@ fn desktop_login_config_reports_html_as_service_configuration_error() {
         write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
     });
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let error = match runtime.block_on(devify_auth_config(&settings.devify)) {
+    let error = match runtime.block_on(devify_auth_config(dir.path(), &settings.devify)) {
         Ok(_) => panic!("HTML cannot be a login configuration"),
         Err(error) => error,
     };

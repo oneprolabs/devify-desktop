@@ -245,10 +245,13 @@ The desktop uploads chat archives through Devify's HTTP API; it does not send th
 
 ## 问题反馈
 
-从侧栏「反馈」或「设置 → 问题反馈」打开，也可从登录、上传失败提示进入。
+从「设置 → 问题反馈」打开，也可从登录、上传失败提示进入。
 填写问题描述，粘贴、拖入或选择最多 3 张截图；提交前可裁剪和实心遮盖敏感信息。
 诊断日志默认不附带，勾选后可预览最近 30 分钟或 24 小时的运行记录。
 诊断采集不读取聊天正文、数据库、密钥或登录凭据。
+
+反馈不再要求填写联系方式：提交人就是当前登录账号。客户端会自动附带客户端版本、
+操作系统版本（如 `macOS 14.5 (23F79)`）和已安装的微信版本，便于定位环境差异。
 
 客户端访问 Devify 时，每次 HTTP 请求会携带独立的 `X-Request-ID`。
 诊断记录包含同一 ID 的请求开始、HTTP 状态或网络错误、耗时；Devify 的响应头
@@ -561,12 +564,16 @@ GitHub Actions workflow `.github/workflows/release-macos.yml` builds and publish
 1. Run **Actions → Release macOS → Run workflow**. Leave the tag input empty to publish
    `v<version>` for the version in `src-tauri/tauri.conf.json`; override it only for a deliberate
    re-tag.
-2. The job runs on `macos-15` (Apple Silicon), imports the self-signed macOS identity, runs
+2. Write the `notes` input in **English**. The workflow rejects a note containing CJK
+   characters before it starts building, because the same text is published on the public
+   releases page and rendered as the update line in **设置 › 关于**. With no note the job falls
+   back to `AIMyChats <version> for macOS Apple Silicon (build <sha>)`.
+3. The job runs on `macos-15` (Apple Silicon), imports the self-signed macOS identity, runs
    `scripts/prepare-release.sh` (version check → build → `macos-build.sh --no-install` →
    updater archive → Tauri signature → `latest.json`), then:
    - creates or updates the versioned Release with the DMG, `.app.tar.gz` and `.sig`;
    - creates or updates the `alpha` manifest Release and uploads `latest.json` last.
-3. The run page links to both Releases; the same files are attached to the workflow run as
+4. The run page links to both Releases; the same files are attached to the workflow run as
    artifacts.
 
 Required repository secrets (Settings → Secrets and variables → Actions):
@@ -590,7 +597,8 @@ Publishing by hand (same result, useful when Actions is unavailable):
    `src-tauri/Cargo.toml`. Alpha prereleases must compare newer than the installed version:
    `0.0.1-alpha.1` is older than `0.0.1`.
 2. Set `TAURI_SIGNING_PRIVATE_KEY_PATH`, optionally `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
-   `AIMYCHATS_RELEASE_NOTES`. `RELEASES_REPO` defaults to `oneprolabs/devify-desktop-releases` and
+   `AIMYCHATS_RELEASE_NOTES` (English only, same text as the workflow's `notes` input).
+   `RELEASES_REPO` defaults to `oneprolabs/devify-desktop-releases` and
    `RELEASES_TAG` to `v<version>`.
 3. Run `scripts/prepare-release.sh`. It builds and signs without installing or publishing.
 4. Upload the DMG, the archive and signature to the versioned Release:

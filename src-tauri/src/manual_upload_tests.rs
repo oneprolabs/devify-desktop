@@ -4,10 +4,10 @@ fn original_job() -> settings::UploadJob {
     settings::UploadJob {
         id: "manual-1".into(),
         account_id: "wechat-account".into(),
-        space_id: 7,
+        space_id: "7".into(),
         owner: Some(settings::UploadOwner {
             base_url: "https://example.invalid".into(),
-            space_id: 7,
+            space_id: "7".into(),
             account_id: "wechat-account".into(),
             user_id: 19,
             device_id: "device-a".into(),

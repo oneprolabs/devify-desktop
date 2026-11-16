@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { registerDevifyDevice } from './devifyDevice';
-import { displayBaseUrl } from './serviceUrl.ts';
+import { storedBaseUrl } from './serviceUrl.ts';
 
 type SessionItem = {
   username: string;
@@ -38,7 +38,7 @@ function useWechatProfiles(accounts: Account[]) {
 function WechatIdentity({ account, profile }: { account: Account; profile?: WechatProfile }) {
   return <><span className="wechat-account-avatar">{profile?.avatar ? <img src={profile.avatar} alt="" /> : '微'}</span><span className="wechat-account-details"><strong>{profile?.nickname || '微信账号'}</strong><small>{profile?.alias ? `微信号：${profile.alias}` : '微信号暂不可用'}</small><small>本机标识：{account.id}</small></span></>;
 }
-type DevifySpace = { id: number; name: string; kind: string; status: string; role?: string; is_global_admin: boolean; admin_takeover_active: boolean };
+type DevifySpace = { id: string; name: string; kind: string; status: string; role?: string; is_global_admin: boolean; admin_takeover_active: boolean };
 
 /** The scheduler stores a status code, not a sentence; the page shows the sentence. */
 const DAILY_STATUS_LABEL: Record<string, string> = {
@@ -75,8 +75,8 @@ export type AppSettings = {
     sync_interval_seconds: number;
   };
   connectors: { waitlist: string[]; wechat_enabled: boolean };
-  devify: { base_url: string; device_label: string; device_id: string; platform: string; active_space_id: number | null; recipient: string; subject: string };
-  upload_queue?: Array<{ id: string; space_id: number; batch_id?: number | null; status: string; message: string; updated_at: string }>;
+  devify: { base_url: string; device_label: string; device_id: string; platform: string; active_space_id: string | null; recipient: string; subject: string };
+  upload_queue?: Array<{ id: string; space_id: string; batch_id?: number | null; status: string; message: string; updated_at: string }>;
   voice: {
     auto_transcribe: boolean;
     upload_transcripts: boolean;
@@ -112,7 +112,7 @@ export type AppSettings = {
     last_daily_status: string | null;
     last_daily_error: string | null;
     daily_topic_id?: number | null;
-    daily_topic_space_id?: number | null;
+    daily_topic_space_id?: string | null;
     last_schedule_sync_at?: string | null;
     last_schedule_signature?: string | null;
     last_schedule_error?: string | null;
@@ -589,7 +589,9 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
   useEffect(() => {
     let active = true;
     if (initialAuthenticated) void (async () => {
-      await invoke<number | null>('devify_space_ensure').catch(() => null);
+      await registerDevifyDevice();
+      if (!active) return;
+      await invoke<string | null>('devify_space_ensure').catch(() => null);
       if (!active) return;
       acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
       if (active) await loadSpaces();
@@ -606,7 +608,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
         const result = await invoke<{ device_id: string }>('devify_auth_callback', { callbackUrl: url });
         if (!active) return;
         setAuthenticated(true);
-        await invoke<number | null>('devify_space_ensure').catch(() => null);
+        await invoke<string | null>('devify_space_ensure').catch(() => null);
         acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
         setAuthStatus('服务端已登录。');
         setSpacesStatus('正在读取可用空间…');
@@ -692,7 +694,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     saveQueue.current = saveQueue.current.then(async () => {
       if (queueFailed.current || !confirmed.current) return;
       const base = confirmed.current;
-      const submitted = { ...base, devify: { ...base.devify, base_url: displayBaseUrl(next.devify.base_url) || next.devify.base_url } };
+      const submitted = { ...base, devify: { ...base.devify, base_url: storedBaseUrl(next.devify.base_url) } };
       try {
         const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: submitted })));
         confirmed.current = saved;

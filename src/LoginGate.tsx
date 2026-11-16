@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import appIcon from './assets/app-icon.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from './Settings';
-import { apiBaseUrl, displayBaseUrl } from './serviceUrl.ts';
+import { apiBaseUrl, storedBaseUrl } from './serviceUrl.ts';
 import { requestFeedback } from './desktopInvoke';
 
 type GateSettings = {
@@ -78,7 +78,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
         requireSettingsRevision(stored);
         settingsRef.current = stored;
         setSettingsLoaded(true);
-        const value = displayBaseUrl(stored.devify?.base_url?.trim().replace(/\/+$/, '') || '').replace(/\/+$/, '');
+        const value = storedBaseUrl(stored.devify?.base_url ?? '').replace(/\/+$/, '');
         draftRef.current = value;
         setBaseUrl(value);
         setServerDraft(value);
@@ -148,10 +148,10 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     const draftAtStart = draftRef.current;
     try {
       const stored = settingsRef.current;
-      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: displayBaseUrl(value) || value } };
+      const next: GateSettings = { ...stored, devify: { ...stored.devify, base_url: storedBaseUrl(value) } };
       const saved = requireSettingsRevision(await invoke<GateSettings>('app_settings_save', { value: next }));
       settingsRef.current = saved;
-      const confirmed = displayBaseUrl(saved.devify?.base_url?.trim().replace(/\/+$/, '') || '').replace(/\/+$/, '');
+      const confirmed = storedBaseUrl(saved.devify?.base_url ?? '').replace(/\/+$/, '');
       setBaseUrl(confirmed);
       if (draftRef.current !== draftAtStart) {
         setServerStatus('之前的地址已保存，新的输入尚未保存，请确认后重试。');
@@ -304,7 +304,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
                 {baseUrl && <button type="button" onClick={() => { setServerOpen(false); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>取消</button>}
               </div>
             </>
-          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>服务地址 · {displayBaseUrl(baseUrl).replace(/^https?:\/\//, '').replace(/\/+$/, '')}</button>}
+          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>服务地址 · {storedBaseUrl(baseUrl).replace(/^https?:\/\//, '').replace(/\/+$/, '')}</button>}
       </div>
       {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
     </div>

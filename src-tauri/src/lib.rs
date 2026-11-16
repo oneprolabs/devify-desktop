@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Local, Utc};
-use devify_http::RequestTrace;
+use devify_http::{RequestTrace, RetryPolicy};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -34,6 +34,7 @@ mod devify_http;
 mod feedback;
 pub mod entitlements;
 pub mod history;
+pub(crate) mod http_client;
 pub mod perm;
 pub mod settings;
 pub mod wechat;
@@ -52,29 +53,8 @@ mod security_identity_tests;
 
 /// Network calls to Devify must never leave the UI spinning forever. Without a
 /// timeout, a wrong LAN address or an unreachable host keeps "checking login"
-/// pending until the kernel gives up, which can be minutes.
-const DEVIFY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const DEVIFY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Chat uploads carry a whole batch and can legitimately take much longer.
-const DEVIFY_UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn devify_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(DEVIFY_CONNECT_TIMEOUT)
-        .timeout(DEVIFY_REQUEST_TIMEOUT)
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
-
-fn devify_upload_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(DEVIFY_CONNECT_TIMEOUT)
-        .timeout(DEVIFY_UPLOAD_TIMEOUT)
-        .build()
-        .map_err(|_| "无法创建上传请求。".to_string())
-}
-
+/// pending until the kernel gives up, which can be minutes. The clients that carry
+/// these deadlines live in [`http_client`] so one connection pool is reused.
 /// A timeout or a refused connection means "server unavailable", not "logged
 /// out". Keep reqwest's URL-heavy wording out of the UI.
 fn devify_unreachable(error: &reqwest::Error) -> bool {
@@ -180,7 +160,10 @@ fn begin_account_upload<'a>(state: &'a UploadState, account: &str) -> Result<upd
 }
 
 #[tauri::command]
-fn update_begin_install(state: State<'_, UploadState>) -> Result<(), String> { state.syncing.begin_install() }
+fn update_begin_install(state: State<'_, UploadState>, force: Option<bool>) -> Result<(), String> { state.syncing.begin_install(force.unwrap_or(false)) }
+
+#[tauri::command]
+fn update_upload_accounts(state: State<'_, UploadState>) -> Result<Vec<String>, String> { state.syncing.uploading_accounts() }
 
 #[tauri::command]
 fn update_cancel_install(state: State<'_, UploadState>) { state.syncing.cancel_install(); }
@@ -214,19 +197,14 @@ struct DevifyAuthConfig {
     redirect_uri: String,
 }
 
-fn auth_http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建登录请求。".into())
-}
-
 async fn devify_auth_config(
     data: &Path,
     settings: &settings::DevifySettings,
 ) -> Result<DevifyAuthConfig, String> {
     let base_url = settings.resolved_base_url()?;
-    let response = auth_http_client()?
+    let response = http_client::strict()
         .get(format!("{}/api/v1/auth/desktop/config", base_url))
-        .send_traced(data, diagnostics::Module::Auth)
+        .send_traced_retrying(data, diagnostics::Module::Auth, RetryPolicy::READ)
         .await
         .map_err(|e| devify_network_message("读取服务端登录配置失败", &e))?;
     if !response.status().is_success() {
@@ -295,13 +273,13 @@ async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_ge
     } else {
         &tokens.refresh
     };
-    let response = auth_http_client()?
+    let response = http_client::strict()
         .post(format!(
             "{}/api/v1/auth/token/refresh",
             base_url.trim_end_matches('/')
         ))
         .json(&serde_json::json!({"refresh": refresh}))
-        .send_traced(app_data, diagnostics::Module::Auth)
+        .send_traced_retrying(app_data, diagnostics::Module::Auth, RetryPolicy::WRITE)
         .await
         .map_err(|e| {
             DevifyTokenError::Unavailable(devify_network_message("刷新服务端登录令牌失败", &e))
@@ -371,13 +349,13 @@ async fn devify_upload_status(app: AppHandle, batch_id: i64) -> Result<DevifyUpl
     let api_base = settings.devify.resolved_base_url()?;
     let token = devify_access_token_async(&app_data(&app), &api_base).await?;
     let generation = request_generation(&app_data(&app), &api_base, &token)?;
-    let response = devify_client()
+    let response = http_client::api()
         .get(format!(
             "{}/api/v1/chat/uploads/{batch_id}",
             api_base
         ))
         .bearer_auth(&token)
-        .send_traced(&app_data(&app), diagnostics::Module::Upload)
+        .send_traced_retrying(&app_data(&app), diagnostics::Module::Upload, RetryPolicy::READ)
         .await
         .map_err(|e| devify_network_message("读取上传状态失败", &e))?;
     let status = response.status();
@@ -431,8 +409,8 @@ fn upload_list_pagination(page: Option<u32>, page_size: Option<u32>) -> Result<(
     Ok((page, page_size))
 }
 
-fn upload_list_base_url(settings: &settings::AppSettings, space_id: i64) -> Result<String, String> {
-    validate_devify_space(settings, space_id)?;
+fn upload_list_base_url(settings: &settings::AppSettings, space_id: &str) -> Result<String, String> {
+    validate_devify_space(settings, &space_id)?;
     let base_url = settings.devify.resolved_base_url()?;
     let parsed = Url::parse(&base_url).map_err(|_| "服务端地址无效。")?;
     if !matches!(parsed.scheme(), "http" | "https")
@@ -468,22 +446,18 @@ fn parse_upload_list(payload: serde_json::Value) -> Result<serde_json::Value, St
 async fn fetch_upload_list(
     data: &Path,
     base_url: &str,
-    space_id: i64,
+    space_id: &str,
     page: u32,
     page_size: u32,
     token: &str,
 ) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
     // Never forward a bearer token via an HTTP redirect or return request URLs in errors.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|_| "无法创建上传列表请求。")?;
+    let client = http_client::strict();
     let mut response = client
         .get(format!("{base_url}/api/v1/spaces/{space_id}/chat/uploads"))
         .query(&[("page", page), ("page_size", page_size)])
         .bearer_auth(token)
-        .send_traced(data, diagnostics::Module::Upload)
+        .send_traced_retrying(data, diagnostics::Module::Upload, RetryPolicy::READ)
         .await
         .map_err(|_| "读取服务端上传列表失败，请检查网络连接。")?;
     let status = response.status();
@@ -500,14 +474,14 @@ async fn fetch_upload_list(
 #[tauri::command]
 async fn devify_upload_list(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     page: Option<u32>,
     page_size: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     let (page, page_size) = upload_list_pagination(page, page_size)?;
     let data = app_data(&app);
     let settings = settings::load(&data)?;
-    let base_url = upload_list_base_url(&settings, space_id)?;
+    let base_url = upload_list_base_url(&settings, &space_id)?;
     let token = match devify_access_token_async(&data, &base_url).await {
         Ok(token) => token,
         // Only a network failure gets the "check the connection" wording; an expired
@@ -517,17 +491,17 @@ async fn devify_upload_list(
         }
         Err(error) => return Err(error.to_string()),
     };
-    if upload_list_base_url(&settings::load(&data)?, space_id)? != base_url {
+    if upload_list_base_url(&settings::load(&data)?, &space_id)? != base_url {
         return Err("服务端地址已改变，请重新读取上传列表。".into());
     }
     if desktop_credentials::load(&data, &base_url)?.access != token {
         return Err("服务端登录状态已改变，请重新读取上传列表。".into());
     }
     let generation = request_generation(&data, &base_url, &token)?;
-    let (status, body) = fetch_upload_list(&data, &base_url, space_id, page, page_size, &token).await?;
+    let (status, body) = fetch_upload_list(&data, &base_url, &space_id, page, page_size, &token).await?;
     // A response for an old selection must not overwrite the new space or service.
     let current = settings::load(&data)?;
-    if upload_list_base_url(&current, space_id)? != base_url {
+    if upload_list_base_url(&current, &space_id)? != base_url {
         return Err("服务端地址已改变，请重新读取上传列表。".into());
     }
     if desktop_credentials::load(&data, &base_url)?.access != token {
@@ -545,7 +519,7 @@ async fn devify_upload_list(
 
 #[derive(serde::Deserialize, Serialize)]
 struct DevifySpace {
-    id: i64,
+    id: String,
     name: String,
     kind: String,
     status: String,
@@ -559,7 +533,7 @@ struct DevifySpace {
 #[tauri::command]
 async fn devify_space_takeover(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     reason: String,
 ) -> Result<(), String> {
     if reason.trim().is_empty() {
@@ -568,14 +542,14 @@ async fn devify_space_takeover(
     let settings = settings::load(&app_data(&app))?;
     let api_base = settings.devify.resolved_base_url()?;
     let token = devify_access_token_async(&app_data(&app), &api_base).await?;
-    let response = devify_client()
+    let response = http_client::api()
         .post(format!(
             "{}/api/v1/spaces/{space_id}/takeover",
             api_base
         ))
         .bearer_auth(token)
         .json(&serde_json::json!({"reason": reason.trim()}))
-        .send_traced(&app_data(&app), diagnostics::Module::App)
+        .send_traced_retrying(&app_data(&app), diagnostics::Module::App, RetryPolicy::WRITE)
         .await
         .map_err(|e| devify_network_message("接管空间失败", &e))?;
     if !response.status().is_success() {
@@ -586,7 +560,7 @@ async fn devify_space_takeover(
 
 /// Prefer the personal space the server creates for every account; fall back to the first
 /// space the account can see. Used after login and by `devify_space_ensure`.
-fn pick_personal_space(spaces: &[DevifySpace]) -> Option<i64> {
+fn pick_personal_space(spaces: &[DevifySpace]) -> Option<String> {
     spaces
         .iter()
         .find(|space| space.kind.eq_ignore_ascii_case("personal"))
@@ -597,17 +571,17 @@ fn pick_personal_space(spaces: &[DevifySpace]) -> Option<i64> {
                 .find(|space| space.kind.eq_ignore_ascii_case("private"))
         })
         .or_else(|| spaces.first())
-        .map(|space| space.id)
+        .map(|space| space.id.clone())
 }
 
 /// Login should not leave the app without an upload target: select the personal space when
 /// nothing is chosen yet (or when the stored space no longer exists).
-async fn ensure_active_space(app: &AppHandle) -> Option<i64> {
+async fn ensure_active_space(app: &AppHandle) -> Option<String> {
     let mut ignored_generation = None;
     ensure_active_space_for(app, None, &mut ignored_generation).await
 }
 
-async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_credentials::Credentials, u64)>, completed_generation: &mut Option<u64>) -> Option<i64> {
+async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_credentials::Credentials, u64)>, completed_generation: &mut Option<u64>) -> Option<String> {
     let data = app_data(app);
     let settings = settings::load(&data).ok()?;
     let base = settings.devify.resolved_base_url().ok()?;
@@ -626,8 +600,8 @@ async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_cre
         || current.active_account_id != settings.active_account_id { return None; }
     let payload = fixed_identity_get(&data, &base, &token, "/api/v1/spaces").await.ok()?;
     let spaces: Vec<DevifySpace> = serde_json::from_value(payload).ok()?;
-    let known = |id: i64| spaces.iter().any(|space| space.id == id);
-    let chosen = settings.devify.active_space_id.filter(|id| known(*id))
+    let known = |id: &str| spaces.iter().any(|space| space.id == id);
+    let chosen = settings.devify.active_space_id.clone().filter(|id| known(id))
         .or_else(|| pick_personal_space(&spaces));
     drop(identity);
     let mut space_changed = false;
@@ -640,8 +614,8 @@ async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_cre
             || current.active_account_id != settings.active_account_id {
             return Err("选择空间时登录状态已改变。".into());
         }
-        space_changed = current.devify.active_space_id != chosen;
-        current.devify.active_space_id = chosen;
+        space_changed = current.devify.active_space_id.as_deref() != chosen.as_deref();
+        current.devify.active_space_id = chosen.clone();
         Ok(())
     }).ok()?;
     *completed_generation = Some(generation.wrapping_add(u64::from(space_changed)));
@@ -649,7 +623,7 @@ async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_cre
 }
 
 #[tauri::command]
-async fn devify_space_ensure(app: AppHandle) -> Result<Option<i64>, String> {
+async fn devify_space_ensure(app: AppHandle) -> Result<Option<String>, String> {
     match ensure_active_space(&app).await {
         Some(id) => Ok(Some(id)),
         None => Ok(None),
@@ -662,13 +636,13 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
     let api_base = settings.devify.resolved_base_url()?;
     let token = devify_access_token_async(&app_data(&app), &api_base).await?;
     let generation = request_generation(&app_data(&app), &api_base, &token)?;
-    let response = devify_client()
+    let response = http_client::api()
         .get(format!(
             "{}/api/v1/spaces",
             api_base
         ))
         .bearer_auth(&token)
-        .send_traced(&app_data(&app), diagnostics::Module::App)
+        .send_traced_retrying(&app_data(&app), diagnostics::Module::App, RetryPolicy::READ)
         .await
         .map_err(|e| devify_network_message("读取 空间失败", &e))?;
     let status = response.status();
@@ -692,13 +666,13 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
 #[tauri::command]
 async fn devify_report_create(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     title: String,
     period_start: Option<String>,
     period_end: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     entitlements::require(
         &app_data(&app),
         &settings.devify.base_url,
@@ -733,21 +707,21 @@ async fn devify_report_create(
 async fn devify_analysis_list(
     app: AppHandle,
     kind: String,
-    space_id: i64,
+    space_id: String,
     page: Option<u32>,
     conversation_id: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     if !matches!(kind.as_str(), "events" | "reports") {
         return Err("不支持的服务端分析类型。".into());
     }
-    if space_id <= 0 {
+    if space_id.trim().is_empty() {
         return Err("请先选择 空间。".into());
     }
     if conversation_id.is_some_and(|id| id <= 0) || (conversation_id.is_some() && kind != "events") {
         return Err("会话标识无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    if settings.devify.active_space_id != Some(space_id) {
+    if settings.devify.active_space_id.as_deref() != Some(space_id.as_str()) {
         return Err("空间已改变，请重新选择后再同步。".into());
     }
     let resource = if kind == "events" {
@@ -756,7 +730,7 @@ async fn devify_analysis_list(
         "reports"
     };
     let first_page = page.unwrap_or(1).max(1);
-    let client = devify_client();
+    let client = http_client::api();
     let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
     let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
     let mut all_items = Vec::new();
@@ -773,7 +747,7 @@ async fn devify_analysis_list(
         let response = client
             .get(url)
             .bearer_auth(&token)
-            .send_traced(&app_data(&app), diagnostics::Module::App)
+            .send_traced_retrying(&app_data(&app), diagnostics::Module::App, RetryPolicy::READ)
             .await
             .map_err(|e| devify_network_message(&format!("同步服务端{kind}失败"), &e))?;
         let status = response.status();
@@ -808,8 +782,8 @@ async fn devify_analysis_list(
     }))
 }
 
-fn validate_devify_space(settings: &settings::AppSettings, space_id: i64) -> Result<(), String> {
-    if space_id <= 0 || settings.devify.active_space_id != Some(space_id) {
+fn validate_devify_space(settings: &settings::AppSettings, space_id: &str) -> Result<(), String> {
+    if space_id.trim().is_empty() || settings.devify.active_space_id.as_deref() != Some(space_id) {
         return Err("空间已改变，请重新选择后再同步。".into());
     }
     Ok(())
@@ -913,7 +887,8 @@ async fn devify_json_request(
     let settings = settings::load(&app_data(app))?;
     let token = devify_access_token_async(&app_data(app), &settings.devify.base_url).await?;
     let generation = request_generation(&app_data(app), &settings.devify.base_url, &token)?;
-    let client = devify_client();
+    let client = http_client::api();
+    let policy = RetryPolicy::for_method(&method);
     let mut request = client
         .request(
             method,
@@ -924,7 +899,7 @@ async fn devify_json_request(
         request = request.json(&body);
     }
     let response = request
-        .send_traced(&app_data(app), diagnostics::Module::App)
+        .send_traced_retrying(&app_data(app), diagnostics::Module::App, policy)
         .await
         .map_err(|e| devify_network_message("访问服务端失败", &e))?;
     let status = response.status();
@@ -949,23 +924,23 @@ async fn devify_current_user(app: AppHandle) -> Result<serde_json::Value, String
 }
 
 #[tauri::command]
-async fn devify_analysis_preferences_get(app: AppHandle, space_id: i64) -> Result<serde_json::Value, String> {
-    validate_devify_space(&settings::load(&app_data(&app))?, space_id)?;
+async fn devify_analysis_preferences_get(app: AppHandle, space_id: String) -> Result<serde_json::Value, String> {
+    validate_devify_space(&settings::load(&app_data(&app))?, &space_id)?;
     let data = devify_json_request(&app, reqwest::Method::GET, format!("/api/v1/spaces/{space_id}/workflow-config"), None).await?;
     data.get("chat_analysis_preferences").cloned().ok_or_else(|| "服务端尚不支持分析偏好设置，请更新服务端。".to_string())
 }
 
 #[tauri::command]
-async fn devify_analysis_preferences_save(app: AppHandle, space_id: i64, preferences: serde_json::Value) -> Result<serde_json::Value, String> {
-    validate_devify_space(&settings::load(&app_data(&app))?, space_id)?;
+async fn devify_analysis_preferences_save(app: AppHandle, space_id: String, preferences: serde_json::Value) -> Result<serde_json::Value, String> {
+    validate_devify_space(&settings::load(&app_data(&app))?, &space_id)?;
     let body = serde_json::json!({"chat_analysis_preferences": preferences});
     let data = devify_json_request(&app, reqwest::Method::PATCH, format!("/api/v1/spaces/{space_id}/workflow-config"), Some(body)).await?;
     data.get("chat_analysis_preferences").cloned().ok_or_else(|| "服务端未确认分析偏好，请更新服务端。".to_string())
 }
 
 #[tauri::command]
-async fn devify_analysis_manual_start(app: AppHandle, space_id: i64, conversation_id: i64) -> Result<serde_json::Value, String> {
-    validate_devify_space(&settings::load(&app_data(&app))?, space_id)?;
+async fn devify_analysis_manual_start(app: AppHandle, space_id: String, conversation_id: i64) -> Result<serde_json::Value, String> {
+    validate_devify_space(&settings::load(&app_data(&app))?, &space_id)?;
     if conversation_id <= 0 { return Err("会话标识无效。".into()); }
     devify_json_request(&app, reqwest::Method::POST, format!("/api/v1/spaces/{space_id}/analysis-jobs/manual"), Some(serde_json::json!({"conversation_id": conversation_id}))).await
 }
@@ -974,14 +949,14 @@ async fn devify_analysis_manual_start(app: AppHandle, space_id: i64, conversatio
 async fn devify_analysis_detail(
     app: AppHandle,
     kind: String,
-    space_id: i64,
+    space_id: String,
     item_id: i64,
 ) -> Result<serde_json::Value, String> {
     if !matches!(kind.as_str(), "events" | "reports") || item_id <= 0 {
         return Err("服务端分析对象无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let resource = if kind == "events" {
         "events"
     } else {
@@ -1024,11 +999,11 @@ fn id_list(value: Option<&serde_json::Value>) -> Vec<i64> {
 #[tauri::command]
 async fn devify_event_notes(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     event_id: i64,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let event = devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1036,7 +1011,7 @@ async fn devify_event_notes(
         None,
     )
     .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
+    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
         return Err("事件不属于当前 空间。".into());
     }
     let mut notes = Vec::new();
@@ -1060,7 +1035,7 @@ async fn devify_event_notes(
 #[tauri::command]
 async fn devify_event_note_remove(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     event_id: i64,
     note_id: i64,
 ) -> Result<serde_json::Value, String> {
@@ -1068,7 +1043,7 @@ async fn devify_event_note_remove(
         return Err("进展记录无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let event = devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1076,7 +1051,7 @@ async fn devify_event_note_remove(
         None,
     )
     .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
+    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
         return Err("事件不属于当前 空间。".into());
     }
     devify_json_request(
@@ -1093,7 +1068,7 @@ async fn devify_event_note_remove(
 #[tauri::command]
 async fn devify_event_note_create(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     event_id: i64,
     text: String,
     start_at: Option<String>,
@@ -1106,7 +1081,7 @@ async fn devify_event_note_create(
         return Err("事件无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let event = devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1114,7 +1089,7 @@ async fn devify_event_note_create(
         None,
     )
     .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
+    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
         return Err("事件不属于当前 空间。".into());
     }
     let now = chrono::Utc::now();
@@ -1150,7 +1125,7 @@ async fn devify_event_note_create(
 #[tauri::command]
 async fn devify_event_note_assign(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     event_id: i64,
     note_id: i64,
 ) -> Result<serde_json::Value, String> {
@@ -1158,7 +1133,7 @@ async fn devify_event_note_assign(
         return Err("进展记录无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let event = devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1166,7 +1141,7 @@ async fn devify_event_note_assign(
         None,
     )
     .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_i64) != Some(space_id) {
+    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
         return Err("事件不属于当前 空间。".into());
     }
     devify_json_request(
@@ -1183,7 +1158,7 @@ async fn devify_event_note_assign(
 #[tauri::command]
 async fn devify_event_update(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     event_id: i64,
     title: Option<String>,
     content: Option<String>,
@@ -1193,7 +1168,7 @@ async fn devify_event_update(
         return Err("事件无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let mut body = serde_json::Map::new();
     if let Some(title) = title {
         let title = title.trim();
@@ -1228,10 +1203,10 @@ async fn devify_event_update(
 #[tauri::command]
 async fn devify_event_relations(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let mut all = Vec::new();
     for page in 1..=50u32 {
         let value = devify_json_request(
@@ -1266,7 +1241,7 @@ async fn devify_event_relations(
 #[tauri::command]
 async fn devify_event_relation_create(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     left_event_id: i64,
     right_event_id: i64,
     relation_kind: Option<String>,
@@ -1277,7 +1252,7 @@ async fn devify_event_relation_create(
         return Err("请选择两个不同的事件。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let kind = relation_kind.unwrap_or_else(|| "related".into());
     if !matches!(
         kind.as_str(),
@@ -1308,14 +1283,14 @@ async fn devify_event_relation_create(
 #[tauri::command]
 async fn devify_event_relation_delete(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     relation_id: i64,
 ) -> Result<serde_json::Value, String> {
     if relation_id <= 0 {
         return Err("关联记录无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     devify_json_request(
         &app,
         reqwest::Method::DELETE,
@@ -1328,13 +1303,13 @@ async fn devify_event_relation_delete(
 #[tauri::command]
 async fn devify_conversations(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     search: Option<String>,
     page: Option<u32>,
     page_size: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let mut path = format!(
         "/api/v1/spaces/{space_id}/conversations?page={}&page_size={}",
         page.unwrap_or(1).max(1),
@@ -1351,11 +1326,11 @@ async fn devify_conversations(
 #[tauri::command]
 async fn devify_conversation_detail(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     conversation_id: i64,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     if conversation_id <= 0 {
         return Err("会话标识无效。".into());
     }
@@ -1371,14 +1346,14 @@ async fn devify_conversation_detail(
 #[tauri::command]
 async fn devify_conversation_messages(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     conversation_id: i64,
     page: Option<u32>,
     page_size: Option<u32>,
     focus_message_id: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     if conversation_id <= 0 {
         return Err("会话标识无效。".into());
     }
@@ -1396,7 +1371,7 @@ async fn devify_conversation_messages(
 #[tauri::command]
 async fn devify_message_detail(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     conversation_id: i64,
     message_id: i64,
 ) -> Result<serde_json::Value, String> {
@@ -1404,7 +1379,7 @@ async fn devify_message_detail(
         return Err("消息标识无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1415,9 +1390,9 @@ async fn devify_message_detail(
 }
 
 #[tauri::command]
-async fn devify_topics(app: AppHandle, space_id: i64) -> Result<serde_json::Value, String> {
+async fn devify_topics(app: AppHandle, space_id: String) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1430,7 +1405,7 @@ async fn devify_topics(app: AppHandle, space_id: i64) -> Result<serde_json::Valu
 #[tauri::command]
 async fn devify_topic_create(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     title: String,
     instruction: String,
     period: String,
@@ -1438,7 +1413,7 @@ async fn devify_topic_create(
     timezone: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let title = title.trim();
     let instruction = instruction.trim();
     if title.is_empty() || instruction.is_empty() {
@@ -1473,14 +1448,14 @@ async fn devify_topic_create(
 #[tauri::command]
 async fn devify_topic_detail(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     topic_id: i64,
 ) -> Result<serde_json::Value, String> {
     if topic_id <= 0 {
         return Err("主题标识无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let topic = devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1490,7 +1465,7 @@ async fn devify_topic_detail(
     .await?;
     if topic
         .get("space_id")
-        .and_then(serde_json::Value::as_i64)
+        .and_then(serde_json::Value::as_str)
         .is_some_and(|topic_space_id| topic_space_id != space_id)
     {
         return Err("主题不属于当前 空间。".into());
@@ -1501,14 +1476,14 @@ async fn devify_topic_detail(
 #[tauri::command]
 async fn devify_note_detail(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     note_id: i64,
 ) -> Result<serde_json::Value, String> {
     if note_id <= 0 {
         return Err("原文标识无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     let note = devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1518,7 +1493,7 @@ async fn devify_note_detail(
     .await?;
     if note
         .get("space_id")
-        .and_then(serde_json::Value::as_i64)
+        .and_then(serde_json::Value::as_str)
         .is_some_and(|note_space_id| note_space_id != space_id)
     {
         return Err("原文不属于当前 空间。".into());
@@ -1546,10 +1521,10 @@ async fn devify_topic_update(
 
 #[tauri::command]
 async fn devify_daily_plan_update(
-    app: AppHandle, space_id: i64, topic_id: i64, enabled: Option<bool>, time_local: Option<String>,
+    app: AppHandle, space_id: String, topic_id: i64, enabled: Option<bool>, time_local: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if enabled.is_none() && time_local.is_none() { return Err("没有要修改的日报设置。".into()); }
-    let topic = devify_topic_detail(app.clone(), space_id, topic_id).await?;
+    let topic = devify_topic_detail(app.clone(), space_id.clone(), topic_id).await?;
     if !matches!(topic.get("title").and_then(|v| v.as_str()), Some(DAILY_TOPIC_TITLE | "每日报告"))
         || topic.get("period").and_then(|v| v.as_str()) != Some("day") {
         return Err("无法确认日报计划，请刷新后重试。".into());
@@ -1561,7 +1536,7 @@ async fn devify_daily_plan_update(
         body["time_local"] = time.into();
     }
     let current = settings::load(&app_data(&app))?;
-    validate_devify_space(&current, space_id)?;
+    validate_devify_space(&current, &space_id)?;
     devify_json_request(&app, reqwest::Method::PATCH, format!("/api/v1/topics/{topic_id}"), Some(body)).await
 }
 
@@ -1581,9 +1556,9 @@ async fn devify_topic_delete(app: AppHandle, topic_id: i64) -> Result<(), String
 }
 
 #[tauri::command]
-async fn devify_questions(app: AppHandle, space_id: i64) -> Result<serde_json::Value, String> {
+async fn devify_questions(app: AppHandle, space_id: String) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1596,14 +1571,14 @@ async fn devify_questions(app: AppHandle, space_id: i64) -> Result<serde_json::V
 #[tauri::command]
 async fn devify_question_detail(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     question_id: i64,
 ) -> Result<serde_json::Value, String> {
     if question_id <= 0 {
         return Err("问答标识无效。".into());
     }
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     devify_json_request(
         &app,
         reqwest::Method::GET,
@@ -1616,11 +1591,11 @@ async fn devify_question_detail(
 #[tauri::command]
 async fn devify_question_ask(
     app: AppHandle,
-    space_id: i64,
+    space_id: String,
     question: String,
 ) -> Result<serde_json::Value, String> {
     let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, space_id)?;
+    validate_devify_space(&settings, &space_id)?;
     entitlements::require(&app_data(&app), &settings.devify.base_url, capabilities::CLOUD_ASK)?;
     let question = question.trim();
     if question.is_empty() {
@@ -1678,10 +1653,9 @@ struct ExistingUploadKeys {
 type LegacyUploadKeys = HashMap<String, ExistingUploadKeys>;
 
 async fn fixed_identity_get(data: &Path, base: &str, token: &str, path: &str) -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建云端请求。")?;
+    let client = http_client::strict();
     let mut response = client.get(format!("{base}{path}")).bearer_auth(token)
-        .send_traced(data, diagnostics::Module::Upload).await.map_err(|_| "无法读取云端数据，请检查网络连接。")?;
+        .send_traced_retrying(data, diagnostics::Module::Upload, RetryPolicy::READ).await.map_err(|_| "无法读取云端数据，请检查网络连接。")?;
     if !response.status().is_success() { return Err(format!("无法读取云端数据：HTTP {}。", response.status().as_u16())); }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端响应。")? {
@@ -1693,7 +1667,7 @@ async fn fixed_identity_get(data: &Path, base: &str, token: &str, path: &str) ->
 
 /// Read existing legacy message keys before assigning new identities. Never assume that a
 /// historic `src:<local_id>` belongs to the earliest or latest local shard.
-async fn load_legacy_upload_keys(app: &AppHandle, space_id: i64, account_id: &str, usernames: &[String], fixed: Option<(&str, &str)>) -> Result<LegacyUploadKeys, String> {
+async fn load_legacy_upload_keys(app: &AppHandle, space_id: &str, account_id: &str, usernames: &[String], fixed: Option<(&str, &str)>) -> Result<LegacyUploadKeys, String> {
     let mut result = LegacyUploadKeys::new();
     for username in usernames {
         let encoded: String = url::form_urlencoded::byte_serialize(username.as_bytes()).collect();
@@ -1785,7 +1759,7 @@ fn next_manual_batch(value: &settings::AppSettings, owner: &settings::UploadOwne
         let Some(group) = job.manual_group.as_ref() else { return false; };
         if job.owner.as_ref() != Some(owner) || job.account_id != owner.account_id
             || job.account_id != value.active_account_id || job.space_id != owner.space_id
-            || value.devify.active_space_id != Some(job.space_id) { return false; }
+            || value.devify.active_space_id.as_deref() != Some(job.space_id.as_str()) { return false; }
         if !matches!(job.status.as_str(), "queued" | "running")
             || job.batch_id.is_some() || job.create_started != Some(false) { return false; }
         let previous: Vec<_> = value.upload_queue.iter().filter(|other| other.manual_group.as_ref() == Some(group) && other.manual_index < job.manual_index).collect();
@@ -1917,7 +1891,7 @@ fn image_resource_hash(cache: &Path, item: &media::MediaItem) -> Option<String> 
 fn prepare_upload(
     cache: &Path,
     account_id: &str,
-    space_id: i64,
+    space_id: &str,
     base_url: &str,
     usernames: &[String],
     since: Option<i64>,
@@ -1991,7 +1965,7 @@ fn prepare_upload_with_voice(
     cache: &Path,
     media_root: &Path,
     account_id: &str,
-    space_id: i64,
+    space_id: &str,
     base_url: &str,
     usernames: &[String],
     since: Option<i64>,
@@ -2426,11 +2400,11 @@ fn validate_account_id(account_id: &str) -> Result<(), String> {
 fn validate_upload_scope(
     settings: &settings::AppSettings,
     account_id: &str,
-    space_id: i64,
+    space_id: &str,
     usernames: &[String],
 ) -> Result<(), String> {
     validate_account_id(account_id)?;
-    if space_id <= 0 || settings.devify.active_space_id != Some(space_id) {
+    if space_id.trim().is_empty() || settings.devify.active_space_id.as_deref() != Some(space_id) {
         return Err("上传目标空间已改变，请重新选择。".into());
     }
     let allowed = settings.chat.allowed_usernames.get(account_id);
@@ -2492,7 +2466,7 @@ async fn wechat_collection_messages(
 async fn devify_upload_preview(
     app: AppHandle,
     account_id: String,
-    space_id: i64,
+    space_id: String,
     usernames: Vec<String>,
     since: Option<i64>,
     until: Option<i64>,
@@ -2500,13 +2474,13 @@ async fn devify_upload_preview(
 ) -> Result<UploadPreview, String> {
     let data = app_data(&app);
     let settings = settings::load(&data)?;
-    validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
+    validate_upload_scope(&settings, &account_id, &space_id, &usernames)?;
     entitlements::require(&data, &settings.devify.base_url, capabilities::INGEST_UPLOAD)?;
-    let (owner, token) = verified_upload_identity(&data, &account_id, space_id).await?;
+    let (owner, token) = verified_upload_identity(&data, &account_id, &space_id).await?;
     let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     let latest = settings::load(&data)?;
     validate_owner_state(&latest, &owner, &token)?;
-    validate_upload_scope(&latest, &account_id, space_id, &usernames)?;
+    validate_upload_scope(&latest, &account_id, &space_id, &usernames)?;
     if desktop_credentials::load(&data, &owner.base_url)?.access != token {
         return Err("登录状态已改变，请重新确认采集任务。".into());
     }
@@ -2516,7 +2490,7 @@ async fn devify_upload_preview(
     let voice_settings = latest.voice.clone();
     let attachments = latest.backup.attachments.clone();
     let selection = message_selection.unwrap_or_default();
-    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
+    let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
     let data_for_prepare = data.clone();
     let preview = tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
@@ -2524,7 +2498,7 @@ async fn devify_upload_preview(
             &cache,
             &media_root,
             &account_id,
-            space_id,
+            &space_id,
             &base_url,
             &usernames,
             since,
@@ -2620,16 +2594,16 @@ async fn submit_manual_batch(app: &AppHandle, job_id: &str) -> Result<DevifyUplo
     let value = settings::load(&data)?;
     let job = value.upload_queue.iter().find(|job| job.id == job_id).cloned().ok_or("找不到上传任务。")?;
     let scope = job.scope.clone().ok_or("找不到上传范围。")?;
-    validate_upload_scope(&value, &job.account_id, job.space_id, &scope.usernames)?;
+    validate_upload_scope(&value, &job.account_id, &job.space_id, &scope.usernames)?;
     if !settings::same_service_url(&scope.base_url, &value.devify.base_url) {
         return Err("服务地址已更改，无法继续原上传任务。".into());
     }
-    let (owner, token) = verified_upload_identity(&data, &job.account_id, job.space_id).await?;
+    let (owner, token) = verified_upload_identity(&data, &job.account_id, &job.space_id).await?;
     validate_owned_job(&value, &job, &owner, &token, &scope)?;
     if !matches!(job.status.as_str(), "queued" | "running") || job.batch_id.is_some() || job.create_started != Some(false) {
         return Err("无法确认本机批次尚未提交，请检查服务端记录。".into());
     }
-    let preview = devify_upload_preview(app.clone(), job.account_id.clone(), job.space_id, scope.usernames.clone(), scope.since, scope.until, Some(scope.message_selection.clone())).await?;
+    let preview = devify_upload_preview(app.clone(), job.account_id.clone(), job.space_id.clone(), scope.usernames.clone(), scope.since, scope.until, Some(scope.message_selection.clone())).await?;
     if job.manual_fingerprint.as_deref().is_some_and(|old| old != preview.fingerprint) {
         return Err("本批消息或附件已变化，无法安全重试；请重新预览并创建任务。".into());
     }
@@ -2648,7 +2622,7 @@ async fn submit_manual_batch(app: &AppHandle, job_id: &str) -> Result<DevifyUplo
         item.updated_at = chrono::Utc::now().to_rfc3339();
         Ok(())
     })?;
-    let result = devify_upload_wechat(app.clone(), job_id.to_string(), job.space_id, job.account_id.clone(), scope.usernames.clone(), scope.since, scope.until, Some(scope.base_url.clone()), Some(preview.fingerprint), scope.message_selection.clone(), UploadTrigger::Manual, None).await;
+    let result = devify_upload_wechat(app.clone(), job_id.to_string(), job.space_id.clone(), job.account_id.clone(), scope.usernames.clone(), scope.since, scope.until, Some(scope.base_url.clone()), Some(preview.fingerprint), scope.message_selection.clone(), UploadTrigger::Manual, None).await;
     settings::update(&data, |current| {
         let item = current.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
         apply_manual_upload_outcome(
@@ -2663,7 +2637,7 @@ async fn submit_manual_batch(app: &AppHandle, job_id: &str) -> Result<DevifyUplo
 async fn devify_upload_selected(
     app: AppHandle,
     account_id: String,
-    space_id: i64,
+    space_id: String,
     usernames: Vec<String>,
     since: Option<i64>,
     until: Option<i64>,
@@ -2674,13 +2648,13 @@ async fn devify_upload_selected(
     let upload_state = app.state::<UploadState>();
     let _upload_guard = begin_account_upload(&upload_state, &account_id)?;
     let settings = settings::load(&app_data(&app))?;
-    validate_upload_scope(&settings, &account_id, space_id, &usernames)?;
+    validate_upload_scope(&settings, &account_id, &space_id, &usernames)?;
     entitlements::require(&app_data(&app), &settings.devify.base_url, capabilities::INGEST_UPLOAD)?;
     if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("请先预览并确认上传范围。".into());
     }
     let message_selection = message_selection.unwrap_or_default();
-    let (owner, owner_token) = verified_upload_identity(&app_data(&app), &account_id, space_id).await?;
+    let (owner, owner_token) = verified_upload_identity(&app_data(&app), &account_id, &space_id).await?;
     let mut initial_baselines = BTreeMap::new();
     if initial_history.unwrap_or(false) {
         if !message_selection.is_empty() { return Err("首次历史上传请选择整段记录。".into()); }
@@ -2706,7 +2680,7 @@ async fn devify_upload_selected(
     }
     let batches = manual_batch_plan(&selected_refs, SYNC_MESSAGES_PER_BATCH)?;
     if batches.len() > 1 {
-        let preview = devify_upload_preview(app.clone(), account_id.clone(), space_id, usernames.clone(), since, until, Some(message_selection.clone())).await?;
+        let preview = devify_upload_preview(app.clone(), account_id.clone(), space_id.clone(), usernames.clone(), since, until, Some(message_selection.clone())).await?;
         verify_upload_preview(Some(&fingerprint), &preview.fingerprint)?;
         let group = format!("manual-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
         let total = batches.len();
@@ -2716,7 +2690,7 @@ async fn devify_upload_selected(
         for (index, selection) in batches.into_iter().enumerate() {
             let names = selection.keys().cloned().collect();
             pending.push(settings::UploadJob {
-                id: format!("{group}-{index}"), space_id, account_id: account_id.clone(),
+                id: format!("{group}-{index}"), space_id: space_id.clone(), account_id: account_id.clone(),
                 owner: Some(owner.clone()), create_started: Some(false),
                 status: "queued".into(), message: format!("等待上传第 {}/{} 批", index + 1, total),
                 created_at: now.clone(), updated_at: now.clone(),
@@ -2731,7 +2705,7 @@ async fn devify_upload_selected(
             if desktop_credentials::load(&data, &owner.base_url)?.access != owner_token {
                 return Err("登录状态已改变，请重新确认采集任务。".into());
             }
-            validate_upload_scope(current, &account_id, space_id, &usernames)?;
+            validate_upload_scope(current, &account_id, &space_id, &usernames)?;
             if pending.iter().any(|job| current.upload_queue.iter().any(|existing| existing.id == job.id)) {
                 return Err("上传任务标识重复，请重新创建采集任务。".into());
             }
@@ -2757,7 +2731,7 @@ async fn devify_upload_selected(
     let now = chrono::Utc::now().to_rfc3339();
     let job = settings::UploadJob {
         id: job_id.clone(),
-        space_id,
+        space_id: space_id.clone(),
         account_id: account_id.clone(),
         batch_id: None,
         owner: Some(owner.clone()),
@@ -2789,7 +2763,7 @@ async fn devify_upload_selected(
         if desktop_credentials::load(&data, &owner.base_url)?.access != owner_token {
             return Err("登录状态已改变，请重新确认采集任务。".into());
         }
-        validate_upload_scope(current, &account_id, space_id, &usernames)?;
+        validate_upload_scope(current, &account_id, &space_id, &usernames)?;
         if current.upload_queue.iter().any(|existing| existing.id == job.id) {
             return Err("上传任务标识重复，请重新创建采集任务。".into());
         }
@@ -2844,7 +2818,7 @@ async fn devify_upload_retry_preview(
     if job.batch_id.is_some() && job.package_digest.is_none() {
         return Err("原任务没有保存归档摘要，无法安全重试，请重新创建采集任务。".into());
     }
-    let (owner, token) = verified_upload_identity(&data, &job.account_id, job.space_id).await?;
+    let (owner, token) = verified_upload_identity(&data, &job.account_id, &job.space_id).await?;
     let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
     let latest = settings::load(&data)?;
@@ -2853,17 +2827,17 @@ async fn devify_upload_retry_preview(
     let attachments = latest.backup.attachments.clone();
     let account_id = job.account_id.clone();
     let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
-    let legacy_keys = load_legacy_upload_keys(&app, job.space_id, &account_id, &scope.usernames, Some((&owner.base_url, &token))).await?;
+    let legacy_keys = load_legacy_upload_keys(&app, &job.space_id, &account_id, &scope.usernames, Some((&owner.base_url, &token))).await?;
     let data_for_prepare = data.clone();
     let scope_for_prepare = scope.clone();
-    let space_id = job.space_id;
+    let space_id = job.space_id.clone();
     let preview = tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
             &data_for_prepare,
             &cache,
             &media_root,
             &account_id,
-            space_id,
+            &space_id,
             &scope_for_prepare.base_url,
             &scope_for_prepare.usernames,
             scope_for_prepare.since,
@@ -2886,7 +2860,7 @@ struct CloudRetryAuth {
     token: String,
     base_url: String,
     job_id: String,
-    space_id: i64,
+    space_id: String,
     account_id: String,
     batch_id: i64,
     device_id: String,
@@ -2906,16 +2880,15 @@ fn cloud_retry_device_id(configured: &str, token: &str) -> Result<String, String
     Ok(device_id.to_string())
 }
 
-async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) -> Result<(settings::UploadOwner, String), String> {
+async fn verified_upload_identity(data: &Path, account_id: &str, space_id: &str) -> Result<(settings::UploadOwner, String), String> {
     let settings = settings::load(data)?;
     if settings.active_account_id != account_id { return Err("当前微信账号已改变。".into()); }
-    let base_url = upload_list_base_url(&settings, space_id)?;
+    let base_url = upload_list_base_url(&settings, &space_id)?;
     let token = devify_access_token_async(data, &base_url).await?;
     let device_id = cloud_retry_device_id(&settings.devify.device_id, &token)?;
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建身份请求。")?;
+    let client = http_client::strict();
     let mut response = client.get(format!("{base_url}/api/v1/auth/user"))
-        .bearer_auth(&token).send_traced(data, diagnostics::Module::Auth).await.map_err(|_| "无法确认云端登录用户。")?;
+        .bearer_auth(&token).send_traced_retrying(data, diagnostics::Module::Auth, RetryPolicy::READ).await.map_err(|_| "无法确认云端登录用户。")?;
     if !response.status().is_success() { return Err("无法确认云端登录用户。".into()); }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端用户。")? {
@@ -2934,7 +2907,7 @@ async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) 
         && item.get("status").and_then(serde_json::Value::as_str) == Some("active")).count() != 1 {
         return Err("当前设备不属于该用户或已停用，无法上传。".into());
     }
-    let owner = settings::UploadOwner { base_url, space_id, account_id: account_id.to_string(), user_id, device_id };
+    let owner = settings::UploadOwner { base_url, space_id: space_id.to_string(), account_id: account_id.to_string(), user_id, device_id };
     validate_owner_state(&settings::load(data)?, &owner, &token)?;
     if desktop_credentials::load(data, &owner.base_url)?.access != token {
         return Err("服务端登录状态已改变，请重新操作。".into());
@@ -2945,7 +2918,7 @@ async fn verified_upload_identity(data: &Path, account_id: &str, space_id: i64) 
 fn validate_owner_state(settings: &settings::AppSettings, owner: &settings::UploadOwner, token: &str) -> Result<(), String> {
     if owner.user_id <= 0 || owner.device_id.is_empty() || owner.device_id.trim() != owner.device_id
         || owner.account_id.is_empty() || settings.active_account_id != owner.account_id
-        || upload_list_base_url(settings, owner.space_id).ok().as_ref()
+        || upload_list_base_url(settings, &owner.space_id).ok().as_ref()
             .is_none_or(|base| !settings::same_service_url(base, &owner.base_url))
         || cloud_retry_device_id(&settings.devify.device_id, token).ok().as_deref() != Some(owner.device_id.as_str()) {
         return Err("任务的登录状态、服务、空间、微信账号或设备已改变。".into());
@@ -2958,7 +2931,7 @@ async fn devify_upload_identity(app: AppHandle) -> Result<serde_json::Value, Str
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     let space = settings.devify.active_space_id.ok_or("请先选择空间。")?;
-    let (owner, _) = verified_upload_identity(&data, &settings.active_account_id, space).await?;
+    let (owner, _) = verified_upload_identity(&data, &settings.active_account_id, &space).await?;
     Ok(serde_json::json!({"user_id": owner.user_id, "device_id": owner.device_id}))
 }
 
@@ -2970,7 +2943,7 @@ fn validate_owned_job(settings: &settings::AppSettings, job: &settings::UploadJo
         || !settings::same_service_url(&scope.base_url, &owner.base_url) {
         return Err("任务身份或上传范围已改变，请重新创建采集任务。".into());
     }
-    validate_upload_scope(settings, &owner.account_id, owner.space_id, &scope.usernames)
+    validate_upload_scope(settings, &owner.account_id, &owner.space_id, &scope.usernames)
 }
 
 fn validate_live_owned_job(data: &Path, job_id: &str, owner: &settings::UploadOwner,
@@ -2995,13 +2968,13 @@ fn validate_cloud_retry_context(
         || job.id != auth.job_id || job.batch_id != Some(auth.batch_id)
         || job.space_id != auth.space_id || job.account_id != auth.account_id
         || settings.active_account_id != auth.account_id
-        || upload_list_base_url(settings, auth.space_id).ok().as_ref()
+        || upload_list_base_url(settings, &auth.space_id).ok().as_ref()
             .is_none_or(|base| !settings::same_service_url(base, &auth.base_url))
         || cloud_retry_device_id(&settings.devify.device_id, current_token).ok().as_deref() != Some(auth.device_id.as_str())
     {
         return Err(invalid());
     }
-    validate_upload_scope(settings, &auth.account_id, auth.space_id, &auth.scope.usernames)
+    validate_upload_scope(settings, &auth.account_id, &auth.space_id, &auth.scope.usernames)
         .map_err(|_| invalid())?;
     let scope = job.retry_scope(settings).map_err(|_| invalid())?;
     if scope.usernames != auth.scope.usernames || scope.since != auth.scope.since
@@ -3015,7 +2988,7 @@ fn validate_cloud_retry_context(
 
 fn validate_remote_owner(owner: &settings::UploadOwner, batch_id: i64, batch: &serde_json::Value, key: Option<&str>) -> Result<(), String> {
     if batch_id <= 0 || batch.get("id").and_then(serde_json::Value::as_i64) != Some(batch_id)
-        || batch.get("space_id").and_then(serde_json::Value::as_i64) != Some(owner.space_id)
+        || batch.get("space_id").and_then(serde_json::Value::as_str) != Some(owner.space_id.as_str())
         || batch.get("uploaded_by_id").and_then(serde_json::Value::as_i64) != Some(owner.user_id)
         || batch.get("source_type").and_then(serde_json::Value::as_str) != Some("wechat")
         || batch.get("source_account_id").and_then(serde_json::Value::as_str) != Some(owner.account_id.as_str())
@@ -3034,7 +3007,7 @@ fn validate_cloud_retry_remote(
     let user_id = user.get("id").and_then(serde_json::Value::as_i64).filter(|id| *id > 0);
     if user_id.is_none()
         || batch.get("id").and_then(serde_json::Value::as_i64) != Some(auth.batch_id)
-        || batch.get("space_id").and_then(serde_json::Value::as_i64) != Some(auth.space_id)
+        || batch.get("space_id").and_then(serde_json::Value::as_str) != Some(auth.space_id.as_str())
         || batch.get("uploaded_by_id").and_then(serde_json::Value::as_i64) != user_id
         || batch.get("source_type").and_then(serde_json::Value::as_str) != Some("wechat")
         || batch.get("source_account_id").and_then(serde_json::Value::as_str) != Some(auth.account_id.as_str())
@@ -3049,7 +3022,7 @@ fn validate_cloud_retry_remote(
     Ok((user_id.ok_or("无法确认云端用户。")?, key.to_string()))
 }
 
-fn validate_cloud_retry_package(auth: &CloudRetryAuth, space_id: i64, account_id: &str, key: &str) -> Result<(), String> {
+fn validate_cloud_retry_package(auth: &CloudRetryAuth, space_id: &str, account_id: &str, key: &str) -> Result<(), String> {
     if auth.space_id != space_id || auth.account_id != account_id || auth.idempotency_key != key {
         return Err("上传内容或范围已变化，请重新创建采集任务。".into());
     }
@@ -3074,7 +3047,7 @@ fn append_retry_identity_body(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), St
 
 async fn retry_identity_get(data: &Path, client: &reqwest::Client, auth: &CloudRetryAuth, path: &str) -> Result<serde_json::Value, String> {
     let mut response = client.get(format!("{}{path}", auth.base_url))
-        .bearer_auth(&auth.token).send_traced(data, diagnostics::Module::Upload).await
+        .bearer_auth(&auth.token).send_traced_retrying(data, diagnostics::Module::Upload, RetryPolicy::READ).await
         .map_err(|_| "无法读取云端重试身份，请检查网络连接。")?;
     if !response.status().is_success() {
         return Err(format!("无法确认云端重试身份：HTTP {}。", response.status().as_u16()));
@@ -3089,8 +3062,7 @@ async fn retry_identity_get(data: &Path, client: &reqwest::Client, auth: &CloudR
 }
 
 async fn verify_cloud_retry_remote(data: &Path, auth: &CloudRetryAuth) -> Result<(i64, String), String> {
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建云端重试身份请求。")?;
+    let client = http_client::strict();
     let user = retry_identity_get(data, &client, auth, "/api/v1/auth/user").await?;
     let batch = retry_identity_get(data, &client, auth, &format!("/api/v1/chat/uploads/{}", auth.batch_id)).await?;
     validate_cloud_retry_remote(auth, &user, &batch)
@@ -3126,14 +3098,14 @@ async fn devify_upload_retry(
     if job.batch_id.is_some() && job.package_digest.is_none() {
         return Err("原任务没有保存归档摘要，无法安全重试。".into());
     }
-    let (owner, token) = verified_upload_identity(&data, &job.account_id, job.space_id).await?;
+    let (owner, token) = verified_upload_identity(&data, &job.account_id, &job.space_id).await?;
     let identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
     let cloud_retry = if let Some(batch_id) = job.batch_id {
         if batch_id <= 0 { return Err("原上传批次无效，不能重试。".into()); }
         let mut auth = CloudRetryAuth {
             token: token.clone(), base_url: owner.base_url.clone(), job_id: job.id.clone(),
-            space_id: job.space_id, account_id: job.account_id.clone(), batch_id,
+            space_id: job.space_id.clone(), account_id: job.account_id.clone(), batch_id,
             device_id: owner.device_id.clone(), user_id: 0, idempotency_key: String::new(), scope: scope.clone(),
         };
         validate_live_cloud_retry(&data, &auth)?;
@@ -3144,7 +3116,7 @@ async fn devify_upload_retry(
         validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
         validate_live_cloud_retry(&data, &auth)?;
         let confirmed_key = format!("wechat-{}-{}", job.account_id, &fingerprint[..32]);
-        validate_cloud_retry_package(&auth, job.space_id, &job.account_id, &confirmed_key)?;
+        validate_cloud_retry_package(&auth, &job.space_id, &job.account_id, &confirmed_key)?;
         Some(auth)
     } else {
         None
@@ -3173,7 +3145,7 @@ async fn devify_upload_retry(
     let result = devify_upload_wechat(
         app.clone(),
         job_id.clone(),
-        job.space_id,
+        job.space_id.clone(),
         job.account_id.clone(),
         retry_usernames,
         retry_since,
@@ -3234,7 +3206,7 @@ fn upload_create_body(
 async fn devify_upload_wechat(
     app: AppHandle,
     job_id: String,
-    space_id: i64,
+    space_id: String,
     account_id: String,
     usernames: Vec<String>,
     since: Option<i64>,
@@ -3253,7 +3225,7 @@ async fn devify_upload_wechat(
         return Err("上传范围包含不在当前白名单中的会话。".into());
     }
     let data = app_data(&app);
-    let (owner, token) = verified_upload_identity(&data, &account_id, space_id).await?;
+    let (owner, token) = verified_upload_identity(&data, &account_id, &space_id).await?;
     let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     let current_settings = settings::load(&data)?;
     let scope = current_settings.upload_queue.iter().find(|job| job.id == job_id)
@@ -3270,7 +3242,7 @@ async fn devify_upload_wechat(
     if !settings::same_service_url(&base_url, &current_settings.devify.base_url) {
         return Err("服务地址已更改，无法安全匹配旧消息。".into());
     }
-    let legacy_keys = load_legacy_upload_keys(&app, space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
+    let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
     let account_for_prepare = account_id.clone();
     let names_for_prepare = usernames.clone();
     let voice_settings = current_settings.voice.clone();
@@ -3280,13 +3252,14 @@ async fn devify_upload_wechat(
     let cache_for_prepare = cache.clone();
     let media_root_for_prepare = account_root(&account_id).unwrap_or_else(|_| cache.clone());
     let base_url_for_prepare = base_url.clone();
+    let space_id_for_prepare = space_id.clone();
     let prepared = tauri::async_runtime::spawn_blocking(move || {
         prepare_upload_with_voice(
             &data_for_prepare,
             &cache_for_prepare,
             &media_root_for_prepare,
             &account_for_prepare,
-            space_id,
+            &space_id_for_prepare,
             &base_url_for_prepare,
             &names_for_prepare,
             since,
@@ -3390,7 +3363,7 @@ async fn devify_upload_wechat(
         if auth.token != token || auth.user_id != owner.user_id || auth.device_id != owner.device_id {
             return Err("重试任务的登录用户或设备已改变。".into());
         }
-        validate_cloud_retry_package(auth, space_id, &account_id, &key)?;
+        validate_cloud_retry_package(auth, &space_id, &account_id, &key)?;
         validate_live_cloud_retry(&data, auth)?;
         let (user_id, remote_key) = verify_cloud_retry_remote(&data, auth).await?;
         if user_id != auth.user_id || remote_key != auth.idempotency_key {
@@ -3416,8 +3389,10 @@ async fn devify_upload_wechat(
         Ok(())
     })?;
     // Redirects stay disabled: a 3xx on the create/upload call must not silently
-    // resend a whole package elsewhere.
-    let client = devify_upload_client()?;
+    // resend a whole package elsewhere. The batch flow owns its own retry state
+    // machine (`create_started`, package digests), so these calls are not retried
+    // here — replaying one could duplicate a batch or an archive.
+    let client = http_client::upload();
     let upload_platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
     } else {
@@ -3716,7 +3691,7 @@ async fn devify_auth_callback(
         settings.devify.platform.clone()
     };
     let device_label = settings::resolved_device_label(&settings.devify);
-    let response = auth_http_client()?
+    let response = http_client::strict()
         .post(format!(
             "{}{}",
             pending.base_url,
@@ -3732,7 +3707,7 @@ async fn devify_auth_callback(
             "device_id": settings.devify.device_id.clone(),
             "platform": platform.clone(),
         }))
-        .send_traced(&app_data(&app), diagnostics::Module::Auth)
+        .send_traced_retrying(&app_data(&app), diagnostics::Module::Auth, RetryPolicy::WRITE)
         .await
         .map_err(|e| devify_network_message("换取服务端登录令牌失败", &e))?;
     if !response.status().is_success() {
@@ -3902,13 +3877,13 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
     if credentials.access != token || settings::load(&data)?.devify.resolved_base_url()? != settings.devify.resolved_base_url()? {
         return Err("登录状态已改变，请重新检查。".into());
     }
-    match devify_client()
+    match http_client::api()
         .get(format!(
             "{}/api/v1/spaces",
             settings.devify.resolved_base_url()?
         ))
         .bearer_auth(&token)
-        .send_traced(&data, diagnostics::Module::Auth)
+        .send_traced_retrying(&data, diagnostics::Module::Auth, RetryPolicy::READ)
         .await
     {
         Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
@@ -3919,7 +3894,7 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
             match devify_access_token_resolve(&data, &settings.devify.base_url, &mut cleared, true).await {
                 Ok(refreshed) => {
                     let refreshed_generation = request_generation(&data, &settings.devify.base_url, &refreshed)?;
-                    let response = devify_client().get(format!("{}/api/v1/spaces", settings.devify.resolved_base_url()?))
+                    let response = http_client::api().get(format!("{}/api/v1/spaces", settings.devify.resolved_base_url()?))
                         .bearer_auth(&refreshed).send().await;
                     if request_generation(&data, &settings.devify.base_url, &refreshed)? != refreshed_generation {
                         return Err("登录状态已改变，请重新检查。".into());
@@ -4023,7 +3998,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
         settings.devify.platform.clone()
     };
     let device_label = settings::resolved_device_label(&settings.devify);
-    let response = auth_http_client()?
+    let response = http_client::strict()
         .post(format!("{base}/api/v1/auth/desktop/devices"))
         .bearer_auth(&token)
         .json(&serde_json::json!({
@@ -4031,7 +4006,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
             "label": device_label.clone(),
             "platform": platform.clone(),
         }))
-        .send_traced(&data, diagnostics::Module::Auth)
+        .send_traced_retrying(&data, diagnostics::Module::Auth, RetryPolicy::WRITE)
         .await
         .map_err(|e| devify_network_message("登记设备失败", &e))?;
     if !response.status().is_success() {
@@ -4132,10 +4107,10 @@ async fn devify_login_password(
     let auth_generation = desktop_credentials::begin_auth_attempt()?;
     let settings = settings::load(&data)?;
     let base_url = settings.devify.resolved_base_url()?;
-    let response = auth_http_client()?
+    let response = http_client::strict()
         .post(format!("{base_url}/api/v1/auth/login"))
         .json(&serde_json::json!({ "username": username, "password": password }))
-        .send_traced(&data, diagnostics::Module::Auth)
+        .send_traced_retrying(&data, diagnostics::Module::Auth, RetryPolicy::WRITE)
         .await
         .map_err(|e| devify_network_message("连接服务端登录服务失败", &e))?;
     let status = response.status();
@@ -4471,13 +4446,13 @@ struct DailyIdentity {
     base: String,
     credentials: desktop_credentials::Credentials,
     generation: u64,
-    space_id: i64,
+    space_id: String,
     account_id: String,
     device_id: String,
     enabled: bool,
     time_local: String,
     topic_id: Option<i64>,
-    topic_space_id: Option<i64>,
+    topic_space_id: Option<String>,
 }
 
 impl DailyIdentity {
@@ -4485,7 +4460,7 @@ impl DailyIdentity {
         let (credentials, generation) = desktop_credentials::load_with_generation(&self.data, &self.base)?;
         if credentials != self.credentials || generation != self.generation
             || current.devify.resolved_base_url()? != self.base
-            || current.devify.active_space_id != Some(self.space_id)
+            || current.devify.active_space_id.as_deref() != Some(self.space_id.as_str())
             || current.devify.device_id != self.device_id
             || current.active_account_id != self.account_id
             || (current.automation.enabled && current.automation.daily_summary_enabled) != self.enabled
@@ -4502,11 +4477,11 @@ impl DailyIdentity {
 
 async fn daily_request(context: &DailyIdentity, method: reqwest::Method, path: String, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     context.validate()?;
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30)).build().map_err(|_| "无法创建日报请求。")?;
+    let client = http_client::strict();
+    let policy = RetryPolicy::for_method(&method);
     let mut request = client.request(method, format!("{}{path}", context.base)).bearer_auth(&context.credentials.access);
     if let Some(body) = body { request = request.json(&body); }
-    let response = request.send_traced(&context.data, diagnostics::Module::App).await;
+    let response = request.send_traced_retrying(&context.data, diagnostics::Module::App, policy).await;
     context.validate()?;
     let mut response = response.map_err(|_| "日报请求失败，请检查网络连接。")?;
     if !response.status().is_success() { return Err(format!("日报请求失败：HTTP {}。", response.status().as_u16())); }
@@ -4519,8 +4494,8 @@ async fn daily_request(context: &DailyIdentity, method: reqwest::Method, path: S
     Ok(payload.get("data").cloned().unwrap_or(payload))
 }
 
-fn daily_stale_topic_warning(value: &settings::AppSettings, space_id: i64) -> Option<&'static str> {
-    (value.automation.daily_topic_id.is_some() && value.automation.daily_topic_space_id != Some(space_id))
+fn daily_stale_topic_warning(value: &settings::AppSettings, space_id: &str) -> Option<&'static str> {
+    (value.automation.daily_topic_id.is_some() && value.automation.daily_topic_space_id.as_deref() != Some(space_id))
         .then_some("旧空间日报计划无法确认归属，请先在服务端检查并关闭。")
 }
 
@@ -4534,7 +4509,7 @@ fn daily_schedule_signature(value: &settings::AppSettings, token: &str) -> Strin
         "{}|{}|{}|{}|{}",
         value.automation.enabled && value.automation.daily_summary_enabled,
         value.automation.daily_time.trim(),
-        value.devify.active_space_id.unwrap_or(0),
+        value.devify.active_space_id.as_deref().unwrap_or_default(),
         local_timezone(),
         fingerprint,
     )
@@ -4573,9 +4548,9 @@ async fn sync_daily_schedule(
     if value.devify.resolved_base_url()? != base || credentials.access != token {
         return Err("日报计划的登录状态已改变，请重试。".into());
     }
-    let space_id = value.devify.active_space_id
+    let space_id = value.devify.active_space_id.clone()
         .ok_or("请先在「设置 / 账户」中登录并选择 空间。")?;
-    validate_devify_space(&value, space_id)?;
+    validate_devify_space(&value, &space_id)?;
     let enabled = value.automation.enabled && value.automation.daily_summary_enabled;
     let time_local = value.automation.daily_time.trim().to_string();
     if !settings::is_valid_time(&time_local) {
@@ -4586,13 +4561,13 @@ async fn sync_daily_schedule(
     let signature = daily_schedule_signature(&value, &credentials.access);
     let current_topic_id = value.automation.daily_topic_id;
     let context = DailyIdentity {
-        data: data.clone(), base, credentials, generation, space_id,
+        data: data.clone(), base, credentials, generation, space_id: space_id.clone(),
         account_id: value.active_account_id.clone(), device_id: value.devify.device_id.clone(),
         enabled, time_local: time_local.clone(), topic_id: value.automation.daily_topic_id,
-        topic_space_id: value.automation.daily_topic_space_id,
+        topic_space_id: value.automation.daily_topic_space_id.clone(),
     };
     context.validate()?;
-    if let Some(warning) = daily_stale_topic_warning(&value, space_id) {
+    if let Some(warning) = daily_stale_topic_warning(&value, &space_id) {
         settings::update(&data, |stored| {
             context.validate_settings(stored)?;
             stored.automation.last_schedule_error = Some(warning.to_string());
@@ -4727,7 +4702,7 @@ async fn daily_schedule_tick(app: &AppHandle) {
     let credentials = desktop_credentials::load(&app_data(app), &value.devify.base_url).ok();
     if let Some(credentials) = credentials {
         let signature = daily_schedule_signature(&value, &credentials.access);
-        if daily_stale_topic_warning(&value, value.devify.active_space_id.unwrap_or(0)).is_none()
+        if daily_stale_topic_warning(&value, value.devify.active_space_id.as_deref().unwrap_or_default()).is_none()
             && value.automation.last_schedule_signature.as_deref() == Some(signature.as_str())
             && schedule_attempt_is_recent(&value) {
             return;
@@ -4747,12 +4722,12 @@ async fn devify_daily_schedule_sync(
 /// run is due (interval elapsed, scheduled time reached, and the window allows it).
 fn continuation_sessions(value: &settings::AppSettings, account_id: &str) -> Vec<String> {
     let allowed = value.chat.allowed_usernames.get(account_id);
-    let mut names: Vec<_> = value.sync.continuation.get(account_id).into_iter().flat_map(|items| items.iter()).filter(|(name, scope)| (scope.manual == Some(true) || value.sync.enabled) && Some(scope.space_id) == value.devify.active_space_id && settings::same_service_url(&scope.base_url, &value.devify.base_url) && allowed.is_some_and(|list| list.contains(name))).map(|(name, _)| name.clone()).collect();
+    let mut names: Vec<_> = value.sync.continuation.get(account_id).into_iter().flat_map(|items| items.iter()).filter(|(name, scope)| (scope.manual == Some(true) || value.sync.enabled) && Some(scope.space_id.as_str()) == value.devify.active_space_id.as_deref() && settings::same_service_url(&scope.base_url, &value.devify.base_url) && allowed.is_some_and(|list| list.contains(name))).map(|(name, _)| name.clone()).collect();
     names.sort();
     names
 }
 
-fn initial_progress_matches(chunk: &settings::InitialChunk, space_id: i64, base_url: &str) -> bool {
+fn initial_progress_matches(chunk: &settings::InitialChunk, space_id: &str, base_url: &str) -> bool {
     chunk.space_id == space_id && settings::same_service_url(&chunk.base_url, base_url)
 }
 
@@ -4770,15 +4745,15 @@ async fn backup_tick(app: &AppHandle) {
     let has_manual_candidates = value.upload_queue.iter().any(|job| {
         job.manual_group.is_some() && job.owner.is_some()
             && job.account_id == value.active_account_id
-            && value.devify.active_space_id == Some(job.space_id)
+            && value.devify.active_space_id.as_deref() == Some(job.space_id.as_str())
             && matches!(job.status.as_str(), "queued" | "running")
             && job.batch_id.is_none() && job.create_started == Some(false)
     });
     if has_manual_candidates {
-        if let Some(space_id) = value.devify.active_space_id {
+        if let Some(space_id) = value.devify.active_space_id.clone() {
             if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok()
                 && network::allow_upload(value.backup.wifi_only) {
-                if let Ok((owner, token)) = verified_upload_identity(&data, &value.active_account_id, space_id).await {
+                if let Ok((owner, token)) = verified_upload_identity(&data, &value.active_account_id, &space_id).await {
                     if let Some(job_id) = next_manual_batch(&value, &owner) {
                         let upload = app.state::<UploadState>();
                         if let Ok(_guard) = begin_account_upload(&upload, &value.active_account_id) {
@@ -4892,7 +4867,7 @@ fn apply_completed_uploads(value: &mut settings::AppSettings) {
             if let Some(scope) = &job.scope {
                 let entries = value.sync.continuation.entry(job.account_id.clone()).or_default();
                 for username in &scope.usernames {
-                    entries.insert(username.clone(), settings::ContinuationScope { space_id: job.space_id, base_url: scope.base_url.clone(), manual: job.continuation_manual });
+                    entries.insert(username.clone(), settings::ContinuationScope { space_id: job.space_id.clone(), base_url: scope.base_url.clone(), manual: job.continuation_manual });
                 }
             }
             job.continue_sync = false;
@@ -4933,13 +4908,13 @@ fn upload_completion_digest(job: &settings::UploadJob) -> Option<String> {
     let scope = job.scope.as_ref()?;
     if job.status != "completed" || job.id.is_empty() || job.batch_id.filter(|id| *id > 0).is_none()
         || job.account_id != owner.account_id || job.space_id != owner.space_id
-        || owner.user_id <= 0 || owner.space_id <= 0 || owner.account_id.is_empty()
+        || owner.user_id <= 0 || owner.space_id.trim().is_empty() || owner.account_id.is_empty()
         || owner.device_id.is_empty() || owner.device_id.trim() != owner.device_id
         || !settings::same_service_url(&scope.base_url, &owner.base_url) {
         return None;
     }
     let bytes = serde_json::to_vec(&("verified-completion-v1", &job.id, job.batch_id, owner,
-        &job.account_id, job.space_id, scope, &job.covered, &job.status, &job.created_at, &job.updated_at)).ok()?;
+        &job.account_id, &job.space_id, scope, &job.covered, &job.status, &job.created_at, &job.updated_at)).ok()?;
     Some(hex::encode(sha2::Sha256::digest(bytes)))
 }
 
@@ -4977,14 +4952,14 @@ async fn reconcile_upload_jobs(app: &AppHandle) {
     let deadline = tokio::time::Instant::now() + RECONCILE_TOTAL_BUDGET;
     let data = app_data(app);
     let Ok(value) = settings::load(&data) else { return; };
-    let Some(space_id) = value.devify.active_space_id else { return; };
+    let Some(space_id) = value.devify.active_space_id.clone() else { return; };
     if !value.upload_queue.iter().any(|job| job.batch_id.is_some() && job.owner.is_some()
         && upload_job_needs_reconciliation(job)) {
         return;
     }
     // Refresh can require the identity write lock, so verify first, then take the read lease
     // and recheck the snapshot before making any batch requests or committing results.
-    let Ok(Ok((owner, token))) = tokio::time::timeout_at(deadline, verified_upload_identity(&data, &value.active_account_id, space_id)).await else { return; };
+    let Ok(Ok((owner, token))) = tokio::time::timeout_at(deadline, verified_upload_identity(&data, &value.active_account_id, &space_id)).await else { return; };
     let Ok(_identity_guard) = tokio::time::timeout_at(deadline, UPLOAD_IDENTITY_LOCK.read()).await else { return; };
     let Ok(current) = settings::load(&data) else { return; };
     if validate_owner_state(&current, &owner, &token).is_err()
@@ -5149,7 +5124,7 @@ fn sync_job(
     let now = chrono::Utc::now().to_rfc3339();
     Ok(settings::UploadJob {
         id: format!("sync-{}", hex::encode(nonce)),
-        space_id: owner.space_id,
+        space_id: owner.space_id.clone(),
         account_id: owner.account_id.clone(),
         batch_id: None,
         owner: Some(owner.clone()),
@@ -5245,7 +5220,7 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
     }
     let upload_state = app.state::<UploadState>();
     let _upload_guard = begin_account_upload(&upload_state, &account_id)?;
-    let Some(space_id) = value.devify.active_space_id else {
+    let Some(space_id) = value.devify.active_space_id.clone() else {
         return Err("请先在服务端配置中选择要同步到的空间。".into());
     };
     let mut whitelist = value
@@ -5264,7 +5239,7 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
         if whitelist.is_empty() { return Err("没有可继续的上传任务。".into()); }
     }
     let base_url = value.devify.base_url.clone();
-    let (sync_owner, sync_token) = verified_upload_identity(&data, &account_id, space_id).await?;
+    let (sync_owner, sync_token) = verified_upload_identity(&data, &account_id, &space_id).await?;
     {
         let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
         let deadline = tokio::time::Instant::now() + LEGACY_ADOPT_BUDGET;
@@ -5358,7 +5333,7 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
         }
         let cursor = value.sync.cursors.get(&account_id).and_then(|items| items.get(username)).copied();
         let progress = value.sync.initial_progress.get(&account_id).and_then(|items| items.get(username)).cloned();
-        if progress.as_ref().is_some_and(|p| !initial_progress_matches(p, space_id, &base_url)) {
+        if progress.as_ref().is_some_and(|p| !initial_progress_matches(p, &space_id, &base_url)) {
             failures.push(format!("{username}：首次历史上传属于其他空间，请切回原空间继续"));
             continue;
         }
@@ -5499,7 +5474,7 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
         if let Some(baseline) = initial_baseline {
             job.initial_chunks.insert(username.clone(), settings::InitialChunk {
                 since, until, baseline, position: selected_position, final_chunk: !planned.has_more,
-                space_id, base_url: sync_owner.base_url.clone(),
+                space_id: space_id.clone(), base_url: sync_owner.base_url.clone(),
             });
         }
         job.continue_sync = planned.has_more;
@@ -5534,7 +5509,7 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
             Err(error) => { failures.push(format!("{username}：{error}")); break; }
         };
         let result = devify_upload_wechat(
-            app.clone(), job_id.clone(), space_id, account_id.clone(), vec![username.clone()],
+            app.clone(), job_id.clone(), space_id.clone(), account_id.clone(), vec![username.clone()],
             since, until, Some(base_url.clone()), None, selection, trigger, None,
         ).await;
         let continuation_snapshot = serde_json::to_value(
@@ -5675,7 +5650,7 @@ fn app_settings_save(
         value.automation.last_daily_status = stored.automation.last_daily_status.clone();
         value.automation.last_daily_error = stored.automation.last_daily_error.clone();
         value.automation.daily_topic_id = stored.automation.daily_topic_id;
-        value.automation.daily_topic_space_id = stored.automation.daily_topic_space_id;
+        value.automation.daily_topic_space_id = stored.automation.daily_topic_space_id.clone();
         value.automation.last_schedule_sync_at = stored.automation.last_schedule_sync_at.clone();
         value.automation.last_schedule_signature = stored.automation.last_schedule_signature.clone();
         value.automation.last_schedule_error = stored.automation.last_schedule_error.clone();
@@ -7397,7 +7372,7 @@ async fn wechat_upload_state(
     let initial = settings::load(&data)?;
     if !initial.connectors.wechat_enabled { return Ok(Vec::new()); }
     let space_id = initial.devify.active_space_id.ok_or("请先选择 空间。")?;
-    let (owner, token) = tokio::time::timeout(Duration::from_secs(5), verified_upload_identity(&data, &account_id, space_id)).await
+    let (owner, token) = tokio::time::timeout(Duration::from_secs(5), verified_upload_identity(&data, &account_id, &space_id)).await
         .map_err(|_| "确认云端身份超时，请稍后重试。")??;
     let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     let deadline = tokio::time::Instant::now() + LEGACY_ADOPT_BUDGET;
@@ -7850,6 +7825,7 @@ pub fn run() {
             feedback::feedback_export,
             connector_detect,
             update_begin_install,
+            update_upload_accounts,
             update_cancel_install,
             devify_auth_start,
             devify_auth_open,
@@ -7981,19 +7957,19 @@ mod cloud_retry_tests {
             base_url: "https://example.test".into(), message_selection: BTreeMap::new(),
         };
         let job = settings::UploadJob {
-            id: "job".into(), space_id: 4, account_id: "account".into(),
+            id: "job".into(), space_id: "4".into(), account_id: "account".into(),
             batch_id: Some(8), status: "failed".into(), scope: Some(scope.clone()),
             ..Default::default()
         };
         let mut settings = settings::AppSettings::default();
         settings.active_account_id = "account".into();
-        settings.devify.active_space_id = Some(4);
+        settings.devify.active_space_id = Some("4".into());
         settings.devify.base_url = "https://example.test".into();
         settings.devify.device_id = "device".into();
         settings.chat.allowed_usernames.insert("account".into(), vec!["chat".into()]);
         let auth = CloudRetryAuth {
             token: "synthetic-token".into(), base_url: "https://example.test".into(),
-            job_id: "job".into(), space_id: 4, account_id: "account".into(),
+            job_id: "job".into(), space_id: "4".into(), account_id: "account".into(),
             batch_id: 8, device_id: "device".into(), user_id: 3,
             idempotency_key: "package-key".into(), scope,
         };
@@ -8001,7 +7977,7 @@ mod cloud_retry_tests {
     }
 
     fn remote_batch() -> serde_json::Value {
-        serde_json::json!({"id": 8, "space_id": 4, "uploaded_by_id": 3,
+        serde_json::json!({"id": 8, "space_id": "4", "uploaded_by_id": 3,
             "source_type": "wechat", "source_account_id": "account",
             "device_id": "device", "status": "failed", "idempotency_key": "package-key"})
     }
@@ -8012,7 +7988,7 @@ mod cloud_retry_tests {
         let user = serde_json::json!({"id": 3});
         assert_eq!(validate_cloud_retry_remote(&auth, &user, &remote_batch()).unwrap(), (3, "package-key".into()));
         for (field, wrong) in [
-            ("id", serde_json::json!(9)), ("space_id", serde_json::json!(5)),
+            ("id", serde_json::json!(9)), ("space_id", serde_json::json!("5")),
             ("uploaded_by_id", serde_json::json!(2)), ("source_type", serde_json::json!("other")),
             ("source_account_id", serde_json::json!("other")), ("device_id", serde_json::json!("other")),
             ("status", serde_json::json!("processing")), ("idempotency_key", serde_json::json!("")),
@@ -8035,7 +8011,7 @@ mod cloud_retry_tests {
         assert!(validate_cloud_retry_context(&settings, &job, &auth, "changed-token").is_err());
         let mut changed = settings.clone(); changed.active_account_id = "other".into();
         assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
-        let mut changed = settings.clone(); changed.devify.active_space_id = Some(5);
+        let mut changed = settings.clone(); changed.devify.active_space_id = Some("5".into());
         assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
         let mut changed = settings.clone(); changed.devify.base_url = "https://other.test".into();
         assert!(validate_cloud_retry_context(&changed, &job, &auth, "synthetic-token").is_err());
@@ -8068,10 +8044,10 @@ mod cloud_retry_tests {
     #[test]
     fn package_key_and_device_claim_are_not_guessed() {
         let (_, _, auth) = fixture();
-        assert!(validate_cloud_retry_package(&auth, 4, "account", "package-key").is_ok());
-        assert!(validate_cloud_retry_package(&auth, 4, "account", "changed-key").is_err());
-        assert!(validate_cloud_retry_package(&auth, 5, "account", "package-key").is_err());
-        assert!(validate_cloud_retry_package(&auth, 4, "other", "package-key").is_err());
+        assert!(validate_cloud_retry_package(&auth, "4", "account", "package-key").is_ok());
+        assert!(validate_cloud_retry_package(&auth, "4", "account", "changed-key").is_err());
+        assert!(validate_cloud_retry_package(&auth, "5", "account", "package-key").is_err());
+        assert!(validate_cloud_retry_package(&auth, "4", "other", "package-key").is_err());
         let token = format!("header.{}.signature", URL_SAFE_NO_PAD.encode(br#"{"device_id":"device"}"#));
         assert_eq!(cloud_retry_device_id("", &token).unwrap(), "device");
         assert_eq!(cloud_retry_device_id("device", &token).unwrap(), "device");
@@ -8120,14 +8096,14 @@ mod upload_list_tests {
     #[test]
     fn list_rejects_wrong_space_and_unsafe_service_address() {
         let mut settings = settings::AppSettings::default();
-        settings.devify.active_space_id = Some(4);
+        settings.devify.active_space_id = Some("4".into());
         settings.devify.base_url = "https://example.test/".into();
-        assert_eq!(upload_list_base_url(&settings, 4).unwrap(), "https://example.test");
-        assert!(upload_list_base_url(&settings, 3).is_err());
-        assert!(upload_list_base_url(&settings, 0).is_err());
+        assert_eq!(upload_list_base_url(&settings, "4").unwrap(), "https://example.test");
+        assert!(upload_list_base_url(&settings, "3").is_err());
+        assert!(upload_list_base_url(&settings, "").is_err());
         for base in ["https://user:password@example.test", "https://example.test/?token=secret", "file:///tmp/data", "https://example.test/#fragment"] {
             settings.devify.base_url = base.into();
-            assert!(upload_list_base_url(&settings, 4).is_err());
+            assert!(upload_list_base_url(&settings, "4").is_err());
         }
     }
 
@@ -8149,7 +8125,7 @@ mod upload_list_tests {
             String::from_utf8(request).unwrap()
         });
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let (status, body) = runtime.block_on(fetch_upload_list(tempfile::tempdir().unwrap().path(), &format!("http://{address}"), 42, 2, 30, "test-token")).unwrap();
+        let (status, body) = runtime.block_on(fetch_upload_list(tempfile::tempdir().unwrap().path(), &format!("http://{address}"), "42", 2, 30, "test-token")).unwrap();
         assert_eq!(status, reqwest::StatusCode::FOUND);
         assert!(body.is_empty());
         let request = server.join().unwrap().to_ascii_lowercase();
@@ -8170,14 +8146,14 @@ mod upload_list_tests {
             assert_eq!(body["source_type"], "wechat");
             assert_eq!(body["idempotency_key"], "key");
         }
-        let legacy: settings::ContinuationScope = serde_json::from_value(serde_json::json!({"space_id": 1, "base_url": "https://example.test"})).unwrap();
+        let legacy: settings::ContinuationScope = serde_json::from_value(serde_json::json!({"space_id": "1", "base_url": "https://example.test"})).unwrap();
         assert_eq!(legacy.manual, None);
         let legacy_job: settings::UploadJob = serde_json::from_value(serde_json::json!({"id": "old"})).unwrap();
         assert_eq!(legacy_job.continuation_manual, None);
         for source in [Some(true), Some(false), None] {
             let mut value = settings::AppSettings::default();
             value.upload_queue.push(settings::UploadJob {
-                account_id: "account".into(), space_id: 1, status: "completed".into(),
+                account_id: "account".into(), space_id: "1".into(), status: "completed".into(),
                 continue_sync: true, continuation_manual: source,
                 scope: Some(settings::UploadScope {
                     usernames: vec!["chat".into()], since: None, until: None,
@@ -8381,7 +8357,7 @@ mod key_flow_tests {
             let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
             db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,{timestamp},'{body}',1);")).unwrap();
         }
-        let result = prepare_upload(dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new()).unwrap();
+        let result = prepare_upload(dir.path(), "account", "7", "https://example.test", &["person".into()], None, None, &BTreeMap::new()).unwrap();
         assert_eq!(result.preview.message_count, 2);
         assert_ne!(result.messages[0]["message_key"], result.messages[1]["message_key"]);
     }
@@ -8415,7 +8391,7 @@ mod key_flow_tests {
         }
         let mut history = LegacyUploadKeys::new();
         history.insert("person".into(), ExistingUploadKeys { legacy: HashMap::from([(1, Some(200))]), stable: HashSet::new() });
-        let prepare = |since, until| prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], since, until, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history).unwrap();
+        let prepare = |since, until| prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", "7", "https://example.test", &["person".into()], since, until, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history).unwrap();
         let both = prepare(None, None);
         let one = prepare(Some(100), Some(150));
         assert_eq!(both.messages[0]["message_key"], "srv:101");
@@ -8437,7 +8413,7 @@ mod key_flow_tests {
         }
         let mut history = LegacyUploadKeys::new();
         history.insert("person".into(), ExistingUploadKeys { legacy: HashMap::from([(1, Some(100))]), stable: HashSet::new() });
-        let result = prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history);
+        let result = prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", "7", "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "text", &history);
         assert!(matches!(result, Err(error) if error.contains("旧消息与多个本地记录匹配")));
     }
 
@@ -8453,7 +8429,7 @@ mod key_flow_tests {
             let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
             db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT, local_type INTEGER); INSERT INTO {table} VALUES (1,{server_id},{timestamp},'<msg><img /></msg>',3);")).unwrap();
         }
-        let result = prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
+        let result = prepare_upload_with_voice(dir.path(), dir.path(), dir.path(), "account", "7", "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
         let image_keys: HashSet<_> = result.parts.iter().filter(|p| p["kind"] == "image").filter_map(|p| p["message_key"].as_str()).collect();
         assert_eq!(image_keys, HashSet::from(["srv:101", "srv:202"]));
     }
@@ -8475,7 +8451,7 @@ mod key_flow_tests {
         std::fs::create_dir_all(&image_dir).unwrap();
         let bytes = b"\xff\xd8\xfffixture";
         std::fs::write(image_dir.join(format!("1_{timestamp}_thumb.jpg")), bytes).unwrap();
-        let result = prepare_upload_with_voice(cache.path(), cache.path(), account.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
+        let result = prepare_upload_with_voice(cache.path(), cache.path(), account.path(), "account", "7", "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
         let part = result.parts.iter().find(|p| p["kind"] == "image").unwrap();
         let path = part["upload_item_path"].as_str().unwrap();
         assert!(result.media_files.iter().any(|(name, content)| name == path && content == bytes));
@@ -8502,7 +8478,7 @@ mod key_flow_tests {
         std::fs::create_dir_all(&image_dir).unwrap();
         let bytes = b"\xff\xd8\xfffixture";
         std::fs::write(image_dir.join("abc12345678901234567890123456789.dat"), bytes).unwrap();
-        let result = prepare_upload_with_voice(cache.path(), cache.path(), account.path(), "account", 7, "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
+        let result = prepare_upload_with_voice(cache.path(), cache.path(), account.path(), "account", "7", "https://example.test", &["person".into()], None, None, &BTreeMap::new(), &settings::VoiceUploadSettings::default(), "images", &LegacyUploadKeys::new()).unwrap();
         let first = result.parts.iter().find(|p| p["kind"] == "image" && p["message_key"] == "srv:101").unwrap();
         assert!(first["upload_item_path"].is_string());
         let second = result.parts.iter().find(|p| p["kind"] == "image" && p["message_key"] == "srv:202").unwrap();
@@ -8524,11 +8500,11 @@ mod key_flow_tests {
     fn manual_batches_resume_in_order_and_stop_on_failure() {
         let mut value = settings::AppSettings::default();
         value.active_account_id = "account".into();
-        value.devify.active_space_id = Some(7);
-        let owner = settings::UploadOwner { base_url: "https://example.invalid".into(), space_id: 7,
+        value.devify.active_space_id = Some("7".into());
+        let owner = settings::UploadOwner { base_url: "https://example.invalid".into(), space_id: "7".into(),
             account_id: "account".into(), user_id: 1, device_id: "device".into() };
         value.upload_queue = (0..3).map(|index| settings::UploadJob {
-            id: format!("batch-{index}"), account_id: "account".into(), space_id: 7,
+            id: format!("batch-{index}"), account_id: "account".into(), space_id: "7".into(),
             owner: Some(owner.clone()), create_started: Some(false),
             status: "queued".into(), manual_group: Some("group".into()), manual_index: index,
             manual_total: 3, ..Default::default()
@@ -8550,9 +8526,9 @@ mod key_flow_tests {
         value.upload_queue[1].status = "processing".into();
         value.upload_queue[1].batch_id = Some(1);
         assert!(super::next_manual_batch(&value, &owner).is_none());
-        value.upload_queue.push(settings::UploadJob { id: "old-stopped".into(), account_id: "account".into(), space_id: 7, status: "failed".into(), ..Default::default() });
+        value.upload_queue.push(settings::UploadJob { id: "old-stopped".into(), account_id: "account".into(), space_id: "7".into(), status: "failed".into(), ..Default::default() });
         assert!(super::next_manual_batch(&value, &owner).is_none());
-        value.devify.active_space_id = Some(8);
+        value.devify.active_space_id = Some("8".into());
         assert!(super::next_manual_batch(&value, &owner).is_none());
     }
 
@@ -8570,7 +8546,7 @@ mod key_flow_tests {
         let first = prepare_upload(
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &names,
             Some(100),
@@ -8592,7 +8568,7 @@ mod key_flow_tests {
         let one = prepare_upload(
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &names,
             Some(100),
@@ -8614,7 +8590,7 @@ mod key_flow_tests {
         assert!(prepare_upload(
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &names,
             Some(100),
@@ -8625,7 +8601,7 @@ mod key_flow_tests {
         let unchanged = prepare_upload(
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &names,
             Some(100),
@@ -8643,7 +8619,7 @@ mod key_flow_tests {
         let edited = prepare_upload(
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &names,
             Some(100),
@@ -8700,7 +8676,7 @@ mod key_flow_tests {
         let prepared = prepare_upload(
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &["person".to_string()],
             Some(0),
@@ -8758,7 +8734,7 @@ mod key_flow_tests {
             dir.path(),
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &["person".into()],
             None,
@@ -8805,7 +8781,7 @@ mod key_flow_tests {
         let prepared = prepare_upload(
             dir.path(),
             "account",
-            7,
+            "7",
             "https://example.test",
             &["person".into()],
             None,
@@ -8827,7 +8803,7 @@ mod key_flow_tests {
     fn upload_scope_uses_selected_accounts_own_allowlist() {
         let mut settings = settings::AppSettings::default();
         settings.active_account_id = "account-a".into();
-        settings.devify.active_space_id = Some(7);
+        settings.devify.active_space_id = Some("7".into());
         settings
             .chat
             .allowed_usernames
@@ -8836,15 +8812,15 @@ mod key_flow_tests {
             .chat
             .allowed_usernames
             .insert("account-b".into(), vec!["chat-b".into()]);
-        assert!(validate_upload_scope(&settings, "account-b", 7, &["chat-b".into()]).is_ok());
-        assert!(validate_upload_scope(&settings, "account-b", 7, &["chat-a".into()]).is_err());
-        assert!(validate_upload_scope(&settings, "", 7, &["chat-b".into()]).is_err());
-        assert!(validate_upload_scope(&settings, "account-b", 8, &["chat-b".into()]).is_err());
+        assert!(validate_upload_scope(&settings, "account-b", "7", &["chat-b".into()]).is_ok());
+        assert!(validate_upload_scope(&settings, "account-b", "7", &["chat-a".into()]).is_err());
+        assert!(validate_upload_scope(&settings, "", "7", &["chat-b".into()]).is_err());
+        assert!(validate_upload_scope(&settings, "account-b", "8", &["chat-b".into()]).is_err());
         settings
             .chat
             .allowed_usernames
             .insert("../other".into(), vec!["chat-b".into()]);
-        assert!(validate_upload_scope(&settings, "../other", 7, &["chat-b".into()]).is_err());
+        assert!(validate_upload_scope(&settings, "../other", "7", &["chat-b".into()]).is_err());
     }
 
     #[test]
@@ -9095,9 +9071,9 @@ mod key_flow_tests {
 mod space_tests {
     use super::{pick_personal_space, DevifySpace};
 
-    fn space(id: i64, name: &str, kind: &str) -> DevifySpace {
+    fn space(id: &str, name: &str, kind: &str) -> DevifySpace {
         DevifySpace {
-            id,
+            id: id.into(),
             name: name.into(),
             kind: kind.into(),
             status: "active".into(),
@@ -9110,18 +9086,18 @@ mod space_tests {
     #[test]
     fn personal_space_is_the_default_target() {
         let spaces = vec![
-            space(1, "团队空间", "team"),
-            space(2, "个人空间", "personal"),
+            space("1", "团队空间", "team"),
+            space("2", "个人空间", "personal"),
         ];
-        assert_eq!(pick_personal_space(&spaces), Some(2));
+        assert_eq!(pick_personal_space(&spaces), Some("2".into()));
     }
 
     #[test]
     fn falls_back_to_name_then_first_space() {
-        let named = vec![space(3, "团队", "team"), space(4, "我的个人空间", "shared")];
-        assert_eq!(pick_personal_space(&named), Some(4));
-        let unnamed = vec![space(7, "Alpha", "team"), space(8, "Beta", "team")];
-        assert_eq!(pick_personal_space(&unnamed), Some(7));
+        let named = vec![space("3", "团队", "team"), space("4", "我的个人空间", "shared")];
+        assert_eq!(pick_personal_space(&named), Some("4".into()));
+        let unnamed = vec![space("7", "Alpha", "team"), space("8", "Beta", "team")];
+        assert_eq!(pick_personal_space(&unnamed), Some("7".into()));
         assert_eq!(pick_personal_space(&[]), None);
     }
 }
@@ -9159,7 +9135,7 @@ mod upload_coverage_tests {
     }
 
     fn owner() -> settings::UploadOwner {
-        settings::UploadOwner { base_url: "https://example.test".into(), space_id: 1, account_id: "acct".into(), user_id: 7, device_id: "device".into() }
+        settings::UploadOwner { base_url: "https://example.test".into(), space_id: "1".into(), account_id: "acct".into(), user_id: 7, device_id: "device".into() }
     }
 
     fn job(status: &str, covered: SyncCursor, fallback_at: &str) -> UploadJob {
@@ -9168,7 +9144,7 @@ mod upload_coverage_tests {
         UploadJob {
             id: "job".into(),
             account_id: "acct".into(),
-            space_id: 1,
+            space_id: "1".into(),
             batch_id: Some(1),
             owner: Some(owner()),
             status: status.into(),
@@ -9216,7 +9192,7 @@ mod upload_coverage_tests {
     fn submitted_job_is_not_reported_as_completed() {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("processing", position, "2026-11-06T00:00:00Z")]);
-        value.devify.active_space_id = Some(1);
+        value.devify.active_space_id = Some("1".into());
         assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("processing"));
     }
 
@@ -9224,7 +9200,7 @@ mod upload_coverage_tests {
     fn older_processing_job_is_not_hidden_by_newer_completed_job() {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("completed", position, "2026-11-06T01:00:00Z"), job("processing", position, "2026-11-06T00:00:00Z")]);
-        value.devify.active_space_id = Some(1);
+        value.devify.active_space_id = Some("1".into());
         assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("processing"));
     }
 
@@ -9232,7 +9208,7 @@ mod upload_coverage_tests {
     fn older_failed_job_is_not_hidden_by_newer_completed_job() {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("completed", position, "2026-11-06T01:00:00Z"), job("failed", position, "2026-11-06T00:00:00Z")]);
-        value.devify.active_space_id = Some(1);
+        value.devify.active_space_id = Some("1".into());
         assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("history_failed"));
     }
 
@@ -9240,7 +9216,7 @@ mod upload_coverage_tests {
     fn newer_failed_job_remains_failure() {
         let position = SyncCursor { time: 100, local_id: 5, boundary_count: Some(1) };
         let mut value = with_jobs(vec![job("completed", position, "2026-11-06T00:00:00Z"), job("failed", position, "2026-11-06T01:00:00Z")]);
-        value.devify.active_space_id = Some(1);
+        value.devify.active_space_id = Some("1".into());
         assert_eq!(super::conversation_job_state(&value, &owner(), "one"), Some("failed"));
     }
 
@@ -9270,21 +9246,21 @@ mod upload_coverage_tests {
         assert!(value.sync.continuation.is_empty());
         value.upload_queue[0].status = "completed".into();
         super::apply_completed_uploads(&mut value);
-        assert_eq!(value.sync.continuation["acct"]["one"].space_id, 1);
+        assert_eq!(value.sync.continuation["acct"]["one"].space_id, "1");
         assert!(!value.upload_queue[0].continue_sync);
     }
 
     #[test]
     fn continuation_stays_with_original_space_and_allowed_chat() {
         let mut value = with_jobs(vec![]);
-        value.devify.active_space_id = Some(1);
+        value.devify.active_space_id = Some("1".into());
         value.devify.base_url = "https://example.test".into();
         value.chat.allowed_usernames.insert("acct".into(), vec!["one".into()]);
-        value.sync.continuation.entry("acct".into()).or_default().insert("one".into(), settings::ContinuationScope { space_id: 1, base_url: "https://example.test".into(), manual: Some(true) });
+        value.sync.continuation.entry("acct".into()).or_default().insert("one".into(), settings::ContinuationScope { space_id: "1".into(), base_url: "https://example.test".into(), manual: Some(true) });
         assert_eq!(super::continuation_sessions(&value, "acct"), vec!["one".to_string()]);
-        value.devify.active_space_id = Some(2);
+        value.devify.active_space_id = Some("2".into());
         assert!(super::continuation_sessions(&value, "acct").is_empty());
-        value.devify.active_space_id = Some(1);
+        value.devify.active_space_id = Some("1".into());
         value.chat.allowed_usernames.clear();
         assert!(super::continuation_sessions(&value, "acct").is_empty());
         value.chat.allowed_usernames.insert("acct".into(), vec!["one".into()]);
@@ -9329,7 +9305,7 @@ mod upload_coverage_tests {
         let baseline = SyncCursor { time: 300, local_id: 3, boundary_count: Some(1) };
         let first = SyncCursor { time: 100, local_id: 1, boundary_count: Some(1) };
         let mut item = job("processing", first, "2026-11-06T00:00:00Z");
-        item.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(10), until: Some(200), baseline, position: first, final_chunk: false, space_id: 1, base_url: "https://example.test".into() });
+        item.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(10), until: Some(200), baseline, position: first, final_chunk: false, space_id: "1".into(), base_url: "https://example.test".into() });
         let mut value = with_jobs(vec![item]);
         super::apply_completed_uploads(&mut value);
         assert!(value.sync.initial_progress.is_empty());
@@ -9342,7 +9318,7 @@ mod upload_coverage_tests {
         assert_eq!(value.sync.initial_progress["acct"]["one"].position.time, 100);
         assert!(value.sync.cursors.get("acct").is_none());
         let mut last = job("completed", first, "2026-11-06T00:01:00Z");
-        last.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(10), until: Some(200), baseline, position: first, final_chunk: true, space_id: 1, base_url: "https://example.test".into() });
+        last.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(10), until: Some(200), baseline, position: first, final_chunk: true, space_id: "1".into(), base_url: "https://example.test".into() });
         value.upload_queue.push(last);
         super::apply_completed_uploads(&mut value);
         assert!(!value.sync.initial_progress.contains_key("acct"));
@@ -9365,7 +9341,7 @@ mod upload_coverage_tests {
             let boundary_count = batch.messages.iter().filter(|item| item.time == last.time).count();
             let position = SyncCursor { time: last.time, local_id: last.local_id, boundary_count: Some(boundary_count) };
             let mut item = job("failed", position, "");
-            item.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(100), until: Some(1250), baseline, position, final_chunk: !batch.has_more, space_id: 1, base_url: "https://example.test".into() });
+            item.initial_chunks.insert("one".into(), settings::InitialChunk { since: Some(100), until: Some(1250), baseline, position, final_chunk: !batch.has_more, space_id: "1".into(), base_url: "https://example.test".into() });
             value.upload_queue.push(item);
             super::apply_completed_uploads(&mut value);
             assert!(value.sync.cursors.get("acct").is_none());
@@ -9380,10 +9356,10 @@ mod upload_coverage_tests {
 
     #[test]
     fn initial_progress_cannot_be_reused_for_another_space() {
-        let chunk = settings::InitialChunk { since: None, until: Some(100), baseline: SyncCursor::default(), position: SyncCursor::default(), final_chunk: false, space_id: 1, base_url: "https://example.test".into() };
-        assert!(super::initial_progress_matches(&chunk, 1, "https://example.test/"));
-        assert!(!super::initial_progress_matches(&chunk, 2, "https://example.test"));
-        assert!(!super::initial_progress_matches(&chunk, 1, "https://another.test"));
+        let chunk = settings::InitialChunk { since: None, until: Some(100), baseline: SyncCursor::default(), position: SyncCursor::default(), final_chunk: false, space_id: "1".into(), base_url: "https://example.test".into() };
+        assert!(super::initial_progress_matches(&chunk, "1", "https://example.test/"));
+        assert!(!super::initial_progress_matches(&chunk, "2", "https://example.test"));
+        assert!(!super::initial_progress_matches(&chunk, "1", "https://another.test"));
     }
 
     #[test]

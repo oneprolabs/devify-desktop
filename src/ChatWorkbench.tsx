@@ -14,7 +14,7 @@ import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 import { requestFeedback } from './desktopInvoke';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null };
-type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: number | null }; upload_queue?: Array<{ status?: string }> };
+type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: string | null }; upload_queue?: Array<{ status?: string }> };
 type SyncResult = { uploaded: number; message_count: number; batch_ids?: number[]; error?: string | null };
 type Scan = { accounts?: Array<{ id: string; modified_at?: number | null }> };
 type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
