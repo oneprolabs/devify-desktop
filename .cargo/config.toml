@@ -1,0 +1,7 @@
+# The Rust test suite is not parallel-safe. Several modules keep process-global state
+# (`settings::save` briefly takes the upload-identity write lock when the service, account or
+# space changes, and `tests` reuse fixed temp paths per case name), so running the harness with
+# its default thread count makes unrelated tests fail with
+# "上传期间无法切换账号、服务、空间或设备". One test thread is the supported mode.
+[env]
+RUST_TEST_THREADS = "1"

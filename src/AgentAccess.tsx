@@ -26,6 +26,7 @@ type AccessStatus = {
   running: boolean;
   base_url: string;
   token_required: boolean;
+  reason: string | null;
   wxq: WxqAsset | null;
   skills: SkillAsset[];
   targets: AccessTarget[];
@@ -156,7 +157,7 @@ export function AgentAccess() {
           <p className="help">
             复制一条提示词，粘贴到你正在使用的 Agent。它会从本机服务下载只读 CLI <code>wxq</code> 和三个
             <code>SKILL.md</code>，写入你指定的目录，并用 <code>wxq health</code> / <code>wxq policy</code> 验证连接。
-            服务只在本机运行，应用关闭后停止。
+            服务只在本机运行，登录且当前套餐包含本机 Agent 集成时才会启动，退出登录或应用关闭后停止。
           </p>
         </div>
         <span className={`mcp-state ${status?.running ? 'on' : 'off'}`}>
@@ -179,14 +180,13 @@ export function AgentAccess() {
         </div>
         <div>
           <dt>认证</dt>
-          <dd>{status?.token_required ? '需要 Bearer Token' : '仅本机访问'}</dd>
+          <dd>{status?.token_required ? 'Bearer Token · 自动生成，wxq 自动读取' : '仅本机访问'}</dd>
         </div>
       </dl>
 
       {status && !status.running && (
         <div className="config warn">
-          服务没有监听，提示词里的下载会失败。请确认 AIMyChats 仍在运行；如果端口被占用，可在启动前设置
-          <code>WECHAT_AGENT_BIND</code> 换一个地址。
+          {status.reason ?? '服务没有监听，提示词里的下载会失败。请确认 AIMyChats 仍在运行；如果端口被占用，可在启动前设置 WECHAT_AGENT_BIND 换一个地址。'}
         </div>
       )}
       {status && !status.wxq && (

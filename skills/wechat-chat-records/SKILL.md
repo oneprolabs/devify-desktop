@@ -13,7 +13,7 @@ description: 通过 wxq 命令行读取 WeChat Devify 白名单内的微信群�
 2. `wxq` 已通过 AIMyChats「Agent 集成 → 工具接入」页的一条提示词安装；本 Skill 也从同一服务的 `/agent/skills` 下载。若 `command -v wxq` 为空，停止并让用户重新复制该提示词，不要自行构建或改用其它方式读取数据库。
 3. 需要更新到最新时，重新运行同一提示词即可；已存在的 `SKILL.md` 会先备份。
 
-服务地址可用 `--endpoint` 或 `WECHAT_AGENT_ENDPOINT` 覆盖（旧名 `WECHAT_MCP_ENDPOINT` 仍兼容）；服务绑定非本机地址时，用 `--token` 或 `WECHAT_AGENT_TOKEN` 传 Bearer Token。
+服务地址可用 `--endpoint` 或 `WECHAT_AGENT_ENDPOINT` 覆盖（旧名 `WECHAT_MCP_ENDPOINT` 仍兼容）；服务始终要求 Bearer Token，`wxq` 默认读取桌面应用生成的 `<应用数据目录>/agent-token`，也可用 `--token` 或 `WECHAT_AGENT_TOKEN` 覆盖。
 
 ## 命令
 
