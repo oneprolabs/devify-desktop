@@ -18,6 +18,7 @@ import {
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
 import { exportNotSupported } from './toast';
+import { useInternalAccount } from './entitlements';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
 
 type DbFile = {
@@ -603,6 +604,8 @@ export default function WeChatLocal({
   /** Reports whether the page-level 整理/导出 actions may be shown at all. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
 } = {}) {
+  // 整理工作内容 runs the local summary agent, which is an internal-account feature.
+  const { internal: internalAccount } = useInternalAccount();
   const [env, setEnv] = useState<WechatEnv | null>(null);
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
@@ -3366,9 +3369,11 @@ const checkMark = (value: boolean | undefined) =>
                 已选 {selectedMessages.length} 条
               </button>
             )}
-            <button type="button" className="wxv-btn" onClick={openWorkPicker} disabled={!messages.length}>
-              整理工作内容
-            </button>
+            {internalAccount && (
+              <button type="button" className="wxv-btn" onClick={openWorkPicker} disabled={!messages.length}>
+                整理工作内容
+              </button>
+            )}
             <button type="button" className="wxv-btn" onClick={exportNotSupported}>
               导出
             </button>

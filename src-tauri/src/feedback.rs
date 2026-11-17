@@ -5,7 +5,6 @@ use base64::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
@@ -412,7 +411,7 @@ async fn authenticated(
     let (base, owner) = identity(root);
     let token = crate::devify_access_token_async(root, &base)
         .await
-        .map_err(|_| "请先登录当前服务端，或保存诊断包后交给支持人员。")?;
+        .map_err(|_| "请先登录当前服务端后再提交反馈。")?;
     let guard = crate::UPLOAD_IDENTITY_LOCK.read().await;
     let (live_base, live_owner) = identity(root);
     if live_base != base || live_owner != owner || owner.is_none() {
@@ -434,7 +433,7 @@ fn feedback_data(status: reqwest::StatusCode, body: &str) -> Result<serde_json::
     if !status.is_success() {
         return Err(match status.as_u16() {
             401 | 403 => "登录已失效或没有反馈权限，请重新登录。",
-            404 => "当前服务端尚未开放问题反馈，请更新客户端或保存诊断包。",
+            404 => "当前服务端尚未开放问题反馈，请更新客户端或联系管理员。",
             409 => "提交编号对应的内容已改变，请查看我的反馈或新建反馈。",
             413 => "截图或诊断内容过大，请缩小后新建反馈。",
             429 => "提交过于频繁，请稍后重试。",
@@ -546,42 +545,6 @@ pub async fn feedback_list(app: AppHandle, page: u32) -> Result<serde_json::Valu
         .await
         .map_err(|e| crate::devify_network_message("读取反馈失败", &e))?;
     response_data(response).await
-}
-
-#[tauri::command]
-pub fn feedback_export(app: AppHandle, draft: Draft) -> Result<String, String> {
-    use tauri::Manager;
-    validate(&draft)?;
-    let dir = app
-        .path()
-        .download_dir()
-        .map_err(|_| "无法找到下载目录。")?;
-    fs::create_dir_all(&dir).map_err(|_| "无法创建下载目录。")?;
-    let path = dir.join(format!("AIMyChats-feedback-{}.zip", new_id()?));
-    let file = tempfile::NamedTempFile::new_in(&dir).map_err(|_| "无法保存诊断包。")?;
-    let mut zip = zip::ZipWriter::new(file);
-    zip.start_file("feedback.json", zip::write::SimpleFileOptions::default())
-        .map_err(|_| "无法创建诊断包。")?;
-    zip.write_all(payload(&draft, true).to_string().as_bytes())
-        .map_err(|_| "无法写入诊断包。")?;
-    for (index, bytes) in image_bytes(&draft)?.into_iter().enumerate() {
-        let ext = if bytes.starts_with(b"\x89PNG") {
-            "png"
-        } else {
-            "jpg"
-        };
-        zip.start_file(
-            format!("screenshot-{}.{ext}", index + 1),
-            zip::write::SimpleFileOptions::default(),
-        )
-        .map_err(|_| "无法创建诊断包。")?;
-        zip.write_all(&bytes).map_err(|_| "无法写入诊断包。")?;
-    }
-    zip.finish()
-        .map_err(|_| "无法保存诊断包。")?
-        .persist_noclobber(&path)
-        .map_err(|_| "无法保存诊断包。")?;
-    Ok(path.to_string_lossy().to_string())
 }
 
 #[cfg(test)]

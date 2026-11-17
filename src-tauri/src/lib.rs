@@ -4234,6 +4234,16 @@ fn access_state(state: &State<McpState>) -> Result<McpStatus, String> {
         .map_err(|_| "读取本机服务状态失败。".to_string())
 }
 
+/// The agent access kit installs a read-only CLI into other agents; it is reserved for
+/// accounts on the internal plan. A missing entitlement snapshot means "no".
+fn require_internal_agent(data: &std::path::Path, base_url: &str) -> Result<(), String> {
+    if entitlements::is_internal(data, base_url) {
+        Ok(())
+    } else {
+        Err("「工具接入」仅对内部账号开放，请联系管理员。".to_string())
+    }
+}
+
 #[tauri::command]
 fn agent_access_status(
     app: AppHandle,
@@ -4241,9 +4251,9 @@ fn agent_access_status(
 ) -> Result<access::AccessStatus, String> {
     let service = access_state(&state)?;
     let data = app_data(&app);
-    let configured = settings::load(&data)
-        .map(|settings| settings.agent.provider_id)
-        .unwrap_or_default();
+    let settings = settings::load(&data)?;
+    require_internal_agent(&data, &settings.devify.base_url)?;
+    let configured = settings.agent.provider_id;
     Ok(access::status(
         &data,
         &configured,
@@ -4263,6 +4273,7 @@ fn agent_access_prompt(
 ) -> Result<access::PromptOut, String> {
     let data = app_data(&app);
     let settings = settings::load(&data)?;
+    require_internal_agent(&data, &settings.devify.base_url)?;
     entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_AGENT_CLI)?;
     let service = access_state(&state)?;
     let targets = access::targets();
@@ -4298,6 +4309,7 @@ fn agent_access_prompt(
 async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
     let data = app_data(&app);
     let settings = settings::load(&data)?;
+    require_internal_agent(&data, &settings.devify.base_url)?;
     entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_AGENT_CLI)?;
     let Some(dir) = access::source_dir() else {
         return Err("当前安装没有附带源码，无法在应用内构建 wxq。".into());
@@ -7845,7 +7857,6 @@ pub fn run() {
             feedback::diagnostic_record,
             feedback::feedback_submit,
             feedback::feedback_list,
-            feedback::feedback_export,
             connector_detect,
             update_begin_install,
             update_upload_accounts,

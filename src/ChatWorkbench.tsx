@@ -13,6 +13,7 @@ import { WhitelistSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
 import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 import { requestFeedback } from './desktopInvoke';
+import { useInternalAccount } from './entitlements';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null };
 type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: string | null; base_url?: string }; upload_queue?: Array<{ status?: string }> };
@@ -59,6 +60,12 @@ function StateDot({ done }: { done: boolean }) {
 
 export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent }: { startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
   const [view, setView] = useState<View>('raw');
+  // Local summaries are an internal-account feature: without the entitlement the summary tab
+  // and its 整理工作内容 entry point disappear, leaving only records and cloud events.
+  const { internal: internalAccount } = useInternalAccount();
+  useEffect(() => {
+    if (!internalAccount) setView(current => (current === 'summary' ? 'raw' : current));
+  }, [internalAccount]);
   const [addingSession, setAddingSession] = useState(false);
   const [sessionRevision, setSessionRevision] = useState(0);
   const [filter, setFilter] = useState<Filter>('all');
@@ -365,17 +372,17 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
           <div className="chat-workbench-tabs" role="tablist" aria-label="聊天视图">
             <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>原始记录</button>
             <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>事件 <small>{scopedEvents.length}</small></button>
-            <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
+            {internalAccount && <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
               聊天总结
               {summaryBusy
                 ? <i className="chat-workbench-tab-spinner" aria-label="正在生成"/>
                 : scopedSummaries.length > 0 && <small>{scopedSummaries.length}</small>}
-            </button>
+            </button>}
           </div>
           <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'} value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'}/>
           {chatState.active && <div className="chat-workbench-head-actions">
             {chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>已选 {chatState.selected} 条</button>}
-            {chatState.agentReady && <button type="button" disabled={!chatState.messages} onClick={openWorkPanel}>整理工作内容</button>}
+            {internalAccount && chatState.agentReady && <button type="button" disabled={!chatState.messages} onClick={openWorkPanel}>整理工作内容</button>}
             <button type="button" onClick={exportNotSupported}>导出</button>
           </div>}</div>
         </div>

@@ -61,6 +61,9 @@ pub struct Snapshot {
     /// Features granted after the snapshot goes stale beyond [`GRACE_SECONDS`].
     /// Empty means the local free baseline from [`capabilities::free_keys`].
     pub fallback_features: Vec<String>,
+    /// The account holds an active subscription to the operator's internal plan.
+    /// Gates features reserved for internal users, such as the agent access kit.
+    pub internal: bool,
     /// The service address the snapshot belongs to. Credentials and plans are per server.
     pub base_url: String,
     /// Unix seconds when this snapshot was fetched.
@@ -102,6 +105,8 @@ pub struct View {
     pub grace_expired: bool,
     /// Mirrors the cache so the UI can explain what survives an expired snapshot.
     pub fallback_features: Vec<String>,
+    /// Whether the account may use internal-only features.
+    pub internal: bool,
     /// The local free baseline, sent so the frontend never hard-codes the same list twice.
     pub free_keys: Vec<String>,
 }
@@ -116,6 +121,7 @@ struct Remote {
     usage: BTreeMap<String, i64>,
     enforced: bool,
     fallback_features: Vec<String>,
+    internal: bool,
     expires_at: Option<String>,
 }
 
@@ -132,6 +138,13 @@ fn save(app_data: &Path, snapshot: &Snapshot) -> Result<(), String> {
     fs::write(&temp, body).map_err(|error| format!("写入订阅权益失败：{error}"))?;
     fs::rename(&temp, &path).map_err(|error| format!("保存订阅权益失败：{error}"))?;
     Ok(())
+}
+
+/// Test-only writer: the cache layout is private to this module, so other modules' tests
+/// ask for a snapshot through here instead of rebuilding the file by hand.
+#[cfg(test)]
+pub(crate) fn write_snapshot(app_data: &Path, snapshot: &Snapshot) {
+    save(app_data, snapshot).unwrap();
 }
 
 /// The cached snapshot, but only when it belongs to the configured server.
@@ -164,6 +177,7 @@ pub fn view(app_data: &Path, base_url: &str) -> View {
             stale: snapshot.stale(now),
             grace_expired: snapshot.grace_expired(now),
             fallback_features: snapshot.fallback_features.clone(),
+            internal: snapshot.internal,
             free_keys: capabilities::free_keys()
                 .into_iter()
                 .map(str::to_string)
@@ -183,6 +197,7 @@ pub fn view(app_data: &Path, base_url: &str) -> View {
             stale: false,
             grace_expired: false,
             fallback_features: Vec::new(),
+            internal: false,
             free_keys: capabilities::free_keys()
                 .into_iter()
                 .map(str::to_string)
@@ -236,6 +251,12 @@ pub fn require(app_data: &Path, base_url: &str, key: &str) -> Result<(), String>
     }
 }
 
+/// Whether the account may use internal-only features. A missing snapshot means "no":
+/// the internal plan is the only way in, and it can only arrive from the server.
+pub fn is_internal(app_data: &Path, base_url: &str) -> bool {
+    effective(app_data, base_url).is_some_and(|snapshot| snapshot.internal)
+}
+
 /// Ask the server what this account may use. A server that has not shipped the endpoint yet
 /// is a normal state: it is cached as `unsupported` and keeps the app wide open.
 pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<View, String> {
@@ -283,6 +304,7 @@ pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<Vie
         usage: remote.usage,
         enforced: remote.enforced,
         fallback_features: remote.fallback_features,
+        internal: remote.internal,
         base_url: base_url.to_string(),
         fetched_at: now_seconds(),
         source: "server".into(),
@@ -369,6 +391,19 @@ mod tests {
         assert!(require(&dir, "https://devify.test", "cloud.records").is_ok());
         assert!(require(&dir, "https://devify.test", "cloud.ask").is_err());
         assert!(require(&dir, "https://devify.test", "local.wechat_read").is_err());
+    }
+
+    #[test]
+    fn internal_only_comes_from_the_server_snapshot() {
+        let dir = temp_dir("internal");
+        assert!(!is_internal(&dir, "https://devify.test"));
+
+        let mut value = snapshot(false, &[]);
+        value.internal = true;
+        save(&dir, &value).unwrap();
+
+        assert!(is_internal(&dir, "https://devify.test"));
+        assert!(!is_internal(&dir, "https://other.test"));
     }
 
     #[test]
