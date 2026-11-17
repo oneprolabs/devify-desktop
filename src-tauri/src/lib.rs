@@ -2751,6 +2751,7 @@ async fn devify_upload_selected(
         create_started: Some(false),
         create_key: None,
         package_digest: None,
+        package_client_version: None,
         verified_completion_digest: None,
         legacy_failure_confirmed: false,
         status: "running".into(),
@@ -3217,6 +3218,56 @@ fn upload_create_body(
     })
 }
 
+fn build_upload_archive<'a>(
+    manifest: &serde_json::Value,
+    records: [(&str, &[serde_json::Value]); 4],
+    files: impl Iterator<Item = &'a (String, Vec<u8>)>,
+) -> Result<Vec<u8>, String> {
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default();
+    for (name, entries) in records {
+        if name == "avatars.jsonl" && entries.is_empty() {
+            continue;
+        }
+        zip.start_file(name, options).map_err(|e| e.to_string())?;
+        for record in entries {
+            writeln!(zip, "{}", serde_json::to_string(record).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    for (name, bytes) in files {
+        zip.start_file(name.as_str(), options).map_err(|e| e.to_string())?;
+        zip.write_all(bytes).map_err(|e| e.to_string())?;
+    }
+    zip.start_file("manifest.json", options).map_err(|e| e.to_string())?;
+    zip.write_all(serde_json::to_string(manifest).map_err(|e| e.to_string())?.as_bytes())
+        .map_err(|e| e.to_string())?;
+    Ok(zip.finish().map_err(|e| e.to_string())?.into_inner())
+}
+
+fn select_upload_archive(
+    expected_digest: Option<&str>,
+    saved_version: Option<&str>,
+    mut build: impl FnMut(&str) -> Result<Vec<u8>, String>,
+) -> Result<(Vec<u8>, String, String), String> {
+    let current = env!("CARGO_PKG_VERSION");
+    // Older jobs stored only the digest. Try the affected release versions,
+    // and accept only a byte-for-byte match with the recorded digest.
+    let versions: &[&str] = match (expected_digest, saved_version) {
+        (None, _) => &[current],
+        (Some(_), Some(_)) => saved_version.as_slice(),
+        (Some(_), None) => &[current, "0.1.7", "0.1.6"],
+    };
+    for version in versions {
+        let body = build(version)?;
+        let digest = hex::encode(sha2::Sha256::digest(&body));
+        if expected_digest.is_none_or(|expected| digest == expected) {
+            return Ok((body, digest, (*version).to_string()));
+        }
+    }
+    Err("原始归档已变化，无法安全恢复。".into())
+}
+
 async fn devify_upload_wechat(
     app: AppHandle,
     job_id: String,
@@ -3242,8 +3293,9 @@ async fn devify_upload_wechat(
     let (owner, token) = verified_upload_identity(&data, &account_id, &space_id).await?;
     let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     let current_settings = settings::load(&data)?;
-    let scope = current_settings.upload_queue.iter().find(|job| job.id == job_id)
-        .and_then(|job| job.scope.clone()).ok_or("找不到原始上传范围。")?;
+    let job_snapshot = current_settings.upload_queue.iter().find(|job| job.id == job_id)
+        .ok_or("找不到原始上传任务。")?;
+    let scope = job_snapshot.scope.clone().ok_or("找不到原始上传范围。")?;
     if scope.usernames != usernames || scope.since != since || scope.until != until
         || scope.message_selection != message_selection {
         return Err("上传范围已改变，请重新创建采集任务。".into());
@@ -3309,54 +3361,38 @@ async fn devify_upload_wechat(
         voice_processed,
         ..
     } = prepared;
-    let manifest = serde_json::json!({
+    let mut manifest = serde_json::json!({
         "schema_version": "wechat.v1",
         "platform": "wechat",
         "source_namespace": account_id,
         "counts": { "conversations": conversations.len(), "messages": messages.len() },
         "scope": { "conversation_ids": usernames },
         "whitelist_snapshot": whitelist,
-        "client": { "name": "AIMyChats", "version": env!("CARGO_PKG_VERSION") },
+        "client": { "name": "AIMyChats" },
     });
-    let mut archive = Cursor::new(Vec::new());
-    {
-        let mut zip = ZipWriter::new(&mut archive);
-        let options = SimpleFileOptions::default();
-        for (name, records) in [
-            ("conversations.jsonl", conversations),
-            ("messages.jsonl", messages),
-            ("message_parts.jsonl", parts),
-            ("avatars.jsonl", avatars),
-        ] {
-            if name == "avatars.jsonl" && records.is_empty() {
-                continue;
-            }
-            zip.start_file(name, options).map_err(|e| e.to_string())?;
-            for record in records {
-                writeln!(
-                    zip,
-                    "{}",
-                    serde_json::to_string(&record).map_err(|e| e.to_string())?
-                )
-                .map_err(|e| e.to_string())?;
-            }
-        }
-        for (name, bytes) in avatar_files.iter().chain(media_files.iter()) {
-            zip.start_file(name.as_str(), options)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(bytes).map_err(|e| e.to_string())?;
-        }
-        zip.start_file("manifest.json", options)
-            .map_err(|e| e.to_string())?;
-        zip.write_all(
-            serde_json::to_string(&manifest)
-                .map_err(|e| e.to_string())?
-                .as_bytes(),
-        )
-        .map_err(|e| e.to_string())?;
-        zip.finish().map_err(|e| e.to_string())?;
-    }
-    let body = archive.into_inner();
+    let recovering = cloud_retry.is_some() || (job_snapshot.status == "failed" && job_snapshot.can_recover_create());
+    let expected_digest = if recovering {
+        Some(job_snapshot.package_digest.as_deref().ok_or("找不到原始归档摘要。")?)
+    } else {
+        None
+    };
+    let (body, digest, archive_version) = select_upload_archive(
+        expected_digest,
+        job_snapshot.package_client_version.as_deref(),
+        |version| {
+            manifest["client"]["version"] = serde_json::json!(version);
+            build_upload_archive(
+                &manifest,
+                [
+                    ("conversations.jsonl", conversations.as_slice()),
+                    ("messages.jsonl", messages.as_slice()),
+                    ("message_parts.jsonl", parts.as_slice()),
+                    ("avatars.jsonl", avatars.as_slice()),
+                ],
+                avatar_files.iter().chain(media_files.iter()),
+            )
+        },
+    )?;
     let settings = settings::load(&data)?;
     if expected_base_url.as_deref().is_some_and(|url| {
         !settings::same_service_url(url, &settings.devify.base_url)
@@ -3385,7 +3421,6 @@ async fn devify_upload_wechat(
         }
         validate_live_cloud_retry(&data, auth)?;
     }
-    let digest = hex::encode(sha2::Sha256::digest(&body));
     // Record the exact ZIP and the possibility of a sent request *before* POST. If the
     // response is lost, the unknown batch cannot be blindly created a second time.
     settings::update(&data, |current| {
@@ -3403,6 +3438,7 @@ async fn devify_upload_wechat(
         job.create_started = Some(true);
         job.create_key = Some(key.clone());
         job.package_digest = Some(digest.clone());
+        job.package_client_version = Some(archive_version.clone());
         Ok(())
     })?;
     // Only batch creation is safe to repeat: the server resolves an existing
@@ -5286,7 +5322,7 @@ async fn reconcile_owned_job(data: &Path, owner: &settings::UploadOwner, token: 
         // independently advance and are intentionally neither compared nor overwritten.
         let mut before = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
         let mut now = serde_json::to_value(live).map_err(|e| e.to_string())?;
-        for field in ["create_started", "create_key", "package_digest"] {
+        for field in ["create_started", "create_key", "package_digest", "package_client_version"] {
             before.as_object_mut().ok_or("任务格式无效。")?.remove(field);
             now.as_object_mut().ok_or("任务格式无效。")?.remove(field);
         }
@@ -5385,6 +5421,7 @@ fn sync_job(
         create_started: Some(false),
         create_key: None,
         package_digest: None,
+        package_client_version: None,
         verified_completion_digest: None,
         legacy_failure_confirmed: false,
         status: "running".into(),
@@ -9455,6 +9492,32 @@ mod upload_coverage_tests {
 
     fn owner() -> settings::UploadOwner {
         settings::UploadOwner { base_url: "https://example.test".into(), space_id: "1".into(), account_id: "acct".into(), user_id: 7, device_id: "device".into() }
+    }
+
+    #[test]
+    fn upload_recovery_reuses_an_archive_from_before_a_client_upgrade() {
+        use sha2::{Digest, Sha256};
+
+        let records = [serde_json::json!({"message": "synthetic test"})];
+        let build = |version: &str| {
+            super::build_upload_archive(
+                &serde_json::json!({"client": {"name": "AIMyChats", "version": version}}),
+                [
+                    ("conversations.jsonl", &[]),
+                    ("messages.jsonl", &records),
+                    ("message_parts.jsonl", &[]),
+                    ("avatars.jsonl", &[]),
+                ],
+                std::iter::empty(),
+            )
+        };
+        let before = build("0.1.7").unwrap();
+        let digest = hex::encode(Sha256::digest(&before));
+        let (after, _, version) = super::select_upload_archive(Some(&digest), None, build).unwrap();
+        assert_eq!(version, "0.1.7");
+        assert_eq!(after, before);
+        assert!(super::select_upload_archive(Some(&digest), Some("0.1.6"), build).is_err());
+        assert!(super::select_upload_archive(Some("different-digest"), None, build).is_err());
     }
 
     #[test]

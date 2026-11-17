@@ -299,6 +299,8 @@ pub struct UploadJob {
     pub create_key: Option<String>,
     /// Digest of the exact ZIP, when known; legacy jobs cannot prove an identical archive.
     pub package_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_client_version: Option<String>,
     /// Snapshot digest recorded only after the completed batch's remote owner is verified.
     /// This is a last-confirmed state, not proof that the server has not since deleted it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -436,6 +438,7 @@ impl Default for UploadJob {
             create_started: None,
             create_key: None,
             package_digest: None,
+            package_client_version: None,
             verified_completion_digest: None,
             legacy_failure_confirmed: false,
             status: "queued".into(),
