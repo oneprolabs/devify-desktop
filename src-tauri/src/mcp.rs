@@ -20,6 +20,7 @@ use tokio_stream::StreamExt;
 use crate::settings::{self, AppSettings};
 use crate::wechat::{decrypt, query};
 use crate::access;
+use crate::entitlements;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 pub const DEFAULT_BIND: &str = "127.0.0.1:18765";
@@ -530,9 +531,34 @@ fn agent_unavailable(message: &str) -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": message }))).into_response()
 }
 
+fn agent_forbidden() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": "「工具接入」仅对内部账号开放，请联系管理员。" })),
+    )
+        .into_response()
+}
+
+/// The access kit is reserved for accounts on the internal plan, so the loopback routes
+/// enforce the same rule as the Tauri commands instead of relying on the UI hiding them.
+///
+/// The entitlement snapshot belongs to the configured service, not to this loopback server,
+/// so the check reads the service address from the settings file — the same value the
+/// `agent_access_status` command uses. Comparing against `state.base_url` would compare
+/// `127.0.0.1:18765` with the service URL and always answer "no".
+fn internal_agent_allowed(state: &AppState) -> bool {
+    let Ok(settings) = crate::settings::load(&state.app_data) else {
+        return false;
+    };
+    entitlements::is_internal(&state.app_data, &settings.devify.base_url)
+}
+
 async fn agent_manifest(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
+    }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
     }
     let wxq = access::resolve_wxq(&state.app_data);
     let skills: Vec<Value> = access::SKILLS
@@ -569,6 +595,9 @@ async fn agent_wxq(State(state): State<AppState>, headers: HeaderMap) -> Respons
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
     }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
+    }
     let Some(path) = access::resolve_wxq(&state.app_data) else {
         return agent_unavailable("没有可下载的 wxq。请在 AIMyChats 源码目录构建后重启应用。");
     };
@@ -595,6 +624,9 @@ async fn agent_skills(State(state): State<AppState>, headers: HeaderMap) -> Resp
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
     }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
+    }
     let skills: Vec<Value> = access::SKILLS
         .iter()
         .map(|skill| {
@@ -615,6 +647,9 @@ async fn agent_skill(
 ) -> Response {
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
+    }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
     }
     let Some(skill) = access::SKILLS.iter().find(|skill| skill.name == name) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "未知的 Skill。" }))).into_response();
@@ -637,6 +672,9 @@ async fn agent_install_script(
 ) -> Response {
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
+    }
+    if !internal_agent_allowed(&state) {
+        return agent_forbidden();
     }
     let Some(bin_dir) = access::expand_path(args.bin.as_deref().unwrap_or("~/.local/bin")) else {
         return (
@@ -726,4 +764,71 @@ pub async fn run_from_env() -> Result<(), String> {
     let app_data = app_data_dir().map_err(|error| error.to_string())?;
     let bind = configured_bind();
     start(app_data, bind, configured_token(), None).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wcd-mcp-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn state(app_data: PathBuf) -> AppState {
+        AppState {
+            app_data,
+            token: None,
+            base_url: client_base_for_test(),
+            next_session: Arc::new(AtomicU64::new(1)),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn client_base_for_test() -> String {
+        access::client_base(DEFAULT_BIND)
+    }
+
+    fn service_dir(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        let mut settings = AppSettings::default();
+        settings.devify.base_url = "http://127.0.0.1:8010".into();
+        settings::save(&dir, &settings).unwrap();
+        dir
+    }
+
+    fn internal_snapshot(base_url: &str) -> entitlements::Snapshot {
+        entitlements::Snapshot {
+            internal: true,
+            base_url: base_url.into(),
+            fetched_at: chrono::Utc::now().timestamp(),
+            source: "server".into(),
+            ..entitlements::Snapshot::default()
+        }
+    }
+
+    /// The snapshot is keyed by the service the account is signed into, so the loopback
+    /// check must compare against that address instead of this server's own bind address.
+    #[test]
+    fn the_agent_gate_reads_the_service_url() {
+        let dir = service_dir("agent-gate-open");
+        entitlements::write_snapshot(&dir, &internal_snapshot("http://127.0.0.1:8010"));
+        assert_ne!(client_base_for_test(), "http://127.0.0.1:8010");
+        assert!(internal_agent_allowed(&state(dir)));
+    }
+
+    #[test]
+    fn the_agent_gate_stays_closed_without_an_internal_snapshot() {
+        let dir = service_dir("agent-gate-closed");
+        assert!(!internal_agent_allowed(&state(dir)));
+    }
+
+    #[test]
+    fn another_service_never_unlocks_the_agent_gate() {
+        let dir = service_dir("agent-gate-other-service");
+        entitlements::write_snapshot(&dir, &internal_snapshot("https://other.test"));
+        assert!(!internal_agent_allowed(&state(dir)));
+    }
 }

@@ -97,13 +97,6 @@ export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [
       await invoke<FeedbackDraft>('feedback_draft_get').then(setDraft).catch(() => {});
     } finally { setBusy(false); }
   };
-  const exportBundle = async () => {
-    if (!draft) return;
-    setBusy(true); setError('');
-    try { await save(draft); const path = await invoke<string>('feedback_export', { draft }); setNotice(`诊断包已保存到：${path}`); }
-    catch (value) { setError(String(value)); }
-    finally { setBusy(false); }
-  };
   const newDraft = async () => {
     setBusy(true); setError('');
     try { await queue.current.catch(() => {}); await invoke('feedback_draft_discard'); setDraft(await invoke<FeedbackDraft>('feedback_draft_get')); setNotice('已新建反馈。'); }
@@ -120,7 +113,7 @@ export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [
     {loading && <p role="status">正在读取反馈草稿…</p>}
     {!loading && !draft && tab === 'new' && <button type="button" onClick={() => void newDraft()}>重新加载</button>}
     {tab === 'new' && draft && <>
-      {(!draft.owner_id || !draft.receiver) && <p className="feedback-metadata">{!draft.receiver ? '尚未配置服务端地址，暂时只能保存诊断包。' : '登录后可在线提交，也可以先保存诊断包。'}</p>}
+      {(!draft.owner_id || !draft.receiver) && <p className="feedback-metadata">{!draft.receiver ? '尚未配置服务端地址，暂时无法提交反馈。' : '登录后可在线提交反馈。'}</p>}
       {draft.attempted && <p className="feedback-notice">上次提交结果尚未确认。重试将发送原反馈，避免重复建单。需要修改内容时请新建反馈。</p>}
       <form onSubmit={event => { event.preventDefault(); void submit(); }}>
         <div className="feedback-environment"><span className="feedback-environment-label">运行环境</span><span className="feedback-environment-value">{environment || '正在读取…'}</span></div>
@@ -134,7 +127,7 @@ export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [
         <div className="feedback-images">{draft.screenshots.map((image, index) => <figure key={index}><button type="button" disabled={disabled} onClick={() => setEditing(index)} aria-label={`编辑截图 ${index + 1}`}><img src={imageSource(image.data)} alt={`截图 ${index + 1}`}/></button><figcaption><button type="button" disabled={disabled} onClick={() => setEditing(index)}>编辑</button><button type="button" disabled={disabled} onClick={() => setDraft({ ...draft, screenshots: draft.screenshots.filter((_, i) => i !== index) })}>删除</button></figcaption></figure>)}</div>
         {editing !== null && draft.screenshots[editing] && <FeedbackScreenshot key={`${editing}-${draft.screenshots[editing].data.length}`} data={draft.screenshots[editing].data} onCancel={() => setEditing(null)} onSave={data => { setDraft({ ...draft, screenshots: draft.screenshots.map((item, index) => index === editing ? { data } : item) }); setEditing(null); }}/ >}
         <div className="feedback-diagnostics"><label className="feedback-checkbox"><input type="checkbox" checked={!!draft.diagnostics} disabled={disabled} onChange={event => void diagnostics(event.target.checked)}/><strong>附带诊断日志</strong></label><p>包含应用版本、系统平台、操作结果与耗时；不采集聊天内容、数据库、密钥或登录凭据。</p>{draft.diagnostics && <><div className="feedback-diagnostic-tools"><select aria-label="日志范围" value={hours} disabled={disabled} onChange={event => { const value = Number(event.target.value); setHours(value); void diagnostics(true, value); }}><option value={0}>最近 30 分钟</option><option value={24}>最近 24 小时</option></select><span>{draft.diagnostics.events.length} 条运行记录</span><button type="button" disabled={disabled} onClick={() => void diagnostics(true)}>刷新日志</button></div><details><summary>预览将提交的诊断内容</summary><pre>{JSON.stringify(draft.diagnostics, null, 2)}</pre></details></>}</div>
-        <footer className="feedback-actions"><small>草稿自动保存在本机</small>{draft.attempted && <button type="button" disabled={busy} onClick={() => void newDraft()}>新建反馈</button>}<button type="button" disabled={busy || adding || editing !== null} onClick={() => void exportBundle()}>保存诊断包</button><button type="submit" className="primary" disabled={busy || adding || editing !== null || !draft.description.trim() || !draft.owner_id || !draft.receiver}>{busy ? '正在处理…' : draft.attempted ? '重试提交' : '提交反馈'}</button></footer>
+        <footer className="feedback-actions"><small>草稿自动保存在本机</small>{draft.attempted && <button type="button" disabled={busy} onClick={() => void newDraft()}>新建反馈</button>}<button type="submit" className="primary" disabled={busy || adding || editing !== null || !draft.description.trim() || !draft.owner_id || !draft.receiver}>{busy ? '正在处理…' : draft.attempted ? '重试提交' : '提交反馈'}</button></footer>
       </form>
     </>}
     {tab === 'history' && <section className="feedback-history" aria-label="我的反馈">{busy ? <p role="status">正在读取反馈…</p> : <>{!history.length && !error && <p className="feedback-empty">还没有提交过反馈。</p>}{history.map(item => <article key={item.id}><header><strong>{feedbackCategories[item.category] || item.category}</strong><span className={`feedback-status ${item.status}`}>{feedbackStatuses[item.status] || item.status}</span></header><p>{item.description}</p><small>{new Date(item.created_at).toLocaleString()} · {feedbackCode(item.id)}</small>{item.reply && <blockquote><strong>处理回复{item.fix_version ? ` · 修复版本 ${item.fix_version}` : ''}</strong><p>{item.reply}</p></blockquote>}</article>)}{!error && <div className="feedback-actions"><button type="button" disabled={historyPage === 1} onClick={() => void loadHistory(historyPage - 1)}>上一页</button><span>第 {historyPage} 页</span><button type="button" disabled={!hasNext} onClick={() => void loadHistory(historyPage + 1)}>下一页</button><button type="button" onClick={() => void loadHistory(historyPage)}>刷新</button></div>}</>}</section>}

@@ -37,6 +37,8 @@ export type Entitlements = {
   grace_expired: boolean;
   fallback_features: string[];
   free_keys: string[];
+  /** The account holds an active subscription to the operator's internal plan. */
+  internal: boolean;
 };
 
 let cached: Entitlements | null = null;
@@ -163,6 +165,17 @@ export function useEntitlements(): { view: Entitlements | null; loading: boolean
   }, []);
 
   return { view, loading, refresh };
+}
+
+/**
+ * Internal-only surfaces — the agent access kit, local summaries and their 总结记录 — share
+ * one gate: the server's `internal` flag. A missing or unsupported snapshot means "no".
+ *
+ * Reads the cached snapshot only, so callers that mount often never add network traffic.
+ */
+export function useInternalAccount(): { internal: boolean; loading: boolean; view: Entitlements | null } {
+  const [view, loading] = useEntitlementsValue();
+  return { internal: view?.internal === true, loading, view };
 }
 
 /**
