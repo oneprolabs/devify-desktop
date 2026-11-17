@@ -529,7 +529,7 @@ pub fn transcribe_file(app_data: &Path, wav: &Path, timeout_secs: u64) -> Result
     Ok((text, spec.id.to_string(), model))
 }
 
-/// Read the SILK blobs for one conversation from the decrypted `media_0.db`.
+/// Read SILK blobs from the decrypted media shards.
 ///
 /// `VoiceInfo.svr_id` is an INTEGER on current builds but TEXT on some older ones, so the
 /// match is done in Rust after a full scan; the table is small (a few hundred rows).
@@ -537,26 +537,29 @@ pub fn read_voice_blobs(
     cache: &Path,
     server_ids: &[i64],
 ) -> Result<BTreeMap<i64, Vec<u8>>, String> {
-    let path = cache.join("message/media_0.db");
-    if !path.is_file() {
+    let directory = cache.join("message");
+    let mut paths: Vec<_> = fs::read_dir(&directory).ok().into_iter().flatten().flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name().and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("media_") && name.ends_with(".db")))
+        .collect();
+    paths.sort();
+    if paths.is_empty() {
         return Err(
             "没有找到解密后的 media_0.db。请先在「本地数据 → 密钥、解密与缓存」里重新解密。"
                 .into(),
         );
     }
-    let conn = rusqlite::Connection::open_with_flags(
-        &path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| format!("无法打开 media_0.db：{e}"))?;
-    let mut stmt = conn
-        .prepare("SELECT svr_id, voice_data FROM VoiceInfo")
-        .map_err(|e| format!("media_0.db 中没有 VoiceInfo 表：{e}"))?;
     let wanted: std::collections::HashSet<String> = server_ids
         .iter()
         .map(|id| id.to_string())
         .collect();
     let mut out = BTreeMap::new();
+    for path in paths {
+    let conn = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .map_err(|e| format!("无法读取语音数据库：{e}"))?;
+    let mut stmt = conn.prepare("SELECT svr_id, voice_data FROM VoiceInfo")
+        .map_err(|e| format!("无法读取语音数据：{e}"))?;
     let rows = stmt
         .query_map([], |row| {
             Ok((
@@ -579,6 +582,7 @@ pub fn read_voice_blobs(
                 out.insert(id, blob);
             }
         }
+    }
     }
     Ok(out)
 }
@@ -611,6 +615,21 @@ fn now_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_voice_from_all_media_shards() {
+        let temp = tempfile::tempdir().unwrap();
+        let message = temp.path().join("message");
+        fs::create_dir_all(&message).unwrap();
+        for (shard, id) in [(0, 10), (1, 20)] {
+            let db = rusqlite::Connection::open(message.join(format!("media_{shard}.db"))).unwrap();
+            db.execute("CREATE TABLE VoiceInfo (svr_id INTEGER, voice_data BLOB)", []).unwrap();
+            db.execute("INSERT INTO VoiceInfo VALUES (?1, ?2)", rusqlite::params![id, vec![id as u8]]).unwrap();
+        }
+        let found = read_voice_blobs(temp.path(), &[10, 20]).unwrap();
+        assert_eq!(found.get(&10), Some(&vec![10]));
+        assert_eq!(found.get(&20), Some(&vec![20]));
+    }
 
     #[test]
     fn wav_header_is_valid_and_sized() {

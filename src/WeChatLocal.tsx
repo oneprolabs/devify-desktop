@@ -1,5 +1,5 @@
 import { LoadingSkeleton } from './LoadingSkeleton';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
@@ -99,6 +99,7 @@ type MessageItem = {
 type MediaItem = {
   local_id: number;
   server_id: number;
+  server_id_exact: string;
   source_shard: string;
   time: number;
   kind: 'image' | 'video' | 'file' | 'voice' | 'emoji' | string;
@@ -359,6 +360,7 @@ function enqueuePreview(task: () => Promise<void>) {
 function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: MediaItem; onOpen: () => void }) {
   const [src, setSrc] = useState<string | null>(item.preview ? convertFileSrc(item.preview) : null);
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     if (src || failed) return;
     let cancelled = false;
@@ -384,8 +386,8 @@ function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: Medi
 
   if (!src) {
     return (
-      <span className="wxv-attach-chip">
-        图片 · {failed ? '本机只有缩略图或无法解码' : '正在解码…'}
+      <span className="wxv-image-placeholder" role="status">
+        {!failed && <i className="wxv-image-spinner" aria-hidden="true"/>}{failed ? '图片加载失败' : '正在加载图片…'}
       </span>
     );
   }
@@ -398,7 +400,8 @@ function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: Medi
       title={onlyThumb ? '本机只有缩略图（微信未下载原图）' : '查看原图'}
       data-open-image={item.local_id}
     >
-      <img src={src} alt="图片" loading="lazy" data-open-image={item.local_id} />
+      {!loaded && <span className="wxv-image-placeholder" role="status"><i className="wxv-image-spinner" aria-hidden="true"/>正在加载图片…</span>}
+      <img src={src} alt="图片" data-open-image={item.local_id} onLoad={() => setLoaded(true)} onError={() => { setSrc(null); setFailed(true); }} style={loaded ? undefined : { position: 'absolute', visibility: 'hidden' }} />
       {onlyThumb && <span className="wxv-attach-badge">仅缩略图</span>}
     </button>
   );
@@ -682,6 +685,9 @@ export default function WeChatLocal({
   const [mobilePane, setMobilePane] = useState<'list' | 'chat'>('list');
 
   const messageRef = useRef<HTMLDivElement | null>(null);
+  const activeRef = useRef<string | null>(null);
+  const scrollIntent = useRef<'bottom' | 'preserve'>('bottom');
+  const scrollSnapshot = useRef<{ top: number; height: number } | null>(null);
   const pendingHighlight = useRef<string>('');
   const pendingFocusMessage = useRef<string>('');
   const syncLock = useRef(false);
@@ -692,17 +698,25 @@ export default function WeChatLocal({
 
   /** Attachment manifest for the loaded message window, keyed by `local_id`. */
   const [mediaByMessage, setMediaByMessage] = useState<Record<string, MediaItem[]>>({});
-  const [voiceText, setVoiceText] = useState<Record<number, string>>({});
-  const [voiceError, setVoiceError] = useState<Record<number, string>>({});
-  const [voiceBusy, setVoiceBusy] = useState<Record<number, boolean>>({});
+  const [mediaScanComplete, setMediaScanComplete] = useState(false);
+  const [imageViewer, setImageViewer] = useState<{ src: string | null; error: string } | null>(null);
+  const imageViewerRequest = useRef(0);
+  const imageViewerOpener = useRef<HTMLElement | null>(null);
+  const [voiceText, setVoiceText] = useState<Record<string, string>>({});
+  const [voiceError, setVoiceError] = useState<Record<string, string>>({});
+  const [voiceBusy, setVoiceBusy] = useState<Record<string, boolean>>({});
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null);
+  const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
+  const voicePlayer = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => () => { voicePlayer.current?.pause(); }, [accountId, active?.username]);
 
   useEffect(() => {
     void invoke<{ chat?: { sync_interval_seconds?: number }; connectors?: { wechat_enabled?: boolean } }>('app_settings_get')
       // The chat view refreshes far more often than the backup job: the backup interval is
       // 30 minutes by default, which would make a live conversation look frozen. Keep the
-      // on-screen cadence between 10 and 120 seconds.
+      // on-screen cadence between 10 and 30 seconds.
       .then(value => {
-        setSyncIntervalSeconds(Math.min(120, Math.max(10, value.chat?.sync_interval_seconds ?? 30)));
+        setSyncIntervalSeconds(Math.min(30, Math.max(10, value.chat?.sync_interval_seconds ?? 30)));
         setWechatEnabled(value.connectors?.wechat_enabled ?? true);
       })
       .catch(() => undefined);
@@ -822,12 +836,19 @@ export default function WeChatLocal({
           username: active.username,
           limit: PAGE,
         });
-        const changed = latest.length !== messages.length
+        if (activeRef.current !== active.username) return;
+        const changed = latest.length !== Math.min(messages.length, PAGE)
           || latest[0]?.local_id !== messages[0]?.local_id
           || latest[0]?.time !== messages[0]?.time;
         if (changed) {
-          setMessages(latest);
-          setHasMore(latest.length >= PAGE);
+          const root = messageRef.current;
+          scrollIntent.current = root && root.scrollHeight - root.scrollTop - root.clientHeight > 80 ? 'preserve' : 'bottom';
+          if (root) scrollSnapshot.current = { top: root.scrollTop, height: root.scrollHeight };
+          setMessages(current => {
+            const keys = new Set(latest.map(message => `${message.source_shard}:${message.local_id}:${message.time}`));
+            return [...latest, ...current.filter(message => !keys.has(`${message.source_shard}:${message.local_id}:${message.time}`))];
+          });
+          setHasMore(current => current || latest.length >= PAGE);
         }
       }
       setLastSyncAt(new Date());
@@ -1364,6 +1385,10 @@ export default function WeChatLocal({
   const openSession = useCallback(
     async (session: SessionItem, keyword = '', focusMessageId?: string | number) => {
       if (!account) return;
+      activeRef.current = session.username;
+      scrollIntent.current = 'bottom';
+      setMediaScanComplete(false);
+      setMediaByMessage({});
       setActive(session);
       setMessages([]);
       setHasMore(false);
@@ -1397,6 +1422,7 @@ export default function WeChatLocal({
           if (!page.length) break;
           list = [...list, ...page];
         }
+        if (activeRef.current !== session.username) return;
         setMessages(list);
         setHasMore(list.length >= PAGE);
         pendingHighlight.current = keyword;
@@ -1433,9 +1459,10 @@ export default function WeChatLocal({
             (map[`${item.source_shard}:${item.local_id}:${item.time}`] ??= []).push(item);
           }
           setMediaByMessage(map);
+          setMediaScanComplete(true);
         })
         .catch(() => {
-          if (!cancelled) setMediaByMessage({});
+          if (!cancelled) { setMediaByMessage({}); setMediaScanComplete(true); }
         });
     }, 350);
     return () => {
@@ -1448,43 +1475,58 @@ export default function WeChatLocal({
 
   const transcribeVoice = async (item: MediaItem) => {
     if (!account || !active) return;
-    setVoiceBusy(current => ({ ...current, [item.server_id]: true }));
+    setVoiceBusy(current => ({ ...current, [item.server_id_exact]: true }));
     setVoiceError(current => {
       const next = { ...current };
-      delete next[item.server_id];
+      delete next[item.server_id_exact];
       return next;
     });
     try {
       const results = await invoke<VoiceResult[]>('wechat_voice_transcribe', {
         accountId: account.id,
         username: active.username,
-        items: [{ local_id: item.local_id, server_id: item.server_id }],
+        items: [{ local_id: item.local_id, server_id: item.server_id_exact }],
       });
       const result = results[0];
       if (result?.text) {
-        setVoiceText(current => ({ ...current, [item.server_id]: result.text as string }));
+        setVoiceText(current => ({ ...current, [item.server_id_exact]: result.text as string }));
       } else if (result?.error) {
-        setVoiceError(current => ({ ...current, [item.server_id]: result.error as string }));
+        setVoiceError(current => ({ ...current, [item.server_id_exact]: result.error as string }));
       }
     } catch (e) {
-      setVoiceError(current => ({ ...current, [item.server_id]: String(e) }));
+      setVoiceError(current => ({ ...current, [item.server_id_exact]: String(e) }));
     } finally {
-      setVoiceBusy(current => ({ ...current, [item.server_id]: false }));
+      setVoiceBusy(current => ({ ...current, [item.server_id_exact]: false }));
     }
   };
 
   const playVoice = async (item: MediaItem) => {
     if (!account || !active) return;
+    if (loadingVoice !== null) return;
+    if (playingVoice === item.server_id_exact) {
+      voicePlayer.current?.pause();
+      setPlayingVoice(null);
+      return;
+    }
     try {
+      voicePlayer.current?.pause();
+      setLoadingVoice(item.server_id_exact);
+      setVoiceError(current => { const next = { ...current }; delete next[item.server_id_exact]; return next; });
       const audio = await invoke<{ data_uri: string; duration_secs: number }>('wechat_voice_audio', {
         accountId: account.id,
         username: active.username,
-        serverId: item.server_id,
+        serverId: item.server_id_exact,
       });
       const player = new Audio(audio.data_uri);
-      void player.play();
+      voicePlayer.current = player;
+      player.onended = () => setPlayingVoice(null);
+      player.onerror = () => { setPlayingVoice(null); setVoiceError(current => ({ ...current, [item.server_id_exact]: '语音播放失败，请重试。' })); };
+      await player.play();
+      setPlayingVoice(item.server_id_exact);
     } catch (e) {
-      setError(String(e));
+      setVoiceError(current => ({ ...current, [item.server_id_exact]: String(e) }));
+    } finally {
+      setLoadingVoice(null);
     }
   };
 
@@ -1493,10 +1535,28 @@ export default function WeChatLocal({
     void invoke('wechat_media_reveal', { accountId: account.id, path: item.rel_path }).catch(e => setError(String(e)));
   };
 
+  const closeImage = useCallback(() => {
+    imageViewerRequest.current += 1;
+    setImageViewer(null);
+    imageViewerOpener.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!imageViewer) return;
+    const handleKey = (event: KeyboardEvent) => { if (event.key === 'Escape') closeImage(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [imageViewer, closeImage]);
+
   const openImage = (item: MediaItem) => {
     const paths = item.sources.length ? item.sources : item.rel_path ? [item.rel_path] : [];
     if (!account || !paths.length) return;
-    void invoke('wechat_media_open_image', { accountId: account.id, paths }).catch(e => setError(String(e)));
+    imageViewerOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const request = ++imageViewerRequest.current;
+    setImageViewer({ src: null, error: '' });
+    void invoke<string>('wechat_media_open_image', { accountId: account.id, paths })
+      .then(path => { if (imageViewerRequest.current === request) setImageViewer({ src: convertFileSrc(path), error: '' }); })
+      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: `无法查看图片：${String(reason)}` }); });
   };
 
   const loadOlder = async () => {
@@ -1512,6 +1572,10 @@ export default function WeChatLocal({
         beforeId: last.local_id,
         beforeShard: last.source_shard,
       });
+      if (activeRef.current !== active.username) return;
+      const root = messageRef.current;
+      scrollIntent.current = 'preserve';
+      if (root) scrollSnapshot.current = { top: root.scrollTop, height: root.scrollHeight };
       setMessages(current => [...current, ...older]);
       setHasMore(older.length >= PAGE);
     } catch (e) {
@@ -1522,7 +1586,7 @@ export default function WeChatLocal({
   };
 
   // Scroll to the newest message, or to the first keyword hit when a search result opened.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = messageRef.current;
     if (!root) return;
     const keyword = pendingHighlight.current;
@@ -1540,7 +1604,10 @@ export default function WeChatLocal({
         return;
       }
     }
-    root.scrollTop = root.scrollHeight;
+    if (scrollIntent.current === 'preserve' && scrollSnapshot.current) {
+      root.scrollTop = scrollSnapshot.current.top + root.scrollHeight - scrollSnapshot.current.height;
+    } else root.scrollTop = root.scrollHeight;
+    scrollSnapshot.current = null;
   }, [messages, loadSeq]);
 
   const runSearch = async () => {
@@ -3175,23 +3242,24 @@ const checkMark = (value: boolean | undefined) =>
                 {(onChatState || (active?.is_group && !message.is_self)) && (
                   <span className="wxv-sender">{message.is_self ? '我' : (message.sender_name || message.sender || '未知成员')}</span>
                 )}
-                <div className={`wxv-bubble ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
-                  {placeholder ? (
+                <div className={`wxv-bubble ${base === 3 ? 'image-only' : ''} ${base === 34 ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
+                  {base === 3 || base === 34 ? null : placeholder ? (
                     message.text
                   ) : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
                   )}
+                  {base === 3 && !mediaFor(message).length && <div className="wxv-attach image"><span className="wxv-image-placeholder" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true"/>}{mediaScanComplete ? '图片不可用' : '正在加载图片…'}</span></div>}
+                  {base === 34 && !mediaFor(message).length && <span className="wxv-attach-chip" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true" />}{mediaScanComplete ? '语音暂不可用' : '正在加载语音…'}</span>}
                   {mediaFor(message).map(item => {
                     if (item.kind === 'voice') {
-                      const text = voiceText[item.server_id];
-                      const failure = voiceError[item.server_id];
-                      const busyVoice = Boolean(voiceBusy[item.server_id]);
+                      const text = voiceText[item.server_id_exact];
+                      const failure = voiceError[item.server_id_exact];
+                      const busyVoice = Boolean(voiceBusy[item.server_id_exact]);
                       return (
-                        <div className="wxv-attach voice" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
-                          <button type="button" className="wxv-attach-play" onClick={() => void playVoice(item)} title="播放语音">
-                            ▶
+                        <div className="wxv-attach voice" key={`${item.local_id}-${item.server_id_exact}`} onClick={event => event.stopPropagation()}>
+                          <button type="button" className={`wxv-voice-bubble ${playingVoice === item.server_id_exact ? 'playing' : ''}`} onClick={() => void playVoice(item)} disabled={loadingVoice === item.server_id_exact} aria-label={loadingVoice === item.server_id_exact ? '正在加载语音' : playingVoice === item.server_id_exact ? '暂停语音' : '播放语音'}>
+                            {loadingVoice === item.server_id_exact ? <i className="wxv-image-spinner" aria-hidden="true" /> : <svg className="wxv-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M4 10v4l4 3V7l-4 3Z" fill="currentColor" stroke="none"/><path d="M11 8.5a5 5 0 0 1 0 7"/><path d="M14 5a10 10 0 0 1 0 14"/></svg>}<span>{item.duration ?? 0}″</span>
                           </button>
-                          <span className="wxv-attach-meta">{item.duration ?? 0}″</span>
                           <button
                             type="button"
                             className="wxv-attach-link"
@@ -3207,28 +3275,18 @@ const checkMark = (value: boolean | undefined) =>
                     }
                     if (item.kind === 'image') {
                       return (
-                        <div className="wxv-attach image" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
+                        <div className="wxv-attach image" key={`${item.local_id}-${item.server_id_exact}`} onClick={event => event.stopPropagation()}>
                           {item.sources.length ? (
                             <MediaThumb accountId={account?.id ?? ''} item={item} onOpen={() => openImage(item)} />
                           ) : (
                             <span className="wxv-attach-chip">图片 · 本地缺失</span>
-                          )}
-                          {item.sources.length > 0 && (
-                            <button type="button" className="wxv-attach-link" onClick={() => openImage(item)}>
-                              查看原图
-                            </button>
-                          )}
-                          {item.rel_path && (
-                            <button type="button" className="wxv-attach-link" onClick={() => revealMedia(item)}>
-                              在访达中显示
-                            </button>
                           )}
                         </div>
                       );
                     }
                     if (item.kind === 'video') {
                       return (
-                        <div className="wxv-attach video" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
+                        <div className="wxv-attach video" key={`${item.local_id}-${item.server_id_exact}`} onClick={event => event.stopPropagation()}>
                           {item.thumb ? (
                             <button type="button" className="wxv-attach-thumb" onClick={() => revealMedia(item)} title="在访达中显示">
                               <img src={item.thumb} alt="视频封面" loading="lazy" />
@@ -3247,7 +3305,7 @@ const checkMark = (value: boolean | undefined) =>
                     }
                     if (item.kind === 'file') {
                       return (
-                        <div className="wxv-attach file" key={`${item.local_id}-${item.server_id}`} onClick={event => event.stopPropagation()}>
+                        <div className="wxv-attach file" key={`${item.local_id}-${item.server_id_exact}`} onClick={event => event.stopPropagation()}>
                           <span className="wxv-attach-chip">
                             📄 {item.name ?? '文件'}
                             {item.size ? ` · ${formatSize(item.size)}` : ''}
@@ -3757,6 +3815,10 @@ const checkMark = (value: boolean | undefined) =>
         )}
       </section>
 
+      {imageViewer && createPortal(<div className="wxv-image-viewer" role="dialog" aria-modal="true" aria-label="查看图片" onClick={closeImage}>
+        <button type="button" className="wxv-image-viewer-close" aria-label="关闭图片" onClick={closeImage} autoFocus>×</button>
+        {imageViewer.error ? <p role="alert">{imageViewer.error}</p> : imageViewer.src ? <img src={imageViewer.src} alt="聊天图片原图" onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: '图片加载失败。' })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>正在加载原图…</p>}
+      </div>, document.body)}
       {/* The capture guide needs the full column width; the digest drawer would clip it. */}
       {workOpen && !forceUnlock && renderWorkSelector()}
     </div>

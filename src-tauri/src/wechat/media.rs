@@ -33,6 +33,7 @@ const MAX_THUMB_BYTES: u64 = 96 * 1024;
 pub struct MediaItem {
     pub local_id: i64,
     pub server_id: i64,
+    pub server_id_exact: String,
     pub source_shard: String,
     pub time: i64,
     pub kind: String,
@@ -222,6 +223,13 @@ pub fn make_preview(
     let mut chosen: Option<(Vec<u8>, String, u64)> = None;
     let mut last_error = String::from("没有可用的图片文件。");
     for path in paths {
+        if let Ok(metadata) = fs::metadata(path) {
+            let dir = app_data.join("image-cache").join(account);
+            for kind in ["jpg", "png"] {
+                let cached = dir.join(format!("preview_v2_{local_id}_{}.{kind}", metadata.len()));
+                if cached.is_file() { return Ok(cached); }
+            }
+        }
         let Ok(bytes) = fs::read(path) else { continue };
         if keys.is_none() {
             keys = image_key::resolve(account_dir, &bytes);
@@ -597,6 +605,7 @@ pub fn resolve(
                 MediaItem {
                     local_id: message.local_id,
                     server_id: message.server_id,
+                    server_id_exact: message.server_id.to_string(),
                     source_shard: message.source_shard.clone(),
                     time: message.time,
                     kind: "image".to_string(),
@@ -648,6 +657,7 @@ pub fn resolve(
                 MediaItem {
                     local_id: message.local_id,
                     server_id: message.server_id,
+                    server_id_exact: message.server_id.to_string(),
                     source_shard: message.source_shard.clone(),
                     time: message.time,
                     kind: "video".to_string(),
@@ -682,6 +692,7 @@ pub fn resolve(
                     MediaItem {
                         local_id: message.local_id,
                         server_id: message.server_id,
+                        server_id_exact: message.server_id.to_string(),
                         source_shard: message.source_shard.clone(),
                         time: message.time,
                         kind: "file".to_string(),
@@ -711,6 +722,7 @@ pub fn resolve(
                 MediaItem {
                     local_id: message.local_id,
                     server_id: message.server_id,
+                    server_id_exact: message.server_id.to_string(),
                     source_shard: message.source_shard.clone(),
                     time: message.time,
                     kind: "voice".to_string(),
@@ -773,7 +785,7 @@ pub fn reveal(account_dir: &Path, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Decode the best available image source and open the plaintext copy in the system viewer.
+/// Decode the best available image source into the private image cache.
 pub fn open_image(
     app_data: &Path,
     account: &str,
@@ -793,6 +805,11 @@ pub fn open_image(
             return Err("拒绝打开账号目录之外的文件。".into());
         }
         let Ok(raw) = fs::read(&source) else { continue };
+        if raw.starts_with(b"\xff\xd8\xff") || raw.starts_with(b"\x89PNG\r\n\x1a\n") {
+            let kind = if raw.starts_with(b"\xff\xd8\xff") { "jpg" } else { "png" };
+            decoded = Some((raw, kind.to_string(), source));
+            break;
+        }
         if keys.is_none() {
             keys = image_key::resolve(account_dir, &raw);
         }
@@ -824,29 +841,6 @@ pub fn open_image(
     let out = dir.join(format!("{stem}.{kind}"));
     write_private(&out, &bytes)?;
 
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = std::process::Command::new("open");
-        command.arg(&out);
-        command
-    };
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("rundll32.exe");
-        command.arg("url.dll,FileProtocolHandler").arg(&out);
-        command
-    };
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let mut command = {
-        let mut command = std::process::Command::new("xdg-open");
-        command.arg(&out);
-        command
-    };
-    command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("无法打开图片：{e}"))?;
     Ok(out)
 }
 
@@ -1133,6 +1127,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_viewer_uses_private_cache_and_rejects_outside_files() {
+        let root = std::env::temp_dir().join(format!("wc-image-viewer-test-{}", std::process::id()));
+        let account = root.join("account");
+        let cache = root.join("cache");
+        fs::create_dir_all(&account).unwrap();
+        let source = account.join("image.jpg");
+        fs::write(&source, b"\xff\xd8\xfftest").unwrap();
+        let result = open_image(&cache, "test", &account, &[source]).unwrap();
+        assert_eq!(fs::read(&result).unwrap(), b"\xff\xd8\xfftest");
+        let outside = root.join("outside.jpg");
+        fs::write(&outside, b"\xff\xd8\xfftest").unwrap();
+        assert!(open_image(&cache, "test", &account, &[outside]).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn attributes_are_read_without_an_xml_parser() {
         let xml = r#"<msg><img aeskey="aa" length="219493" md5="bb" /><imgdatahash /></msg>"#;
         assert_eq!(attr(xml, "aeskey").as_deref(), Some("aa"));
@@ -1217,7 +1227,7 @@ mod tests {
             RawMessage {
                 source_shard: String::new(),
                 local_id: 42,
-                server_id: 14,
+                server_id: 9_007_199_254_740_993,
                 time,
                 kind: 34,
                 content: r#"<msg><voicemsg voicelength="2300" /></msg>"#.into(),
@@ -1257,5 +1267,6 @@ mod tests {
 
         let voice = &report.items[3];
         assert_eq!(voice.duration, Some(2));
+        assert_eq!(serde_json::to_value(voice).unwrap()["server_id_exact"], "9007199254740993");
     }
 }

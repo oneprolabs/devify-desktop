@@ -25,6 +25,7 @@ import { LoginGate } from './LoginGate';
 import { Feedback, FeedbackSettings } from './Feedback';
 import { requestFeedback } from './desktopInvoke';
 import { registerDevifyDevice } from './devifyDevice';
+import { clearTaskSnapshot } from './taskSnapshot';
 import { refreshEntitlements } from './entitlements';
 import { shouldApplyAuthExpired } from './authEvents';
 import './prototype-shell.css';
@@ -135,7 +136,7 @@ export default function PrototypeShell() {
     if (authState === 'authed') void invoke<{ display_name?: string; username?: string }>('devify_current_user').then(user => { if (active) setCurrentUser(user.display_name || user.username || ''); }).catch(() => { if (active) setCurrentUser(''); });
     return () => { active = false; };
   }, [authState]);
-  const handleAuthenticated = useCallback(() => { authEpoch.current += 1; setAuthState('authed'); setConnectionState('connected'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
+  const handleAuthenticated = useCallback(() => { clearTaskSnapshot(); authEpoch.current += 1; setAuthState('authed'); setConnectionState('connected'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
   /**
    * The backend caps every Devify request with a timeout, so this resolves even when the
    * server is unreachable. `unavailable` is a separate state from "logged out": it must not
@@ -179,12 +180,14 @@ export default function PrototypeShell() {
         () => active && authEpoch.current === eventEpoch,
       ).then(apply => {
         if (!apply || !active || authEpoch.current !== eventEpoch) return;
+        clearTaskSnapshot();
         authEpoch.current += 1;
         setAuthNotice(event.payload?.message ?? '登录状态已失效，请重新登录。');
         setAuthState('anonymous');
       });
     }).then(unlisten => { if (active) cleanExpired = unlisten; else unlisten(); }).catch(() => {});
     const onAuthChanged = (event: Event) => {
+      clearTaskSnapshot();
       const detail = (event as CustomEvent<{ authenticated?: boolean }>).detail;
       authEpoch.current += 1;
       setAuthNotice('');
@@ -324,7 +327,7 @@ export default function PrototypeShell() {
             <div className="first-backup-actions"><button className="chat-landing-primary" onClick={() => { setStartFirstBackup(true); setFirstBackupStep('none'); setChatReady(true); }}>立即开始首次备份 <span aria-hidden="true">→</span></button><button className="first-backup-later" onClick={() => { setFirstBackupStep('none'); setChatReady(true); }}>稍后自动备份</button></div>
           </section><p className="first-backup-note">备份进度可以在「任务」中查看，首次备份时间取决于记录数量和网络情况。</p>
         </div></div>}
-        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
+        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
       </>}
       {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
       {section === 'settings' && <div className="prototype-settings-layout">
