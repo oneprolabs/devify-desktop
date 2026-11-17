@@ -3770,6 +3770,10 @@ async fn devify_auth_callback(
         .is_some_and(|(stored, generation)| stored == &credentials && *generation == completed_generation.unwrap_or(committed_generation)) {
         return Err("服务端登录状态已改变，请重新登录。".into());
     }
+    let service = app.clone();
+    tauri::async_runtime::spawn(async move {
+        refresh_entitlements_then_reconcile(&service).await;
+    });
     Ok(DevifyAuthResult {
         device_id,
         expires_in: data
@@ -3856,7 +3860,9 @@ async fn entitlements_refresh(app: AppHandle) -> Result<entitlements::View, Stri
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     let token = devify_access_token_async(&data, &settings.devify.base_url).await?;
-    entitlements::refresh(&data, &settings.devify.base_url, &token).await
+    let view = entitlements::refresh(&data, &settings.devify.base_url, &token).await?;
+    reconcile_local_service(&app).await;
+    Ok(view)
 }
 
 #[tauri::command]
@@ -4176,6 +4182,10 @@ async fn devify_login_password(
         .is_some_and(|(stored, generation)| stored == &credentials && *generation == completed_generation.unwrap_or(device_generation)) {
         return Err("服务端登录状态已改变，请重新登录。".into());
     }
+    let service = app.clone();
+    tauri::async_runtime::spawn(async move {
+        refresh_entitlements_then_reconcile(&service).await;
+    });
     Ok(DevifyAuthResult {
         device_id: device.map(|value| value.device_id).unwrap_or_default(),
         expires_in: 3600,
@@ -4184,7 +4194,12 @@ async fn devify_login_password(
 
 #[tauri::command]
 fn devify_logout(app: AppHandle) -> Result<(), String> {
-    desktop_credentials::clear(&app_data(&app))
+    desktop_credentials::clear(&app_data(&app))?;
+    // Signing out must close the loopback port immediately, not on the next tick.
+    tauri::async_runtime::spawn(async move {
+        reconcile_local_service(&app).await;
+    });
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -4194,25 +4209,37 @@ struct McpStatus {
     endpoint: String,
     local_only: bool,
     error: Option<String>,
+    /// Set when the listener is intentionally down (not signed in, no bridge capability,
+    /// connector off). Kept apart from `error` so the UI can explain instead of alarm.
+    reason: Option<String>,
+}
+
+struct RunningService {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    handle: tauri::async_runtime::JoinHandle<()>,
 }
 
 #[derive(Clone)]
 struct McpState {
     status: Arc<Mutex<McpStatus>>,
+    token: Option<String>,
+    task: Arc<tokio::sync::Mutex<Option<RunningService>>>,
 }
 
-impl Default for McpState {
-    fn default() -> Self {
-        let bind = mcp::configured_bind();
-        let local_only = !mcp::requires_token_for_ui(&bind);
+impl McpState {
+    fn new(bind: &str, token: Option<String>) -> Self {
+        let local_only = !mcp::requires_token_for_ui(bind);
         Self {
             status: Arc::new(Mutex::new(McpStatus {
                 running: false,
                 endpoint: format!("http://{bind}/sse"),
-                address: bind,
+                address: bind.to_string(),
                 local_only,
                 error: None,
+                reason: None,
             })),
+            token,
+            task: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
@@ -4234,14 +4261,112 @@ fn access_state(state: &State<McpState>) -> Result<McpStatus, String> {
         .map_err(|_| "读取本机服务状态失败。".to_string())
 }
 
-/// The agent access kit installs a read-only CLI into other agents; it is reserved for
-/// accounts on the internal plan. A missing entitlement snapshot means "no".
-fn require_internal_agent(data: &std::path::Path, base_url: &str) -> Result<(), String> {
-    if entitlements::is_internal(data, base_url) {
-        Ok(())
-    } else {
-        Err("「工具接入」仅对内部账号开放，请联系管理员。".to_string())
+/// Why the listener is down when it is not an error.
+fn local_service_idle_reason(data: &Path) -> String {
+    let Ok(settings) = settings::load(data) else {
+        return "无法读取本机设置，本机 Agent 服务不会启动。".to_string();
+    };
+    if !settings.connectors.wechat_enabled {
+        return "微信连接已断开，本机 Agent 服务不会启动。".to_string();
     }
+    let Ok(base_url) = settings.devify.resolved_base_url() else {
+        return "服务端地址无效，本机 Agent 服务不会启动。".to_string();
+    };
+    if desktop_credentials::load(data, &base_url).is_err() {
+        return "未登录，本机 Agent 服务不会启动。".to_string();
+    }
+    "当前套餐未包含本地 Agent 集成，本机服务不会启动。".to_string()
+}
+
+/// Start or stop the loopback listener so it exists only while the account is signed in and
+/// its plan carries a bridge capability. Called after login, logout, entitlement refresh,
+/// settings changes and on the periodic tick, so the port tracks state instead of the app's
+/// lifetime.
+async fn reconcile_local_service(app: &AppHandle) {
+    let state = app.state::<McpState>();
+    let data = app_data(app);
+    let allowed = mcp::bridge_listen_allowed(&data);
+    let mut slot = state.task.lock().await;
+
+    if allowed {
+        if slot.is_some() {
+            if let Ok(mut status) = state.status.lock() {
+                status.reason = None;
+            }
+            return;
+        }
+        let Some(token) = state.token.clone() else {
+            if let Ok(mut status) = state.status.lock() {
+                status.running = false;
+                status.reason = Some("无法创建本机访问 Token，本机服务不会启动。".to_string());
+            }
+            return;
+        };
+        let bind = mcp::configured_bind();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let status = state.status.clone();
+        let start_data = data.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let result = mcp::start(start_data, bind, Some(token), Some(ready_tx), Some(shutdown_rx)).await;
+            if let Err(error) = result {
+                if let Ok(mut status) = status.lock() {
+                    status.running = false;
+                    status.error = Some(error);
+                }
+            }
+        });
+        match tokio::time::timeout(Duration::from_secs(5), ready_rx).await {
+            Ok(Ok(Ok(()))) => {
+                *slot = Some(RunningService { shutdown: shutdown_tx, handle });
+                if let Ok(mut status) = state.status.lock() {
+                    status.running = true;
+                    status.error = None;
+                    status.reason = None;
+                }
+            }
+            Ok(Ok(Err(_))) => {
+                // `start` already reported the bind error through the ready channel and the
+                // spawned task; nothing else to record here.
+            }
+            Ok(Err(_)) | Err(_) => {
+                if let Ok(mut status) = state.status.lock() {
+                    status.running = false;
+                    status.error = Some("本机服务启动超时。".to_string());
+                }
+            }
+        }
+    } else {
+        if let Some(running) = slot.take() {
+            let _ = running.shutdown.send(());
+            let _ = tokio::time::timeout(Duration::from_secs(5), running.handle).await;
+        }
+        if let Ok(mut status) = state.status.lock() {
+            status.running = false;
+            status.error = None;
+            status.reason = Some(local_service_idle_reason(&data));
+        }
+    }
+}
+
+/// Refresh the snapshot after a login and then reconcile, so a restored session picks up a
+/// plan change without waiting for the frontend's first refresh.
+async fn refresh_entitlements_then_reconcile(app: &AppHandle) {
+    let data = app_data(app);
+    if let Ok(settings) = settings::load(&data) {
+        if let Ok(base_url) = settings.devify.resolved_base_url() {
+            if let Ok(token) = devify_access_token_async(&data, &base_url).await {
+                let _ = entitlements::refresh(&data, &base_url, &token).await;
+            }
+        }
+    }
+    reconcile_local_service(app).await;
+}
+
+/// The agent access kit installs a read-only CLI into other agents; it needs both an
+/// internal account and the bridge capability. A missing snapshot means "no".
+fn require_internal_agent(data: &std::path::Path, base_url: &str) -> Result<(), String> {
+    entitlements::require_agent_access(data, base_url)
 }
 
 #[tauri::command]
@@ -4259,7 +4384,7 @@ fn agent_access_status(
         &configured,
         &service.address,
         service.running,
-        !service.local_only,
+        service.reason,
     ))
 }
 
@@ -4274,7 +4399,6 @@ fn agent_access_prompt(
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     require_internal_agent(&data, &settings.devify.base_url)?;
-    entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_AGENT_CLI)?;
     let service = access_state(&state)?;
     let targets = access::targets();
     let target = access::target_by_id(&targets, &tool).unwrap_or_else(|| {
@@ -4285,14 +4409,14 @@ fn agent_access_prompt(
         .ok_or_else(|| "CLI 目录必须是绝对路径或以 ~/ 开头。".to_string())?;
     let skills = access::expand_path(&skills_dir)
         .ok_or_else(|| "Skills 目录必须是绝对路径或以 ~/ 开头。".to_string())?;
-    let wxq = access::resolve_wxq(&app_data(&app));
+    let wxq = access::resolve_wxq(&data);
     let base_url = access::client_base(&service.address);
     let prompt = access::build_prompt(
         &target,
         &bin,
         &skills,
         &base_url,
-        !service.local_only,
+        &mcp::token_path(&data),
         service.running,
         wxq.is_some(),
     );
@@ -4310,7 +4434,6 @@ async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     require_internal_agent(&data, &settings.devify.base_url)?;
-    entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_AGENT_CLI)?;
     let Some(dir) = access::source_dir() else {
         return Err("当前安装没有附带源码，无法在应用内构建 wxq。".into());
     };
@@ -5656,7 +5779,7 @@ fn app_settings_save(
     app: AppHandle,
     mut value: settings::AppSettings,
 ) -> Result<settings::AppSettings, String> {
-    settings::update(&app_data(&app), |stored| {
+    let saved = settings::update(&app_data(&app), |stored| {
         if value.user_settings_revision != stored.user_settings_revision {
             return Err("SETTINGS_CONFLICT: 设置已在其他位置更改，请重新加载后重试。".into());
         }
@@ -5674,7 +5797,12 @@ fn app_settings_save(
         value.automation.last_schedule_error = stored.automation.last_schedule_error.clone();
         *stored = value;
         Ok(())
-    })
+    })?;
+    // Connecting or disconnecting WeChat changes whether the loopback service should exist.
+    tauri::async_runtime::spawn(async move {
+        reconcile_local_service(&app).await;
+    });
+    Ok(saved)
 }
 
 #[derive(Serialize)]
@@ -7792,7 +7920,6 @@ pub fn run() {
         .manage(SyncState::default())
         .manage(UploadState::default())
         .manage(DevifyAuthState::default())
-        .manage(McpState::default())
         .setup(|app| {
             let diagnostics_root = app_data(app.handle());
             let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Start, code: None, batch_id: None, duration_ms: None, request_id: None, server_request_id: None, http_status: None });
@@ -7805,43 +7932,31 @@ pub fn run() {
             {
                 app.handle().plugin(tauri_plugin_deep_link::init())?;
             }
-            let mcp_handle = app.handle().clone();
-            let mcp_status = app.state::<McpState>().status.clone();
+            let mcp_data = app_data(app.handle());
             let mcp_bind = mcp::configured_bind();
-            let mcp_token = mcp::configured_token();
-            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-            let mcp_data = app_data(&mcp_handle);
-            let server_status = mcp_status.clone();
-            tauri::async_runtime::spawn(async move {
-                let result = mcp::start(mcp_data, mcp_bind, mcp_token, Some(ready_tx)).await;
-                if let Ok(mut status) = server_status.lock() {
-                    status.running = false;
-                    if let Err(error) = result {
-                        status.error = Some(error);
-                    }
+            let (mcp_token, token_error) = match mcp::load_or_create_token(&mcp_data) {
+                Ok(token) => (Some(token), None),
+                Err(error) => (None, Some(error)),
+            };
+            let mcp_state = McpState::new(&mcp_bind, mcp_token);
+            if let Some(error) = token_error {
+                if let Ok(mut status) = mcp_state.status.lock() {
+                    status.error = Some(error);
                 }
-            });
+            }
+            app.manage(mcp_state);
+            let reconcile_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let result = ready_rx
-                    .await
-                    .unwrap_or_else(|_| Err("本机只读服务未能启动。".to_string()));
-                if let Ok(mut status) = mcp_status.lock() {
-                    match result {
-                        Ok(()) => {
-                            status.running = true;
-                            status.error = None;
-                        }
-                        Err(error) => {
-                            status.running = false;
-                            status.error = Some(error);
-                        }
-                    }
-                }
+                // The port starts only after a signed-in account with a bridge capability is
+                // known; the refresh afterwards picks up a plan change on restored sessions.
+                reconcile_local_service(&reconcile_handle).await;
+                refresh_entitlements_then_reconcile(&reconcile_handle).await;
             });
             let sync_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     backup_tick(&sync_handle).await;
+                    reconcile_local_service(&sync_handle).await;
                     // A short fixed tick keeps "每天定点" close to the minute it promises;
                     // `backup::due` decides whether this tick actually uploads.
                     tokio::time::sleep(Duration::from_secs(30)).await;

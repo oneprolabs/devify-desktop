@@ -257,6 +257,38 @@ pub fn is_internal(app_data: &Path, base_url: &str) -> bool {
     effective(app_data, base_url).is_some_and(|snapshot| snapshot.internal)
 }
 
+/// Strict feature check for capabilities that must stay closed until the plan is known.
+///
+/// [`require`] keeps the legacy "unknown means allow" behaviour so adding a guard never
+/// changes what an existing install can do. The local bridge cannot use that rule: a
+/// missing snapshot would open a loopback port before anyone signed in. This helper only
+/// reports a feature the server actually granted (an unenforced snapshot still counts as
+/// "everything on", matching [`require`]).
+pub fn grants(app_data: &Path, base_url: &str, key: &str) -> bool {
+    let Some(snapshot) = effective(app_data, base_url) else {
+        return false;
+    };
+    if !snapshot.enforced {
+        return true;
+    }
+    granted(&snapshot, key, now_seconds())
+}
+
+/// The agent access kit needs an internal account *and* the bridge capability; the
+/// listener and every `/agent/*` route share this rule so the UI and HTTP agree.
+pub fn agent_access(app_data: &Path, base_url: &str) -> bool {
+    is_internal(app_data, base_url) && grants(app_data, base_url, capabilities::BRIDGE_AGENT_CLI)
+}
+
+/// [`agent_access`] with the message the UI should show. Internal accounts still get the
+/// plan error when their subscription does not carry the bridge capability.
+pub fn require_agent_access(app_data: &Path, base_url: &str) -> Result<(), String> {
+    if !is_internal(app_data, base_url) {
+        return Err("「工具接入」仅对内部账号开放，请联系管理员。".to_string());
+    }
+    require(app_data, base_url, capabilities::BRIDGE_AGENT_CLI)
+}
+
 /// Ask the server what this account may use. A server that has not shipped the endpoint yet
 /// is a normal state: it is cached as `unsupported` and keeps the app wide open.
 pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<View, String> {
@@ -404,6 +436,41 @@ mod tests {
 
         assert!(is_internal(&dir, "https://devify.test"));
         assert!(!is_internal(&dir, "https://other.test"));
+    }
+
+    /// The listener must stay closed until a snapshot exists: unlike `require`, the strict
+    /// helper treats "nothing known" as "not granted".
+    #[test]
+    fn strict_grants_deny_a_missing_snapshot() {
+        let dir = temp_dir("strict-missing");
+        assert!(!grants(&dir, "https://devify.test", "bridge.mcp"));
+        assert!(!agent_access(&dir, "https://devify.test"));
+    }
+
+    #[test]
+    fn strict_grants_follow_the_snapshot_and_the_free_baseline() {
+        let dir = temp_dir("strict-enforced");
+        save(&dir, &snapshot(true, &["bridge.mcp", "bridge.agent_cli"])).unwrap();
+        assert!(grants(&dir, "https://devify.test", "bridge.mcp"));
+        assert!(!grants(&dir, "https://devify.test", "ingest.upload"));
+
+        let mut value = snapshot(true, &["bridge.mcp"]);
+        value.internal = true;
+        save(&dir, &value).unwrap();
+        assert!(!agent_access(&dir, "https://devify.test"), "plan lacks bridge.agent_cli");
+
+        value.features.push("bridge.agent_cli".into());
+        save(&dir, &value).unwrap();
+        assert!(agent_access(&dir, "https://devify.test"));
+    }
+
+    /// An unenforced server keeps the legacy "everything is allowed" behaviour, which is how
+    /// deployments that have not shipped `/me/entitlements` continue to work.
+    #[test]
+    fn strict_grants_keep_unenforced_servers_open() {
+        let dir = temp_dir("strict-unenforced");
+        save(&dir, &snapshot(false, &[])).unwrap();
+        assert!(grants(&dir, "https://devify.test", "bridge.mcp"));
     }
 
     #[test]

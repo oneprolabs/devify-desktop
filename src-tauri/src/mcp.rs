@@ -24,6 +24,73 @@ use crate::entitlements;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 pub const DEFAULT_BIND: &str = "127.0.0.1:18765";
+/// Per-install bearer token. Every request needs it, including loopback ones: another
+/// local user can reach 127.0.0.1 too, so "bound to loopback" is not authentication.
+pub const TOKEN_FILE: &str = "agent-token";
+
+/// Where the CLI and the install script look for the token this app generated.
+pub fn token_path(app_data: &Path) -> PathBuf {
+    app_data.join(TOKEN_FILE)
+}
+
+/// Read the per-install token, generating it on first run. The file is 0600 so other local
+/// accounts cannot read it; `wxq` and the installer pick it up automatically.
+pub fn load_or_create_token(app_data: &Path) -> Result<String, String> {
+    let path = token_path(app_data);
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+        let value = raw.trim();
+        if !value.is_empty() {
+            return Ok(value.to_string());
+        }
+    }
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|error| format!("无法生成本机访问 Token：{error}"))?;
+    let token = hex::encode(bytes);
+    std::fs::create_dir_all(app_data)
+        .map_err(|error| format!("无法创建应用数据目录：{error}"))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("无法写入本机访问 Token：{error}"))?;
+    std::io::Write::write_all(&mut file, token.as_bytes())
+        .map_err(|error| format!("无法写入本机访问 Token：{error}"))?;
+    let _ = file.sync_all();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(token)
+}
+
+/// Whether the loopback listener may exist at all.
+///
+/// The port is opened for a signed-in account whose plan carries a bridge capability, and
+/// only while the WeChat connector is on. A missing snapshot means "no": the app must not
+/// expose a port before login or before the server has answered. An unenforced snapshot
+/// still counts as granted so self-hosted servers without `/me/entitlements` keep working.
+pub fn bridge_listen_allowed(app_data: &Path) -> bool {
+    let Ok(settings) = settings::load(app_data) else {
+        return false;
+    };
+    if !settings.connectors.wechat_enabled {
+        return false;
+    }
+    let Ok(base_url) = settings.devify.resolved_base_url() else {
+        return false;
+    };
+    if crate::desktop_credentials::load(app_data, &base_url).is_err() {
+        return false;
+    }
+    entitlements::grants(app_data, &base_url, crate::capabilities::BRIDGE_MCP)
+        || entitlements::agent_access(app_data, &base_url)
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -424,9 +491,11 @@ async fn messages(
     StatusCode::ACCEPTED.into_response()
 }
 
-async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let _ = state;
-    Json(json!({"ok": true, "service": "wechat-devify-bridge", "protocol": "mcp-sse"}))
+async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &state.token) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))).into_response();
+    }
+    Json(json!({"ok": true, "service": "wechat-devify-bridge", "protocol": "mcp-sse"})).into_response()
 }
 
 /* ── read-only REST adapter ─────────────────────────────────────────────────── */
@@ -550,7 +619,10 @@ fn internal_agent_allowed(state: &AppState) -> bool {
     let Ok(settings) = crate::settings::load(&state.app_data) else {
         return false;
     };
-    entitlements::is_internal(&state.app_data, &settings.devify.base_url)
+    let Ok(base_url) = settings.devify.resolved_base_url() else {
+        return false;
+    };
+    entitlements::agent_access(&state.app_data, &base_url)
 }
 
 async fn agent_manifest(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -690,7 +762,12 @@ async fn agent_install_script(
         )
             .into_response();
     };
-    let script = access::build_install_script(&bin_dir, &skills_dir, &state.base_url);
+    let script = access::build_install_script(
+        &bin_dir,
+        &skills_dir,
+        &state.base_url,
+        &token_path(&state.app_data),
+    );
     (
         StatusCode::OK,
         [
@@ -713,6 +790,7 @@ pub async fn start(
     bind: String,
     token: Option<String>,
     ready: Option<oneshot::Sender<Result<(), String>>>,
+    shutdown: Option<oneshot::Receiver<()>>,
 ) -> Result<(), String> {
     if requires_token_for_ui(&bind) && token.is_none() {
         let error = "非本机绑定必须设置 WECHAT_AGENT_TOKEN。".to_string();
@@ -721,6 +799,20 @@ pub async fn start(
         }
         return Err(error);
     }
+    // Loopback is not authentication: every local account can reach 127.0.0.1. Fall back
+    // to the per-install token so no code path can start an unauthenticated listener.
+    let token = match token {
+        Some(token) => Some(token),
+        None => match load_or_create_token(&app_data) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                if let Some(ready) = ready {
+                    let _ = ready.send(Err(error.clone()));
+                }
+                return Err(error);
+            }
+        },
+    };
     let state = AppState {
         app_data,
         token,
@@ -757,13 +849,23 @@ pub async fn start(
         let _ = ready.send(Ok(()));
     }
     eprintln!("wechat read-only service listening on http://{bind}");
-    axum::serve(listener, app).await.map_err(|error| format!("本机只读服务退出：{error}"))
+    let served = match shutdown {
+        Some(stop) => {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = stop.await;
+                })
+                .await
+        }
+        None => axum::serve(listener, app).await,
+    };
+    served.map_err(|error| format!("本机只读服务退出：{error}"))
 }
 
 pub async fn run_from_env() -> Result<(), String> {
     let app_data = app_data_dir().map_err(|error| error.to_string())?;
     let bind = configured_bind();
-    start(app_data, bind, configured_token(), None).await
+    start(app_data, bind, configured_token(), None, None).await
 }
 
 #[cfg(test)]
@@ -830,5 +932,95 @@ mod tests {
         let dir = service_dir("agent-gate-other-service");
         entitlements::write_snapshot(&dir, &internal_snapshot("https://other.test"));
         assert!(!internal_agent_allowed(&state(dir)));
+    }
+
+    fn bridge_snapshot(base_url: &str, features: &[&str]) -> entitlements::Snapshot {
+        entitlements::Snapshot {
+            enforced: true,
+            features: features.iter().map(|item| item.to_string()).collect(),
+            base_url: base_url.into(),
+            fetched_at: chrono::Utc::now().timestamp(),
+            source: "server".into(),
+            ..entitlements::Snapshot::default()
+        }
+    }
+
+    fn sign_in(dir: &Path) {
+        crate::desktop_credentials::save(
+            dir,
+            &crate::desktop_credentials::Credentials {
+                base_url: "http://127.0.0.1:8010".into(),
+                access: "access".into(),
+                refresh: "refresh".into(),
+            },
+        )
+        .unwrap();
+    }
+
+    /// The port may only open for a signed-in account whose plan carries a bridge capability.
+    #[test]
+    fn the_listener_waits_for_a_login_and_a_bridge_capability() {
+        let dir = service_dir("listen-gate");
+        assert!(!bridge_listen_allowed(&dir), "no credentials");
+
+        sign_in(&dir);
+        assert!(!bridge_listen_allowed(&dir), "no snapshot");
+
+        entitlements::write_snapshot(&dir, &bridge_snapshot("http://127.0.0.1:8010", &[]));
+        assert!(!bridge_listen_allowed(&dir), "plan without a bridge capability");
+
+        entitlements::write_snapshot(&dir, &bridge_snapshot("http://127.0.0.1:8010", &["bridge.mcp"]));
+        assert!(bridge_listen_allowed(&dir));
+
+        let mut settings = settings::load(&dir).unwrap();
+        settings.connectors.wechat_enabled = false;
+        settings::save(&dir, &settings).unwrap();
+        assert!(!bridge_listen_allowed(&dir), "connector off");
+    }
+
+    /// The access kit alone is enough to open the listener, but only for internal accounts.
+    #[test]
+    fn the_listener_opens_for_the_internal_access_kit() {
+        let dir = service_dir("listen-internal");
+        sign_in(&dir);
+        let mut snapshot = bridge_snapshot("http://127.0.0.1:8010", &["bridge.agent_cli"]);
+        entitlements::write_snapshot(&dir, &snapshot);
+        assert!(!bridge_listen_allowed(&dir), "bridge.agent_cli without internal");
+
+        snapshot.internal = true;
+        entitlements::write_snapshot(&dir, &snapshot);
+        assert!(bridge_listen_allowed(&dir));
+        assert!(internal_agent_allowed(&state(dir)));
+    }
+
+    #[test]
+    fn the_install_token_is_stable_and_private() {
+        let dir = temp_dir("token");
+        let first = load_or_create_token(&dir).unwrap();
+        assert_eq!(first.len(), 64);
+        assert_eq!(load_or_create_token(&dir).unwrap(), first);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(token_path(&dir)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    /// Signing out must release the port: the shutdown channel has to end `axum::serve`.
+    #[test]
+    fn shutdown_stops_the_listener() {
+        let dir = service_dir("listen-shutdown");
+        tauri::async_runtime::block_on(async move {
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let (stop_tx, stop_rx) = oneshot::channel();
+            let handle = tokio::spawn(async move {
+                start(dir, "127.0.0.1:0".into(), Some("token".into()), Some(ready_tx), Some(stop_rx)).await
+            });
+            assert_eq!(ready_rx.await.unwrap(), Ok(()));
+            stop_tx.send(()).unwrap();
+            let stopped = tokio::time::timeout(Duration::from_secs(5), handle).await;
+            assert!(stopped.is_ok(), "listener did not stop after shutdown");
+        });
     }
 }

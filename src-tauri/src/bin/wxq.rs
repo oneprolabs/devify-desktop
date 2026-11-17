@@ -118,6 +118,41 @@ fn env_first(keys: &[&str]) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Where the desktop app keeps its per-install files. Mirrors the app-data directory for the
+/// bundle identifier so `wxq` can pick up the token without any setup or export.
+fn default_app_data_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("WECHAT_DEVIFY_APP_DATA_DIR") {
+        let path = std::path::PathBuf::from(dir);
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")?;
+        Some(std::path::PathBuf::from(home).join("Library/Application Support/local.wechat.devifybridge"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var_os("APPDATA")?;
+        Some(std::path::PathBuf::from(base).join("local.wechat.devifybridge"))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share")))?;
+        Some(base.join("local.wechat.devifybridge"))
+    }
+}
+
+/// The per-install token the desktop app generated (0600). Loopback now requires it too.
+fn stored_token() -> Option<String> {
+    let raw = std::fs::read_to_string(default_app_data_dir()?.join("agent-token")).ok()?;
+    let value = raw.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 fn run() -> Result<String, String> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.is_empty() {
@@ -126,7 +161,7 @@ fn run() -> Result<String, String> {
 
     let mut endpoint = env_first(&["WECHAT_AGENT_ENDPOINT", "WECHAT_MCP_ENDPOINT"])
         .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
-    let mut token = env_first(&["WECHAT_AGENT_TOKEN", "WECHAT_MCP_TOKEN"]);
+    let mut token = env_first(&["WECHAT_AGENT_TOKEN", "WECHAT_MCP_TOKEN"]).or_else(stored_token);
     let mut json = false;
     let mut rest: Vec<String> = Vec::new();
 
@@ -692,7 +727,8 @@ fn usage() -> String {
 
 环境变量:
   WECHAT_AGENT_ENDPOINT  默认 {DEFAULT_ENDPOINT}（旧名 WECHAT_MCP_ENDPOINT 仍兼容）
-  WECHAT_AGENT_TOKEN     服务绑定非本机地址时必填（旧名 WECHAT_MCP_TOKEN 仍兼容）
+  WECHAT_AGENT_TOKEN     覆盖自动读取的 <应用数据目录>/agent-token（旧名 WECHAT_MCP_TOKEN 仍兼容）
+                           本机服务始终要求 Token；wxq 默认直接读取桌面应用生成的 0600 文件
 
 示例:
   wxq policy

@@ -26,13 +26,13 @@
 | 单个 Skill | `http://127.0.0.1:18765/agent/skills/<name>` |
 | 安装脚本 | `http://127.0.0.1:18765/agent/install.sh?bin=<目录>&skills=<目录>` |
 
-服务地址由 `WECHAT_AGENT_BIND` 决定（默认 `127.0.0.1:18765`，旧名 `WECHAT_MCP_BIND` 仍兼容）；绑定非本机地址时必须同时设置 `WECHAT_AGENT_TOKEN`，下载请求也要带
-`Authorization: Bearer <token>`。
+服务地址由 `WECHAT_AGENT_BIND` 决定（默认 `127.0.0.1:18765`，旧名 `WECHAT_MCP_BIND` 仍兼容）。服务只在登录且当前套餐包含本机 Agent 集成时启动，退出登录即停止。所有请求（包括本机回环）都要带 `Authorization: Bearer <token>`；Token 由桌面应用生成在 `<应用数据目录>/agent-token`（0600），`wxq` 与安装脚本会自动读取，`WECHAT_AGENT_TOKEN` 可覆盖。
 
 ## 手动安装（可选）
 
 ```bash
-curl -fsSL 'http://127.0.0.1:18765/agent/install.sh?bin=~/.local/bin&skills=~/.claude/skills' | sh
+TOKEN=$(cat "$HOME/Library/Application Support/local.wechat.devifybridge/agent-token")
+curl -fsSL -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18765/agent/install.sh?bin=~/.local/bin&skills=~/.claude/skills' | sh
 ```
 
 脚本会先备份已存在的 `SKILL.md`，再写入新内容，最后运行 `wxq health`。只读约束不变：`wxq` 不读数据库、不解密、不发邮件，每次请求都由服务端重新校验白名单。

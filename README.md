@@ -38,7 +38,7 @@ The app never modifies, deletes, or writes to WeChat's own database files. It do
 - **Centralized strategy**: the `聊天白名单` page persists the allowed group and one-to-one conversations per account. The Rust layer always enforces this allowlist for the session list, message reads, search, exploration, digest, and scheduled delivery; an empty allowlist exposes no chat history.
 - **Server-side daily report**: enabling the daily report creates or updates a `TopicSubscription` on Devify with the selected local time and IANA timezone. Devify runs the schedule even when the desktop app is closed, then generates the report from the uploaded notes and events. The app only keeps the topic id and the last known run status.
 - **No SMTP delivery in this path**: the daily report no longer reads the local database or sends email from the desktop. Chat records reach Devify through the existing incremental upload, and delivery/notification is a server concern.
-- **Read-only service and agent kit**: the desktop app starts an in-process listener at `127.0.0.1:18765` and stops it with the app. Chat data is exposed as whitelist-checked REST (`/api/policy`, `/api/sessions`, `/api/messages`, `/api/search`, `/api/digest`, plus `/health`). The same listener distributes the agent kit: `/agent/manifest`, `/agent/wxq` (the read-only CLI binary), `/agent/skills`, `/agent/skills/<name>` and `/agent/install.sh`. The **Agent 集成 → 工具接入** page turns this into one prompt: the user picks a host and two directories, copies the prompt, and the receiving agent downloads both artifacts and verifies the connection. The CLI speaks the REST side, so any agent with shell access can read chats. `WECHAT_AGENT_BIND` moves the listener and `WECHAT_AGENT_TOKEN` is mandatory for any non-loopback bind (the older `WECHAT_MCP_*` names still work as aliases). Every request re-reads `app-settings.json` and re-checks the whitelist, so policy changes take effect without a restart. Nothing can decrypt, write, or send mail. MCP over SSE remains available for existing GUI clients but is not part of the page or the prompt; the standalone `wechat-mcp-sse` binary is only a debugging entry point.
+- **Read-only service and agent kit**: after sign-in, when the plan includes a bridge capability, the desktop app starts an in-process listener at `127.0.0.1:18765`; signing out, losing the capability, disconnecting WeChat, or quitting the app stops it. Chat data is exposed as whitelist-checked REST (`/api/policy`, `/api/sessions`, `/api/messages`, `/api/search`, `/api/digest`, plus `/health`). The same listener distributes the agent kit: `/agent/manifest`, `/agent/wxq` (the read-only CLI binary), `/agent/skills`, `/agent/skills/<name>` and `/agent/install.sh`. The **Agent 集成 → 工具接入** page turns this into one prompt: the user picks a host and two directories, copies the prompt, and the receiving agent downloads both artifacts and verifies the connection. The CLI speaks the REST side, so any agent with shell access can read chats. `WECHAT_AGENT_BIND` moves the listener. Every request needs the per-install Bearer token stored in `<app data>/agent-token` (0600); `wxq` and the install script read it automatically, and `WECHAT_AGENT_TOKEN` overrides it (the older `WECHAT_MCP_*` names still work as aliases). Every request re-reads `app-settings.json` and re-checks the whitelist, so policy changes take effect without a restart. Nothing can decrypt, write, or send mail. MCP over SSE remains available for existing GUI clients but is not part of the page or the prompt; the standalone `wechat-mcp-sse` binary is only a debugging entry point.
 - **Per-conversation browsing**: newest-first messages, page size 100 with "load older", day dividers, and time stamps only when messages are more than five minutes apart.
 - **Incremental upload to Devify**: while automatic sync is on, every interval decrypts the local cache and uploads only the allowlisted conversations that have messages newer than their saved cursor. The first run of a conversation sends its full local history. Batches are idempotent by content, and the client never invents messages the local database does not contain. See [Sync chat records to a Devify space](#sync-chat-records-to-a-devify-space).
 - **Cloud records view**: the 聊天 page opens a **云端记录** tab that reads the selected Devify space's conversations and messages (search, paging, jump-to-message). Event evidence links open the matching server-side message instead of the local viewer.
@@ -283,7 +283,9 @@ The app publishes an **agent kit** from its loopback listener: the read-only `wx
 2. Set the CLI directory (default `~/.local/bin`) and the skills directory. Both accept `~` or absolute paths.
 3. Copy the prompt and paste it into that host, allowing shell execution. The agent downloads both artifacts, writes the three `SKILL.md` files, then runs `wxq health` and `wxq policy`.
 
-Nothing in the prompt depends on the repository checkout, and no MCP configuration is involved. The service and every download live on the loopback listener and stop with the app.
+Nothing in the prompt depends on the repository checkout, and no MCP configuration is involved. The service and every download live on the loopback listener; it only exists while the account is signed in with a bridge capability and stops on sign-out, plan loss, or app exit.
+
+The listener requires the per-install token even on loopback (another local user can reach `127.0.0.1` too). The app generates it at `<app data>/agent-token` with `0600`; the prompt and the installer read it in place, so the token never has to be copied around.
 
 ### Agent kit endpoints
 
@@ -295,12 +297,13 @@ Nothing in the prompt depends on the repository checkout, and no MCP configurati
 | `GET` | `/agent/skills/<name>` | — |
 | `GET` | `/agent/install.sh` | `bin`, `skills` (absolute or `~/…`) |
 
-The `/agent/*` routes expose only the app's own CLI binary and static skill documents — never chat data. They follow the same token rule as `/api/*`.
+The `/agent/*` routes expose only the app's own CLI binary and static skill documents — never chat data. They need an internal account whose plan carries `bridge.agent_cli`, and the same Bearer token as `/api/*`.
 
 Manual install without an agent:
 
 ```bash
-curl -fsSL 'http://127.0.0.1:18765/agent/install.sh?bin=~/.local/bin&skills=~/.claude/skills' | sh
+TOKEN=$(cat "$HOME/Library/Application Support/local.wechat.devifybridge/agent-token")
+curl -fsSL -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18765/agent/install.sh?bin=~/.local/bin&skills=~/.claude/skills' | sh
 ```
 
 ### Read-only chat endpoints
@@ -331,7 +334,7 @@ wxq digest --chat 56209716836@chatroom --since 2026-10-20 --until 2026-10-27
 ```
 
 - Default output is a readable transcript/table; add `--json` for the raw payload.
-- `--endpoint` / `WECHAT_AGENT_ENDPOINT` and `--token` / `WECHAT_AGENT_TOKEN` move the target and supply the Bearer token (the `WECHAT_MCP_*` names remain as aliases).
+- `--endpoint` / `WECHAT_AGENT_ENDPOINT` and `--token` / `WECHAT_AGENT_TOKEN` move the target and override the Bearer token; by default `wxq` reads `<app data>/agent-token` (the `WECHAT_MCP_*` names remain as aliases).
 - `--before`, `--since`, `--until` accept Unix seconds, `2026-10-20`, or `"2026-10-20 18:00"`; a date-only `--until` means end of that day.
 - Non-zero exit code plus a message on stderr for whitelist, token, or connectivity failures.
 
@@ -339,7 +342,7 @@ Agent-facing skills live in `skills/` and call `wxq`.
 
 ### MCP (legacy, not shown in the app)
 
-The listener still speaks MCP over SSE at `http://127.0.0.1:18765/sse` for existing GUI clients. It is intentionally absent from the **Agent 集成** page and the prompt. `GET /sse` returns the `POST /messages?sessionId=…` endpoint; tools are read-only and whitelist-enforcing (`wechat_get_policy`, `wechat_list_sessions`, `wechat_get_messages`, `wechat_search_messages`, `wechat_digest`). The standalone `wechat-mcp-sse` binary stays available as a debugging entry point; it is not shipped in the app and needs `WECHAT_DEVIFY_APP_DATA_DIR` set to the app data directory.
+The listener still speaks MCP over SSE at `http://127.0.0.1:18765/sse` for existing GUI clients. It is intentionally absent from the **Agent 集成** page and the prompt, and it now requires the same Bearer token on every request, including loopback. `GET /sse` returns the `POST /messages?sessionId=…` endpoint; tools are read-only and whitelist-enforcing (`wechat_get_policy`, `wechat_list_sessions`, `wechat_get_messages`, `wechat_search_messages`, `wechat_digest`). The standalone `wechat-mcp-sse` binary stays available as a debugging entry point; it is not shipped in the app and needs `WECHAT_DEVIFY_APP_DATA_DIR` set to the app data directory.
 
 ## Configure the summary agent
 
@@ -494,9 +497,21 @@ cd src-tauri
 cargo test
 ```
 
+The suite is not parallel-safe: `settings::save` briefly takes the global upload-identity write
+lock whenever the service, account or space changes, and several cases reuse a fixed temp path per
+name. `.cargo/config.toml` therefore pins `RUST_TEST_THREADS=1`; passing `--test-threads=N` on the
+command line overrides it and will produce unrelated failures such as
+`上传期间无法切换账号、服务、空间或设备`.
+
 `tests/pipeline.rs` generates encrypted fixtures with the independent `sqlcipher` CLI (page size 4096, SQLCipher 4) and asserts that decryption, session listing, contact-name resolution, message decoding, cache reuse, passphrase derivation, group prefix stripping, self detection, bounded search, and digest extraction all behave. Install it with `brew install sqlcipher` / `apt install sqlcipher`; the test prints a skip notice and passes when the CLI is absent.
 
 `cargo test --bin wxq --features aux-binaries` covers the CLI's flag/date parsing, URL encoding, chunked responses, and output formatting; it does not need a running app.
+
+```bash
+for f in scripts/test-*.mjs; do node "$f" || exit 1; done
+```
+
+The Node scripts import the TypeScript modules directly and assert on them (auth expiry, settings revisions and save queue, sync feedback, task cloud/status/snapshot, chat presentation, login address, daily plan); they need neither the app nor a running server.
 
 ### Developer helpers
 
