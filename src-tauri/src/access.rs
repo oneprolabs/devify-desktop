@@ -63,6 +63,8 @@ pub struct AccessStatus {
     pub running: bool,
     pub base_url: String,
     pub token_required: bool,
+    /// Why the listener is not running when `running` is false and it is not an error.
+    pub reason: Option<String>,
     pub wxq: Option<WxqAsset>,
     pub skills: Vec<SkillAsset>,
     pub targets: Vec<AccessTarget>,
@@ -286,7 +288,7 @@ pub fn status(
     configured_agent: &str,
     bind: &str,
     running: bool,
-    token_required: bool,
+    reason: Option<String>,
 ) -> AccessStatus {
     let base_url = client_base(bind);
     let targets = targets();
@@ -302,7 +304,8 @@ pub fn status(
     AccessStatus {
         running,
         base_url: base_url.clone(),
-        token_required,
+        token_required: true,
+        reason,
         wxq,
         skills: SKILLS
             .iter()
@@ -337,23 +340,18 @@ pub fn build_prompt(
     bin_dir: &Path,
     skills_dir: &Path,
     base_url: &str,
-    token_required: bool,
+    token_path: &Path,
     running: bool,
     wxq_available: bool,
 ) -> String {
     let bin = display_path(bin_dir);
     let skills = display_path(skills_dir);
+    let token = display_path(token_path);
     let wxq_path = format!("{}/{}", bin.trim_end_matches('/'), CLI_NAME);
-    let auth_line = if token_required {
-        "需要 Bearer Token：从用户的 `WECHAT_AGENT_TOKEN` 环境变量读取（旧名 `WECHAT_MCP_TOKEN` 也兼容），不要回显、不要写入文件；下面所有 curl 都带 `-H \"Authorization: Bearer $WECHAT_AGENT_TOKEN\"`。"
-    } else {
-        "仅本机访问，不需要 Token。"
-    };
-    let curl_auth = if token_required {
-        " -H \"Authorization: Bearer $WECHAT_AGENT_TOKEN\""
-    } else {
-        ""
-    };
+    let auth_line = format!(
+        "需要 Bearer Token。桌面应用已为这台机器生成 Token 并写入 `{token}`（0600），`wxq` 和安装脚本会自动读取，不需要手工复制。"
+    );
+    let curl_auth = format!(" -H \"Authorization: Bearer $(cat {})\"", sh_quote(&token));
     let mut prompt = String::new();
     prompt.push_str("你正在为 AIMyChats 安装只读的 Agent 工具与 Skills。请按顺序执行，完成后汇报结果。不要修改微信数据，不要把聊天内容或 Token 写入日志、文件或外部服务。\n\n");
     prompt.push_str("## 目标环境\n");
@@ -408,17 +406,19 @@ pub fn build_prompt(
 
     prompt.push_str("## 第 3 步：验证\n");
     prompt.push_str(&format!("```bash\n{}\n{}\n```\n\n", sh_quote(&wxq_path) + " health", sh_quote(&wxq_path) + " policy"));
-    prompt.push_str("health 应返回 `ok · wechat-devify-bridge`；policy 应返回当前账号和白名单会话。若服务不可用，让用户打开 AIMyChats 后重试；不要自行解密数据库或启动其它服务。白名单为空时，提示用户在应用的「聊天白名单」页配置。若服务需要 Token 而当前 shell 没有 `WECHAT_AGENT_TOKEN`，让用户自己导出后再运行验证，不要把 Token 写进命令或文件。\n\n");
+    prompt.push_str("health 应返回 `ok · wechat-devify-bridge`；policy 应返回当前账号和白名单会话。若服务不可用，让用户打开 AIMyChats 后重试；不要自行解密数据库或启动其它服务。白名单为空时，提示用户在应用的「聊天白名单」页配置。Token 已由应用写入本机文件，不要回显、复制或写入其它位置；若文件不可读，让用户回到「Agent 集成 → 工具接入」重新复制提示词。\n\n");
     prompt.push_str("## 第 4 步：汇报\n");
     prompt.push_str("只汇报：wxq 的最终路径、skills 目录、三个 `SKILL.md` 是否写入、health/policy 的结果摘要、失败原因。完成后提示用户重新打开或刷新当前工具的 Skills 列表。\n");
     prompt
 }
 
 /// Convenience installer served at `/agent/install.sh`. It is the same operation as the
-/// prompt, in one shell script, with an auth header when the listener needs one.
-pub fn build_install_script(bin_dir: &Path, skills_dir: &Path, base_url: &str) -> String {
+/// prompt, in one shell script. The token comes from the environment or the 0600 file the
+/// desktop app generated, so a loopback install does not have to paste anything.
+pub fn build_install_script(bin_dir: &Path, skills_dir: &Path, base_url: &str, token_path: &Path) -> String {
     let bin = display_path(bin_dir);
     let skills = display_path(skills_dir);
+    let token = display_path(token_path);
     let wxq_path = format!("{}/{}", bin.trim_end_matches('/'), CLI_NAME);
     let mut script = String::new();
     script.push_str("#!/bin/sh\nset -eu\n\n");
@@ -426,10 +426,13 @@ pub fn build_install_script(bin_dir: &Path, skills_dir: &Path, base_url: &str) -
     script.push_str(&format!("BIN_DIR={}\n", sh_quote(&bin)));
     script.push_str(&format!("SKILLS_DIR={}\n", sh_quote(&skills)));
     script.push_str(&format!("WXQ={}\n", sh_quote(&wxq_path)));
-    script.push_str("AUTH=''\n");
-    script.push_str("if [ -n \"${WECHAT_AGENT_TOKEN:-}\" ]; then AUTH=\"Authorization: Bearer $WECHAT_AGENT_TOKEN\"; elif [ -n \"${WECHAT_MCP_TOKEN:-}\" ]; then AUTH=\"Authorization: Bearer $WECHAT_MCP_TOKEN\"; fi\n");
+    script.push_str(&format!("TOKEN_FILE={}\n", sh_quote(&token)));
+    script.push_str("TOKEN=\"${WECHAT_AGENT_TOKEN:-${WECHAT_MCP_TOKEN:-}}\"\n");
+    script.push_str("if [ -z \"$TOKEN\" ] && [ -r \"$TOKEN_FILE\" ]; then TOKEN=$(cat \"$TOKEN_FILE\"); fi\n");
+    script.push_str("if [ -z \"$TOKEN\" ]; then echo 'missing agent token: set WECHAT_AGENT_TOKEN or reopen AIMyChats' >&2; exit 1; fi\n");
+    script.push_str("AUTH=\"Authorization: Bearer $TOKEN\"\n");
     script.push_str("fetch() {\n");
-    script.push_str("  if [ -n \"$AUTH\" ]; then curl -fsSL -H \"$AUTH\" \"$1\" -o \"$2\"; else curl -fsSL \"$1\" -o \"$2\"; fi\n");
+    script.push_str("  curl -fsSL -H \"$AUTH\" \"$1\" -o \"$2\"\n");
     script.push_str("}\n\n");
     script.push_str("mkdir -p \"$BIN_DIR\" \"$SKILLS_DIR\"\n");
     script.push_str("tmp=\"$WXQ.download.$$\"\n");
@@ -479,7 +482,7 @@ mod tests {
             Path::new("/Users/me/.local/bin"),
             Path::new("/Users/me/.claude/skills"),
             "http://127.0.0.1:18765",
-            false,
+            Path::new("/Users/me/Library/Application Support/local.wechat.devifybridge/agent-token"),
             true,
             true,
         );
@@ -491,6 +494,8 @@ mod tests {
         assert!(prompt.contains("wechat-work-exploration"));
         assert!(prompt.contains("health"));
         assert!(prompt.contains("policy"));
+        assert!(prompt.contains("agent-token"));
+        assert!(prompt.contains("$(cat"));
     }
 
     #[test]
@@ -500,12 +505,12 @@ mod tests {
             Path::new("/tmp/bin"),
             Path::new("/tmp/skills"),
             "http://127.0.0.1:18765",
-            true,
+            Path::new("/tmp/agent-token"),
             false,
             false,
         );
         assert!(prompt.contains("没有在监听"));
-        assert!(prompt.contains("WECHAT_AGENT_TOKEN"));
+        assert!(prompt.contains("Token"));
         assert!(prompt.contains("暂时没有可下载的 wxq"));
     }
 
@@ -515,12 +520,15 @@ mod tests {
             Path::new("/Users/me/it's bin"),
             Path::new("/Users/me/skills"),
             "http://127.0.0.1:18765",
+            Path::new("/Users/me/agent-token"),
         );
         assert!(script.contains("#!/bin/sh"));
         assert!(script.contains("it'\\''s bin"));
         assert!(script.contains("/agent/wxq"));
         assert!(script.contains("/agent/skills/wechat-chat-records"));
         assert!(script.contains("\"$WXQ\" health"));
+        assert!(script.contains("TOKEN_FILE='/Users/me/agent-token'"));
+        assert!(script.contains("missing agent token"));
     }
 
     #[test]
