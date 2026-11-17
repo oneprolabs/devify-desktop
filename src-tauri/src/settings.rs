@@ -303,8 +303,7 @@ pub struct UploadJob {
     /// This is a last-confirmed state, not proof that the server has not since deleted it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_completion_digest: Option<String>,
-    /// A pre-ownership failed job whose cloud batch the server confirmed as terminally
-    /// failed or cancelled. Nothing of it can still be ingested, so it never blocks sync.
+    /// A failed job verified against the server to have no batch that can still ingest.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub legacy_failure_confirmed: bool,
     pub status: String,
@@ -386,7 +385,8 @@ pub struct UploadScope {
 
 impl UploadJob {
     pub fn can_recover_create(&self) -> bool {
-        self.batch_id.is_none() && self.create_started == Some(true) && self.package_digest.is_some()
+        !self.legacy_failure_confirmed && self.batch_id.is_none()
+            && self.create_started == Some(true) && self.package_digest.is_some()
     }
 
     pub fn matches_create_package(&self, key: &str, digest: &str) -> bool {

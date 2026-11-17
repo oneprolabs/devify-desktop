@@ -3431,15 +3431,19 @@ async fn devify_upload_wechat(
         validate_live_cloud_retry(&data, auth)?;
     }
     let retry_request = request.try_clone().ok_or("无法准备创建批次请求。")?;
-    let created = match request.send_traced(&data, diagnostics::Module::Upload).await {
-        Err(error) if error.is_timeout() || error.is_connect() => {
-            validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
-            if let Some(auth) = &cloud_retry {
-                validate_live_cloud_retry(&data, auth)?;
-            }
-            retry_request.send_traced(&data, diagnostics::Module::Upload).await
+    let first = request.send_traced(&data, diagnostics::Module::Upload).await;
+    let retry_create = match &first {
+        Err(error) => error.is_timeout() || error.is_connect(),
+        Ok(response) => matches!(response.status().as_u16(), 502 | 503 | 504),
+    };
+    let created = if retry_create {
+        validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+        if let Some(auth) = &cloud_retry {
+            validate_live_cloud_retry(&data, auth)?;
         }
-        result => result,
+        retry_request.send_traced(&data, diagnostics::Module::Upload).await
+    } else {
+        first
     }.map_err(|error| devify_network_message("创建上传批次失败", &error))?;
     if !created.status().is_success() {
         return Err(format!("创建上传批次失败：{}", created.status()));
@@ -5585,9 +5589,38 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
         if !manual && uploaded >= SYNC_UPLOADS_PER_TICK {
             break;
         }
+        // An explicit sync can resume the original create before planning a new batch.
+        if manual && !continuation_only {
+            if let Some(job) = value.upload_queue.iter().find(|job|
+                recoverable_sync_job(job, &sync_owner, username)
+            ).cloned() {
+                let scope = job.retry_scope(&value)?.clone();
+                let result = devify_upload_wechat(
+                    app.clone(), job.id.clone(), space_id.clone(), account_id.clone(),
+                    scope.usernames.clone(), scope.since, scope.until, Some(scope.base_url.clone()),
+                    None, scope.message_selection.clone(),
+                    sync_upload_trigger(true, true, job.continuation_manual), None,
+                ).await;
+                value = settings::update(&data, |current| {
+                    let item = current.upload_queue.iter_mut().find(|item| item.id == job.id)
+                        .ok_or("找不到待恢复的同步任务。")?;
+                    apply_manual_upload_outcome(item, &job, &result, "已恢复上传，等待服务端解析")
+                })?;
+                match result {
+                    Ok(result) => {
+                        uploaded += 1;
+                        message_count += result.message_count;
+                        batch_ids.push(result.batch_id);
+                        touched = true;
+                    }
+                    Err(error) => failures.push(error),
+                }
+                continue;
+            }
+        }
         if blocks_sync(&value, username) {
             skipped += 1;
-            failures.push(format!("{username}：已有未完成或身份不明的上传任务，请在任务中核对状态"));
+            failures.push("有旧上传任务尚未完成，请到任务页核对批次状态。".into());
             continue;
         }
         let cursor = value.sync.cursors.get(&account_id).and_then(|items| items.get(username)).copied();
@@ -7447,6 +7480,18 @@ fn upload_job_in_sync_scope(job: &settings::UploadJob, owner: &settings::UploadO
         None => job.account_id == owner.account_id && job.space_id == owner.space_id
             && job.scope.as_ref().map_or(true, |scope| settings::same_service_url(&scope.base_url, &owner.base_url)),
     }
+}
+
+fn recoverable_sync_job(job: &settings::UploadJob, owner: &settings::UploadOwner, username: &str) -> bool {
+    job.id.starts_with("sync-")
+        && job.status == "failed"
+        && job.can_recover_create()
+        && job.owner.as_ref() == Some(owner)
+        && job.scope.as_ref().is_some_and(|scope| {
+            scope.usernames.len() == 1
+                && scope.usernames[0] == username
+                && scope.message_selection.get(username).is_some_and(|messages| !messages.is_empty())
+        })
 }
 
 /// An inert job or a verified legacy failure cannot still ingest messages.
@@ -9410,6 +9455,35 @@ mod upload_coverage_tests {
 
     fn owner() -> settings::UploadOwner {
         settings::UploadOwner { base_url: "https://example.test".into(), space_id: "1".into(), account_id: "acct".into(), user_id: 7, device_id: "device".into() }
+    }
+
+    #[test]
+    fn manual_sync_recovers_only_its_own_unlinked_failed_batch() {
+        let owner = owner();
+        let mut job = UploadJob {
+            id: "sync-old".into(),
+            status: "failed".into(),
+            owner: Some(owner.clone()),
+            create_started: Some(true),
+            package_digest: Some("archive".into()),
+            scope: Some(UploadScope {
+                usernames: vec!["one".into()],
+                message_selection: BTreeMap::from([("one".into(), vec![
+                    settings::MessageRef { time: 10, local_id: 1, source_shard: "shard".into() },
+                ])]),
+                base_url: owner.base_url.clone(),
+                since: None,
+                until: None,
+            }),
+            ..Default::default()
+        };
+        assert!(super::recoverable_sync_job(&job, &owner, "one"));
+        assert!(!super::recoverable_sync_job(&job, &owner, "another"));
+        let other = settings::UploadOwner { user_id: owner.user_id + 1, ..owner.clone() };
+        assert!(!super::recoverable_sync_job(&job, &other, "one"));
+        job.legacy_failure_confirmed = true;
+        assert!(!super::recoverable_sync_job(&job, &owner, "one"));
+        assert!(super::job_never_blocks_sync(&job));
     }
 
     fn job(status: &str, covered: SyncCursor, fallback_at: &str) -> UploadJob {

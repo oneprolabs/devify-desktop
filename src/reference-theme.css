@@ -416,6 +416,10 @@
 .sync-inline-notice { flex:none; margin:0; padding:8px 20px; color:#5f5f5a; font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
 .sync-inline-notice.is-error { color:#a73f4a; }
 .sync-feedback-toast { position:fixed; top:30px; left:50%; z-index:100; display:flex; align-items:center; gap:12px; width:max-content; max-width:min(520px,calc(100vw - 40px)); padding:10px 12px; border:1px solid #e9e9e6; border-radius:14px; background:#fcfbff; color:#5f5f5a; box-shadow:0 8px 24px #39305025; transform:translateX(-50%); font-size:14px; line-height:1.5; }
+.sync-feedback-toast.is-confirmation { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; }
+.sync-feedback-toast.is-confirmation .sync-feedback-close { grid-column:3; grid-row:1; }
+.sync-feedback-actions { grid-column:2 / -1; display:flex; flex-wrap:wrap; gap:8px 12px; }
+.sync-feedback-toast .sync-feedback-actions button { padding:6px 0; font-size:14px; line-height:1.5; }
 .sync-feedback-icon { display:grid; place-items:center; flex:none; width:28px; height:28px; border-radius:50%; background:#edf7f0; color:#25844a; font-weight:700; }
 .sync-feedback-icon.is-loading { border:2px solid #e9e9e6; border-top-color:#a3279a; background:transparent; animation:chat-tab-spin .9s linear infinite; }
 .sync-feedback-toast.is-error .sync-feedback-icon { background:#fcebee; color:#bf4550; }
