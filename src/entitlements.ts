@@ -168,6 +168,17 @@ export function useEntitlements(): { view: Entitlements | null; loading: boolean
 }
 
 /**
+ * Internal-only surfaces — the agent access kit, local summaries and their 总结记录 — share
+ * one gate: the server's `internal` flag. A missing or unsupported snapshot means "no".
+ *
+ * Reads the cached snapshot only, so callers that mount often never add network traffic.
+ */
+export function useInternalAccount(): { internal: boolean; loading: boolean; view: Entitlements | null } {
+  const [view, loading] = useEntitlementsValue();
+  return { internal: view?.internal === true, loading, view };
+}
+
+/**
  * Whether one capability is available right now. UI use only — the Rust command guard is the
  * actual boundary, so hiding a button never stands in for enforcement.
  */

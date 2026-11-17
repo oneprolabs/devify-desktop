@@ -140,6 +140,13 @@ fn save(app_data: &Path, snapshot: &Snapshot) -> Result<(), String> {
     Ok(())
 }
 
+/// Test-only writer: the cache layout is private to this module, so other modules' tests
+/// ask for a snapshot through here instead of rebuilding the file by hand.
+#[cfg(test)]
+pub(crate) fn write_snapshot(app_data: &Path, snapshot: &Snapshot) {
+    save(app_data, snapshot).unwrap();
+}
+
 /// The cached snapshot, but only when it belongs to the configured server.
 pub fn effective(app_data: &Path, base_url: &str) -> Option<Snapshot> {
     let snapshot = load(app_data)?;

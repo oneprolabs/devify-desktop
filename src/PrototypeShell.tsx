@@ -26,7 +26,7 @@ import { Feedback, FeedbackSettings } from './Feedback';
 import { requestFeedback } from './desktopInvoke';
 import { registerDevifyDevice } from './devifyDevice';
 import { clearTaskSnapshot } from './taskSnapshot';
-import { refreshEntitlements } from './entitlements';
+import { refreshEntitlements, useInternalAccount } from './entitlements';
 import { shouldApplyAuthExpired } from './authEvents';
 import './prototype-shell.css';
 import './reference-theme.css';
@@ -253,6 +253,9 @@ export default function PrototypeShell() {
     void refreshEntitlements();
   }, [authState]);
   const handleChatReady = useCallback(() => setChatReady(true), []);
+  // Agent 集成 (local summaries plus the access kit) is reserved for internal accounts, so both
+  // of its settings pages disappear with the entitlement instead of showing an empty shell.
+  const { internal: internalAccount } = useInternalAccount();
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('connectors');
   const [wechatGuide, setWechatGuide] = useState(false);
   const [wechatGuideEdit, setWechatGuideEdit] = useState(false);
@@ -260,6 +263,8 @@ export default function PrototypeShell() {
   const wechatInstall = useConnectorDetect('wechat');
   const wizardBlocked = !wechatInstall.checking && !wechatInstall.usable;
   const wizardOrder = ['wizard-method', 'wizard-permission', 'wizard-account', 'wizard-key', 'wizard-import', 'wx-connect-decrypt', 'wizard-done'];
+  const settingsNav = (wechatGuide ? wizardSettingsPages : settingsPages)
+    .filter(item => internalAccount || (item.id !== 'agent' && item.id !== 'history'));
   const openSettings = (page: SettingsPage, guide = false, edit = guide) => { setSettingsPage(page); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardStep('wizard-method'); setSection('settings'); };
   const setWizard = (step: string) => {
     setWizardStep(step);
@@ -331,11 +336,11 @@ export default function PrototypeShell() {
       </>}
       {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
       {section === 'settings' && <div className="prototype-settings-layout">
-        <header className="prototype-settings-breadcrumb">设置 <span>/</span> {(wechatGuide ? wizardSettingsPages : settingsPages).find(item => item.id === settingsPage)?.label ?? ''}</header>
+        <header className="prototype-settings-breadcrumb">设置 <span>/</span> {settingsNav.find(item => item.id === settingsPage)?.label ?? ''}</header>
         <div className="prototype-settings">
         <aside className="prototype-settings-nav">
           <h1>设置</h1>
-          {(wechatGuide ? wizardSettingsPages : settingsPages).map((item, index, list) => {
+          {settingsNav.map((item, index, list) => {
             const divider = !wechatGuide && item.group === 'local' && list[index - 1]?.group === 'main';
             return <Fragment key={item.id}>
               {divider && <div className="prototype-settings-divider" aria-hidden="true"/>}
@@ -361,8 +366,8 @@ export default function PrototypeShell() {
           {settingsPage === 'analysis' && <AnalysisSettings />}
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
-          {settingsPage === 'history' && <HistoryPage />}
-          {settingsPage === 'agent' && <AgentHub />}
+          {settingsPage === 'history' && internalAccount && <HistoryPage />}
+          {settingsPage === 'agent' && internalAccount && <AgentHub />}
           {settingsPage === 'feedback' && <FeedbackSettings />}
           {settingsPage === 'about' && <About />}
         </div>
