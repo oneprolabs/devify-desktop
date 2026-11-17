@@ -2673,10 +2673,10 @@ async fn devify_upload_selected(
         if !message_selection.is_empty() { return Err("首次历史上传请选择整段记录。".into()); }
         let cache = decrypt::cache_dir(&app_data(&app), &account_id);
         for username in &usernames {
-            if settings.sync.cursors.get(&account_id).is_some_and(|items| items.contains_key(username)) {
+            if settings.sync.cursors_for_owner(&owner).is_some_and(|items| items.contains_key(username)) {
                 return Err("所选会话已有自动同步记录，不能重新设置首次范围。".into());
             }
-            if settings.upload_queue.iter().any(|job| job.account_id == account_id && job.initial_baselines.contains_key(username)) {
+            if settings.upload_queue.iter().any(|job| upload_job_in_sync_scope(job, &owner) && job.initial_baselines.contains_key(username)) {
                 return Err("所选会话已有尚未完成的首次历史上传，请先处理该任务。".into());
             }
             let (time, local_id) = query::latest_position(&cache, username)?.ok_or("所选会话没有本地消息。")?;
@@ -2749,6 +2749,7 @@ async fn devify_upload_selected(
         batch_id: None,
         owner: Some(owner.clone()),
         create_started: Some(false),
+        create_key: None,
         package_digest: None,
         verified_completion_digest: None,
         legacy_failure_confirmed: false,
@@ -2825,7 +2826,7 @@ async fn devify_upload_retry_preview(
         .cloned()
         .ok_or_else(|| "找不到上传任务。".to_string())?;
     let scope = job.retry_scope(&settings)?.clone();
-    if job.owner.is_none() || (job.batch_id.is_none() && job.create_started != Some(false)) {
+    if job.owner.is_none() || (job.batch_id.is_none() && job.create_started != Some(false) && !job.can_recover_create()) {
         return Err("无法确认原任务的账号或服务端批次，请核对后重新创建采集任务。".into());
     }
     if job.batch_id.is_some() && job.package_digest.is_none() {
@@ -3105,7 +3106,7 @@ async fn devify_upload_retry(
     if job.manual_fingerprint.as_deref().is_some_and(|old| old != fingerprint) {
         return Err("本批消息或附件已变化，无法安全重试；请重新创建采集任务。".into());
     }
-    if job.owner.is_none() || (job.batch_id.is_none() && job.create_started != Some(false)) {
+    if job.owner.is_none() || (job.batch_id.is_none() && job.create_started != Some(false) && !job.can_recover_create()) {
         return Err("无法确认原任务的账号或服务端批次，请核对后重新创建采集任务。".into());
     }
     if job.batch_id.is_some() && job.package_digest.is_none() {
@@ -3166,7 +3167,7 @@ async fn devify_upload_retry(
         Some(retry_base_url),
         Some(fingerprint),
         retry_selection,
-        UploadTrigger::Manual,
+        if job.id.starts_with("sync-") { UploadTrigger::Unknown } else { UploadTrigger::Manual },
         cloud_retry,
     )
     .await;
@@ -3391,20 +3392,21 @@ async fn devify_upload_wechat(
         let job = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
         validate_owned_job(current, job, &owner, &token, &scope)?;
         if desktop_credentials::load(&data, &owner.base_url)?.access != token { return Err("登录状态已改变。".into()); }
-        if cloud_retry.is_some() {
-            if job.package_digest.as_deref() != Some(digest.as_str()) { return Err("无法确认原始归档完全一致，请重新创建采集任务。".into()); }
+        if cloud_retry.is_some() || (job.status == "failed" && job.can_recover_create()) {
+            if !job.matches_create_package(&key, &digest) {
+                return Err("原始归档或批次标识已变化，无法安全恢复。".into());
+            }
         } else if job.batch_id.is_some() || job.create_started != Some(false) {
             return Err("无法确认服务端是否已有批次，请核对后重新创建采集任务。".into());
         }
         let job = current.upload_queue.iter_mut().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
         job.create_started = Some(true);
+        job.create_key = Some(key.clone());
         job.package_digest = Some(digest.clone());
         Ok(())
     })?;
-    // Redirects stay disabled: a 3xx on the create/upload call must not silently
-    // resend a whole package elsewhere. The batch flow owns its own retry state
-    // machine (`create_started`, package digests), so these calls are not retried
-    // here — replaying one could duplicate a batch or an archive.
+    // Only batch creation is safe to repeat: the server resolves an existing
+    // batch atomically using the same user, space and idempotency key.
     let client = http_client::upload();
     let upload_platform = if settings.devify.platform.is_empty() {
         settings::default_platform()
@@ -3428,10 +3430,17 @@ async fn devify_upload_wechat(
     if let Some(auth) = &cloud_retry {
         validate_live_cloud_retry(&data, auth)?;
     }
-    let created = request.send_traced(&data, diagnostics::Module::Upload).await.map_err(|error| {
-        if cloud_retry.is_some() { "创建上传批次失败，请检查网络连接。".to_string() }
-        else { format!("创建上传批次失败：{error}") }
-    })?;
+    let retry_request = request.try_clone().ok_or("无法准备创建批次请求。")?;
+    let created = match request.send_traced(&data, diagnostics::Module::Upload).await {
+        Err(error) if error.is_timeout() || error.is_connect() => {
+            validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
+            if let Some(auth) = &cloud_retry {
+                validate_live_cloud_retry(&data, auth)?;
+            }
+            retry_request.send_traced(&data, diagnostics::Module::Upload).await
+        }
+        result => result,
+    }.map_err(|error| devify_network_message("创建上传批次失败", &error))?;
     if !created.status().is_success() {
         return Err(format!("创建上传批次失败：{}", created.status()));
     }
@@ -3442,11 +3451,12 @@ async fn devify_upload_wechat(
     let batch = payload.get("data").unwrap_or(&payload);
     let batch_id = batch.get("id").and_then(|v| v.as_i64()).filter(|id| *id > 0)
         .ok_or_else(|| "上传响应缺少批次 ID；请核对服务端记录。".to_string())?;
+    validate_remote_owner(&owner, batch_id, batch, Some(&key))?;
     if cloud_retry.as_ref().is_some_and(|auth| auth.batch_id != batch_id) {
         return Err("服务端返回了不同的上传批次，已取消上传。".into());
     }
     // Save the server ID and package coverage before any subsequent network request.
-    // A failed save leaves create_started=true and prevents an ambiguous replay.
+    // A failed save leaves the original digest and key available for recovery.
     settings::update(&data, |current| {
         let job = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
         validate_owned_job(current, job, &owner, &token, &scope)?;
@@ -5011,7 +5021,7 @@ async fn backup_tick(app: &AppHandle) {
     }
     if !continuation_sessions(&value, &value.active_account_id).is_empty() {
         if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok() && network::allow_upload(value.backup.wifi_only) {
-            let _ = perform_chat_sync(app, true, true).await;
+            let _ = perform_chat_sync(app, true, true, None).await;
         }
         return;
     }
@@ -5272,7 +5282,7 @@ async fn reconcile_owned_job(data: &Path, owner: &settings::UploadOwner, token: 
         // independently advance and are intentionally neither compared nor overwritten.
         let mut before = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
         let mut now = serde_json::to_value(live).map_err(|e| e.to_string())?;
-        for field in ["create_started", "package_digest"] {
+        for field in ["create_started", "create_key", "package_digest"] {
             before.as_object_mut().ok_or("任务格式无效。")?.remove(field);
             now.as_object_mut().ok_or("任务格式无效。")?.remove(field);
         }
@@ -5369,6 +5379,7 @@ fn sync_job(
         batch_id: None,
         owner: Some(owner.clone()),
         create_started: Some(false),
+        create_key: None,
         package_digest: None,
         verified_completion_digest: None,
         legacy_failure_confirmed: false,
@@ -5414,10 +5425,7 @@ const SYNC_MESSAGES_PER_BATCH: usize = 1000;
 
 fn validate_sync_owner(value: &settings::AppSettings, owner: &settings::UploadOwner) -> Result<(), String> {
     let account = &owner.account_id;
-    let has_legacy_state = value.sync.cursors.get(account).is_some_and(|v| !v.is_empty())
-        || value.sync.initial_progress.get(account).is_some_and(|v| !v.is_empty())
-        || value.sync.continuation.get(account).is_some_and(|v| !v.is_empty())
-        || value.sync.pending_voice.get(account).is_some_and(|v| !v.is_empty());
+    let has_legacy_state = value.sync.has_progress(account);
     match value.sync.owners.get(account) {
         Some(saved) if saved == owner => Ok(()),
         None if !has_legacy_state => Ok(()),
@@ -5427,9 +5435,9 @@ fn validate_sync_owner(value: &settings::AppSettings, owner: &settings::UploadOw
 
 /// Decrypt the local cache, then upload every allowlisted conversation that has messages
 /// newer than its cursor. The first run of a conversation uploads its full local history.
-async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: bool) -> Result<ChatSyncSummary, String> {
+async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: bool, scope_confirmation: Option<&str>) -> Result<ChatSyncSummary, String> {
     let started = std::time::Instant::now();
-    let result = perform_chat_sync_inner(app, manual, continuation_only).await;
+    let result = perform_chat_sync_inner(app, manual, continuation_only, scope_confirmation).await;
     let _ = diagnostics::record(&app_data(app), diagnostics::EventInput {
         module: diagnostics::Module::Upload,
         operation: if result.is_ok() { diagnostics::Operation::Success } else { diagnostics::Operation::Failure },
@@ -5440,7 +5448,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
     result
 }
 
-async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_only: bool) -> Result<ChatSyncSummary, String> {
+async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_only: bool, scope_confirmation: Option<&str>) -> Result<ChatSyncSummary, String> {
     let data = app_data(app);
     let mut value = settings::load(&data)?;
     ensure_wechat_connected(app)?;
@@ -5485,25 +5493,36 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
         let deadline = tokio::time::Instant::now() + LEGACY_ADOPT_BUDGET;
         let _ = adopt_legacy_upload_history(&data, &sync_owner, &sync_token, deadline).await;
     }
-    value = settings::load(&data)?;
-    validate_sync_owner(&value, &sync_owner)?;
-    reconcile_upload_jobs(app).await;
+    let confirmation = hex::encode(sha2::Sha256::digest(
+        serde_json::to_vec(&sync_owner).map_err(|error| error.to_string())?,
+    ));
+    if scope_confirmation.is_some_and(|value| value != confirmation) {
+        return Err("当前服务、账号或空间已改变，请重新确认同步范围。".into());
+    }
     settings::update(&data, |current| {
         validate_owner_state(current, &sync_owner, &sync_token)?;
         if desktop_credentials::load(&data, &sync_owner.base_url)?.access != sync_token {
             return Err("服务端登录状态已改变。".into());
         }
-        validate_sync_owner(current, &sync_owner)?;
-        // Completed legacy sync jobs may still contain unapplied progress. Never bind
-        // an unknown or different historical owner to the newly verified identity.
-        if current.upload_queue.iter().any(|job| job.account_id == account_id
-            && job.id.starts_with("sync-") && job.owner.as_ref() != Some(&sync_owner)
+        if let Err(error) = validate_sync_owner(current, &sync_owner) {
+            if !current.sync.has_saved_progress(&sync_owner)
+                && scope_confirmation != Some(confirmation.as_str()) {
+                return Err(if manual && !continuation_only {
+                    format!("SYNC_SCOPE_CONFIRM:{confirmation}")
+                } else {
+                    error
+                });
+            }
+        }
+        if current.upload_queue.iter().any(|job| upload_job_in_sync_scope(job, &sync_owner)
+            && job.id.starts_with("sync-") && job.owner.is_none()
             && !legacy_job_is_inert(job)) {
             return Err("已有旧同步任务的云端账号或设备未知或不匹配；已暂停，请先核对。".into());
         }
-        current.sync.owners.entry(account_id.clone()).or_insert_with(|| sync_owner.clone());
+        current.sync.activate_owner(&sync_owner);
         Ok(())
     })?;
+    reconcile_upload_jobs(app).await;
     value = settings::load(&data)?;
 
     let scan = discover::scan();
@@ -5553,7 +5572,7 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
     // owner, scope, or create marker are equally ambiguous and must not be replayed.
     let blocks_sync = |current: &settings::AppSettings, username: &str| {
         current.upload_queue.iter().any(|job| {
-            job.account_id == account_id && job.status != "completed" && !job_never_blocks_sync(job)
+            upload_job_in_sync_scope(job, &sync_owner) && job.status != "completed" && !job_never_blocks_sync(job)
                 && job.scope.as_ref().map_or(true, |scope| scope.usernames.is_empty() || scope.usernames.iter().any(|name| name == username))
                 && (matches!(job.status.as_str(), "queued" | "running" | "processing" | "uploading")
                     || job.owner.as_ref() != Some(&sync_owner)
@@ -5849,7 +5868,7 @@ async fn chat_sync_tick(app: &AppHandle) {
     if !value.sync.enabled {
         return;
     }
-    let Err(error) = perform_chat_sync(app, false, false).await else {
+    let Err(error) = perform_chat_sync(app, false, false, None).await else {
         return;
     };
     // Only persist when the failure reason changed, otherwise every tick rewrites the file.
@@ -5864,8 +5883,8 @@ async fn chat_sync_tick(app: &AppHandle) {
 }
 
 #[tauri::command]
-async fn devify_sync_now(app: AppHandle) -> Result<ChatSyncSummary, String> {
-    perform_chat_sync(&app, true, false).await
+async fn devify_sync_now(app: AppHandle, scope_confirmation: Option<String>) -> Result<ChatSyncSummary, String> {
+    perform_chat_sync(&app, true, false, scope_confirmation.as_deref()).await
 }
 
 #[tauri::command]
@@ -7422,8 +7441,15 @@ fn legacy_adoption_candidate(job: &settings::UploadJob, owner: &settings::Upload
         && job.scope.as_ref().is_some_and(|scope| settings::same_service_url(&scope.base_url, &owner.base_url))
 }
 
-/// A non-completed job that does not stop a conversation from syncing: it either never
-/// reached the server, or the server confirmed its legacy batch ended without ingesting.
+fn upload_job_in_sync_scope(job: &settings::UploadJob, owner: &settings::UploadOwner) -> bool {
+    match &job.owner {
+        Some(saved) => saved == owner,
+        None => job.account_id == owner.account_id && job.space_id == owner.space_id
+            && job.scope.as_ref().map_or(true, |scope| settings::same_service_url(&scope.base_url, &owner.base_url)),
+    }
+}
+
+/// An inert job or a verified legacy failure cannot still ingest messages.
 fn job_never_blocks_sync(job: &settings::UploadJob) -> bool {
     legacy_job_is_inert(job)
         || (job.legacy_failure_confirmed && matches!(job.status.as_str(), "failed" | "cancelled"))

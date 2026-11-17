@@ -155,7 +155,7 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
           : '没有需要同步的新消息');
       await loadConversations(1);
     } catch (reason) {
-      setNotice(String(reason));
+      setNotice(String(reason).startsWith('SYNC_SCOPE_CONFIRM:') ? '请到聊天页确认当前空间的首次同步范围。' : String(reason));
     } finally { setSyncing(false); }
   };
 

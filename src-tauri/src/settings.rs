@@ -177,6 +177,8 @@ pub struct SyncSettings {
     pub enabled: bool,
     /// Identity that owns each account's local sync state. Missing legacy ownership pauses sync.
     pub owners: HashMap<String, UploadOwner>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub saved_progress: Vec<SavedSyncProgress>,
     /// account id → conversation username → upload position.
     pub cursors: HashMap<String, HashMap<String, SyncCursor>>,
     pub initial_progress: HashMap<String, HashMap<String, InitialChunk>>,
@@ -189,6 +191,69 @@ pub struct SyncSettings {
     /// account id → conversation username → voice messages without a successful transcript.
     /// These are retried once automatic transcription becomes available.
     pub pending_voice: HashMap<String, HashMap<String, Vec<VoiceRef>>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SavedSyncProgress {
+    account_id: String,
+    owner: Option<UploadOwner>,
+    cursors: HashMap<String, SyncCursor>,
+    initial_progress: HashMap<String, InitialChunk>,
+    continuation: HashMap<String, ContinuationScope>,
+    pending_voice: HashMap<String, Vec<VoiceRef>>,
+}
+
+impl SyncSettings {
+    pub fn has_progress(&self, account: &str) -> bool {
+        self.cursors.get(account).is_some_and(|v| !v.is_empty())
+            || self.initial_progress.get(account).is_some_and(|v| !v.is_empty())
+            || self.continuation.get(account).is_some_and(|v| !v.is_empty())
+            || self.pending_voice.get(account).is_some_and(|v| !v.is_empty())
+    }
+
+    pub fn has_saved_progress(&self, owner: &UploadOwner) -> bool {
+        self.saved_progress.iter().any(|saved| saved.owner.as_ref() == Some(owner))
+    }
+
+    pub fn cursors_for_owner(&self, owner: &UploadOwner) -> Option<&HashMap<String, SyncCursor>> {
+        if self.owners.get(&owner.account_id) == Some(owner) {
+            return self.cursors.get(&owner.account_id);
+        }
+        self.saved_progress.iter()
+            .find(|saved| saved.owner.as_ref() == Some(owner))
+            .map(|saved| &saved.cursors)
+    }
+
+    pub fn activate_owner(&mut self, owner: &UploadOwner) {
+        let account = &owner.account_id;
+        if self.owners.get(account) == Some(owner) {
+            return;
+        }
+        let restored = self.saved_progress.iter().position(|saved|
+            saved.owner.as_ref() == Some(owner)
+        ).map(|index| self.saved_progress.remove(index));
+        if self.owners.contains_key(account) || self.has_progress(account) {
+            self.saved_progress.push(SavedSyncProgress {
+                account_id: account.clone(),
+                owner: self.owners.remove(account),
+                cursors: self.cursors.remove(account).unwrap_or_default(),
+                initial_progress: self.initial_progress.remove(account).unwrap_or_default(),
+                continuation: self.continuation.remove(account).unwrap_or_default(),
+                pending_voice: self.pending_voice.remove(account).unwrap_or_default(),
+            });
+            self.last_run_at = None;
+            self.last_status = None;
+            self.last_error = None;
+            self.last_message_count = 0;
+        }
+        if let Some(saved) = restored {
+            self.cursors.insert(account.clone(), saved.cursors);
+            self.initial_progress.insert(account.clone(), saved.initial_progress);
+            self.continuation.insert(account.clone(), saved.continuation);
+            self.pending_voice.insert(account.clone(), saved.pending_voice);
+        }
+        self.owners.insert(account.clone(), owner.clone());
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
@@ -205,6 +270,7 @@ impl Default for SyncSettings {
         Self {
             enabled: false,
             owners: HashMap::new(),
+            saved_progress: Vec::new(),
             cursors: HashMap::new(),
             initial_progress: HashMap::new(),
             continuation: HashMap::new(),
@@ -227,8 +293,10 @@ pub struct UploadJob {
     pub batch_id: Option<i64>,
     /// Verified cloud identity at task creation; legacy tasks have no owner.
     pub owner: Option<UploadOwner>,
-    /// Durable intent: once true, a missing response is ambiguous and must not be resent.
+    /// Durable intent: an unknown response requires proof of the original package before replay.
     pub create_started: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_key: Option<String>,
     /// Digest of the exact ZIP, when known; legacy jobs cannot prove an identical archive.
     pub package_digest: Option<String>,
     /// Snapshot digest recorded only after the completed batch's remote owner is verified.
@@ -317,6 +385,15 @@ pub struct UploadScope {
 }
 
 impl UploadJob {
+    pub fn can_recover_create(&self) -> bool {
+        self.batch_id.is_none() && self.create_started == Some(true) && self.package_digest.is_some()
+    }
+
+    pub fn matches_create_package(&self, key: &str, digest: &str) -> bool {
+        self.package_digest.as_deref() == Some(digest)
+            && self.create_key.as_deref().map_or(true, |saved| saved == key)
+    }
+
     pub fn retry_scope<'a>(&'a self, settings: &AppSettings) -> Result<&'a UploadScope, String> {
         if self.status != "failed" {
             return Err("只能重试失败的上传任务。".into());
@@ -357,6 +434,7 @@ impl Default for UploadJob {
             batch_id: None,
             owner: None,
             create_started: None,
+            create_key: None,
             package_digest: None,
             verified_completion_digest: None,
             legacy_failure_confirmed: false,
@@ -932,6 +1010,61 @@ pub fn is_valid_time(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn switching_cloud_identity_preserves_only_matching_progress() {
+        let mut sync = super::SyncSettings::default();
+        let first = super::UploadOwner {
+            base_url: "https://first.example".into(),
+            space_id: "first-space".into(),
+            account_id: "wechat".into(),
+            user_id: 4,
+            device_id: "device".into(),
+        };
+        let second = super::UploadOwner {
+            base_url: "https://other.example".into(),
+            ..first.clone()
+        };
+        let cursor = super::SyncCursor { time: 1, local_id: 2, boundary_count: Some(1) };
+        sync.owners.insert(first.account_id.clone(), first.clone());
+        sync.cursors.entry(first.account_id.clone()).or_default().insert("first-chat".into(), cursor);
+
+        sync.activate_owner(&second);
+        assert!(sync.cursors_for_owner(&second).is_none());
+        assert!(sync.has_saved_progress(&first));
+        sync.cursors.entry(second.account_id.clone()).or_default().insert("second-chat".into(), cursor);
+        let serialized = serde_json::to_string(&sync).unwrap();
+        let mut sync: super::SyncSettings = serde_json::from_str(&serialized).unwrap();
+        sync.activate_owner(&first);
+        assert!(sync.cursors_for_owner(&first).unwrap().contains_key("first-chat"));
+        assert!(sync.cursors_for_owner(&second).unwrap().contains_key("second-chat"));
+        assert!(!sync.cursors_for_owner(&first).unwrap().contains_key("second-chat"));
+
+        let mut unknown = super::SyncSettings::default();
+        unknown.cursors.entry(first.account_id.clone()).or_default().insert("legacy-chat".into(), cursor);
+        unknown.activate_owner(&first);
+        assert!(unknown.cursors_for_owner(&first).is_none());
+        assert_eq!(unknown.saved_progress.len(), 1);
+        assert!(unknown.saved_progress[0].owner.is_none());
+    }
+
+    #[test]
+    fn recovering_create_requires_original_digest_and_any_saved_key() {
+        let mut job = super::UploadJob {
+            create_started: Some(true),
+            create_key: Some("original-key".into()),
+            package_digest: Some("original-digest".into()),
+            ..Default::default()
+        };
+        assert!(job.can_recover_create());
+        assert!(job.matches_create_package("original-key", "original-digest"));
+        assert!(!job.matches_create_package("another-key", "original-digest"));
+        assert!(!job.matches_create_package("original-key", "another-digest"));
+        job.create_key = None;
+        assert!(job.matches_create_package("reconstructed-key", "original-digest"));
+        job.package_digest = None;
+        assert!(!job.can_recover_create());
+    }
     use super::*;
 
     #[test]

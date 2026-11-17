@@ -2,7 +2,7 @@ import { apiBaseUrl } from './serviceUrl.ts';
 
 export type UploadScope = { usernames: string[]; since: number | null; until: number | null; base_url: string; message_selection?: Record<string, unknown[]> };
 export type UploadOwner = { base_url: string; space_id: string; account_id: string; user_id: number; device_id: string };
-export type UploadJob = { id: string; account_id: string; space_id: string; batch_id: number | null; status: string; message: string; created_at: string; updated_at: string; scope?: UploadScope | null; owner?: UploadOwner | null; create_started?: boolean | null; manual_group?: string | null; manual_index?: number; manual_total?: number };
+export type UploadJob = { id: string; account_id: string; space_id: string; batch_id: number | null; status: string; message: string; created_at: string; updated_at: string; scope?: UploadScope | null; owner?: UploadOwner | null; create_started?: boolean | null; create_key?: string | null; package_digest?: string | null; manual_group?: string | null; manual_index?: number; manual_total?: number };
 export type TaskSettings = { active_account_id?: string; devify?: { base_url?: string; active_space_id?: string | null; device_id?: string; device_label?: string }; upload_queue?: UploadJob[] };
 export type AnalysisSummary = { state?: string; job_count?: number; event_count?: number; running?: boolean; failed?: boolean; partial?: boolean; retried?: boolean; duration_seconds?: number | null };
 export type CloudBatch = { id: number; uuid: string; space_id: string; uploaded_by_id: number | null; source_account_id: string; device_id: string; platform: string; trigger: string; status: string; error_message: string; message_count: number; duplicate_count: number; conversation_count: number; image_count: number; analysis_summary: AnalysisSummary | null; created_at: string; updated_at: string; archive_received_at: string | null; parse_started_at: string | null; completed_at: string | null };
@@ -213,9 +213,11 @@ export function analysisLabel(summary: AnalysisSummary | null | undefined): stri
   return labels[summary.state ?? ''] ?? '状态未知';
 }
 export function retryCandidate(settings: TaskSettings, id: string, userId: number | null, deviceId: string | null): UploadJob | undefined {
-  // A missing or true flag means a create request may already have succeeded.
-  // Retrying could duplicate an upload if its package or login has since changed.
-  return visibleLocalJobs(settings, userId, deviceId).find(job => job.id === id && job.status === 'failed' && job.create_started === false);
+  return visibleLocalJobs(settings, userId, deviceId).find(job => job.id === id && job.status === 'failed'
+    && (job.create_started === false || canRecoverCreate(job)));
+}
+export function canRecoverCreate(job: UploadJob): boolean {
+  return job.batch_id == null && job.create_started === true && Boolean(job.package_digest);
 }
 export function cloudRetryCandidate(settings: TaskSettings, batch: CloudBatch, userId: unknown, deviceId: string | null, id: string): UploadJob | undefined {
   if (!Number.isSafeInteger(userId) || (userId as number) <= 0 || batch.uploaded_by_id !== userId || batch.status !== 'failed') return undefined;
@@ -225,5 +227,5 @@ export function cloudRetryCandidate(settings: TaskSettings, batch: CloudBatch, u
   return linkedLocalJobs(batch, settings, deviceId).find(job => job.id === id && job.status === 'failed' && ownerMatches(job, settings, userId as number, deviceId));
 }
 export function sameRetryJob(a: UploadJob, b: UploadJob): boolean {
-  return a.id === b.id && a.account_id === b.account_id && a.space_id === b.space_id && a.batch_id === b.batch_id && a.create_started === b.create_started && JSON.stringify(a.scope) === JSON.stringify(b.scope) && JSON.stringify(a.owner) === JSON.stringify(b.owner);
+  return a.id === b.id && a.account_id === b.account_id && a.space_id === b.space_id && a.batch_id === b.batch_id && a.create_started === b.create_started && a.create_key === b.create_key && a.package_digest === b.package_digest && JSON.stringify(a.scope) === JSON.stringify(b.scope) && JSON.stringify(a.owner) === JSON.stringify(b.owner);
 }
