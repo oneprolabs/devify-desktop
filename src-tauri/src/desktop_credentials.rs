@@ -18,6 +18,10 @@ pub struct Credentials {
     pub base_url: String,
     pub access: String,
     pub refresh: String,
+    #[serde(default)]
+    pub device_session: Option<String>,
+    #[serde(default)]
+    pub session_device_id: Option<String>,
 }
 
 pub fn load(app_data: &Path, base_url: &str) -> Result<Credentials, String> {

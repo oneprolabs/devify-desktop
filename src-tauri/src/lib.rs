@@ -235,6 +235,15 @@ fn access_token_claim(access: &str, claim: &str) -> Option<String> {
         })
 }
 
+fn device_session_from_response(data: &serde_json::Value, device_id: &str) -> Result<(Option<String>, Option<String>), String> {
+    match data.get("session") {
+        None | Some(serde_json::Value::Null) => Ok((None, None)),
+        Some(serde_json::Value::String(session)) if !session.is_empty() && !device_id.is_empty() =>
+            Ok((Some(session.clone()), Some(device_id.to_string()))),
+        _ => Err("设备会话响应无效，请稍后重试。".into()),
+    }
+}
+
 /// Uploads hold a read lease over the fixed credential/context; identity changes fail
 /// rather than switching the user, service or device in the middle of an upload.
 pub(crate) static UPLOAD_IDENTITY_LOCK: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
@@ -269,17 +278,19 @@ async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_ge
     {
         return Ok(access.to_string());
     }
-    let refresh = if tokens.refresh.is_empty() {
+    let refresh = if tokens.refresh.is_empty() && tokens.device_session.is_none() {
         return Err("服务端刷新令牌不存在，请重新登录。".into());
     } else {
         &tokens.refresh
     };
+    let (path, body) = match (&tokens.device_session, &tokens.session_device_id) {
+        (Some(session), Some(device_id)) if !session.is_empty() && !device_id.is_empty() =>
+            ("/api/v1/auth/desktop/session/refresh", serde_json::json!({"session": session, "device_id": device_id})),
+        _ => ("/api/v1/auth/token/refresh", serde_json::json!({"refresh": refresh})),
+    };
     let response = http_client::strict()
-        .post(format!(
-            "{}/api/v1/auth/token/refresh",
-            base_url.trim_end_matches('/')
-        ))
-        .json(&serde_json::json!({"refresh": refresh}))
+        .post(format!("{}{path}", base_url.trim_end_matches('/')))
+        .json(&body)
         .send_traced_retrying(app_data, diagnostics::Module::Auth, RetryPolicy::WRITE)
         .await
         .map_err(|e| {
@@ -301,12 +312,13 @@ async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_ge
     let payload: serde_json::Value = response
         .json()
         .await
-        .map_err(|e| format!("读取刷新响应失败：{e}"))?;
+        .map_err(|e| DevifyTokenError::Unavailable(format!("读取刷新响应失败：{e}")))?;
     let data = payload.get("data").unwrap_or(&payload);
     let new_access = data
         .get("access")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "刷新响应缺少 access。".to_string())?;
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| DevifyTokenError::Unavailable("刷新响应缺少有效的 access。".into()))?;
     tokens.access = new_access.to_string();
     if let Some(new_refresh) = data.get("refresh").and_then(|v| v.as_str()) {
         tokens.refresh = new_refresh.to_string();
@@ -3737,9 +3749,15 @@ async fn devify_auth_callback(
         .and_then(|v| v.as_str())
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "token 响应缺少 refresh。".to_string())?;
+    let device_id = data.get("device_id").and_then(|v| v.as_str())
+        .map(str::to_string).or_else(|| access_token_claim(access, "device_id")).unwrap_or_default();
+    // New servers return the durable device-session secret in the PKCE exchange.
+    // Save it atomically with the JWT pair so the first refresh does not need to
+    // create a second session (which could invalidate the just-issued token pair).
+    let (device_session, session_device_id) = device_session_from_response(data, &device_id)?;
     let app_data = app_data(&app);
     let credentials = desktop_credentials::Credentials {
-        base_url: pending.base_url.clone(), access: access.to_string(), refresh: refresh.to_string(),
+        base_url: pending.base_url.clone(), access: access.to_string(), refresh: refresh.to_string(), device_session, session_device_id,
     };
     settings::with_identity(&app_data, |current| {
         if current.devify.resolved_base_url()? != pending.base_url
@@ -3748,8 +3766,6 @@ async fn devify_auth_callback(
         }
         Ok(())
     })?;
-    let device_id = data.get("device_id").and_then(|v| v.as_str())
-        .map(str::to_string).or_else(|| access_token_claim(access, "device_id")).unwrap_or_default();
     let mut device_changed = false;
     settings::update_identity(&app_data, |current| {
         let (stored, generation) = desktop_credentials::load_with_generation(&app_data, &pending.base_url)?;
@@ -3978,7 +3994,47 @@ struct DevifyDeviceResult {
 /// the web console's 设备与设置 page.
 #[tauri::command]
 async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, String> {
-    devify_device_register_for(app, None).await
+    let mut result = devify_device_register_for(app.clone(), None).await?;
+    let data = app_data(&app);
+    let base = settings::load(&data)?.devify.resolved_base_url()?;
+    let (_, generation) = establish_device_session(&data, &base, &result).await?;
+    result.generation = generation;
+    Ok(result)
+}
+
+async fn establish_device_session(data: &Path, base: &str, result: &DevifyDeviceResult) -> Result<(desktop_credentials::Credentials, u64), String> {
+    let _refresh_guard = CREDENTIAL_REFRESH_LOCK.lock().await;
+    let config = settings::load(data)?;
+    let (mut credentials, generation) = desktop_credentials::load_with_generation(data, base)?;
+    if generation != result.generation || config.devify.resolved_base_url()? != base
+        || config.devify.device_id != result.device_id {
+        return Err("设备登记的登录状态已改变。".into());
+    }
+    let mut committed_generation = generation;
+    if credentials.device_session.is_none() {
+        let original = credentials.clone();
+        let response = http_client::strict().post(format!("{base}/api/v1/auth/desktop/session"))
+            .bearer_auth(&credentials.access)
+            .json(&serde_json::json!({"device_id": result.device_id}))
+            .send_traced_retrying(&data, diagnostics::Module::Auth, RetryPolicy::WRITE).await
+            .map_err(|e| devify_network_message("建立设备登录会话失败", &e))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND { return Ok((credentials, generation)); }
+        if !response.status().is_success() { return Err(format!("建立设备登录会话失败：{}", response.status())); }
+        let value: serde_json::Value = response.json().await.map_err(|e| format!("读取设备会话失败：{e}"))?;
+        let value = value.get("data").unwrap_or(&value);
+        let secret = value.get("session").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).ok_or("设备会话响应无效。")?;
+        credentials.device_session = Some(secret.to_string());
+        credentials.session_device_id = Some(result.device_id.clone());
+        credentials.access = value.get("access").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).ok_or("设备会话缺少访问令牌。")?.to_string();
+        if let Some(refresh) = value.get("refresh").and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+            credentials.refresh = refresh.to_string();
+        }
+        if !desktop_credentials::save_if_current(&data, generation, &original, &credentials)? {
+            return Err("登录状态已改变，请重试。".into());
+        }
+        committed_generation = generation.wrapping_add(1);
+    }
+    Ok((credentials, committed_generation))
 }
 
 async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_credentials::Credentials, u64)>) -> Result<DevifyDeviceResult, String> {
@@ -4164,7 +4220,7 @@ async fn devify_login_password(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "登录响应缺少 refresh token。".to_string())?;
     let credentials = desktop_credentials::Credentials {
-        base_url: base_url.clone(), access: access.to_string(), refresh: refresh.to_string(),
+        base_url: base_url.clone(), access: access.to_string(), refresh: refresh.to_string(), device_session: None, session_device_id: None,
     };
     settings::with_identity(&data, |current| {
         if current.devify.resolved_base_url()? != base_url
@@ -4175,7 +4231,16 @@ async fn devify_login_password(
     })?;
     let committed_generation = auth_generation.wrapping_add(1);
     let device = devify_device_register_for(app.clone(), Some((&credentials, committed_generation))).await.ok();
-    let device_generation = device.as_ref().map(|value| value.generation).unwrap_or(committed_generation);
+    let mut device_generation = device.as_ref().map(|value| value.generation).unwrap_or(committed_generation);
+    // Complete device-session migration before reporting a password login as
+    // finished, preserving the same generation/identity checks as PKCE login.
+    let mut credentials = credentials;
+    if let Some(device) = &device {
+        if let Ok((stored, generation)) = establish_device_session(&data, &base_url, device).await {
+            credentials = stored;
+            device_generation = generation;
+        }
+    }
     let mut completed_generation = None;
     let _ = ensure_active_space_for(&app, Some((&credentials, device_generation)), &mut completed_generation).await;
     if !desktop_credentials::load_with_generation(&data, &base_url).ok().as_ref()
@@ -4193,12 +4258,19 @@ async fn devify_login_password(
 }
 
 #[tauri::command]
-fn devify_logout(app: AppHandle) -> Result<(), String> {
-    desktop_credentials::clear(&app_data(&app))?;
-    // Signing out must close the loopback port immediately, not on the next tick.
-    tauri::async_runtime::spawn(async move {
-        reconcile_local_service(&app).await;
-    });
+async fn devify_logout(app: AppHandle) -> Result<(), String> {
+    let data = app_data(&app);
+    let base = settings::load(&data)?.devify.resolved_base_url()?;
+    let stored = desktop_credentials::load(&data, &base).ok();
+    desktop_credentials::clear(&data)?;
+    reconcile_local_service(&app).await;
+    if let Some(credentials) = stored {
+        if let (Some(secret), Some(device_id)) = (credentials.device_session, credentials.session_device_id) {
+            let _ = http_client::strict().delete(format!("{base}/api/v1/auth/desktop/session/refresh"))
+                .json(&serde_json::json!({"device_id": device_id, "session": secret}))
+                .send().await;
+        }
+    }
     Ok(())
 }
 
