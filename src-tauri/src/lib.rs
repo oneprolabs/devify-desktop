@@ -7857,7 +7857,6 @@ pub fn run() {
             feedback::diagnostic_record,
             feedback::feedback_submit,
             feedback::feedback_list,
-            feedback::feedback_export,
             connector_detect,
             update_begin_install,
             update_upload_accounts,

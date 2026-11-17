@@ -258,9 +258,8 @@ The desktop uploads chat archives through Devify's HTTP API; it does not send th
 和请求期间的服务端日志携带该 ID，可据此关联排查。重试会生成新请求 ID，
 反馈编号等业务幂等键保持不变。
 
-草稿按服务端和登录用户保存在本机。提交失败可重试原反馈；也可「保存诊断包」
-导出 ZIP 到下载目录。在线反馈发送至界面显示的当前 Devify 实例，需登录且服务端
-已部署反馈模块；处理状态与回复在「我的反馈」查看。
+草稿按服务端和登录用户保存在本机，提交失败可重试原反馈。在线反馈发送至界面显示的
+当前 Devify 实例，需登录且服务端已部署反馈模块；处理状态与回复在「我的反馈」查看。
 
 Devify 管理端入口为 `/management/feedback`；部署需运行数据库迁移、挂载私有
 附件目录并登记附件清理任务，详见 Devify 仓库 `docs/feedback.md`。
