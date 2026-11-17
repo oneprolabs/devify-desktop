@@ -83,6 +83,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
   const [syncNoticeError, setSyncNoticeError] = useState(false);
+  const [syncScopeConfirmation, setSyncScopeConfirmation] = useState<string | null>(null);
   const [syncNoticePending, setSyncNoticePending] = useState(false);
   const [syncToastVisible, setSyncToastVisible] = useState(false);
   const [syncBatchIds, setSyncBatchIds] = useState<number[]>([]);
@@ -213,22 +214,31 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     return () => window.clearInterval(timer);
   }, [refreshUploadState, activeUploads.length, syncNoticePending]);
 
-  const syncNow = async () => {
+  const syncNow = async (scopeConfirmation?: string) => {
     if (syncing) return;
-    setSyncBatchIds([]); setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticePending(false); setSyncToastVisible(true);
+    setSyncScopeConfirmation(null); setSyncBatchIds([]); setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticePending(false); setSyncToastVisible(true);
     try {
-      const result = await invoke<SyncResult>('devify_sync_now');
+      const result = await invoke<SyncResult>('devify_sync_now', { scopeConfirmation });
       setSyncNoticeError(Boolean(result.error));
       const ids = result.batch_ids ?? [];
       setSyncBatchIds(result.error ? [] : ids);
       setSyncNoticePending(!result.error && ids.length > 0);
       setSyncNotice(result.error
-        ? `已提交 ${result.message_count} 条记录；部分会话未完成，请查看任务。`
+        ? (result.message_count ? `已提交 ${result.message_count} 条记录，部分会话未完成。 ` : '本次未提交记录。') + syncErrorMessage(result.error)
         : result.message_count
           ? ids.length ? `已提交 ${result.message_count} 条记录，等待服务端处理。` : `已提交 ${result.message_count} 条记录，请在任务中查看状态。`
           : '没有需要提交的新记录。');
       await refreshUploadState();
-    } catch (reason) { setSyncNoticeError(!String(reason).includes('该账号正在上传')); setSyncNotice(syncErrorMessage(reason)); }
+    } catch (reason) {
+      const confirmation = /^SYNC_SCOPE_CONFIRM:([a-f0-9]{64})$/.exec(String(reason));
+      setSyncNoticeError(!String(reason).includes('该账号正在上传'));
+      if (confirmation) {
+        setSyncScopeConfirmation(confirmation[1]);
+        setSyncNotice('当前账号和空间没有可用的同步进度。请先检查首次上传范围，再开始同步。');
+      } else {
+        setSyncNotice(syncErrorMessage(reason));
+      }
+    }
     finally { setSyncing(false); }
   };
 
@@ -439,12 +449,17 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             <button type="button" className="primary" onClick={onSchedule}>备份周期</button>
           </div>
         </div>}
-        {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
+        {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}${syncScopeConfirmation ? ' is-confirmation' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
           <span className={`sync-feedback-icon${syncing || syncNoticePending ? ' is-loading' : ''}`} aria-hidden="true">{syncing || syncNoticePending ? '' : syncNoticeError ? '!' : '✓'}</span>
           <span className="sync-feedback-text">{syncing ? '正在提交记录…' : syncNotice}</span>
-          {!syncing && (syncNoticeError || syncNotice.includes('后台上传')) && <button type="button" onClick={onOpenTasks}>查看任务</button>}
-          {syncNoticeError && <button type="button" onClick={() => requestFeedback('upload', 'chat', syncBatchIds.slice(0, 20))}>反馈此问题</button>}
-          <button type="button" onClick={() => setSyncToastVisible(false)} aria-label="关闭提示">×</button>
+          {syncScopeConfirmation ? <div className="sync-feedback-actions">
+            <button type="button" onClick={onOpenWhitelist}>检查上传范围</button>
+            <button type="button" onClick={() => void syncNow(syncScopeConfirmation)}>确认并开始同步</button>
+          </div> : <>
+            {!syncing && (syncNoticeError || syncNotice.includes('后台上传')) && <button type="button" onClick={onOpenTasks}>查看任务</button>}
+            {syncNoticeError && <button type="button" onClick={() => requestFeedback('upload', 'chat', syncBatchIds.slice(0, 20))}>反馈此问题</button>}
+          </>}
+          <button type="button" className="sync-feedback-close" onClick={() => setSyncToastVisible(false)} aria-label="关闭提示">×</button>
         </div>}
         <WeChatLocal
           sessionRevision={sessionRevision}
