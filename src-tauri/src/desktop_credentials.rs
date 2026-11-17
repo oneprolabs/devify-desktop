@@ -42,6 +42,10 @@ fn load_unlocked(app_data: &Path, base_url: &str) -> Result<Credentials, String>
 
 pub fn clear(app_data: &Path) -> Result<(), String> {
     let _identity = crate::UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "上传期间无法更改登录状态，请稍后重试。")?;
+    clear_with_identity_lock(app_data)
+}
+
+pub(crate) fn clear_with_identity_lock(app_data: &Path) -> Result<(), String> {
     let mut guard = CREDENTIALS_LOCK.lock().map_err(|_| "无法清除服务端凭据。")?;
     clear_unlocked(app_data)?;
     *guard = guard.wrapping_add(1);

@@ -611,12 +611,12 @@ async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_cre
         || current.devify.active_space_id != settings.devify.active_space_id
         || current.devify.device_id != settings.devify.device_id
         || current.active_account_id != settings.active_account_id { return None; }
+    drop(identity);
     let payload = fixed_identity_get(&data, &base, &token, "/api/v1/spaces").await.ok()?;
     let spaces: Vec<DevifySpace> = serde_json::from_value(payload).ok()?;
     let known = |id: &str| spaces.iter().any(|space| space.id == id);
     let chosen = settings.devify.active_space_id.clone().filter(|id| known(id))
         .or_else(|| pick_personal_space(&spaces));
-    drop(identity);
     let mut space_changed = false;
     settings::update_identity(&data, |current| {
         let (stored, current_generation) = desktop_credentials::load_with_generation(&data, &base)?;
@@ -4260,9 +4260,15 @@ async fn devify_login_password(
 #[tauri::command]
 async fn devify_logout(app: AppHandle) -> Result<(), String> {
     let data = app_data(&app);
-    let base = settings::load(&data)?.devify.resolved_base_url()?;
+    let _identity = UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "正在处理上传任务，请稍后再退出登录。")?;
+    let settings = settings::load(&data)?;
+    if logout_has_active_upload(&settings.upload_queue) {
+        return Err("仍有上传任务未完成，请等待任务完成后再退出登录。".into());
+    }
+    let base = settings.devify.resolved_base_url()?;
     let stored = desktop_credentials::load(&data, &base).ok();
-    desktop_credentials::clear(&data)?;
+    desktop_credentials::clear_with_identity_lock(&data)?;
+    drop(_identity);
     reconcile_local_service(&app).await;
     if let Some(credentials) = stored {
         if let (Some(secret), Some(device_id)) = (credentials.device_session, credentials.session_device_id) {
@@ -4272,6 +4278,27 @@ async fn devify_logout(app: AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn logout_has_active_upload(jobs: &[settings::UploadJob]) -> bool {
+    jobs.iter().any(|job| matches!(job.status.as_str(), "queued" | "running" | "uploading" | "processing"))
+}
+
+#[cfg(test)]
+mod logout_queue_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_only_unfinished_uploads() {
+        for status in ["queued", "running", "uploading", "processing"] {
+            let job = settings::UploadJob { status: status.into(), ..Default::default() };
+            assert!(logout_has_active_upload(&[job]));
+        }
+        for status in ["completed", "failed", "cancelled"] {
+            let job = settings::UploadJob { status: status.into(), ..Default::default() };
+            assert!(!logout_has_active_upload(&[job]));
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]

@@ -195,11 +195,12 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     if (!isTauri()) { setLoading(false); return; }
     setLoading(true);
     void invoke<AppSettings>('app_settings_get')
-      .then(settings => {
+      .then(async settings => {
         if (!active) return;
-        const id = settings.devify?.active_space_id ?? null;
+        const id = settings.devify?.active_space_id ?? await invoke<string | null>('devify_space_ensure');
+        if (!active) return;
         setSpaceId(id);
-        if (!id) throw new Error('请先在「设置 / 账户」中登录并选择空间。');
+        if (!id) throw new Error('暂时无法读取空间，请检查账户连接后重试。');
         cacheKey = userId === null ? '' : JSON.stringify([settings.devify?.base_url, userId, id, kind]);
         const cached = cacheKey ? readPageSnapshot<{ list: Array<EventItem | ReportItem>; total: number }>(cacheKey) : undefined;
         if (cached) {
