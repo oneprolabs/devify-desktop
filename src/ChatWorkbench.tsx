@@ -58,7 +58,7 @@ function StateDot({ done }: { done: boolean }) {
   </svg>;
 }
 
-export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent }: { startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
+export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
   const [view, setView] = useState<View>('raw');
   // Local summaries are an internal-account feature: without the entitlement the summary tab
   // and its 整理工作内容 entry point disappear, leaving only records and cloud events.
@@ -123,6 +123,11 @@ export function ChatWorkbench({ startFirstBackup, onFirstBackupStarted, onOpenDa
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    if (visible && !wasVisible.current) void load();
+    wasVisible.current = visible;
+  }, [visible, load]);
 
   useEffect(() => {
     let cancelled = false;

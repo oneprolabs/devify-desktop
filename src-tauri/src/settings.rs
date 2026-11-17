@@ -1089,6 +1089,8 @@ mod tests {
                 base_url: "https://app.aimychats.com".into(),
                 access: "access".into(),
                 refresh: "refresh".into(),
+                device_session: None,
+                session_device_id: None,
             },
         )
         .unwrap();

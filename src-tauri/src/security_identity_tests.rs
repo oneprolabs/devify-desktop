@@ -7,7 +7,7 @@ use std::net::TcpListener as StdTcpListener;
 use std::thread;
 
 fn credentials(base: &str, access: &str) -> desktop_credentials::Credentials {
-    desktop_credentials::Credentials { base_url: base.into(), access: access.into(), refresh: "synthetic-refresh".into() }
+    desktop_credentials::Credentials { base_url: base.into(), access: access.into(), refresh: "synthetic-refresh".into(), device_session: None, session_device_id: None }
 }
 
 fn settings_for(data: &Path, base: &str) -> settings::AppSettings {
@@ -236,6 +236,66 @@ fn refresh_server_error_keeps_credentials_and_reports_unavailable() {
     assert!(matches!(error, DevifyTokenError::Unavailable(_)));
     assert!(cleared.is_none());
     assert!(desktop_credentials::load(dir.path(), &base).unwrap() == original);
+    server.join().unwrap();
+}
+
+#[test]
+fn invalid_refresh_response_does_not_log_out_or_discard_credentials() {
+    for body in ["not json", "{}", r#"{"access":""}"#] {
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        settings_for(dir.path(), &base);
+        let original = credentials(&base, "synthetic-expired");
+        desktop_credentials::save(dir.path(), &original).unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            socket.read(&mut request).unwrap();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let mut cleared = None;
+        let error = runtime.block_on(devify_access_token_with_cleanup(dir.path(), &base, &mut cleared)).unwrap_err();
+        assert!(matches!(error, DevifyTokenError::Unavailable(_)));
+        assert!(cleared.is_none());
+        assert!(desktop_credentials::load(dir.path(), &base).unwrap() == original);
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn legacy_credentials_remain_readable_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = "https://example.com";
+    std::fs::write(dir.path().join("devify-credentials.json"), r#"{"base_url":"https://example.com","access":"old","refresh":"old-refresh"}"#).unwrap();
+    let stored = desktop_credentials::load(dir.path(), base).unwrap();
+    assert_eq!(stored.refresh, "old-refresh");
+    assert!(stored.device_session.is_none());
+}
+
+#[test]
+fn expired_access_uses_persistent_device_session() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    settings_for(dir.path(), &base);
+    let mut original = credentials(&base, "expired");
+    original.device_session = Some("device-secret".into());
+    original.session_device_id = Some("mac".into());
+    desktop_credentials::save(dir.path(), &original).unwrap();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        let size = socket.read(&mut request).unwrap();
+        assert!(String::from_utf8_lossy(&request[..size]).starts_with("POST /api/v1/auth/desktop/session/refresh "));
+        let body = r#"{"access":"new-access"}"#;
+        write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut cleared = None;
+    assert_eq!(runtime.block_on(devify_access_token_resolve(dir.path(), &base, &mut cleared, false)).unwrap(), "new-access");
+    assert_eq!(desktop_credentials::load(dir.path(), &base).unwrap().device_session, original.device_session);
     server.join().unwrap();
 }
 

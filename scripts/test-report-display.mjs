@@ -40,7 +40,7 @@ const render = (instance, kind = 'reports') => {
   current = instance;
   instance.index = 0;
   instance.effects = [];
-  const tree = CloudAnalysisPage({ kind });
+  const tree = CloudAnalysisPage({ kind, userId: null });
   for (const effect of instance.effects) effect();
   current = undefined;
   return tree;
@@ -89,6 +89,7 @@ const load = path => {
 };
 const { reportPresentation } = load('../src/reportPresentation.ts');
 mocks['./reportPresentation'] = { reportPresentation };
+mocks['./pageSnapshots'] = load('../src/pageSnapshots.ts');
 const { CloudAnalysisPage } = load('../src/CloudAnalysis.tsx');
 
 const partialWith = '报告未完全生成，以下展示已保存的内容。';
