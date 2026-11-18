@@ -3238,6 +3238,7 @@ const checkMark = (value: boolean | undefined) =>
         const media = !isWhatsApp && !placeholder && base !== 1;
         const imageMessage = !isWhatsApp && base === 3;
         const voiceMessage = !isWhatsApp && base === 34;
+        const videoMessage = !isWhatsApp && base === 43;
         const hit = !!highlightKeyword && contains(message.text, highlightKeyword);
         const selected = selectedMessages.some(item => messageKey(item.session.username, item.message) === messageKey(active?.username ?? '', message));
         const selectMessage = (extend = false) => toggleMessageSelection(message, extend);
@@ -3293,6 +3294,12 @@ const checkMark = (value: boolean | undefined) =>
                   openImage(image);
                   return;
                 }
+                const video = mediaFor(message).find(entry => entry.kind === 'video');
+                if (video && !event.shiftKey && (event.target as HTMLElement).closest('.wxv-bubble')) {
+                  event.stopPropagation();
+                  revealMedia(video);
+                  return;
+                }
                 selectMessage(event.shiftKey);
               }}
               role="button"
@@ -3321,8 +3328,8 @@ const checkMark = (value: boolean | undefined) =>
                 {(onChatState || (active?.is_group && !message.is_self)) && (
                   <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || message.sender || t("未知成员"))}</span>
                 )}
-                <div className={`wxv-bubble ${imageMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
-                  {imageMessage || voiceMessage ? null : placeholder ? (
+                <div className={`wxv-bubble ${imageMessage || videoMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
+                  {imageMessage || voiceMessage || videoMessage ? null : placeholder ? (
                     message.text
                   ) : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
@@ -3372,12 +3379,7 @@ const checkMark = (value: boolean | undefined) =>
                               <span className="wxv-attach-badge">{item.duration ? `${item.duration}″` : t("视频")}</span>
                             </button>
                           ) : (
-                            <span className="wxv-attach-chip">{t("视频")}{item.duration ? ` · ${item.duration}″` : ''}</span>
-                          )}
-                          {item.rel_path && (
-                            <button type="button" className="wxv-attach-link" onClick={() => revealMedia(item)}>
-                              {t("在访达中显示")}
-                            </button>
+                            <span className="wxv-attach-chip">{item.duration ? `${item.duration}″` : t("视频")}</span>
                           )}
                         </div>
                       );

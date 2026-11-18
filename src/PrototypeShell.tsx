@@ -319,9 +319,10 @@ export default function PrototypeShell() {
   return <main className={`prototype-shell${isTauri() && /Mac/.test(navigator.platform) ? ' prototype-shell-macos' : ''}`} onMouseDown={handleWindowDrag}>
     <div className="prototype-titlebar" aria-hidden="true" />
     <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
+      updateVersion={update.status === 'available' && !(section === 'settings' && settingsPage === 'about') ? update.version : undefined}
+      onUpdate={() => { setUpdateDialogOpen(true); void checkForUpdates(true); }}
       onNavigate={next => { if (next !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(next); }} />
     <section className="prototype-content">
-      {update.status === 'available' && !(section === 'settings' && settingsPage === 'about') && <button type="button" className="update-available-notice" onClick={() => { setUpdateDialogOpen(true); void checkForUpdates(true); }}>{t("发现新版本")} {update.version}{t("，查看更新")}</button>}
       {updateDialogOpen && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setUpdateDialogOpen(false); }}>
         <section className="auth-modal update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
           <header className="auth-modal-head"><span id="update-dialog-title">{t("软件更新")}</span><button type="button" aria-label={t("关闭更新")} autoFocus onClick={() => setUpdateDialogOpen(false)}>×</button></header>

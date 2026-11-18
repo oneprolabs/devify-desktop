@@ -464,9 +464,6 @@
 .sidebar-resize-handle:focus-visible { outline: 2px solid #74746e; outline-offset: -2px; }
 .chat-workbench-filters button { white-space: nowrap; }
 
-/* Sits inside the 49px page header row. `top:10px` put the 38px pill's bottom border exactly on
-   the header's border-bottom, so the two lines collided; 6px keeps a clear gap above it. */
-.update-available-notice { position:absolute; z-index:5; top:6px; right:18px; padding:8px 12px; border:1px solid #e6c9e2; border-radius:7px; background:#fff; color:#8e2187; cursor:pointer; }
 .about-update { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin:12px 0 16px; padding:12px 14px; border:1px solid #ecece8; border-radius:10px; background:#fafaf8; }
 .about-update-status { display:flex; align-items:center; gap:10px; flex:1 1 260px; min-width:0; }
 .about-update-status-text { display:flex; flex-direction:column; gap:2px; min-width:0; }
