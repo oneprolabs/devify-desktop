@@ -1,3 +1,4 @@
+import { t } from './locale';
 import { useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 
 const MIN_WIDTH = 280;
@@ -38,5 +39,5 @@ export function SidebarResizeHandle() {
     if (current != null) setSidebarWidth(event.currentTarget, current + (event.key === 'ArrowLeft' ? -10 : 10));
   };
 
-  return <div className="sidebar-resize-handle" role="separator" aria-label="调整列表宽度" aria-orientation="vertical" aria-valuemin={MIN_WIDTH} aria-valuenow={width} tabIndex={0} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }} onKeyDown={onKeyDown}/>;
+  return <div className="sidebar-resize-handle" role="separator" aria-label={t("调整列表宽度")} aria-orientation="vertical" aria-valuemin={MIN_WIDTH} aria-valuenow={width} tabIndex={0} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }} onKeyDown={onKeyDown}/>;
 }

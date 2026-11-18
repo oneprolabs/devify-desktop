@@ -82,6 +82,7 @@ const load = path => {
   const module = { exports: {} };
   const requireMock = id => {
     if (id in mocks) return mocks[id];
+    if (id === './locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
     throw Error(`unexpected import: ${id}`);
   };
   new Function('require', 'module', 'exports', compiled)(requireMock, module, module.exports);

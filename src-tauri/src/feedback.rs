@@ -246,21 +246,48 @@ fn validate(draft: &Draft) -> Result<(), String> {
     }
     image_bytes(draft)?;
     if let Some(value) = &draft.diagnostics {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Snapshot {
-            schema_version: u32,
-            generated_at: String,
-            events: Vec<diagnostics::Event>,
-        }
-        let parsed: Snapshot =
-            serde_json::from_value(value.clone()).map_err(|_| "诊断内容格式无效。")?;
-        if parsed.schema_version != 1
-            || chrono::DateTime::parse_from_rfc3339(&parsed.generated_at).is_err()
-            || parsed.events.len() > 1000
-            || value.to_string().len() > 400 * 1024
-        {
+        if value.to_string().len() > 400 * 1024 {
             return Err("诊断内容过大或无效。".into());
+        }
+        match value.get("schema_version").and_then(|v| v.as_u64()) {
+            // Current format: one greppable text line per record.
+            Some(2) => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct TextSnapshot {
+                    schema_version: u32,
+                    generated_at: String,
+                    lines: Vec<String>,
+                }
+                let parsed: TextSnapshot =
+                    serde_json::from_value(value.clone()).map_err(|_| "诊断内容格式无效。")?;
+                if parsed.schema_version != 2
+                    || chrono::DateTime::parse_from_rfc3339(&parsed.generated_at).is_err()
+                    || parsed.lines.len() > 1000
+                    || parsed.lines.iter().any(|line| line.chars().count() > 4000)
+                {
+                    return Err("诊断内容过大或无效。".into());
+                }
+            }
+            // Drafts saved by earlier versions keep the structured event shape.
+            Some(1) => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Snapshot {
+                    schema_version: u32,
+                    generated_at: String,
+                    events: Vec<diagnostics::Event>,
+                }
+                let parsed: Snapshot =
+                    serde_json::from_value(value.clone()).map_err(|_| "诊断内容格式无效。")?;
+                if parsed.schema_version != 1
+                    || chrono::DateTime::parse_from_rfc3339(&parsed.generated_at).is_err()
+                    || parsed.events.len() > 1000
+                {
+                    return Err("诊断内容过大或无效。".into());
+                }
+            }
+            _ => return Err("诊断内容过大或无效。".into()),
         }
     }
     Ok(())
@@ -446,9 +473,18 @@ fn feedback_data(status: reqwest::StatusCode, body: &str) -> Result<serde_json::
     Ok(parsed.get("data").cloned().unwrap_or(parsed))
 }
 
-fn feedback_form(draft: &Draft, with_environment: bool) -> Result<reqwest::multipart::Form, String> {
-    let mut form =
-        reqwest::multipart::Form::new().text("payload", payload(draft, with_environment).to_string());
+fn feedback_form(
+    draft: &Draft,
+    with_environment: bool,
+    with_diagnostics: bool,
+) -> Result<reqwest::multipart::Form, String> {
+    let mut payload = payload(draft, with_environment);
+    if !with_diagnostics {
+        payload
+            .as_object_mut()
+            .map(|value| value.remove("diagnostics"));
+    }
+    let mut form = reqwest::multipart::Form::new().text("payload", payload.to_string());
     for (index, bytes) in image_bytes(draft)?.into_iter().enumerate() {
         let mime = if bytes.starts_with(b"\x89PNG") {
             "image/png"
@@ -471,12 +507,26 @@ async fn post_feedback(
     base: &str,
     token: &str,
     form: reqwest::multipart::Form,
+    screenshots: usize,
 ) -> Result<(reqwest::StatusCode, String), String> {
+    let url = format!("{base}/api/v1/feedbacks");
     let response = crate::http_client::upload()
-        .post(format!("{base}/api/v1/feedbacks"))
+        .post(&url)
         .bearer_auth(token)
         .multipart(form)
-        .send_traced(root, diagnostics::Module::Feedback)
+        // A multipart body cannot be cloned, so pass the summary explicitly: a
+        // timeout must still name the address and what was being sent.
+        .send_traced_hinted(
+            root,
+            diagnostics::Module::Feedback,
+            diagnostics::request_hint(
+                "POST",
+                &url,
+                Some(format!(
+                    "multipart: payload + {screenshots} screenshot(s), body not captured"
+                )),
+            ),
+        )
         .await
         .map_err(|e| crate::devify_network_message("提交反馈失败，草稿已保留", &e))?;
     let status = response.status();
@@ -487,26 +537,72 @@ async fn post_feedback(
     Ok((status, body))
 }
 
-/// Send one draft, falling back to the legacy body when the server rejects the newer
-/// environment fields. Split from [`feedback_submit`] so tests can drive the real request
-/// bytes without inventing a Tauri app handle.
+/// A server that predates a field rejects it with this message.
+fn unsupported_field(status: reqwest::StatusCode, body: &str) -> bool {
+    status.as_u16() == 400 && body.contains("不支持的诊断字段")
+}
+
+/// Attempts to make in order, each `(host environment, diagnostics)`.
+///
+/// Old servers reject an unknown context key and a server that only knows the
+/// structured diagnostics rejects the text shape, both with the same message.
+/// Shedding one field group at a time keeps whichever half the server supports:
+/// dropping both at once silently loses the host versions as well as the log.
+fn fallback_attempts(draft: &Draft) -> Vec<(bool, bool)> {
+    let mut attempts = vec![(true, true)];
+    if draft.diagnostics.is_some() {
+        // The log is the newest and largest field, so try without it first: a
+        // server that accepts the host environment keeps it in the report.
+        attempts.push((true, false));
+        // Then retry the log against a legacy context, in case the host
+        // versions were what the server rejected.
+        attempts.push((false, true));
+    }
+    attempts.push((false, false));
+    attempts
+}
+
+/// Send one draft, degrading gracefully on older servers. Split from
+/// [`feedback_submit`] so tests can drive the real request bytes without
+/// inventing a Tauri app handle.
 async fn send_feedback(
     root: &Path,
     base: &str,
     token: &str,
     draft: &Draft,
 ) -> Result<serde_json::Value, String> {
-    let (status, body) = post_feedback(root, base, token, feedback_form(draft, true)?).await?;
-    // A server that predates the host environment fields rejects unknown context keys.
-    // Resend the legacy body so the report still arrives instead of failing outright.
-    let (status, body) = if status.as_u16() == 400 && body.contains("不支持的诊断字段") {
-        post_feedback(root, base, token, feedback_form(draft, false)?).await?
-    } else {
-        (status, body)
-    };
-    let result = feedback_data(status, &body)?;
+    let screenshots = draft.screenshots.len();
+    let attempts = fallback_attempts(draft);
+    let last = attempts.len() - 1;
+    let mut sent = attempts[0];
+    let mut response = None;
+    for (index, attempt) in attempts.into_iter().enumerate() {
+        sent = attempt;
+        let posted = post_feedback(
+            root,
+            base,
+            token,
+            feedback_form(draft, attempt.0, attempt.1)?,
+            screenshots,
+        )
+        .await?;
+        let retry = index < last && unsupported_field(posted.0, &posted.1);
+        response = Some(posted);
+        if !retry {
+            break;
+        }
+    }
+    let (status, body) = response.expect("the attempt list is never empty");
+    let mut result = feedback_data(status, &body)?;
     if result.get("id").and_then(|v| v.as_str()).is_none() {
         return Err("反馈响应缺少编号，草稿已保留。".into());
+    }
+    // A report that arrives without its log must not be reported as complete:
+    // the form turns this flag into an explicit notice.
+    if !sent.1 && draft.diagnostics.is_some() {
+        if let Some(object) = result.as_object_mut() {
+            object.insert("diagnostics_dropped".into(), serde_json::Value::Bool(true));
+        }
     }
     Ok(result)
 }
@@ -574,8 +670,18 @@ mod tests {
         let value = payload(&draft, true);
         assert!(value.get("contact").is_none());
         assert_eq!(value["context"]["os_version"], draft.environment.os_version);
-        assert_eq!(value["context"]["wechat_version"], draft.environment.wechat_version);
-        assert!(value["context"]["os_version"].as_str().unwrap().chars().count() <= ENVIRONMENT_FIELD_MAX);
+        assert_eq!(
+            value["context"]["wechat_version"],
+            draft.environment.wechat_version
+        );
+        assert!(
+            value["context"]["os_version"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= ENVIRONMENT_FIELD_MAX
+        );
         assert!(validate(&draft).is_ok());
     }
 
@@ -699,6 +805,7 @@ mod tests {
                     crate::devify_http::RequestId::try_from("server-456".to_string()).unwrap(),
                 ),
                 http_status: Some(503),
+                request: None,
             },
         )
         .unwrap();
@@ -718,11 +825,18 @@ mod tests {
             attempted: false,
         };
         assert!(save_edit(root.path(), &draft).is_ok());
-        assert_eq!(payload(&draft, true)["diagnostics"]["events"][0]["batch_id"], 42);
-        assert_eq!(
-            payload(&draft, true)["diagnostics"]["events"][0]["request_id"],
-            "desktop-123"
-        );
+        let value = payload(&draft, true);
+        let lines = value["diagnostics"]["lines"].as_array().unwrap();
+        assert!(lines[0].as_str().unwrap().contains("batch_id=42"));
+        assert!(lines[0]
+            .as_str()
+            .unwrap()
+            .contains("request_id=desktop-123"));
+        assert!(lines[0]
+            .as_str()
+            .unwrap()
+            .contains("server_request_id=server-456"));
+        assert!(lines[0].as_str().unwrap().contains("status=503"));
     }
 
     /// Serve `responses` in order and return the request line, headers and body of each
@@ -822,6 +936,7 @@ mod tests {
         ));
         let value = result.unwrap();
         assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000001");
+        assert!(value.get("diagnostics_dropped").is_none());
 
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 1);
@@ -838,7 +953,9 @@ mod tests {
         assert!(!body_text.contains("contact"));
         assert!(!body_text.contains("old@example.com"));
         assert!(body_text.contains("name=\"screenshots\"; filename=\"screenshot-0\""));
-        assert!(body_text.to_ascii_lowercase().contains("content-type: image/png"));
+        assert!(body_text
+            .to_ascii_lowercase()
+            .contains("content-type: image/png"));
         assert!(body.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
     }
 
@@ -849,8 +966,14 @@ mod tests {
         let server = serve(
             listener,
             vec![
-                (400, r#"{"code":40001,"message":"不支持的诊断字段: os_version"}"#.into()),
-                (200, r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000002"}}"#.into()),
+                (
+                    400,
+                    r#"{"code":40001,"message":"不支持的诊断字段: os_version"}"#.into(),
+                ),
+                (
+                    200,
+                    r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000002"}}"#.into(),
+                ),
             ],
         );
         let root = tempfile::tempdir().unwrap();
@@ -861,7 +984,10 @@ mod tests {
             "secret-token",
             &draft,
         ));
-        assert_eq!(result.unwrap()["id"], "4d1c9f1e-0000-4000-8000-000000000002");
+        assert_eq!(
+            result.unwrap()["id"],
+            "4d1c9f1e-0000-4000-8000-000000000002"
+        );
 
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 2);
@@ -877,6 +1003,116 @@ mod tests {
     }
 
     #[test]
+    fn old_servers_still_receive_the_report_without_text_diagnostics() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        // This server accepts the host versions but not the text log.
+        let server = serve(
+            listener,
+            vec![
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (200, r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000003"}}"#.into()),
+            ],
+        );
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = reproducible_draft();
+        draft.diagnostics = Some(diagnostics::snapshot(root.path(), 0));
+        let result = runtime().block_on(send_feedback(
+            root.path(),
+            &format!("http://{address}"),
+            "secret-token",
+            &draft,
+        ));
+        let value = result.unwrap();
+        assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000003");
+        assert_eq!(value["diagnostics_dropped"], true);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        let first = String::from_utf8_lossy(&requests[0].2).into_owned();
+        let second = String::from_utf8_lossy(&requests[1].2).into_owned();
+        assert!(first.contains(r#""os_version""#));
+        assert!(first.contains(r#""schema_version":2"#));
+        // Only the log is dropped; the environment survives the retry.
+        assert!(second.contains(r#""os_version":"macOS 27.2.1 (26B131)""#));
+        assert!(second.contains(r#""wechat_version":"4.2.0""#));
+        assert!(!second.contains(r#""diagnostics""#));
+        assert!(second.contains(&draft.client_id));
+    }
+
+    #[test]
+    fn old_servers_without_host_versions_keep_the_text_diagnostics() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        // This server rejects the host versions but accepts schema 2 diagnostics.
+        let server = serve(
+            listener,
+            vec![
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (200, r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000004"}}"#.into()),
+            ],
+        );
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = reproducible_draft();
+        draft.diagnostics = Some(diagnostics::snapshot(root.path(), 0));
+        let result = runtime().block_on(send_feedback(
+            root.path(),
+            &format!("http://{address}"),
+            "secret-token",
+            &draft,
+        ));
+        let value = result.unwrap();
+        assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000004");
+        assert!(value.get("diagnostics_dropped").is_none());
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        let second = String::from_utf8_lossy(&requests[1].2).into_owned();
+        let third = String::from_utf8_lossy(&requests[2].2).into_owned();
+        assert!(second.contains(r#""os_version""#));
+        assert!(!second.contains(r#""diagnostics""#));
+        // The third attempt drops only the context fields and keeps the log.
+        assert!(!third.contains(r#""os_version""#));
+        assert!(!third.contains(r#""wechat_version""#));
+        assert!(third.contains(r#""schema_version":2"#));
+    }
+
+    #[test]
+    fn servers_without_either_extension_still_keep_the_report() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = serve(
+            listener,
+            vec![
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (200, r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000005"}}"#.into()),
+            ],
+        );
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = reproducible_draft();
+        draft.diagnostics = Some(diagnostics::snapshot(root.path(), 0));
+        let result = runtime().block_on(send_feedback(
+            root.path(),
+            &format!("http://{address}"),
+            "secret-token",
+            &draft,
+        ));
+        let value = result.unwrap();
+        assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000005");
+        assert_eq!(value["diagnostics_dropped"], true);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 4);
+        let fourth = String::from_utf8_lossy(&requests[3].2).into_owned();
+        assert!(!fourth.contains(r#""os_version""#));
+        assert!(!fourth.contains(r#""diagnostics""#));
+        assert!(fourth.contains(&draft.client_id));
+    }
+
+    #[test]
     fn unsupported_or_unauthenticated_servers_report_actionable_errors() {
         let not_open = feedback_data(reqwest::StatusCode::NOT_FOUND, "").unwrap_err();
         assert!(not_open.contains("尚未开放"), "{not_open}");
@@ -884,7 +1120,8 @@ mod tests {
         assert!(expired.contains("登录已失效"), "{expired}");
         let conflict = feedback_data(reqwest::StatusCode::CONFLICT, "").unwrap_err();
         assert!(conflict.contains("已改变"), "{conflict}");
-        let malformed = feedback_data(reqwest::StatusCode::OK, "<html>not json</html>").unwrap_err();
+        let malformed =
+            feedback_data(reqwest::StatusCode::OK, "<html>not json</html>").unwrap_err();
         assert!(malformed.contains("无效响应"), "{malformed}");
     }
 }

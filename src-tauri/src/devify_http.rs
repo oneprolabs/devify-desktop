@@ -113,6 +113,16 @@ pub trait RequestTrace {
         module: Module,
     ) -> impl std::future::Future<Output = Result<reqwest::Response, reqwest::Error>> + Send;
 
+    /// Same as [`RequestTrace::send_traced`], but with an explicit summary for a
+    /// body that cannot be cloned (multipart/streaming), so a timeout still shows
+    /// the request address and method.
+    fn send_traced_hinted(
+        self,
+        root: &Path,
+        module: Module,
+        hint: diagnostics::RequestInfo,
+    ) -> impl std::future::Future<Output = Result<reqwest::Response, reqwest::Error>> + Send;
+
     /// Send with bounded retries. Every attempt keeps its own `X-Request-ID`, so
     /// the diagnostics file shows the retry chain instead of hiding it.
     fn send_traced_retrying(
@@ -123,56 +133,86 @@ pub trait RequestTrace {
     ) -> impl std::future::Future<Output = Result<reqwest::Response, reqwest::Error>> + Send;
 }
 
+/// One traced attempt. `hint` supplies method/URL/body for bodies that cannot be
+/// cloned; otherwise the summary is read from the builder itself.
+async fn traced_send(
+    builder: reqwest::RequestBuilder,
+    root: &Path,
+    module: Module,
+    hint: Option<diagnostics::RequestInfo>,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let id = new_request_id();
+    let started = std::time::Instant::now();
+    let request = hint.or_else(|| diagnostics::capture_request(&builder));
+    let event = EventInput {
+        module,
+        operation: Operation::Start,
+        code: None,
+        batch_id: None,
+        duration_ms: None,
+        request_id: Some(id.clone()),
+        server_request_id: None,
+        http_status: None,
+        // The body is only kept on the outcome line, where a timeout needs it.
+        request: request.as_ref().map(diagnostics::RequestInfo::without_body),
+    };
+    let _ = diagnostics::record(root, event.clone());
+    let result = builder.header("X-Request-ID", id.0.as_str()).send().await;
+    let mut completed = event;
+    completed.request = request;
+    completed.duration_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+    completed.operation = Operation::Success;
+    match &result {
+        Ok(response) => {
+            completed.http_status = Some(response.status().as_u16());
+            completed.server_request_id = response
+                .headers()
+                .get("X-Request-ID")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| RequestId::try_from(v.to_owned()).ok())
+                .filter(|v| *v != id);
+            if response.status().is_success() {
+                // Only a failure needs the body; successful requests stay small.
+                completed.request = completed
+                    .request
+                    .as_ref()
+                    .map(diagnostics::RequestInfo::without_body);
+            } else {
+                completed.operation = Operation::Failure;
+                completed.code = Some(Code::HttpError);
+            }
+        }
+        Err(error) => {
+            completed.operation = Operation::Failure;
+            completed.code = Some(if error.is_timeout() {
+                Code::NetworkTimeout
+            } else if error.is_connect() {
+                Code::NetworkConnect
+            } else {
+                Code::NetworkRequest
+            });
+        }
+    }
+    let _ = diagnostics::record(root, completed);
+    result
+}
+
 impl RequestTrace for reqwest::RequestBuilder {
     async fn send_traced(
         self,
         root: &Path,
         module: Module,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        let id = new_request_id();
-        let started = std::time::Instant::now();
-        let event = EventInput {
-            module,
-            operation: Operation::Start,
-            code: None,
-            batch_id: None,
-            duration_ms: None,
-            request_id: Some(id.clone()),
-            server_request_id: None,
-            http_status: None,
-        };
-        let _ = diagnostics::record(root, event.clone());
-        let result = self.header("X-Request-ID", id.0.as_str()).send().await;
-        let mut completed = event;
-        completed.duration_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
-        completed.operation = Operation::Success;
-        match &result {
-            Ok(response) => {
-                completed.http_status = Some(response.status().as_u16());
-                completed.server_request_id = response
-                    .headers()
-                    .get("X-Request-ID")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| RequestId::try_from(v.to_owned()).ok())
-                    .filter(|v| *v != id);
-                if !response.status().is_success() {
-                    completed.operation = Operation::Failure;
-                    completed.code = Some(Code::HttpError);
-                }
-            }
-            Err(error) => {
-                completed.operation = Operation::Failure;
-                completed.code = Some(if error.is_timeout() {
-                    Code::NetworkTimeout
-                } else if error.is_connect() {
-                    Code::NetworkConnect
-                } else {
-                    Code::NetworkRequest
-                });
-            }
-        }
-        let _ = diagnostics::record(root, completed);
-        result
+        traced_send(self, root, module, None).await
+    }
+
+    async fn send_traced_hinted(
+        self,
+        root: &Path,
+        module: Module,
+        hint: diagnostics::RequestInfo,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        traced_send(self, root, module, Some(hint)).await
     }
 
     async fn send_traced_retrying(
@@ -282,17 +322,26 @@ mod tests {
         let ids = server.join().unwrap();
         assert_ne!(ids[0], ids[1]);
         let logs = diagnostics::snapshot(root.path(), 0);
-        let events = logs["events"].as_array().unwrap();
-        assert_eq!(events.len(), 6);
-        assert_eq!(events[0]["request_id"], ids[0]);
-        assert_eq!(events[1]["request_id"], ids[0]);
-        assert_eq!(events[3]["request_id"], ids[1]);
-        assert_eq!(events[3]["http_status"], 503);
-        assert_eq!(events[3]["code"], "HTTP_ERROR");
-        assert_eq!(events[3]["server_request_id"], "gateway-456");
-        assert!(events[5].get("server_request_id").is_none());
-        assert!(!logs.to_string().contains("private-"));
+        let lines: Vec<&str> = logs["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap())
+            .collect();
+        assert_eq!(lines.len(), 6);
+        assert!(lines[0].contains(&format!("request_id={}", ids[0])));
+        assert!(lines[1].contains(&format!("request_id={}", ids[0])));
+        assert!(lines[3].contains(&format!("request_id={}", ids[1])));
+        assert!(lines[3].contains("status=503"));
+        assert!(lines[3].contains("code=HTTP_ERROR"));
+        assert!(lines[3].contains("server_request_id=gateway-456"));
+        assert!(!lines[5].contains("server_request_id"));
+        // Credentials never reach the log; the address and method do.
+        assert!(!logs.to_string().contains("private-credential"));
         assert!(!logs.to_string().contains("secret"));
+        assert!(lines[0].contains("method=GET"));
+        assert!(lines[0].contains("url=http://127.0.0.1:"));
+        assert!(lines[0].contains("token=***"));
     }
 
     #[test]
@@ -315,11 +364,21 @@ mod tests {
         );
         assert!(result.is_err());
         let logs = diagnostics::snapshot(root.path(), 0);
-        assert_eq!(logs["events"][1]["code"], "NETWORK_CONNECT");
-        assert_eq!(
-            logs["events"][0]["request_id"],
-            logs["events"][1]["request_id"]
-        );
+        let lines = logs["lines"].as_array().unwrap();
+        let first = lines[0].as_str().unwrap();
+        let second = lines[1].as_str().unwrap();
+        assert!(second.contains("code=NETWORK_CONNECT"));
+        assert_eq!(request_id_of(first), request_id_of(second));
+    }
+
+    /// The request id embedded in one text line, for correlation assertions.
+    fn request_id_of(line: &str) -> &str {
+        line.split('\t')
+            .nth(3)
+            .unwrap()
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix("request_id="))
+            .unwrap()
     }
 
     #[test]
@@ -415,7 +474,7 @@ mod tests {
         assert_ne!(ids[0], ids[1]);
         // Both attempts stay visible in the diagnostics file.
         assert_eq!(
-            diagnostics::snapshot(root.path(), 0)["events"]
+            diagnostics::snapshot(root.path(), 0)["lines"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -451,16 +510,24 @@ mod tests {
         drop(listener);
         let root = tempfile::tempdir().unwrap();
         let result = runtime().block_on(
-            reqwest::Client::builder().no_proxy().build().unwrap()
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
                 .post(format!("http://{address}/api/v1/auth/login"))
                 .json(&serde_json::json!({"username": "a", "password": "b"}))
                 .send_traced_retrying(root.path(), Module::Auth, RetryPolicy::WRITE),
         );
         assert!(result.is_err());
         let logs = diagnostics::snapshot(root.path(), 0);
-        let events = logs["events"].as_array().unwrap();
-        assert_eq!(events.len(), 4);
-        assert_eq!(events[1]["code"], "NETWORK_CONNECT");
-        assert_eq!(events[3]["code"], "NETWORK_CONNECT");
+        let lines = logs["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 4);
+        let failed = lines[1].as_str().unwrap();
+        assert!(failed.contains("code=NETWORK_CONNECT"));
+        assert!(failed.contains("method=POST"));
+        assert!(failed.contains("url=http://127.0.0.1:"));
+        assert!(failed.contains(r#""password":"***""#));
+        assert!(!logs.to_string().contains(r#""password":"b""#));
+        assert!(lines[3].as_str().unwrap().contains("code=NETWORK_CONNECT"));
     }
 }

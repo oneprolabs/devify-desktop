@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import type { ReactNode } from 'react';
 
 /** One conversation included in a saved summary. */
@@ -112,7 +113,7 @@ function renderInline(text: string): ReactNode[] {
     } else if (token.startsWith('![')) {
       // Remote images would leak a request, so the alt text is shown instead.
       const alt = token.slice(2, token.indexOf(']'));
-      nodes.push(<span key={key} className="md-image">[图片{alt ? `：${alt}` : ''}]</span>);
+      nodes.push(<span key={key} className="md-image">{t("[图片")}{alt ? `：${alt}` : ''}]</span>);
     } else {
       const link = token.match(/^\[([^\]]*)\]\(([^)]*)\)$/);
       nodes.push(link ? linkNode(link[2], renderInline(link[1]), key) : token);
@@ -348,9 +349,9 @@ export function renderAgentMarkdown(text: string): ReactNode[] {
 /** Conversation names are the primary identity of a record, so they lead the title. */
 export function summarySourceTitle(record: SummaryRecord): string {
   const names = record.sessions.map(session => session.display).filter(Boolean);
-  if (!names.length) return record.range_label || '未标记来源会话';
+  if (!names.length) return record.range_label || t("未标记来源会话");
   if (names.length <= 2) return names.join('、');
-  return `${names.slice(0, 2).join('、')} 等 ${names.length} 个会话`;
+  return tf("{0} 等 {1} 个会话", names.slice(0, 2).join('、'), names.length);
 }
 
 /**
@@ -375,27 +376,27 @@ export function SummaryDetail({
         <p className="history-detail-meta">
           {record.created_at}
           {record.range_label ? ` · ${record.range_label}` : ''}
-          {record.account_id ? ` · 账号 ${record.account_id}` : ''}
+          {record.account_id ? tf(" · 账号 {0}", record.account_id) : ''}
           {record.agent_name ? ` · ${record.agent_name}` : ''}
           {record.model ? ` · ${record.model}` : ''}
-          {record.elapsed_ms ? ` · ${(record.elapsed_ms / 1000).toFixed(1)} 秒` : ''}
+          {record.elapsed_ms ? tf(" · {0} 秒", (record.elapsed_ms / 1000).toFixed(1)) : ''}
         </p>
       </div>
       <div className="history-detail-actions">
-        {onDelete && <button type="button" className="secondary" onClick={onDelete}>删除</button>}
-        {onClose && <button type="button" className="secondary" onClick={onClose} aria-label="关闭这条记录">关闭</button>}
+        {onDelete && <button type="button" className="secondary" onClick={onDelete}>{t("删除")}</button>}
+        {onClose && <button type="button" className="secondary" onClick={onClose} aria-label={t("关闭这条记录")}>{t("关闭")}</button>}
       </div>
     </header>
 
     <section className="history-sources">
       {record.sessions.length ? <ul>{record.sessions.map(session => <li key={session.username}>
         <span className="history-source-icon" aria-hidden="true">◌</span>
-        <span className="history-source-info"><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'}{session.messages > 0 ? ` · ${session.messages} 条消息` : ''}</small></span>
-      </li>)}</ul> : <p className="history-empty-line">这条记录没有保存来源会话。</p>}
-      <p className="history-stats">共 {record.messages} 条消息 · 约 {record.characters} 字{record.truncated ? ' · 生成时已截断' : ''}</p>
+        <span className="history-source-info"><strong>{session.display}</strong><small>{session.is_group ? t("群聊") : t("单聊")}{session.messages > 0 ? tf(" · {0} 条消息", session.messages) : ''}</small></span>
+      </li>)}</ul> : <p className="history-empty-line">{t("这条记录没有保存来源会话。")}</p>}
+      <p className="history-stats">{t("共")} {record.messages} {t("条消息 · 约")} {record.characters} {t("字")}{record.truncated ? t(" · 生成时已截断") : ''}</p>
     </section>
 
-    {record.note && <div className="config warn">{record.note}</div>}
+    {record.note && <div className="config warn">{t(record.note)}</div>}
 
     {record.output && (
       <div className="history-output wxv-ai-body">{renderAgentMarkdown(record.output)}</div>
@@ -403,8 +404,8 @@ export function SummaryDetail({
 
     {record.insights && (
       <section className="history-insights">
-        <div className="history-focus-heading"><h4>项目重点</h4><span>共 {record.insights.focus.length} 条</span></div>
-        <p className="history-insight-hint">根据消息内容自动提取，结果仅供参考</p>
+        <div className="history-focus-heading"><h4>{t("项目重点")}</h4><span>{t("共")} {record.insights.focus.length} {t("条")}</span></div>
+        <p className="history-insight-hint">{t("根据消息内容自动提取，结果仅供参考")}</p>
         {record.insights.focus.length ? (
           record.insights.focus.slice(0, 30).map((item, index) => (
             <article key={`focus-${index}`} className="history-focus">
@@ -416,31 +417,31 @@ export function SummaryDetail({
             </article>
           ))
         ) : (
-          <p className="history-empty-line">当时没有识别到待办、决定、风险、问题或数据线索。</p>
+          <p className="history-empty-line">{t("当时没有识别到待办、决定、风险、问题或数据线索。")}</p>
         )}
-        <div className="history-related-grid"><section><h4>时间线</h4>
+        <div className="history-related-grid"><section><h4>{t("时间线")}</h4>
         {record.insights.timeline.length ? (
           record.insights.timeline.map(day => (
             <div key={`day-${day.day}`} className="history-timeline-row">
               <strong>{day.day}</strong>
-              <span>{day.messages} 条消息{day.sessions.length ? ` · ${day.sessions.join('、')}` : ''}</span>
+              <span>{day.messages} {t("条消息")}{day.sessions.length ? ` · ${day.sessions.join('、')}` : ''}</span>
             </div>
           ))
         ) : (
-          <p className="history-empty-line">没有可展示的时间线。</p>
+          <p className="history-empty-line">{t("没有可展示的时间线。")}</p>
         )}
-        </section><section><h4>相关会话</h4>
+        </section><section><h4>{t("相关会话")}</h4>
         {record.insights.related.length ? (
           record.insights.related.map(item => (
             <div key={`related-${item.username}`} className="history-timeline-row">
               <strong>{item.display}</strong>
-              <span>{item.hits}{item.truncated ? '+' : ''} 条相关命中</span>
+              <span>{item.hits}{item.truncated ? '+' : ''} {t("条相关命中")}</span>
             </div>
           ))
         ) : (
-          <p className="history-empty-line">当时没有发现其他相关会话。</p>
+          <p className="history-empty-line">{t("当时没有发现其他相关会话。")}</p>
         )}</section></div>
-        {record.insights.terms.length > 0 && <p className="history-terms">探索词：{record.insights.terms.join('、')}</p>}
+        {record.insights.terms.length > 0 && <p className="history-terms">{t("探索词：")}{record.insights.terms.join('、')}</p>}
       </section>
     )}
   </article>;

@@ -52,10 +52,14 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/core') return { isTauri: () => true };
   if (id === './desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
   if (id === './WeChatLocal') return { default: MessagePane };
-  if (id === './entitlements') return { useInternalAccount: () => ({ internal: false }) };
+  if (id === './entitlements') return {
+    useInternalAccount: () => ({ internal: false }),
+    useCapability: () => ({ allowed: false, loading: false, view: null }),
+  };
   if (id === './connectorDetect') return { currentAccount: (items, remembered) => items.find(item => item.id === remembered) ?? items[0] };
   if (id === './syncFeedback') return { syncFeedback: () => 'completed' };
   if (id === './chatPresentation') return { eventViewState: () => 'empty', syncErrorMessage: String };
+  if (id === './locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
   if (id === './toast') return { exportNotSupported() {} };
   if (id.endsWith('.svg')) return id;
   return new Proxy({}, { get: () => component });

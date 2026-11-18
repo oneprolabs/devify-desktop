@@ -1,3 +1,4 @@
+import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -20,7 +21,7 @@ import {
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
 import { exportNotSupported } from './toast';
-import { useInternalAccount } from './entitlements';
+import { useCapability, useInternalAccount } from './entitlements';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
 
 type DbFile = {
@@ -390,7 +391,7 @@ function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: Medi
   if (!src) {
     return (
       <span className="wxv-image-placeholder" role="status">
-        {!failed && <i className="wxv-image-spinner" aria-hidden="true"/>}{failed ? '图片加载失败' : '正在加载图片…'}
+        {!failed && <i className="wxv-image-spinner" aria-hidden="true"/>}{failed ? t("图片加载失败") : t("正在加载图片…")}
       </span>
     );
   }
@@ -400,12 +401,12 @@ function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: Medi
       type="button"
       className="wxv-attach-thumb"
       onClick={onOpen}
-      title={onlyThumb ? '本机只有缩略图（微信未下载原图）' : '查看原图'}
+      title={onlyThumb ? t("本机只有缩略图（微信未下载原图）") : t("查看原图")}
       data-open-image={item.local_id}
     >
-      {!loaded && <span className="wxv-image-placeholder" role="status"><i className="wxv-image-spinner" aria-hidden="true"/>正在加载图片…</span>}
-      <img src={src} alt="图片" data-open-image={item.local_id} onLoad={() => setLoaded(true)} onError={() => { setSrc(null); setFailed(true); }} style={loaded ? undefined : { position: 'absolute', visibility: 'hidden' }} />
-      {onlyThumb && <span className="wxv-attach-badge">仅缩略图</span>}
+      {!loaded && <span className="wxv-image-placeholder" role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{t("正在加载图片…")}</span>}
+      <img src={src} alt={t("图片")} data-open-image={item.local_id} onLoad={() => setLoaded(true)} onError={() => { setSrc(null); setFailed(true); }} style={loaded ? undefined : { position: 'absolute', visibility: 'hidden' }} />
+      {onlyThumb && <span className="wxv-attach-badge">{t("仅缩略图")}</span>}
     </button>
   );
 }
@@ -434,10 +435,10 @@ function dayLabel(date: Date): string {
   const today = new Date();
   const yesterday = new Date(today.getTime() - 86400000);
   const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  if (dayKey(date) === dayKey(today)) return `今天 ${time}`;
-  if (dayKey(date) === dayKey(yesterday)) return `昨天 ${time}`;
-  if (date.getFullYear() === today.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日 ${time}`;
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${time}`;
+  if (dayKey(date) === dayKey(today)) return tf("今天 {0}", time);
+  if (dayKey(date) === dayKey(yesterday)) return tf("昨天 {0}", time);
+  if (date.getFullYear() === today.getFullYear()) return tf("{0}月{1}日 {2}", date.getMonth() + 1, date.getDate(), time);
+  return tf("{0}年{1}月{2}日 {3}", date.getFullYear(), date.getMonth() + 1, date.getDate(), time);
 }
 
 function timeOnly(seconds: number | null): string {
@@ -452,7 +453,7 @@ function listTime(seconds: number | null): string {
   const today = new Date();
   if (dayKey(date) === dayKey(today)) return timeOnly(seconds);
   const yesterday = new Date(today.getTime() - 86400000);
-  if (dayKey(date) === dayKey(yesterday)) return '昨天';
+  if (dayKey(date) === dayKey(yesterday)) return t("昨天");
   if (date.getFullYear() === today.getFullYear()) return `${date.getMonth() + 1}/${date.getDate()}`;
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
 }
@@ -550,16 +551,16 @@ function selectionBounds(range: RangeKey, from: string, to: string): { since?: n
 }
 
 function formatAge(seconds: number | null | undefined): string {
-  if (seconds == null) return '时间未知';
-  if (seconds < 60) return '刚刚';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
-  return `${Math.floor(seconds / 86400)} 天前`;
+  if (seconds == null) return t("时间未知");
+  if (seconds < 60) return t("刚刚");
+  if (seconds < 3600) return tf("{0} 分钟前", Math.floor(seconds / 60));
+  if (seconds < 86400) return tf("{0} 小时前", Math.floor(seconds / 3600));
+  return tf("{0} 天前", Math.floor(seconds / 86400));
 }
 
 function formatKeyDate(seconds: number | null | undefined): string {
-  if (!seconds) return '时间未知';
-  return new Date(seconds * 1000).toLocaleDateString('zh-CN', {
+  if (!seconds) return t("时间未知");
+  return new Date(seconds * 1000).toLocaleDateString(dateLocale(), {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -621,6 +622,11 @@ export default function WeChatLocal({
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
   const { internal: internalAccount } = useInternalAccount();
+  const { allowed: workDigestGranted } = useCapability('ai.work_digest');
+  const { allowed: aiSummaryGranted } = useCapability('ai.agent_summary');
+  const { allowed: canConfigureAgent } = useCapability('ai.local_agent');
+  const canOrganize = internalAccount && workDigestGranted;
+  const canUseAi = internalAccount && aiSummaryGranted;
   const [env, setEnv] = useState<WechatEnv | null>(null);
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
@@ -634,7 +640,8 @@ export default function WeChatLocal({
   const [applyWal, setApplyWal] = useState(true);
   const [onlyChat, setOnlyChat] = useState(true);
 
-  const [busy, setBusy] = useState<'scan' | 'import' | 'decrypt' | 'messages' | 'search' | 'work' | 'explore' | 'ai' | null>(null);
+  const [busy, setBusy] = useState<'scan' | 'import' | 'messages' | 'search' | 'work' | 'explore' | 'ai' | null>(null);
+  const [decrypting, setDecrypting] = useState(false);
   const [outcomes, setOutcomes] = useState<DecryptOutcome[]>([]);
   const [showLog, setShowLog] = useState(false);
 
@@ -802,7 +809,7 @@ export default function WeChatLocal({
       const seen = sourceSeen.current;
       if (seen && next.exists && (!seen.exists || (next.modified_at ?? 0) > (seen.modifiedAt ?? 0))) {
         setFreshSource(true);
-        setNotice('检测到新的口令文件，可以导入并校验。');
+        setNotice(t("检测到新的口令文件，可以导入并校验。"));
       }
       sourceSeen.current = { exists: next.exists, modifiedAt: next.modified_at ?? null };
       setSavedKeySource(next);
@@ -834,7 +841,7 @@ export default function WeChatLocal({
         setWhitelistConfigured(null);
         // Before the first decrypt there is simply no session.db; that is the
         // onboarding state, not an error worth covering the key guide with.
-        if (!message.includes('未找到解密后的')) setError(message);
+        if (!message.includes(t("未找到解密后的"))) setError(message);
         return [];
       }
     },
@@ -906,13 +913,13 @@ export default function WeChatLocal({
   /** Do not present a different account until the backend has accepted the selection. */
   const rememberAccount = useCallback(async (id: string) => {
     const stored = settingsRef.current;
-    if (!stored) throw new Error('设置尚未加载，无法切换账号；请重新打开页面。');
+    if (!stored) throw new Error(t("设置尚未加载，无法切换账号；请重新打开页面。"));
     if (stored.active_account_id === id) return;
     try {
       const saved = requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: { ...stored, active_account_id: id } }));
       if (saved.active_account_id !== id) {
         settingsRef.current = null;
-        throw new Error('后端未确认所选微信账号，请重新打开页面。');
+        throw new Error(t("后端未确认所选微信账号，请重新打开页面。"));
       }
       settingsRef.current = saved;
     } catch (reason) {
@@ -966,11 +973,11 @@ export default function WeChatLocal({
       setAccountId(nextId);
       await refreshKeys();
       if (!result.accounts.length && detect?.state === 'installed') {
-        setError('没有找到微信 4.x 数据目录。若微信已登录，请按下方的文字步骤授予「完全磁盘访问权限」后重新检测。');
+        setError(t("没有找到微信 4.x 数据目录。若微信已登录，请按下方的文字步骤授予「完全磁盘访问权限」后重新检测。"));
       }
       if (nextId) await loadSessions(nextId);
     } catch (e) {
-      setError(`账号未切换：${settingsSaveError(e)}`);
+      setError(tf("账号未切换：{0}", settingsSaveError(e)));
     } finally {
       accountSwitchLock.current = false;
       setAccountSwitching(false);
@@ -1008,7 +1015,7 @@ export default function WeChatLocal({
         settingsRef.current = requireSettingsRevision(await invoke<AppSettings>('app_settings_get'));
         await doScan(settingsRef.current.active_account_id || undefined);
       } catch (reason) {
-        setError(`设置加载失败，无法选择微信账号：${String(reason)}。请重新打开页面。`);
+        setError(tf("设置加载失败，无法选择微信账号：{0}。请重新打开页面。", String(reason)));
       }
     })();
     // Scan once per pinned account; account switching and manual rescans call doScan directly.
@@ -1062,7 +1069,7 @@ export default function WeChatLocal({
         setAvatars({});
         await loadSessions(nextId);
       } catch (reason) {
-        setError(`账号未切换：${settingsSaveError(reason)}`);
+        setError(tf("账号未切换：{0}", settingsSaveError(reason)));
       } finally {
         accountSwitchLock.current = false;
         setAccountSwitching(false);
@@ -1079,7 +1086,7 @@ export default function WeChatLocal({
     // stays visible so it can be corrected instead of retyped from memory.
     if (result.matched > 0) setKeyText('');
     if (result.unmatched.length) {
-      setError(`有 ${result.unmatched.length} 个数据库没有匹配到密钥（微信可能从未打开过它们）。`);
+      setError(tf("有 {0} 个数据库没有匹配到密钥（微信可能从未打开过它们）。", result.unmatched.length));
     }
     await refreshKeys();
   };
@@ -1090,14 +1097,14 @@ export default function WeChatLocal({
     let text = keyText;
     if (file) {
       if (file.size > 2_000_000) {
-        setError('密钥文件过大，请确认选择的是口令或密钥 JSON。');
+        setError(t("密钥文件过大，请确认选择的是口令或密钥 JSON。"));
         return;
       }
       text = await file.text();
       setKeyText(text);
     }
     if (!text.trim()) {
-      setError('请粘贴密钥或口令，或选择口令 JSON 文件。');
+      setError(t("请粘贴密钥或口令，或选择口令 JSON 文件。"));
       return;
     }
     setBusy('import');
@@ -1119,7 +1126,7 @@ export default function WeChatLocal({
     try {
       const result = await invoke<KeyImportResult>('wechat_windows_key_scan', { accountId: account?.id ?? null });
       setKeyImport(result); await refreshKeys();
-      setNotice(result.message || 'Windows 密钥已校验并导入。');
+      setNotice(result.message || t("Windows 密钥已校验并导入。"));
     } catch (reason) { setError(String(reason)); }
     finally { setWindowsScanBusy(false); }
   };
@@ -1147,7 +1154,7 @@ export default function WeChatLocal({
     try {
       const next = await invoke<SavedKeySource>('wechat_fix_key_permissions');
       setSavedKeySource(next);
-      setNotice(`口令文件权限已改为 ${next.mode ?? '600'}，只有当前用户可读。`);
+      setNotice(tf("口令文件权限已改为 {0}，只有当前用户可读。", next.mode ?? '600'));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1203,18 +1210,18 @@ export default function WeChatLocal({
     setError('');
     setRecoveryNotice('');
     setLaunchDiagnosis(null);
-    setNotice('正在校验微信签名并建立原版备份，可能需要几分钟，请不要关闭窗口…');
+    setNotice(t("正在校验微信签名并建立原版备份，可能需要几分钟，请不要关闭窗口…"));
     setCaptureBusy('prepare');
     try {
       const result = await invoke<PrepareResult>('wechat_capture_prepare');
       const sanitized =
         result.entitlement_mode === 'deep'
-          ? ' 本次临时副本及内部组件会被重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复原版。'
+          ? t(" 本次临时副本及内部组件会被重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复原版。")
           : result.entitlement_mode === 'sanitized'
-          ? ` 这台 Mac 会拒绝 ad-hoc 签名携带腾讯团队的受限权限，本次临时副本已剔除 ${result.dropped_entitlements.length} 项受限权限（${result.dropped_entitlements.join('、')}），否则微信在启动前就会被系统拒绝；结束或取消时会换回腾讯原版。`
+          ? tf(" 这台 Mac 会拒绝 ad-hoc 签名携带腾讯团队的受限权限，本次临时副本已剔除 {0} 项受限权限（{1}），否则微信在启动前就会被系统拒绝；结束或取消时会换回腾讯原版。", result.dropped_entitlements.length, result.dropped_entitlements.join('、'))
           : '';
       setNotice(
-        `已备份微信 ${result.version}（${result.build}）并完成临时重签。${sanitized}下一步：打开微信并完整登录要读取的账号。`,
+        tf("已备份微信 {0}（{1}）并完成临时重签。{2}下一步：打开微信并完整登录要读取的账号。", result.version, result.build, sanitized),
       );
     } catch (e) {
       setError(captureErrorText(e));
@@ -1232,13 +1239,13 @@ export default function WeChatLocal({
       const result = await invoke<LaunchAttempt>('wechat_capture_open');
       setLaunchDiagnosis(result.launched ? null : result.diagnosis);
       if (result.launched) {
-        setNotice('已打开临时微信。请等登录界面出现并完整登录，然后点「我已登录，检查启动」。');
+        setNotice(t("已打开临时微信。请等登录界面出现并完整登录，然后点「我已登录，检查启动」。"));
       } else {
         // The card carries the `open` stderr and the fix, so no error toast that could cover it.
         setNotice(
           result.diagnosis.amfi_rejected
-            ? '这台 Mac 在启动前就拒绝了本次临时签名，无法通过放行解决，请按下面的说明恢复微信。'
-            : '系统没有确认微信启动，请按下面的步骤放行后再试。',
+            ? t("这台 Mac 在启动前就拒绝了本次临时签名，无法通过放行解决，请按下面的说明恢复微信。")
+            : t("系统没有确认微信启动，请按下面的步骤放行后再试。"),
         );
       }
     } catch (e) {
@@ -1251,7 +1258,7 @@ export default function WeChatLocal({
   const openPrivacySecuritySettings = async () => {
     try {
       await invoke('wechat_open_privacy_security_settings');
-      setNotice('已打开「隐私与安全性」。请在「安全性」区域找到被阻止的微信，点「仍要打开」。');
+      setNotice(t("已打开「隐私与安全性」。请在「安全性」区域找到被阻止的微信，点「仍要打开」。"));
     } catch (e) {
       setError(captureErrorText(e));
     }
@@ -1260,7 +1267,7 @@ export default function WeChatLocal({
   const confirmCaptureLaunch = async () => {
     const transaction = captureStatus?.transaction_id;
     if (!transaction) {
-      setError('没有找到本次捕获事务，请先点「准备并临时重签」。');
+      setError(t("没有找到本次捕获事务，请先点「准备并临时重签」。"));
       return;
     }
     setError('');
@@ -1269,10 +1276,10 @@ export default function WeChatLocal({
       const check = await invoke<LaunchCheck>('wechat_capture_confirm_launch', { transactionId: transaction });
       if (check.ready_for_preflight) {
         setLaunchDiagnosis(null);
-        setNotice('已检测到临时微信进程。下一步检查捕获断点。');
+        setNotice(t("已检测到临时微信进程。下一步检查捕获断点。"));
       } else {
         setLaunchDiagnosis(check.diagnosis);
-        setNotice('还没有检测到稳定的微信进程，原因见下方说明。');
+        setNotice(t("还没有检测到稳定的微信进程，原因见下方说明。"));
       }
     } catch (e) {
       setError(captureErrorText(e));
@@ -1286,11 +1293,11 @@ export default function WeChatLocal({
   /** Brief attach with one administrator prompt; the user still logs out *after* this. */
   const runCapturePreflight = async () => {
     setError('');
-    setNotice('即将弹出管理员授权对话框：请输入本机密码，密码只交给 macOS，本应用不会读取或保存。');
+    setNotice(t("即将弹出管理员授权对话框：请输入本机密码，密码只交给 macOS，本应用不会读取或保存。"));
     setCaptureBusy('preflight');
     try {
       const result = await invoke<PreflightResult>('wechat_capture_preflight');
-      setNotice(`断点可用（${result.pbkdf_locations} 处）。现在请在微信里退出账号，然后启动监测。`);
+      setNotice(tf("断点可用（{0} 处）。现在请在微信里退出账号，然后启动监测。", result.pbkdf_locations));
     } catch (e) {
       setError(captureErrorText(e));
       return capturePrerequisiteFailure(e);
@@ -1306,8 +1313,8 @@ export default function WeChatLocal({
     setError('');
     setNotice(
       captureStatus?.resume_available
-        ? '正在校验上次已捕获的密钥，随后恢复腾讯原版微信并导入。'
-        : '即将弹出管理员授权对话框：请输入本机密码。授权后保持微信窗口打开，等待界面显示「监测已就绪」再登录。',
+        ? t("正在校验上次已捕获的密钥，随后恢复腾讯原版微信并导入。")
+        : t("即将弹出管理员授权对话框：请输入本机密码。授权后保持微信窗口打开，等待界面显示「监测已就绪」再登录。"),
     );
     setCaptureBusy('start');
     try {
@@ -1345,8 +1352,8 @@ export default function WeChatLocal({
       const result = await invoke<RestoreResult>('wechat_capture_restore');
       setNotice(
         result.restored
-          ? `已恢复腾讯原版微信 ${result.version}（${result.build}），可以重新打开微信。`
-          : `当前微信已经是腾讯原版 ${result.version}，无需恢复。`,
+          ? tf("已恢复腾讯原版微信 {0}（{1}），可以重新打开微信。", result.version, result.build)
+          : tf("当前微信已经是腾讯原版 {0}，无需恢复。", result.version),
       );
       await refreshCaptureStatus();
     } catch (e) {
@@ -1443,10 +1450,10 @@ export default function WeChatLocal({
   };
 
   const decrypt = async () => {
-    if (!account) return;
+    if (!account || accountSwitching || decrypting) return;
     setError('');
     setNotice('');
-    setBusy('decrypt');
+    setDecrypting(true);
     try {
       const result = await invoke<DecryptOutcome[]>('wechat_decrypt', {
         accountId: account.id,
@@ -1456,21 +1463,20 @@ export default function WeChatLocal({
       setOutcomes(result);
       const ok = result.filter(o => o.status === 'ok' || o.status === 'cached').length;
       const failed = result.length - ok;
-      setNotice(`解密完成：${ok} 个数据库可用${failed ? `，${failed} 个失败或缺少密钥` : ''}。`);
+      setNotice(tf("解密完成：{0} 个数据库可用{1}。", ok, failed ? `，${failed} 个失败或缺少密钥` : ''));
       if (ok > 0) {
-        setBusy('messages');
         await loadSessions(account.id);
       } else if (result.length > 0) {
         // Nothing decrypted at all: the most likely cause is a key for another account or a
         // rotated passphrase, so surface the acquisition guide instead of a silent failure.
         setForceUnlock(true);
         setShowKeyGuide(true);
-        setError('没有任何数据库解密成功，通常是密钥与当前账号不匹配或已轮换。请重新捕获口令后再导入。');
+        setError(t("没有任何数据库解密成功，通常是密钥与当前账号不匹配或已轮换。请重新捕获口令后再导入。"));
       }
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy(null);
+      setDecrypting(false);
     }
   };
 
@@ -1650,7 +1656,7 @@ export default function WeChatLocal({
       const player = new Audio(audio.data_uri);
       voicePlayer.current = player;
       player.onended = () => setPlayingVoice(null);
-      player.onerror = () => { setPlayingVoice(null); setVoiceError(current => ({ ...current, [item.server_id_exact]: '语音播放失败，请重试。' })); };
+      player.onerror = () => { setPlayingVoice(null); setVoiceError(current => ({ ...current, [item.server_id_exact]: t("语音播放失败，请重试。") })); };
       await player.play();
       setPlayingVoice(item.server_id_exact);
     } catch (e) {
@@ -1686,7 +1692,7 @@ export default function WeChatLocal({
     setImageViewer({ src: null, error: '' });
     void invoke<string>('wechat_media_open_image', { accountId: account.id, paths })
       .then(path => { if (imageViewerRequest.current === request) setImageViewer({ src: convertFileSrc(path), error: '' }); })
-      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: `无法查看图片：${String(reason)}` }); });
+      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: tf("无法查看图片：{0}", String(reason)) }); });
   };
 
   const loadOlder = async () => {
@@ -1821,10 +1827,11 @@ export default function WeChatLocal({
     setSelectedMessages([]);
     setSelectionAnchor(null);
     setWorkInsights(null);
-    setNotice('已清空消息选集。');
+    setNotice(t("已清空消息选集。"));
   };
 
   const openWorkPicker = () => {
+    if (!canOrganize) return;
     setWorkPhase('select');
     setWorkOpen(true);
     setError('');
@@ -1977,16 +1984,16 @@ export default function WeChatLocal({
     if (!account) return;
     const selectedSessions = sessions.filter(session => workSelected.includes(session.username));
     if (!selectedSessions.length) {
-      setError('请至少选择一个对话。');
+      setError(t("请至少选择一个对话。"));
       return;
     }
     if (workRange === 'custom' && (!workFrom || !workTo)) {
-      setError('请选择自定义时间范围的开始日期和结束日期。');
+      setError(t("请选择自定义时间范围的开始日期和结束日期。"));
       return;
     }
     const bounds = selectionBounds(workRange, workFrom, workTo);
     if (workRange === 'custom' && bounds.since !== undefined && bounds.until !== undefined && bounds.since > bounds.until) {
-      setError('自定义时间范围无效：开始日期不能晚于结束日期。');
+      setError(t("自定义时间范围无效：开始日期不能晚于结束日期。"));
       return;
     }
     setBusy('work');
@@ -2012,7 +2019,7 @@ export default function WeChatLocal({
       setAiConfirm(false);
       setActionPicker(false);
       setWorkPhase('review');
-      if (!groups.some(group => group.messages.length > 0)) setNotice('当前条件下没有找到消息，请调整时间范围或对话。');
+      if (!groups.some(group => group.messages.length > 0)) setNotice(t("当前条件下没有找到消息，请调整时间范围或对话。"));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -2021,11 +2028,11 @@ export default function WeChatLocal({
   };
 
   const selectionTitle = () => {
-    if (workRange === 'today') return '今天';
-    if (workRange === '7d') return '近 7 天';
-    if (workRange === '30d') return '近 30 天';
-    if (workRange === 'custom') return `${workFrom || '开始'} 至 ${workTo || '结束'}`;
-    return '全部时间';
+    if (workRange === 'today') return t("今天");
+    if (workRange === '7d') return t("近 7 天");
+    if (workRange === '30d') return t("近 30 天");
+    if (workRange === 'custom') return tf("{0} 至 {1}", workFrom || '开始', workTo || '结束');
+    return t("全部时间");
   };
 
   /** Exactly what the user reviewed, capped the same way the Rust builder caps it. */
@@ -2038,7 +2045,7 @@ export default function WeChatLocal({
           display: group.session.display,
           is_group: group.session.is_group,
           time: message.time,
-          sender: message.is_self ? '我' : message.sender_name || message.sender || '未知',
+          sender: message.is_self ? t("我") : message.sender_name || message.sender || t("未知"),
           text: message.text,
         })),
       );
@@ -2051,14 +2058,14 @@ export default function WeChatLocal({
     };
   }, [workGroups]);
 
-  const aiReady = Boolean(agentCurrent?.configured && agentCurrent.available);
+  const aiReady = canUseAi && Boolean(agentCurrent?.configured && agentCurrent.available);
 
   const saveHistory = async (record: NewSummaryRecord) => {
     try {
       await invoke<SummaryRecord[]>('summary_history_add', { record });
-      setNotice(`${HISTORY_KIND_LABEL[record.kind]}已保存到本机，可在左侧「总结记录」查看。`);
+      setNotice(tf("{0}已保存到本机，可在左侧「总结记录」查看。", HISTORY_KIND_LABEL[record.kind]));
     } catch (e) {
-      setError(`保存总结记录失败：${String(e)}`);
+      setError(tf("保存总结记录失败：{0}", String(e)));
     }
   };
 
@@ -2117,11 +2124,11 @@ export default function WeChatLocal({
   const runAiSummary = async () => {
     if (!account) return;
     if (!agentCurrent?.configured || !agentCurrent.available) {
-      setError('尚未配置可用的本地 Agent。请先在左侧「Agent 集成」页面选择并测试。');
+      setError(canConfigureAgent ? t("请在「设置 → Agent 集成」中配置可用的 Agent。") : t("当前无法使用 AI 总结。"));
       return;
     }
     if (!aiPlan.items.length) {
-      setError('当前选集没有消息，无法生成总结。');
+      setError(t("当前选集没有消息，无法生成总结。"));
       return;
     }
     setBusy('ai');
@@ -2190,14 +2197,14 @@ export default function WeChatLocal({
   const generateWorkInsights = async () => {
     const items = workGroups.flatMap(group => group.messages.map(message => ({ session: group.session, message })));
     if (!items.length) {
-      setError('当前选集没有消息，无法生成总结。');
+      setError(t("当前选集没有消息，无法生成总结。"));
       return;
     }
     const timelineMap = new Map<string, SelectedMessage[]>();
     const focus: WorkInsightItem[] = [];
     for (const item of [...items].sort((a, b) => a.message.time - b.message.time)) {
       const date = toDate(item.message.time);
-      const day = date ? dayKey(date) : '未知日期';
+      const day = date ? dayKey(date) : t("未知日期");
       timelineMap.set(day, [...(timelineMap.get(day) ?? []), item]);
       const category = classifyWorkText(item.message.text);
       if (category) focus.push({ ...item, category });
@@ -2245,7 +2252,7 @@ export default function WeChatLocal({
       persist(merged);
     } catch (e) {
       setError(String(e));
-      persist(base, '相关会话探索失败，记录里只有项目重点与时间线。');
+      persist(base, t("相关会话探索失败，记录里只有项目重点与时间线。"));
     } finally {
       setBusy(null);
     }
@@ -2261,7 +2268,7 @@ export default function WeChatLocal({
     setActionPicker(false);
     setWorkSelected(current => Array.from(new Set([...current, username])));
     setWorkPhase('select');
-    setNotice('已加入相关会话；点击「展开并预览」读取它的聊天内容。');
+    setNotice(t("已加入相关会话；点击「展开并预览」读取它的聊天内容。"));
   };
 
   const renderAiSummary = () => {
@@ -2270,22 +2277,22 @@ export default function WeChatLocal({
       <section className="wxv-ai">
         <header className="wxv-ai-head">
           <div>
-            <strong>Agent 总结</strong>
+            <strong>{t("Agent 总结")}</strong>
             <small>
               {aiSummary.agent_name}
-              {aiSummary.model ? ` · ${aiSummary.model}` : ''} · {(aiSummary.elapsed_ms / 1000).toFixed(1)} 秒
+              {aiSummary.model ? ` · ${aiSummary.model}` : ''} · {(aiSummary.elapsed_ms / 1000).toFixed(1)} {t("秒")}
             </small>
           </div>
           <span>
-            {aiSummary.sessions} 个会话 / {aiSummary.messages} 条消息
-            {aiSummary.truncated ? ' · 已按上限截断' : ''}
+            {aiSummary.sessions} {t("个会话 /")} {aiSummary.messages} {t("条消息")}
+            {aiSummary.truncated ? t(" · 已按上限截断") : ''}
           </span>
         </header>
         <div className="wxv-ai-body">{renderAgentMarkdown(aiSummary.output)}</div>
         <footer className="wxv-ai-foot">
-          <span>由你配置的本地 Agent 生成，请对照原文核对。</span>
+          <span>{t("由你配置的本地 Agent 生成，请对照原文核对。")}</span>
           <button type="button" className="wxv-link" onClick={() => void runAiSummary()} disabled={busy === 'ai'}>
-            {busy === 'ai' ? '生成中…' : '重新生成'}
+            {busy === 'ai' ? t("生成中…") : t("重新生成")}
           </button>
         </footer>
       </section>
@@ -2297,11 +2304,11 @@ export default function WeChatLocal({
     return (
       <section className="wxv-insights">
         <header className="wxv-insights-head">
-          <div><strong>本地初步整理</strong><small>基于已选原文的规则分析，不是 AI 结论</small></div>
-          <span>{workInsights.terms.length ? `探索词：${workInsights.terms.join('、')}` : '未提取到探索词'}</span>
+          <div><strong>{t("本地初步整理")}</strong><small>{t("基于已选原文的规则分析，不是 AI 结论")}</small></div>
+          <span>{workInsights.terms.length ? tf("探索词：{0}", workInsights.terms.join('、')) : t("未提取到探索词")}</span>
         </header>
         <section className="wxv-insight-section">
-          <h4>项目重点</h4>
+          <h4>{t("项目重点")}</h4>
           {workInsights.focus.length ? (
             workInsights.focus.slice(0, 24).map((item, index) => (
               <article key={`${item.session.username}-${item.message.local_id}-${index}`} className="wxv-insight-item">
@@ -2309,25 +2316,25 @@ export default function WeChatLocal({
                 <div><strong>{item.session.display}</strong><small>{dayLabel(toDate(item.message.time) ?? new Date())}</small><p>{item.message.text}</p></div>
               </article>
             ))
-          ) : <p className="wxv-empty-line">暂未识别到待办、决定、风险、问题或数据线索。</p>}
+          ) : <p className="wxv-empty-line">{t("暂未识别到待办、决定、风险、问题或数据线索。")}</p>}
         </section>
         <section className="wxv-insight-section">
           <h4>Timeline</h4>
           {workInsights.timeline.map(item => (
             <div key={item.day} className="wxv-timeline-day">
               <strong>{item.day}</strong>
-              <span>{item.messages.length} 条消息 · {item.messages.slice(0, 3).map(entry => entry.session.display).join('、')}</span>
+              <span>{item.messages.length} {t("条消息 ·")} {item.messages.slice(0, 3).map(entry => entry.session.display).join('、')}</span>
             </div>
           ))}
         </section>
         <section className="wxv-insight-section">
-          <h4>相关聊天群 / 会话</h4>
+          <h4>{t("相关聊天群 / 会话")}</h4>
           {workInsights.related.length ? workInsights.related.map(hit => (
             <div key={hit.username} className="wxv-related-session">
-              <div><strong>{hit.display}</strong><small>{hit.hits}{hit.truncated ? '+' : ''} 条相关命中</small></div>
-              <button type="button" className="wxv-link" onClick={() => addRelatedSession(hit.username)}>加入选集</button>
+              <div><strong>{hit.display}</strong><small>{hit.hits}{hit.truncated ? '+' : ''} {t("条相关命中")}</small></div>
+              <button type="button" className="wxv-link" onClick={() => addRelatedSession(hit.username)}>{t("加入选集")}</button>
             </div>
-          )) : <p className="wxv-empty-line">暂未发现其他相关会话；可以补充关键字后重新总结。</p>}
+          )) : <p className="wxv-empty-line">{t("暂未发现其他相关会话；可以补充关键字后重新总结。")}</p>}
         </section>
       </section>
     );
@@ -2336,10 +2343,10 @@ export default function WeChatLocal({
   // Header buttons live in the embedding page. They are requests, not state, so a click
   // while the pane is hidden still opens the drawer / downloads once the chat is ready.
   useEffect(() => {
-    if (!workRequest || workRequest === handledWorkRequest.current || !ready) return;
+    if (!canOrganize || !workRequest || workRequest === handledWorkRequest.current || !ready) return;
     handledWorkRequest.current = workRequest;
     openWorkPicker();
-  }, [workRequest, ready]);
+  }, [workRequest, ready, canOrganize]);
 
   useEffect(() => {
     onChatState?.({
@@ -2417,9 +2424,9 @@ export default function WeChatLocal({
             <span className="wxv-session-bottom">
               <span className="wxv-session-preview">
                 {session.is_group && session.member_count ? (
-                  <em>{session.member_count} 人 · </em>
+                  <em>{session.member_count} {t("人 ·")} </em>
                 ) : null}
-                {session.preview ?? '（无预览）'}
+                {session.preview ?? t("（无预览）")}
               </span>
               {session.unread ? (
                 <span className="wxv-unread">{session.unread > 99 ? '99+' : session.unread}</span>
@@ -2429,7 +2436,7 @@ export default function WeChatLocal({
         </button>
       ))}
       {!filteredSessions.length && (
-        <p className="wxv-empty-line">{tab === 'group' ? '没有匹配的群聊。' : '没有匹配的会话。'}</p>
+        <p className="wxv-empty-line">{tab === 'group' ? t("没有匹配的群聊。") : t("没有匹配的会话。")}</p>
       )}
     </div>
   );
@@ -2440,15 +2447,15 @@ export default function WeChatLocal({
       <div className="wxv-scroll">
         <div className="wxv-search-summary">
           <span>
-            「{search.keyword}」在 <strong>{search.hits.length}</strong> 个会话中命中
+            「{search.keyword}{t("」在")} <strong>{search.hits.length}</strong> {t("个会话中命中")}
           </span>
           <button type="button" className="wxv-link" onClick={clearSearch}>
-            返回会话
+            {t("返回会话")}
           </button>
           <small>
             {tab === 'group'
-              ? `扫描最近 ${search.scanned} 个群聊（未检索单聊）`
-              : `扫描最近 ${search.scanned} 个会话${search.skipped ? `，另有 ${search.skipped} 个未扫描` : ''}`}
+              ? tf("扫描最近 {0} 个群聊（未检索单聊）", search.scanned)
+              : tf("扫描最近 {0} 个会话{1}", search.scanned, search.skipped ? `，另有 ${search.skipped} 个未扫描` : '')}
           </small>
         </div>
         {search.hits.map(hit => (
@@ -2465,12 +2472,12 @@ export default function WeChatLocal({
               <span className="wxv-session-name">{hit.display}</span>
               <span className="wxv-hit-count">
                 {hit.hits}
-                {hit.truncated ? '+' : ''} 条
+                {hit.truncated ? '+' : ''} {t("条")}
               </span>
             </span>
             {hit.snippets.map((snippet, idx) => (
               <span key={idx} className="wxv-hit-snippet">
-                <em>{snippet.sender_name || snippet.sender || '未知'}</em>
+                <em>{snippet.sender_name || snippet.sender || t("未知")}</em>
                 <span className="wxv-hit-text">
                   <Highlight text={snippet.text} keyword={search.keyword} />
                 </span>
@@ -2478,7 +2485,7 @@ export default function WeChatLocal({
             ))}
           </button>
         ))}
-        {!search.hits.length && <p className="wxv-empty-line">没有命中。搜索只覆盖最近 200 个会话的文字内容。</p>}
+        {!search.hits.length && <p className="wxv-empty-line">{t("没有命中。搜索只覆盖最近 200 个会话的文字内容。")}</p>}
       </div>
     );
   };
@@ -2493,24 +2500,24 @@ const checkMark = (value: boolean | undefined) =>
   const renderWhitelistRequired = () => (
     <div className="wxv-onboard">
       <div className="wxv-onboard-head">
-        <p className="wxv-eyebrow">先定义查看范围</p>
-        <h2>请先配置聊天白名单</h2>
-        <p>为避免把整套微信历史记录直接展示出来，聊天记录只开放白名单中的群聊和单聊。</p>
+        <p className="wxv-eyebrow">{t("先定义查看范围")}</p>
+        <h2>{t("请先配置聊天白名单")}</h2>
+        <p>{t("为避免把整套微信历史记录直接展示出来，聊天记录只开放白名单中的群聊和单聊。")}</p>
       </div>
       <div className="wxv-steps">
         <li className="done">
           <span className="wxv-step-no">1</span>
           <div>
-            <strong>打开“聊天白名单”</strong>
-            <p className="wxv-muted">在设置的「导入管理」中勾选需要查看的群聊和单聊。</p>
+            <strong>{t("打开“聊天白名单”")}</strong>
+            <p className="wxv-muted">{t("在设置的「导入管理」中勾选需要查看的群聊和单聊。")}</p>
           </div>
         </li>
         <li>
           <span className="wxv-step-no">2</span>
           <div>
-            <strong>保存后返回这里</strong>
-            <p className="wxv-muted">保存后重新进入聊天记录，白名单会同时约束消息查看、搜索、探索和总结。</p>
-            {onOpenWhitelist && <button type="button" className="wxv-btn primary" onClick={onOpenWhitelist}>打开导入管理</button>}
+            <strong>{t("保存后返回这里")}</strong>
+            <p className="wxv-muted">{t("保存后重新进入聊天记录，白名单会同时约束消息查看、搜索、探索和总结。")}</p>
+            {onOpenWhitelist && <button type="button" className="wxv-btn primary" onClick={onOpenWhitelist}>{t("打开导入管理")}</button>}
           </div>
         </li>
       </div>
@@ -2536,7 +2543,7 @@ const checkMark = (value: boolean | undefined) =>
         : step === 'wizard-import'
           ? keyedCount > 0
           : step === 'wx-connect-decrypt'
-            ? ready || decryptedForWizard
+            ? !decrypting && (ready || decryptedForWizard)
             : true);
     return (
     <div className="wxv-onboard">
@@ -2547,23 +2554,23 @@ const checkMark = (value: boolean | undefined) =>
             className="wxv-link"
             onClick={() => (onOpenChat ? onOpenChat() : setForceUnlock(false))}
           >
-            ← 返回聊天记录
+            {t("← 返回聊天记录")}
           </button>
         )}
-        {mode !== 'settings' && <p className="wxv-eyebrow">只读 · 本地解密</p>}
-        <h2>连接微信</h2>
+        {mode !== 'settings' && <p className="wxv-eyebrow">{t("只读 · 本地解密")}</p>}
+        <h2>{t("连接微信")}</h2>
         <p>
-          程序读取微信 4.x 的数据库副本，用你的密钥逐库校验第 1 页 HMAC 后解密到应用数据目录。原始数据库不会被修改。
+          {t("程序读取微信 4.x 的数据库副本，用你的密钥逐库校验第 1 页 HMAC 后解密到应用数据目录。原始数据库不会被修改。")}
         </p>
       </div>
 
-      <nav className="wxv-connection-progress" aria-label="微信连接步骤">
+      <nav className="wxv-connection-progress" aria-label={t("微信连接步骤")}>
         {[
-          { id: 'wx-connect-account', label: '查找账号', done: Boolean(account) },
-          { id: 'wx-connect-key', label: '获取密钥', done: keyedCount > 0 },
-          { id: 'wx-connect-decrypt', label: '解密记录', done: ready },
-        ].map((step, index) => <button key={step.id} type="button" onClick={() => document.getElementById(step.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
-          <span className={step.done ? 'complete' : ''}>{step.done ? Icons.check : index + 1}</span>{step.label}
+          { id: 'wx-connect-account', label: t("查找账号"), done: Boolean(account) },
+          { id: 'wx-connect-key', label: t("获取密钥"), done: keyedCount > 0 },
+          { id: 'wx-connect-decrypt', label: t("解密记录"), done: ready },
+        ].map((step, index) => <button key={step.id} type="button" onClick={() => document.getElementById(step.id)?.scrollIntoView({ block: 'start' })}>
+          <span className={step.done ? 'complete' : ''}>{step.done ? Icons.check : index + 1}</span>{t(step.label)}
         </button>)}
       </nav>
 
@@ -2571,12 +2578,12 @@ const checkMark = (value: boolean | undefined) =>
         <li id="wx-connect-account" className={account ? 'done' : ''}>
           <span className="wxv-step-no">{account ? Icons.check : '1'}</span>
           <div>
-            <strong>{wizard && step === 'wizard-permission' ? '系统授权' : wizard && step === 'wizard-account' ? '账号扫描' : scan && scan.accounts.length > 1 ? '选择账号' : '当前账号'}</strong>
+            <strong>{wizard && step === 'wizard-permission' ? t("系统授权") : wizard && step === 'wizard-account' ? t("账号扫描") : scan && scan.accounts.length > 1 ? t("选择账号") : t("当前账号")}</strong>
             {wizard && step === 'wizard-permission' ? (
               <>
-                <p className="wxv-muted">先确认 AIMyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。</p>
+                <p className="wxv-muted">{t("先确认 AIMyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。")}</p>
                 <DiskAccessCard onRescan={() => void doScan()} />
-                {account && <div className="wxv-wizard-state">系统授权已完成，可以继续扫描微信账号。</div>}
+                {account && <div className="wxv-wizard-state">{t("系统授权已完成，可以继续扫描微信账号。")}</div>}
               </>
             ) : scan?.accounts.length ? (
               scan.accounts.length > 1 ? (
@@ -2593,7 +2600,7 @@ const checkMark = (value: boolean | undefined) =>
                       <span>
                         <strong>{item.id}</strong>
                         <small>
-                          {item.db_count} 个库 · {formatSize(item.total_bytes)} · 加密 {item.encrypted_count}
+                          {item.db_count} {t("个库 ·")} {formatSize(item.total_bytes)} {t("· 加密")} {item.encrypted_count}
                         </small>
                       </span>
                     </label>
@@ -2601,16 +2608,16 @@ const checkMark = (value: boolean | undefined) =>
                 </div>
               ) : (
                 <p className="wxv-muted">
-                  {accountId ? <>已自动使用本机微信账号 <span className="mono">{accountId}</span>。</> : '尚未确认本机微信账号。'}
+                  {accountId ? <>{t("已自动使用本机微信账号")} <span className="mono">{accountId}</span>。</> : t("尚未确认本机微信账号。")}
                   {account
-                    ? ` ${account.db_count} 个库 · ${formatSize(account.total_bytes)} · 加密 ${account.encrypted_count}`
+                    ? tf(" {0} 个库 · {1} · 加密 {2}", account.db_count, formatSize(account.total_bytes), account.encrypted_count)
                     : ''}
                 </p>
               )
             ) : (
               <>
                 <p className="wxv-muted">
-                  {busy === 'scan' ? '正在定位微信目录…' : '没有发现账号目录，请确认微信已登录过。'}
+                  {busy === 'scan' ? t("正在定位微信目录…") : t("没有发现账号目录，请确认微信已登录过。")}
                 </p>
                 {!wizard && busy !== 'scan' && <DiskAccessCard onRescan={() => void doScan()} />}
               </>
@@ -2621,40 +2628,40 @@ const checkMark = (value: boolean | undefined) =>
         <li id="wx-connect-key" className={keyedCount > 0 ? 'done' : ''}>
           <span className="wxv-step-no">{keyedCount > 0 ? Icons.check : '2'}</span>
           <div>
-            <strong>{wizard && step === 'wizard-import' ? '导入校验' : '获取密钥'}</strong>
+            <strong>{wizard && step === 'wizard-import' ? t("导入校验") : t("获取密钥")}</strong>
             <p className="wxv-muted">
-              支持账号口令（64 位十六进制，逐库 PBKDF2 派生）、内存密钥 <code>x'&lt;hex&gt;'</code>、或口令 JSON
-              <code>{'{"passphrase":"…"}'}</code>。导入时只保留通过第 1 页 HMAC 校验的内容。
+              {t("支持账号口令（64 位十六进制，逐库 PBKDF2 派生）、内存密钥")} <code>x'&lt;hex&gt;'</code>{t("、或口令 JSON")}
+              <code>{'{"passphrase":"…"}'}</code>{t("。导入时只保留通过第 1 页 HMAC 校验的内容。")}
             </p>
 
             <div className={`wxv-keyguide ${noKeysYet || freshSource ? 'attention' : ''} ${platform?.platform === 'windows' ? 'windows' : ''}`}>
               <div className="wxv-keyguide-head">
                 <div>
-                  <strong>{platform?.platform === 'windows' ? '使用 Windows 方式获取密钥' : '没有密钥？在本应用里直接获取'}</strong>
+                  <strong>{platform?.platform === 'windows' ? t("使用 Windows 方式获取密钥") : t("没有密钥？在本应用里直接获取")}</strong>
                   <p className="wxv-muted">
                     {platform?.platform === 'windows'
-                      ? 'Windows 通过读取已登录 Weixin.exe 的可读内存寻找候选密钥，并用本地数据库第 1 页 HMAC 逐库校验；找不到时可导入可信工具导出的密钥 JSON。'
+                      ? t("Windows 通过读取已登录 Weixin.exe 的可读内存寻找候选密钥，并用本地数据库第 1 页 HMAC 逐库校验；找不到时可导入可信工具导出的密钥 JSON。")
                       : savedKeySource?.exists
-                        ? `已检测到口令文件（${formatAge(savedKeySource.age_seconds)}），可以导入并逐库校验。`
+                        ? tf("已检测到口令文件（{0}），可以导入并逐库校验。", formatAge(savedKeySource.age_seconds))
                         : captureStatus?.pending
-                          ? '正在进行密钥捕获：按下面的步骤完成即可，中途不要手动改动微信。'
-                          : '按下面四步在本机完成捕获：环境检查 → 安全准备并启动捕获 → 登录时读取口令 → 自动恢复并逐库校验。全程不需要修改系统完整性保护，也不需要另装工具。'}
+                          ? t("正在进行密钥捕获：按下面的步骤完成即可，中途不要手动改动微信。")
+                          : t("按下面四步在本机完成捕获：环境检查 → 安全准备并启动捕获 → 登录时读取口令 → 自动恢复并逐库校验。全程不需要修改系统完整性保护，也不需要另装工具。")}
                   </p>
                 </div>
                 <div className="wxv-keyguide-head-actions">
-                  {freshSource && <span className="wxv-keyguide-fresh">新口令</span>}
+                  {freshSource && <span className="wxv-keyguide-fresh">{t("新口令")}</span>}
                   <button type="button" className="wxv-btn" onClick={() => setShowKeyGuide(value => !value)}>
-                    {showKeyGuide ? '收起步骤' : '查看获取步骤'}
+                    {showKeyGuide ? t("收起步骤") : t("查看获取步骤")}
                   </button>
                 </div>
               </div>
 
 {platform?.platform === 'windows' && (
                 <div className="wxv-windows-keyguide">
-                  <strong>Windows 密钥扫描</strong>
-                  <p className="wxv-muted">请先启动微信并登录目标账号。扫描只读取本机 Weixin.exe 的内存，不上传密钥；候选结果必须通过数据库 HMAC 校验才会保存。</p>
-                  <div className="wxv-row"><button type="button" className="wxv-btn primary" onClick={() => void scanWindowsKeys()} disabled={windowsScanBusy || !account}>{windowsScanBusy ? '扫描并校验中…' : '扫描微信内存并校验'}</button><span className="wxv-muted">支持旧版 x'&lt;key&gt;&lt;salt&gt;' 格式；新版本可导入可信 JSON。</span></div>
-                  {platform.key_acquisition && <p className="wxv-keyguide-path">当前策略：<code>{platform.key_acquisition}</code></p>}
+                  <strong>{t("Windows 密钥扫描")}</strong>
+                  <p className="wxv-muted">{t("请先启动微信并登录目标账号。扫描只读取本机 Weixin.exe 的内存，不上传密钥；候选结果必须通过数据库 HMAC 校验才会保存。")}</p>
+                  <div className="wxv-row"><button type="button" className="wxv-btn primary" onClick={() => void scanWindowsKeys()} disabled={windowsScanBusy || !account}>{windowsScanBusy ? t("扫描并校验中…") : t("扫描微信内存并校验")}</button><span className="wxv-muted">{t("支持旧版 x'&lt;key&gt;&lt;salt&gt;' 格式；新版本可导入可信 JSON。")}</span></div>
+                  {platform.key_acquisition && <p className="wxv-keyguide-path">{t("当前策略：")}<code>{platform.key_acquisition}</code></p>}
                 </div>
               )}
 
@@ -2663,19 +2670,19 @@ const checkMark = (value: boolean | undefined) =>
                   {/* Environment: the reference flow refuses to touch WeChat unless every
                       one of these checks passes, so they are shown before the first action. */}
                   <div id="wizard-detail-key-env" className="wxv-keyguide-step">
-                    <strong>1 · 环境检查</strong>
+                    <strong>{t("1 · 环境检查")}</strong>
                     <ul className="wxv-keyguide-checks">
                       <li>
                         <span className={`wxv-keyguide-check ${checkTone(captureStatus?.platform_supported)}`}>
                           {checkMark(captureStatus?.platform_supported)}
                         </span>
-                        Apple Silicon Mac（应用内捕获目前只验证了这一架构）
+                        {t("Apple Silicon Mac（应用内捕获目前只验证了这一架构）")}
                       </li>
                       <li>
                         <span className={`wxv-keyguide-check ${checkTone(captureStatus?.lldb_available)}`}>
                           {checkMark(captureStatus?.lldb_available)}
                         </span>
-                        LLDB{captureStatus?.lldb_available ? ' 已就绪' : ' 或 Python 运行环境无法启动：请修复 Xcode Command Line Tools'}
+                        LLDB{captureStatus?.lldb_available ? t(" 已就绪") : t(" 或 Python 运行环境无法启动：请修复 Xcode Command Line Tools")}
                       </li>
                       <li>
                         {/* A running transaction re-signs WeChat on purpose: showing that as a
@@ -2691,51 +2698,46 @@ const checkMark = (value: boolean | undefined) =>
                               (Boolean(captureStatus?.pending) && Boolean(captureStatus?.wechat_ad_hoc))
                           )}
                         </span>
-                        微信 {captureStatus?.wechat_version ?? '未找到'}
+                        {t("微信")} {captureStatus?.wechat_version ?? t("未找到")}
                         {captureStatus?.wechat_build ? `（${captureStatus.wechat_build}）` : ''}
                         {captureStatus?.wechat_official
-                          ? ' · 腾讯原签名'
+                          ? t(" · 腾讯原签名")
                           : captureStatus?.wechat_ad_hoc
                             ? captureStatus?.pending
-                              ? ' · 本次捕获的临时签名（结束后自动换回原版）'
-                              : ' · 当前是临时签名，请先恢复原版'
-                            : ' · 不是可验证的腾讯签名'}
+                              ? t(" · 本次捕获的临时签名（结束后自动换回原版）")
+                              : t(" · 当前是临时签名，请先恢复原版")
+                            : t(" · 不是可验证的腾讯签名")}
                       </li>
                       <li>
                         <span className={`wxv-keyguide-check ${checkTone(captureStatus?.user_can_write)}`}>
                           {checkMark(captureStatus?.user_can_write)}
                         </span>
-                        当前用户可写入微信与「应用程序」（保证异常退出后也能恢复原版）
+                        {t("当前用户可写入微信与「应用程序」（保证异常退出后也能恢复原版）")}
                       </li>
                     </ul>
                     <p className="wxv-keyguide-path">
-                      备份目录：<span className="mono">{captureStatus?.backup_root ?? '~'}</span>
+                      {t("备份目录：")}<span className="mono">{captureStatus?.backup_root ?? '~'}</span>
                     </p>
-                    {captureStatus?.message && <p className="wxv-keyguide-note">{captureStatus.message}</p>}
+                    {captureStatus?.message && <p className="wxv-keyguide-note">{t(captureStatus.message)}</p>}
                   </div>
 
                   {!captureStatus?.pending && (
                     <div id="wizard-detail-key-capture" className="wxv-keyguide-step">
-                      <strong>2 · 备份并临时重签微信</strong>
+                      <strong>{t("2 · 备份并临时重签微信")}</strong>
                       <p className="wxv-muted">
-                        程序会先用 <code>ditto</code> 建立腾讯原版压缩备份和同卷写时复制保护，再把「副本」临时
-                        ad-hoc 签名，最后原子替换安装位置。部分系统使用无沙箱的深度重签，微信可能使用不同的数据目录。
+                        {t("程序会先用")} <code>ditto</code> {t("建立腾讯原版压缩备份和同卷写时复制保护，再把「副本」临时\n                        ad-hoc 签名，最后原子替换安装位置。部分系统使用无沙箱的深度重签，微信可能使用不同的数据目录。")}
                       </p>
                       <div className="wxv-keyguide-confirm">
-                        <strong>开始前请确认</strong>
+                        <strong>{t("开始前请确认")}</strong>
                         <span>
-                          微信会被退出并需要重新扫码登录；请先处理未保存的内容。若微信或其安装目录不可写，程序会直接停止。
+                          {t("微信会被退出并需要重新扫码登录；请先处理未保存的内容。若微信或其安装目录不可写，程序会直接停止。")}
                         </span>
                         <p>
-                          捕获期间微信会以临时签名运行。结束、取消或失败时程序会自动换回腾讯原版并校验
-                          TeamIdentifier / 版本 / CDHash；无法证明安全时不会覆盖，而是保留恢复资产并报错。
+                          {t("捕获期间微信会以临时签名运行。结束、取消或失败时程序会自动换回腾讯原版并校验\n                          TeamIdentifier / 版本 / CDHash；无法证明安全时不会覆盖，而是保留恢复资产并报错。")}
                         </p>
                         {captureStatus?.wechat_quarantined && (
                           <p className="wxv-keyguide-note">
-                            这台 Mac 的微信仍带 <code>com.apple.quarantine</code> 隔离属性：临时副本是 ad-hoc
-                            签名，腾讯的公证票据随之失效，首次启动会被 Gatekeeper 拦下。macOS 15
-                            起没有右键「打开」入口，需要在「系统设置 → 隐私与安全性 → 安全性」里点一次
-                            「仍要打开」（被拦下后 1 小时内有效）；15.1 还可能连提示都不弹。
+                            {t("这台 Mac 的微信仍带")} <code>com.apple.quarantine</code> {t("隔离属性：临时副本是 ad-hoc\n                            签名，腾讯的公证票据随之失效，首次启动会被 Gatekeeper 拦下。macOS 15\n                            起没有右键「打开」入口，需要在「系统设置 → 隐私与安全性 → 安全性」里点一次\n                            「仍要打开」（被拦下后 1 小时内有效）；15.1 还可能连提示都不弹。")}
                           </p>
                         )}
                         <label className="wxv-keyguide-accept">
@@ -2744,7 +2746,7 @@ const checkMark = (value: boolean | undefined) =>
                             checked={captureRiskAccepted}
                             onChange={event => setCaptureRiskAccepted(event.target.checked)}
                           />
-                          我了解上述风险，并确认这台 Mac 与微信数据归我本人所有
+                          {t("我了解上述风险，并确认这台 Mac 与微信数据归我本人所有")}
                         </label>
                         <div className="wxv-row">
                           <button
@@ -2760,7 +2762,7 @@ const checkMark = (value: boolean | undefined) =>
                               !captureStatus?.user_can_write
                             }
                           >
-                            {captureBusy === 'prepare' ? '正在备份并重签…' : '备份并临时重签'}
+                            {captureBusy === 'prepare' ? t("正在备份并重签…") : t("备份并临时重签")}
                           </button>
                         </div>
                       </div>
@@ -2771,44 +2773,39 @@ const checkMark = (value: boolean | undefined) =>
                       visible beforehand — otherwise the checklist reads 1, 2, 4 and looks broken. */}
                   {!captureStatus?.pending && (
                     <div id="wizard-detail-key-login" className="wxv-keyguide-step">
-                      <strong>3 · 打开微信、登录并完成捕获</strong>
+                      <strong>{t("3 · 打开微信、登录并完成捕获")}</strong>
                       <p className="wxv-muted">
-                        完成第 2 步后这里会出现具体操作：打开微信 → 检查启动 → 检查捕获断点（一次管理员授权）→
-                        在微信里退出账号 → 启动监测（再一次授权）→ 重新登录同一账号，程序随后自动恢复并导入。
+                        {t("完成第 2 步后这里会出现具体操作：打开微信 → 检查启动 → 检查捕获断点（一次管理员授权）→\n                        在微信里退出账号 → 启动监测（再一次授权）→ 重新登录同一账号，程序随后自动恢复并导入。")}
                       </p>
                     </div>
                   )}
 
                   {captureStatus?.pending && (
                     <div className="wxv-keyguide-step">
-                      <strong>3 · 打开微信、登录并完成捕获</strong>
+                      <strong>{t("3 · 打开微信、登录并完成捕获")}</strong>
                       {captureStatus.entitlement_mode === 'deep' && (
-                        <p className="wxv-keyguide-note">临时微信及其内部组件已重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复官方微信。</p>
+                        <p className="wxv-keyguide-note">{t("临时微信及其内部组件已重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复官方微信。")}</p>
                       )}
                       {captureStatus.entitlement_mode === 'sanitized' && (
                         <p className="wxv-keyguide-note">
-                          本次临时副本已剔除腾讯团队的受限权限（application-identifier / team-identifier /
-                          application-groups / temporary-exception）。这台 Mac 的签名校验不允许 ad-hoc
-                          签名携带它们，保留就会在启动前被系统拒绝（launchd 153）。结束或取消时仍会换回腾讯原版。
+                          {t("本次临时副本已剔除腾讯团队的受限权限（application-identifier / team-identifier /\n                          application-groups / temporary-exception）。这台 Mac 的签名校验不允许 ad-hoc\n                          签名携带它们，保留就会在启动前被系统拒绝（launchd 153）。结束或取消时仍会换回腾讯原版。")}
                         </p>
                       )}
                       <ol className="wxv-keyguide-steps">
                         <li>
-                          <strong>打开微信并完整登录</strong>：点下面的「打开微信」；如果 macOS
-                          提示无法验证或双击没有反应，按下方说明放行一次。登录后进入要读取的聊天，让本地数据库生成。
+                          <strong>{t("打开微信并完整登录")}</strong>{t("：点下面的「打开微信」；如果 macOS\n                          提示无法验证或双击没有反应，按下方说明放行一次。登录后进入要读取的聊天，让本地数据库生成。")}
                         </li>
                         <li>
-                          <strong>检查启动</strong>：程序确认运行的是本次临时副本后，再检查捕获断点（这一步会弹管理员
-                          授权，密码只交给 macOS）。
+                          <strong>{t("检查启动")}</strong>{t("：程序确认运行的是本次临时副本后，再检查捕获断点（这一步会弹管理员\n                          授权，密码只交给 macOS）。")}
                         </li>
                         <li>
-                          <strong>在微信里退出账号</strong>：断点可用后再退出；不要提前退出，否则这次捕获作废。
+                          <strong>{t("在微信里退出账号")}</strong>{t("：断点可用后再退出；不要提前退出，否则这次捕获作废。")}
                         </li>
                         <li>
-                          <strong>启动监测并授权</strong>：再次输入管理员密码。看到「监测已就绪」之前不要重新登录。
+                          <strong>{t("启动监测并授权")}</strong>{t("：再次输入管理员密码。看到「监测已就绪」之前不要重新登录。")}
                         </li>
                         <li>
-                          <strong>重新登录同一账号</strong>：捕获成功后程序自动逐库校验、恢复腾讯原版微信并导入密钥。
+                          <strong>{t("重新登录同一账号")}</strong>{t("：捕获成功后程序自动逐库校验、恢复腾讯原版微信并导入密钥。")}
                         </li>
                       </ol>
 
@@ -2816,57 +2813,55 @@ const checkMark = (value: boolean | undefined) =>
                         <div className="wxv-launch-diag">
                           <strong>
                             {launchDiagnosis.amfi_rejected
-                              ? '系统在启动前拒绝了这次临时签名（AMFI）'
-                              : '系统没有启动临时微信'}
+                              ? t("系统在启动前拒绝了这次临时签名（AMFI）")
+                              : t("系统没有启动临时微信")}
                           </strong>
-                          <p className="wxv-muted">{launchDiagnosis.hint}</p>
+                          <p className="wxv-muted">{t(launchDiagnosis.hint)}</p>
                           <ul className="wxv-launch-diag-facts">
                             <li>
-                              隔离属性 <code>com.apple.quarantine</code>：
-                              {launchDiagnosis.quarantined ? '存在（Gatekeeper 会评估这个副本）' : '不存在'}
+                              {t("隔离属性")} <code>com.apple.quarantine</code>：
+                              {launchDiagnosis.quarantined ? t("存在（Gatekeeper 会评估这个副本）") : t("不存在")}
                             </li>
                             <li>
-                              签名：
+                              {t("签名：")}
                               {launchDiagnosis.resigned
-                                ? '本次临时 ad-hoc 副本'
-                                : '不是本次调试副本，请先检查是否在「本地数据」重新开始'}
+                                ? t("本次临时 ad-hoc 副本")
+                                : t("不是本次调试副本，请先检查是否在「本地数据」重新开始")}
                             </li>
                             <li>
-                              Gatekeeper 评估：
+                              {t("Gatekeeper 评估：")}
                               {launchDiagnosis.gatekeeper_accepted === null
-                                ? '无法评估'
+                                ? t("无法评估")
                                 : launchDiagnosis.gatekeeper_accepted
-                                  ? '已通过'
-                                  : '被拒绝'}
+                                  ? t("已通过")
+                                  : t("被拒绝")}
                               {launchDiagnosis.gatekeeper_reason
                                 ? `（${launchDiagnosis.gatekeeper_reason}）`
                                 : ''}
                             </li>
                             {launchDiagnosis.amfi_rejected && (
-                              <li>受限权限检查：被拒绝（launchd 153，进程在创建阶段就被杀死）</li>
+                              <li>{t("受限权限检查：被拒绝（launchd 153，进程在创建阶段就被杀死）")}</li>
                             )}
-                            <li>当前微信进程数：{launchDiagnosis.processes}</li>
+                            <li>{t("当前微信进程数：")}{launchDiagnosis.processes}</li>
                           </ul>
                           {launchDiagnosis.open_error && (
-                            <p className="wxv-launch-diag-error">open 返回：{launchDiagnosis.open_error}</p>
+                            <p className="wxv-launch-diag-error">{t("open 返回：")}{launchDiagnosis.open_error}</p>
                           )}
                           {!launchDiagnosis.amfi_rejected && (
                             <ol className="wxv-keyguide-steps">
                               <li>
-                                在 Finder 里双击 <code>/Applications/WeChat.app</code>
-                                。如果弹出「无法打开 / 无法验证」，点「完成」，不要点「移到废纸篓」。
+                                {t("在 Finder 里双击")} <code>/Applications/WeChat.app</code>
+                                {t("。如果弹出「无法打开 / 无法验证」，点「完成」，不要点「移到废纸篓」。")}
                               </li>
                               <li>
-                                1 小时内打开 <strong>系统设置 → 隐私与安全性 → 安全性</strong>
-                                ，看到「“WeChat” 已被阻止…」就点「仍要打开」→ 输入管理员密码 → 再点「打开」。
-                                macOS 15 起没有右键「打开」入口；15.1 可能完全不弹窗，只能走这里。
+                                {t("1 小时内打开")} <strong>{t("系统设置 → 隐私与安全性 → 安全性")}</strong>
+                                {t("，看到「“WeChat” 已被阻止…」就点「仍要打开」→ 输入管理员密码 → 再点「打开」。\n                                macOS 15 起没有右键「打开」入口；15.1 可能完全不弹窗，只能走这里。")}
                               </li>
                               <li>
-                                放行后微信会正常启动；扫码登录完成后回到这里点「我已登录，检查启动」。
+                                {t("放行后微信会正常启动；扫码登录完成后回到这里点「我已登录，检查启动」。")}
                               </li>
                               <li>
-                                如果系统设置里根本没有「仍要打开」，说明不是 Gatekeeper：先用「控制台」查看微信是否启动即退出，
-                                或直接点「取消并恢复微信」结束本次捕获，稍后再排查崩溃原因。
+                                {t("如果系统设置里根本没有「仍要打开」，说明不是 Gatekeeper：先用「控制台」查看微信是否启动即退出，\n                                或直接点「取消并恢复微信」结束本次捕获，稍后再排查崩溃原因。")}
                               </li>
                             </ol>
                           )}
@@ -2878,7 +2873,7 @@ const checkMark = (value: boolean | undefined) =>
                                   className="wxv-btn primary"
                                   onClick={() => void openPrivacySecuritySettings()}
                                 >
-                                  打开隐私与安全性设置
+                                  {t("打开隐私与安全性设置")}
                                 </button>
                                 <button
                                   type="button"
@@ -2886,7 +2881,7 @@ const checkMark = (value: boolean | undefined) =>
                                   onClick={() => void openCaptureWeChat()}
                                   disabled={captureBusy !== null}
                                 >
-                                  {captureBusy === 'open' ? '正在打开…' : '再打开一次微信'}
+                                  {captureBusy === 'open' ? t("正在打开…") : t("再打开一次微信")}
                                 </button>
                                 <button
                                   type="button"
@@ -2894,7 +2889,7 @@ const checkMark = (value: boolean | undefined) =>
                                   onClick={() => void confirmCaptureLaunch()}
                                   disabled={captureBusy !== null}
                                 >
-                                  {captureBusy === 'confirm' ? '正在检查…' : '重新检查启动'}
+                                  {captureBusy === 'confirm' ? t("正在检查…") : t("重新检查启动")}
                                 </button>
                               </>
                             )}
@@ -2904,7 +2899,7 @@ const checkMark = (value: boolean | undefined) =>
                               onClick={() => void restoreWeChat()}
                               disabled={captureBusy !== null}
                             >
-                              {captureBusy === 'restore' ? '正在恢复…' : '取消并恢复微信'}
+                              {captureBusy === 'restore' ? t("正在恢复…") : t("取消并恢复微信")}
                             </button>
                           </div>
                         </div>
@@ -2922,7 +2917,7 @@ const checkMark = (value: boolean | undefined) =>
                               onClick={() => void openCaptureWeChat()}
                               disabled={captureBusy !== null}
                             >
-                              {captureBusy === 'open' ? '正在打开…' : '打开微信'}
+                              {captureBusy === 'open' ? t("正在打开…") : t("打开微信")}
                             </button>
                             <button
                               type="button"
@@ -2930,7 +2925,7 @@ const checkMark = (value: boolean | undefined) =>
                               onClick={() => void confirmCaptureLaunch()}
                               disabled={captureBusy !== null}
                             >
-                              {captureBusy === 'confirm' ? '正在检查…' : '我已登录，检查启动'}
+                              {captureBusy === 'confirm' ? t("正在检查…") : t("我已登录，检查启动")}
                             </button>
                           </>
                         )}
@@ -2941,7 +2936,7 @@ const checkMark = (value: boolean | undefined) =>
                             onClick={() => void runCapturePreflight()}
                             disabled={captureBusy !== null}
                           >
-                            {captureBusy === 'preflight' ? '正在检查断点…' : '检查捕获断点（需管理员授权）'}
+                            {captureBusy === 'preflight' ? t("正在检查断点…") : t("检查捕获断点（需管理员授权）")}
                           </button>
                         )}
                         {captureStatus.stage === 'preflight_passed' && (
@@ -2951,7 +2946,7 @@ const checkMark = (value: boolean | undefined) =>
                             onClick={() => void startCapture()}
                             disabled={captureBusy !== null}
                           >
-                            {captureBusy === 'start' ? '监测中，等待登录…' : '我已退出账号，启动监测（需管理员授权）'}
+                            {captureBusy === 'start' ? t("监测中，等待登录…") : t("我已退出账号，启动监测（需管理员授权）")}
                           </button>
                         )}
                         {captureStatus.stage === 'capturing' && (
@@ -2966,20 +2961,20 @@ const checkMark = (value: boolean | undefined) =>
                                 disabled={captureBusy !== null}
                               >
                                 {captureBusy === 'start'
-                                  ? '正在校验并恢复…'
-                                  : '校验并恢复已捕获的密钥'}
+                                  ? t("正在校验并恢复…")
+                                  : t("校验并恢复已捕获的密钥")}
                               </button>
                             ) : (
                               <span className="wxv-keyguide-progress">
                                 {captureStatus.capture_phase === 'waiting_authorization'
-                                  ? '等待管理员授权…'
+                                  ? t("等待管理员授权…")
                                   : captureStatus.capture_phase === 'monitoring'
-                                    ? '监测已就绪：现在重新登录同一账号'
+                                    ? t("监测已就绪：现在重新登录同一账号")
                                     : captureStatus.capture_phase === 'captured'
-                                      ? '已捕获密钥，正在结束调试会话，随后校验并恢复微信'
+                                      ? t("已捕获密钥，正在结束调试会话，随后校验并恢复微信")
                                       : captureStatus.capture_phase === 'validating'
-                                        ? '正在逐库校验…'
-                                        : '正在恢复腾讯原版微信…'}
+                                        ? t("正在逐库校验…")
+                                        : t("正在恢复腾讯原版微信…")}
                               </span>
                             )}
                           </>
@@ -2989,34 +2984,33 @@ const checkMark = (value: boolean | undefined) =>
                           className="wxv-btn danger"
                           onClick={() => void restoreWeChat()}
                           disabled={captureBusy !== null}
-                          title={captureBusy === 'start' ? '监测进行中：请等它超时或完成后再恢复' : undefined}
+                          title={captureBusy === 'start' ? t("监测进行中：请等它超时或完成后再恢复") : undefined}
                         >
-                          {captureBusy === 'restore' ? '正在恢复…' : '取消并恢复官方微信'}
+                          {captureBusy === 'restore' ? t("正在恢复…") : t("取消并恢复官方微信")}
                         </button>
                       </div>
 
                       {captureStatus.prepared_process_exited && captureStatus.stage !== 'capturing' && (
                         <p className="wxv-keyguide-warn">
-                          临时微信进程已退出。请点「取消并恢复官方微信」换回腾讯原版后重新开始，不要自行改签名。
+                          {t("临时微信进程已退出。请点「取消并恢复官方微信」换回腾讯原版后重新开始，不要自行改签名。")}
                         </p>
                       )}
                       {captureStatus.recovery_error_code && (
                         <p className="wxv-keyguide-warn">
-                          恢复被安全策略拦下（{captureStatus.recovery_error_code}）。程序保留了应用、备份和恢复记录；
-                          请先点「取消并恢复官方微信」，按提示处理后再重新开始。
+                          {t("恢复被安全策略拦下（")}{captureStatus.recovery_error_code}{t("）。程序保留了应用、备份和恢复记录；\n                          请先点「取消并恢复官方微信」，按提示处理后再重新开始。")}
                         </p>
                       )}
                     </div>
                   )}
 
                   <div id="wizard-detail-key-import" className="wxv-keyguide-step">
-                    <strong>{wizard && step === 'wizard-import' ? '导入校验' : '4 · 导入并校验'}</strong>
+                    <strong>{wizard && step === 'wizard-import' ? t("导入校验") : t("4 · 导入并校验")}</strong>
                     <p className="wxv-muted">
                       {captureOutcome?.matched
-                        ? '本次捕获的口令已通过消息库与会话库校验，并已逐库导入保存。'
+                        ? t("本次捕获的口令已通过消息库与会话库校验，并已逐库导入保存。")
                         : savedKeySource?.exists
-                          ? '已检测到口令文件：点「导入已提取的口令」逐库用第 1 页 HMAC 校验。口令不会显示在界面、不会写日志、不会上传。'
-                          : '捕获成功后口令会写入本机文件并自动导入；也可以手动粘贴或选择文件导入。'}
+                          ? t("已检测到口令文件：点「导入已提取的口令」逐库用第 1 页 HMAC 校验。口令不会显示在界面、不会写日志、不会上传。")
+                          : t("捕获成功后口令会写入本机文件并自动导入；也可以手动粘贴或选择文件导入。")}
                     </p>
                     <div className="wxv-keyguide-actions">
                       <button
@@ -3025,14 +3019,14 @@ const checkMark = (value: boolean | undefined) =>
                         onClick={() => void importSavedKey()}
                         disabled={!savedKeySource?.exists || busy === 'import'}
                       >
-                        {busy === 'import' ? '校验中…' : '导入已提取的口令'}
+                        {busy === 'import' ? t("校验中…") : t("导入已提取的口令")}
                       </button>
                       <button
                         type="button"
                         className="wxv-btn"
                         onClick={() => void refreshSavedKeySource()}
                       >
-                        重新检测文件
+                        {t("重新检测文件")}
                       </button>
                       {savedKeySource?.exists && !savedKeySource.secure && (
                         <button
@@ -3041,7 +3035,7 @@ const checkMark = (value: boolean | undefined) =>
                           onClick={() => void fixKeyPermissions()}
                           disabled={fixingPermissions}
                         >
-                          {fixingPermissions ? '正在修改…' : '修复口令文件权限'}
+                          {fixingPermissions ? t("正在修改…") : t("修复口令文件权限")}
                         </button>
                       )}
                       <button
@@ -3053,7 +3047,7 @@ const checkMark = (value: boolean | undefined) =>
                         }}
                         disabled={busy === 'scan'}
                       >
-                        {busy === 'scan' ? '扫描中…' : '重新扫描账号'}
+                        {busy === 'scan' ? t("扫描中…") : t("重新扫描账号")}
                       </button>
                       {keyedCount > 0 && (
                         <button
@@ -3062,20 +3056,19 @@ const checkMark = (value: boolean | undefined) =>
                           onClick={() => setClearConfirm(true)}
                           disabled={busy === 'import' || clearConfirm}
                         >
-                          清除本账号密钥
+                          {t("清除本账号密钥")}
                         </button>
                       )}
                       {!savedKeySource?.exists && (
-                        <span className="wxv-keyguide-missing">尚未找到口令文件，导入按钮保持禁用。</span>
+                        <span className="wxv-keyguide-missing">{t("尚未找到口令文件，导入按钮保持禁用。")}</span>
                       )}
                     </div>
 
                     {clearConfirm && (
                       <div className="wxv-keyguide-danger">
                         <p>
-                          确定清除账号 <span className="mono">{accountId}</span> 已保存的 {keyedCount}{' '}
-                          个密钥？这会同时删除该账号已解密的本地副本，之后必须重新捕获或导入口令才能查看。
-                          微信原始数据库不受影响。
+                          {t("确定清除账号")} <span className="mono">{accountId}</span> {t("已保存的")} {keyedCount}{' '}
+                          {t("个密钥？这会同时删除该账号已解密的本地副本，之后必须重新捕获或导入口令才能查看。\n                          微信原始数据库不受影响。")}
                         </p>
                         <div className="wxv-row">
                           <button
@@ -3084,7 +3077,7 @@ const checkMark = (value: boolean | undefined) =>
                             onClick={() => void clearKeys()}
                             disabled={busy === 'import'}
                           >
-                            {busy === 'import' ? '正在清除…' : '确认清除密钥与解密副本'}
+                            {busy === 'import' ? t("正在清除…") : t("确认清除密钥与解密副本")}
                           </button>
                           <button
                             type="button"
@@ -3092,7 +3085,7 @@ const checkMark = (value: boolean | undefined) =>
                             onClick={() => setClearConfirm(false)}
                             disabled={busy === 'import'}
                           >
-                            取消
+                            {t("取消")}
                           </button>
                         </div>
                       </div>
@@ -3100,39 +3093,37 @@ const checkMark = (value: boolean | undefined) =>
 
                     {freshSource && (
                       <p className="wxv-keyguide-fresh-note">
-                        检测到新写入的口令，导入会替换当前账号里已失效的密钥。
+                        {t("检测到新写入的口令，导入会替换当前账号里已失效的密钥。")}
                       </p>
                     )}
 
                     {importedForOther && !importedForCurrent && (
                       <p className="wxv-keyguide-partial">
-                        该口令解锁的是账号 <strong>{importedForOther.account}</strong>（{importedForOther.matched} 个新密钥），
-                        当前选择的是 {account?.id}。
+                        {t("该口令解锁的是账号")} <strong>{importedForOther.account}</strong>（{importedForOther.matched} {t("个新密钥），\n                        当前选择的是")} {account?.id}。
                         <button
                           type="button"
                           className="wxv-link"
                           disabled={accountSwitching}
                           onClick={() => void switchAccount(importedForOther.account)}
                         >
-                          切换到 {importedForOther.account}
+                          {t("切换到")} {importedForOther.account}
                         </button>
                       </p>
                     )}
 
                     <p className="wxv-keyguide-path">
-                      口令文件：<span className="mono">{savedKeySource?.path ?? '~/.wcdb-key-tool/wechat-passphrase.json'}</span>
+                      {t("口令文件：")}<span className="mono">{savedKeySource?.path ?? '~/.wcdb-key-tool/wechat-passphrase.json'}</span>
                       {savedKeySource?.exists
-                        ? `（${formatAge(savedKeySource.age_seconds)}，权限 ${savedKeySource.mode ?? '未知'}）`
-                        : '（尚未生成）'}
+                        ? tf("（{0}，权限 {1}）", formatAge(savedKeySource.age_seconds), savedKeySource.mode ?? t("未知"))
+                        : t("（尚未生成）")}
                     </p>
                     {savedKeySource?.exists && !savedKeySource.secure && (
                       <p className="wxv-keyguide-warn">
-                        口令文件权限是 {savedKeySource.mode ?? '未知'}，其他本机用户可能读取它。点「修复口令文件权限」改成 600。
+                        {t("口令文件权限是")} {savedKeySource.mode ?? t("未知")}{t("，其他本机用户可能读取它。点「修复口令文件权限」改成 600。")}
                       </p>
                     )}
                     <p className="wxv-keyguide-path">
-                      需要新增微信号时：在微信登录新账号 → 点「重新扫描账号」→ 从第 1 步重新捕获一次。
-                      每个账号单独捕获、单独校验，口令不通用。
+                      {t("需要新增微信号时：在微信登录新账号 → 点「重新扫描账号」→ 从第 1 步重新捕获一次。\n                      每个账号单独捕获、单独校验，口令不通用。")}
                     </p>
                   </div>
                 </>
@@ -3142,18 +3133,18 @@ const checkMark = (value: boolean | undefined) =>
             {/* Capture already writes the passphrase file and imports it automatically, so this
                 box is only for keys obtained elsewhere — keep it available, not mandatory. */}
             <details className="wxv-keyguide-manual">
-              <summary>手动导入（可选）：粘贴或选择密钥文件</summary>
+              <summary>{t("手动导入（可选）：粘贴或选择密钥文件")}</summary>
               <textarea
                 className="wxv-textarea"
                 rows={3}
                 value={keyText}
                 onChange={e => setKeyText(e.target.value)}
-                placeholder="粘贴 64 位十六进制口令，或 x'<key><salt>'，或口令 JSON"
+                placeholder={t("粘贴 64 位十六进制口令，或 x'<key><salt>'，或口令 JSON")}
                 spellCheck={false}
               />
               <div className="wxv-row">
                 <label className="wxv-file">
-                  选择文件
+                  {t("选择文件")}
                   <input
                     type="file"
                     accept=".json,application/json,text/plain"
@@ -3166,23 +3157,23 @@ const checkMark = (value: boolean | undefined) =>
                   onClick={() => void importKeys()}
                   disabled={busy === 'import'}
                 >
-                  {busy === 'import' ? '校验中…' : '导入并校验'}
+                  {busy === 'import' ? t("校验中…") : t("导入并校验")}
                 </button>
               </div>
             </details>
             <div className="wxv-row">
               <span className="wxv-key-state">
-                {encryptedDbs.length ? `已就绪 ${keyedCount}/${encryptedDbs.length} 个加密库` : '等待发现账号'}
+                {encryptedDbs.length ? tf("已就绪 {0}/{1} 个加密库", keyedCount, encryptedDbs.length) : t("等待发现账号")}
               </span>
             </div>
             {keyedCount > 0 && keyVerifiedSecs && (
               <p className="wxv-keyguide-path">
-                密钥最近校验：{formatKeyDate(keyVerifiedSecs)}（{keyAgeDays} 天前）。微信更新或重新登录后口令会轮换，需要重新提取并导入。
+                {t("密钥最近校验：")}{formatKeyDate(keyVerifiedSecs)}（{keyAgeDays} {t("天前）。微信更新或重新登录后口令会轮换，需要重新提取并导入。")}
               </p>
             )}
             {accountMissingKeys && keyedCount > 0 && (
               <p className="wxv-keyguide-partial">
-                还有 {encryptedDbs.length - keyedCount} 个加密库没有匹配到密钥，通常是微信从未打开过的库，不影响已就绪的聊天记录。
+                {t("还有")} {encryptedDbs.length - keyedCount} {t("个加密库没有匹配到密钥，通常是微信从未打开过的库，不影响已就绪的聊天记录。")}
               </p>
             )}
           </div>
@@ -3191,58 +3182,58 @@ const checkMark = (value: boolean | undefined) =>
         <li id="wx-connect-decrypt" className={ready ? 'done' : ''}>
           <span className="wxv-step-no">{ready ? Icons.check : '3'}</span>
           <div>
-            <strong>{wizard && step === 'wx-connect-decrypt' ? '解密记录' : '解密并打开'}</strong>
+            <strong>{wizard && step === 'wx-connect-decrypt' ? t("解密记录") : t("解密并打开")}</strong>
             <p className="wxv-muted">
-              解密会逐页校验，任一页失败即整体失败，不会产出半成品。已解密过的库直接复用缓存。
+              {t("解密会逐页校验，任一页失败即整体失败，不会产出半成品。已解密过的库直接复用缓存。")}
             </p>
             <div className="wxv-row">
               <button
                 type="button"
                 className="wxv-btn primary"
                 onClick={() => void decrypt()}
-                disabled={!account || busy === 'decrypt' || keyedCount === 0}
+                disabled={!account || accountSwitching || decrypting || keyedCount === 0}
               >
-                {busy === 'decrypt' ? '解密中…' : '解密当前账号'}
+                {decrypting ? t("解密中…") : t("解密当前账号")}
               </button>
               <label className="wxv-check">
                 <input type="checkbox" checked={onlyChat} onChange={e => setOnlyChat(e.target.checked)} />
-                只处理聊天相关库
+                {t("只处理聊天相关库")}
               </label>
               <label className="wxv-check">
                 <input type="checkbox" checked={applyWal} onChange={e => setApplyWal(e.target.checked)} />
-                尝试回填 WAL
+                {t("尝试回填 WAL")}
               </label>
-              <button type="button" className="wxv-btn" onClick={() => void clearCache()}>
-                清理解密缓存
+              <button type="button" className="wxv-btn" disabled={decrypting} onClick={() => void clearCache()}>
+                {t("清理解密缓存")}
               </button>
             </div>
             {wizard && notice && <div className="wxv-wizard-state">{notice}</div>}
             <p className="wxv-muted">
-              解密副本保存在应用数据目录；清理后会回到未解密状态，聊天记录页在重新解密前不显示内容。
+              {t("解密副本保存在应用数据目录；清理后会回到未解密状态，聊天记录页在重新解密前不显示内容。")}
             </p>
             {!!outcomes.length && (
               <>
                 <button type="button" className="wxv-link" onClick={() => setShowLog(v => !v)}>
-                  {showLog ? '收起' : '查看'}解密详情（{outcomes.length} 个库）
+                  {showLog ? t("收起") : t("查看")}{t("解密详情（")}{outcomes.length} {t("个库）")}
                 </button>
                 {showLog && (
                   <table className="wxv-table">
                     <thead>
                       <tr>
-                        <th>数据库</th>
-                        <th>状态</th>
-                        <th>页数</th>
-                        <th>说明</th>
+                        <th>{t("数据库")}</th>
+                        <th>{t("状态")}</th>
+                        <th>{t("页数")}</th>
+                        <th>{t("说明")}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {outcomes.map(outcome => (
                         <tr key={`${outcome.account}-${outcome.rel}`}>
                           <td className="mono">{outcome.rel}</td>
-                          <td className={`wxv-status ${outcome.status}`}>{outcome.status}</td>
+                          <td className={`wxv-status ${outcome.status}`}>{t(outcome.status)}</td>
                           <td>{outcome.pages || '—'}</td>
                           <td className="wxv-note">
-                            {outcome.error ?? outcome.wal?.status ?? (outcome.status === 'cached' ? '命中缓存' : '')}
+                            {outcome.error ?? outcome.wal?.status ?? (outcome.status === 'cached' ? t("命中缓存") : '')}
                           </td>
                         </tr>
                       ))}
@@ -3257,28 +3248,26 @@ const checkMark = (value: boolean | undefined) =>
 
       {wizard && step !== 'wizard-method' && (
         <div className="wizard-detail-actions">
-          <button type="button" className="wxv-btn" onClick={onWizardBack}>上一步</button>
+          <button type="button" className="wxv-btn" onClick={onWizardBack}>{t("上一步")}</button>
           <button type="button" className="wxv-btn primary" onClick={onWizardNext} disabled={!wizardCanNext}>
-            {step === 'wizard-permission' ? '下一步：账号扫描' : step === 'wizard-account' ? '下一步：获取密钥' : step === 'wizard-key' ? '下一步：导入校验' : step === 'wizard-import' ? '下一步：解密记录' : '下一步：完成'}
+            {step === 'wizard-permission' ? t("下一步：账号扫描") : step === 'wizard-account' ? t("下一步：获取密钥") : step === 'wizard-key' ? t("下一步：导入校验") : step === 'wizard-import' ? t("下一步：解密记录") : t("下一步：完成")}
           </button>
         </div>
       )}
 
       <details className="wxv-warn">
-        <summary>密钥获取与安全说明</summary>
+        <summary>{t("密钥获取与安全说明")}</summary>
         <p>
-          官方微信启用了 Hardened Runtime 和沙盒，直接附加调试器可能被系统拒绝。
-          应用内获取流程会先备份官方微信，再经你确认后使用临时签名捕获，完成或取消时恢复并校验原版。
+          {t("官方微信启用了 Hardened Runtime 和沙盒，直接附加调试器可能被系统拒绝。\n          应用内获取流程会先备份官方微信，再经你确认后使用临时签名捕获，完成或取消时恢复并校验原版。")}
         </p>
         <p>
-          <strong>不要自行重签微信。</strong>签名或权限处理不当可能导致微信无法启动。
-          如不希望使用应用内捕获，也可以手动导入可信来源的密钥文件。
+          <strong>{t("不要自行重签微信。")}</strong>{t("签名或权限处理不当可能导致微信无法启动。\n          如不希望使用应用内捕获，也可以手动导入可信来源的密钥文件。")}
         </p>
         {env && (
           <p className="wxv-muted mono">
-            密钥文件：{env.keys_path}
+            {t("密钥文件：")}{env.keys_path}
             <br />
-            解密缓存：{env.cache_root}
+            {t("解密缓存：")}{env.cache_root}
           </p>
         )}
       </details>
@@ -3327,10 +3316,10 @@ const checkMark = (value: boolean | undefined) =>
       if (root.clientHeight > 0) followNewest.current = root.scrollHeight - root.scrollTop - root.clientHeight <= 24;
     }}>
       <div ref={messageContentRef}>
-      {busy === 'messages' && !messages.length && <LoadingSkeleton label="正在加载聊天记录" kind="messages" />}
+      {busy === 'messages' && !messages.length && <LoadingSkeleton label={t("正在加载聊天记录")} kind="messages" />}
       {hasMore && (
         <button type="button" className="wxv-more" onClick={() => void loadOlder()} disabled={busy === 'messages'}>
-          {busy === 'messages' ? '加载中…' : '加载更早的消息'}
+          {busy === 'messages' ? t("加载中…") : t("加载更早的消息")}
         </button>
       )}
       {orderedWithDates.map(({ message, divider, stamp }) => {
@@ -3341,6 +3330,7 @@ const checkMark = (value: boolean | undefined) =>
         const media = !isWhatsApp && !placeholder && base !== 1;
         const imageMessage = !isWhatsApp && base === 3;
         const voiceMessage = !isWhatsApp && base === 34;
+        const videoMessage = !isWhatsApp && base === 43;
         const hit = !!highlightKeyword && contains(message.text, highlightKeyword);
         const selected = selectedMessages.some(item => messageKey(item.session.username, item.message) === messageKey(active?.username ?? '', message));
         const selectMessage = (extend = false) => toggleMessageSelection(message, extend);
@@ -3396,6 +3386,12 @@ const checkMark = (value: boolean | undefined) =>
                   openImage(image);
                   return;
                 }
+                const video = mediaFor(message).find(entry => entry.kind === 'video');
+                if (video && !event.shiftKey && (event.target as HTMLElement).closest('.wxv-bubble')) {
+                  event.stopPropagation();
+                  revealMedia(video);
+                  return;
+                }
                 selectMessage(event.shiftKey);
               }}
               role="button"
@@ -3405,7 +3401,7 @@ const checkMark = (value: boolean | undefined) =>
                 if (event.key === 'Enter' || event.key === ' ') selectMessage(event.shiftKey);
               }}
             >
-              {onChatState && <time className="wxv-timeline-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}
+              {onChatState && <time className="wxv-timeline-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}
               {(!message.is_self || onChatState) && (
                 <span className="wxv-avatar sm" style={{ background: avatarColor(message.sender ?? message.text) }}>
                   {message.sender && avatars[message.sender] ? (
@@ -3416,22 +3412,22 @@ const checkMark = (value: boolean | undefined) =>
                       draggable={false}
                     />
                   ) : (
-                    initial(message.sender_name || message.sender || (message.is_self ? '我' : '?'))
+                    initial(message.sender_name || message.sender || (message.is_self ? t("我") : '?'))
                   )}
                 </span>
               )}
               <div className="wxv-msg-body">
                 {(onChatState || (active?.is_group && !message.is_self)) && (
-                  <span className="wxv-sender">{message.is_self ? '我' : (message.sender_name || message.sender || '未知成员')}</span>
+                  <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || message.sender || t("未知成员"))}</span>
                 )}
-                <div className={`wxv-bubble ${imageMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
-                  {imageMessage || voiceMessage ? null : placeholder ? (
+                <div className={`wxv-bubble ${imageMessage || videoMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
+                  {imageMessage || voiceMessage || videoMessage ? null : placeholder ? (
                     message.text
                   ) : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
                   )}
-                  {imageMessage && !mediaFor(message).length && <div className="wxv-attach image"><span className="wxv-image-placeholder" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true"/>}{mediaScanComplete ? '图片不可用' : '正在加载图片…'}</span></div>}
-                  {voiceMessage && !mediaFor(message).length && <span className="wxv-attach-chip" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true" />}{mediaScanComplete ? '语音暂不可用' : '正在加载语音…'}</span>}
+                  {imageMessage && !mediaFor(message).length && <div className="wxv-attach image"><span className="wxv-image-placeholder" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true"/>}{mediaScanComplete ? t("图片不可用") : t("正在加载图片…")}</span></div>}
+                  {voiceMessage && !mediaFor(message).length && <span className="wxv-attach-chip" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true" />}{mediaScanComplete ? t("语音暂不可用") : t("正在加载语音…")}</span>}
                   {mediaFor(message).map(item => {
                     if (item.kind === 'voice') {
                       const text = voiceText[item.server_id_exact];
@@ -3439,7 +3435,7 @@ const checkMark = (value: boolean | undefined) =>
                       const busyVoice = Boolean(voiceBusy[item.server_id_exact]);
                       return (
                         <div className="wxv-attach voice" key={`${item.local_id}-${item.server_id_exact}`} onClick={event => event.stopPropagation()}>
-                          <button type="button" className={`wxv-voice-bubble ${playingVoice === item.server_id_exact ? 'playing' : ''}`} onClick={() => void playVoice(item)} disabled={loadingVoice === item.server_id_exact} aria-label={loadingVoice === item.server_id_exact ? '正在加载语音' : playingVoice === item.server_id_exact ? '暂停语音' : '播放语音'}>
+                          <button type="button" className={`wxv-voice-bubble ${playingVoice === item.server_id_exact ? 'playing' : ''}`} onClick={() => void playVoice(item)} disabled={loadingVoice === item.server_id_exact} aria-label={loadingVoice === item.server_id_exact ? t("正在加载语音") : playingVoice === item.server_id_exact ? t("暂停语音") : t("播放语音")}>
                             {loadingVoice === item.server_id_exact ? <i className="wxv-image-spinner" aria-hidden="true" /> : <svg className="wxv-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M4 10v4l4 3V7l-4 3Z" fill="currentColor" stroke="none"/><path d="M11 8.5a5 5 0 0 1 0 7"/><path d="M14 5a10 10 0 0 1 0 14"/></svg>}<span>{item.duration ?? 0}″</span>
                           </button>
                           <button
@@ -3448,7 +3444,7 @@ const checkMark = (value: boolean | undefined) =>
                             onClick={() => void transcribeVoice(item)}
                             disabled={busyVoice}
                           >
-                            {busyVoice ? '转写中…' : text ? '重新转写' : '转写'}
+                            {busyVoice ? t("转写中…") : text ? t("重新转写") : t("转写")}
                           </button>
                           {text && <p className="wxv-attach-text">{text}</p>}
                           {failure && <p className="wxv-attach-error">{failure}</p>}
@@ -3461,7 +3457,7 @@ const checkMark = (value: boolean | undefined) =>
                           {item.sources.length ? (
                             <MediaThumb accountId={account?.id ?? ''} item={item} onOpen={() => openImage(item)} />
                           ) : (
-                            <span className="wxv-attach-chip">图片 · 本地缺失</span>
+                            <span className="wxv-attach-chip">{t("图片 · 本地缺失")}</span>
                           )}
                         </div>
                       );
@@ -3470,17 +3466,12 @@ const checkMark = (value: boolean | undefined) =>
                       return (
                         <div className="wxv-attach video" key={`${item.local_id}-${item.server_id_exact}`} onClick={event => event.stopPropagation()}>
                           {item.thumb ? (
-                            <button type="button" className="wxv-attach-thumb" onClick={() => revealMedia(item)} title="在访达中显示">
-                              <img src={item.thumb} alt="视频封面" loading="lazy" />
-                              <span className="wxv-attach-badge">{item.duration ? `${item.duration}″` : '视频'}</span>
+                            <button type="button" className="wxv-attach-thumb" onClick={() => revealMedia(item)} title={t("在访达中显示")}>
+                              <img src={item.thumb} alt={t("视频封面")} loading="lazy" />
+                              <span className="wxv-attach-badge">{item.duration ? `${item.duration}″` : t("视频")}</span>
                             </button>
                           ) : (
-                            <span className="wxv-attach-chip">视频{item.duration ? ` · ${item.duration}″` : ''}</span>
-                          )}
-                          {item.rel_path && (
-                            <button type="button" className="wxv-attach-link" onClick={() => revealMedia(item)}>
-                              在访达中显示
-                            </button>
+                            <span className="wxv-attach-chip">{item.duration ? `${item.duration}″` : t("视频")}</span>
                           )}
                         </div>
                       );
@@ -3489,13 +3480,13 @@ const checkMark = (value: boolean | undefined) =>
                       return (
                         <div className="wxv-attach file" key={`${item.local_id}-${item.server_id_exact}`} onClick={event => event.stopPropagation()}>
                           <span className="wxv-attach-chip">
-                            📄 {item.name ?? '文件'}
+                            📄 {item.name ?? t("文件")}
                             {item.size ? ` · ${formatSize(item.size)}` : ''}
-                            {!item.exists ? ' · 本地缺失' : ''}
+                            {!item.exists ? t(" · 本地缺失") : ''}
                           </span>
                           {item.rel_path && (
                             <button type="button" className="wxv-attach-link" onClick={() => revealMedia(item)}>
-                              打开
+                              {t("打开")}
                             </button>
                           )}
                         </div>
@@ -3509,7 +3500,7 @@ const checkMark = (value: boolean | undefined) =>
           </div>
         );
       })}
-      {!messages.length && busy !== 'messages' && <p className="wxv-empty-line">这个会话没有可读取的文字消息。</p>}
+      {!messages.length && busy !== 'messages' && <p className="wxv-empty-line">{t("这个会话没有可读取的文字消息。")}</p>}
       </div>
     </div>
   );
@@ -3519,43 +3510,43 @@ const checkMark = (value: boolean | undefined) =>
       return (
         <div className="wxv-placeholder">
           <div className="wxv-placeholder-mark">{Icons.chat}</div>
-          <h3>选择一个会话开始查看</h3>
-          <p>左侧按最近消息排序；群聊会在名称下方显示成员数与未读。</p>
-          <p className="wxv-muted">在搜索框按回车，可以按关键字跨会话检索文字内容。</p>
+          <h3>{t("选择一个会话开始查看")}</h3>
+          <p>{t("左侧按最近消息排序；群聊会在名称下方显示成员数与未读。")}</p>
+          <p className="wxv-muted">{t("在搜索框按回车，可以按关键字跨会话检索文字内容。")}</p>
         </div>
       );
     }
     return (
       <>
         <header className="wxv-chat-head">
-          <button type="button" className="wxv-back" onClick={() => setMobilePane('list')} aria-label="返回会话列表">
+          <button type="button" className="wxv-back" onClick={() => setMobilePane('list')} aria-label={t("返回会话列表")}>
             {Icons.chevronLeft}
           </button>
           <div className="wxv-chat-title">
             <h2>{active.display}</h2>
             <div className="wxv-chat-meta">
               {active.is_group ? (
-                <span className="wxv-badge group">群聊{active.member_count ? ` · ${active.member_count} 人` : ''}</span>
+                <span className="wxv-badge group">{t("群聊")}{active.member_count ? tf(" · {0} 人", active.member_count) : ''}</span>
               ) : (
-                <span className="wxv-badge">单聊</span>
+                <span className="wxv-badge">{t("单聊")}</span>
               )}
-              {active.unread ? <span className="wxv-badge unread">{active.unread} 条未读</span> : null}
+              {active.unread ? <span className="wxv-badge unread">{active.unread} {t("条未读")}</span> : null}
               <span className="mono">{active.username}</span>
             </div>
           </div>
           <div className="wxv-chat-actions">
             {selectedMessages.length > 0 && (
               <button type="button" className="wxv-selection-count" onClick={openWorkPicker}>
-                已选 {selectedMessages.length} 条
+                {t("已选")} {selectedMessages.length} {t("条")}
               </button>
             )}
-            {internalAccount && (
+            {canOrganize && (
               <button type="button" className="wxv-btn" onClick={openWorkPicker} disabled={!messages.length}>
-                整理工作内容
+                {t("整理工作内容")}
               </button>
             )}
             <button type="button" className="wxv-btn" onClick={exportNotSupported}>
-              导出
+              {t("导出")}
             </button>
           </div>
         </header>
@@ -3563,8 +3554,8 @@ const checkMark = (value: boolean | undefined) =>
         {highlightKeyword && (
           <div className="wxv-filterbar">
             {highlightHits
-              ? `正在高亮「${highlightKeyword}」的 ${highlightHits} 处命中`
-              : `「${highlightKeyword}」在当前记录中没有命中，已尝试向前加载更多消息`}
+              ? tf("正在高亮「{0}」的 {1} 处命中", highlightKeyword, highlightHits)
+              : tf("「{0}」在当前记录中没有命中，已尝试向前加载更多消息", highlightKeyword)}
             <button
               type="button"
               className="wxv-link"
@@ -3574,7 +3565,7 @@ const checkMark = (value: boolean | undefined) =>
                 onClearSearch?.();
               }}
             >
-              取消高亮
+              {t("取消高亮")}
             </button>
           </div>
         )}
@@ -3583,14 +3574,14 @@ const checkMark = (value: boolean | undefined) =>
 
         <footer className="wxv-chat-foot">
           <span>
-            已加载最近 {messages.length} 条
-            {hasMore ? '，可继续向前加载' : '，已到本地记录起点'}
+            {t("已加载最近")} {messages.length} {t("条")}
+            {hasMore ? t("，可继续向前加载") : t("，已到本地记录起点")}
           </span>
           <span>{selectedMessages.length
-            ? `已选 ${selectedMessages.length} 条 · 点击消息可切换，Shift + 点击连续选择`
-            : '点击图片查看原图，Shift + 点击消息可加入跨会话选集'}</span>
+            ? tf("已选 {0} 条 · 点击消息可切换，Shift + 点击连续选择", selectedMessages.length)
+            : t("点击图片查看原图，Shift + 点击消息可加入跨会话选集")}</span>
           {selectedMessages.length > 0 && (
-            <button type="button" className="wxv-link" onClick={clearSelectedMessages}>清空选中</button>
+            <button type="button" className="wxv-link" onClick={clearSelectedMessages}>{t("清空选中")}</button>
           )}
           <span className="mono">{messages.length ? listTime(messages[0].time) : ''}</span>
         </footer>
@@ -3604,12 +3595,12 @@ const checkMark = (value: boolean | undefined) =>
     <aside className="wxv-digest wxv-workspace">
       <header>
         <div>
-          <h3>{workPhase === 'select' ? '选择工作内容' : '已选择的聊天记录'}</h3>
+          <h3>{workPhase === 'select' ? t("选择工作内容") : t("已选择的聊天记录")}</h3>
           <p className="wxv-muted">
-            {workPhase === 'select' ? '先限定范围，再展开多个会话核对' : `${selectionTitle()} · ${workGroups.length} 个会话`}
+            {workPhase === 'select' ? t("先限定范围，再展开多个会话核对") : tf("{0} · {1} 个会话", selectionTitle(), workGroups.length)}
           </p>
         </div>
-        <button type="button" className="wxv-icon" onClick={() => setWorkOpen(false)} aria-label="关闭">
+        <button type="button" className="wxv-icon" onClick={() => setWorkOpen(false)} aria-label={t("关闭")}>
           {Icons.close}
         </button>
       </header>
@@ -3617,7 +3608,7 @@ const checkMark = (value: boolean | undefined) =>
       {workPhase === 'select' ? (
         <>
           <section className="wxv-work-section">
-            <div className="wxv-work-label">1. 选择时间</div>
+            <div className="wxv-work-label">{t("1. 选择时间")}</div>
             <div className="wxv-row wxv-work-chips">
               {(['today', '7d', '30d', 'all', 'custom'] as RangeKey[]).map(range => (
                 <button
@@ -3626,20 +3617,20 @@ const checkMark = (value: boolean | undefined) =>
                   className={`wxv-chip ${workRange === range ? 'on' : ''}`}
                   onClick={() => selectWorkRange(range)}
                 >
-                  {range === 'today' ? '今天' : range === '7d' ? '近 7 天' : range === '30d' ? '近 30 天' : range === 'all' ? '全部' : '自定义'}
+                  {range === 'today' ? t("今天") : range === '7d' ? t("近 7 天") : range === '30d' ? t("近 30 天") : range === 'all' ? t("全部") : t("自定义")}
                 </button>
               ))}
             </div>
             {workRange === 'custom' && (
               <div className="wxv-date-grid">
-                <label>开始日期<input type="date" value={workFrom} onChange={e => setWorkFrom(e.target.value)} /></label>
-                <label>结束日期<input type="date" value={workTo} onChange={e => setWorkTo(e.target.value)} /></label>
+                <label>{t("开始日期")}<input type="date" value={workFrom} onChange={e => setWorkFrom(e.target.value)} /></label>
+                <label>{t("结束日期")}<input type="date" value={workTo} onChange={e => setWorkTo(e.target.value)} /></label>
               </div>
             )}
           </section>
 
           <section className="wxv-work-section">
-            <div className="wxv-work-label">2. 指定对话或按关键字定位</div>
+            <div className="wxv-work-label">{t("2. 指定对话或按关键字定位")}</div>
             <div className="wxv-work-search">
               <input
                 value={workKeyword}
@@ -3650,18 +3641,18 @@ const checkMark = (value: boolean | undefined) =>
                 onKeyDown={e => {
                   if (e.key === 'Enter') void runWorkSearch();
                 }}
-                placeholder="输入项目名、客户名或关键字，回车定位"
+                placeholder={t("输入项目名、客户名或关键字，回车定位")}
                 spellCheck={false}
               />
               <button type="button" className="wxv-btn" onClick={() => void runWorkSearch()} disabled={busy === 'search'}>
-                {busy === 'search' ? '定位中…' : '定位'}
+                {busy === 'search' ? t("定位中…") : t("定位")}
               </button>
             </div>
             {workSearch && (
               <div className="wxv-work-hits">
                 <div className="wxv-work-hit-head">
-                  <span>“{workSearch.keyword}”命中 {workSearch.hits.length} 个会话</span>
-                  <button type="button" className="wxv-link" onClick={selectWorkSearchHits}>选择全部命中</button>
+                  <span>“{workSearch.keyword}{t("”命中")} {workSearch.hits.length} {t("个会话")}</span>
+                  <button type="button" className="wxv-link" onClick={selectWorkSearchHits}>{t("选择全部命中")}</button>
                 </div>
                 {workSearch.hits.map(hit => (
                   <button
@@ -3671,37 +3662,37 @@ const checkMark = (value: boolean | undefined) =>
                     onClick={() => toggleWorkSession(hit.username)}
                   >
                     <span className="wxv-work-check">{workSelected.includes(hit.username) ? Icons.check : null}</span>
-                    <span><strong>{hit.display}</strong><small>{hit.hits}{hit.truncated ? '+' : ''} 条命中</small></span>
+                    <span><strong>{hit.display}</strong><small>{hit.hits}{hit.truncated ? '+' : ''} {t("条命中")}</small></span>
                   </button>
                 ))}
-                {!workSearch.hits.length && <p className="wxv-empty-line">没有找到包含该关键字的会话。</p>}
+                {!workSearch.hits.length && <p className="wxv-empty-line">{t("没有找到包含该关键字的会话。")}</p>}
               </div>
             )}
             <div className="wxv-work-label row-label">
-              对话列表 <span>{workSelected.length} 个已选{selectedMessages.length ? ` · ${selectedMessages.length} 条消息` : ''}</span>
-              <button type="button" className="wxv-link" onClick={() => setWorkSelected(sessions.map(session => session.username))}>全选</button>
-              <button type="button" className="wxv-link" onClick={() => setWorkSelected([])}>清空</button>
+              {t("对话列表")} <span>{workSelected.length} {t("个已选")}{selectedMessages.length ? tf(" · {0} 条消息", selectedMessages.length) : ''}</span>
+              <button type="button" className="wxv-link" onClick={() => setWorkSelected(sessions.map(session => session.username))}>{t("全选")}</button>
+              <button type="button" className="wxv-link" onClick={() => setWorkSelected([])}>{t("清空")}</button>
             </div>
             {selectedMessages.length > 0 && (
               <div className="wxv-work-selection-note">
-                当前将使用已点选的 {selectedMessages.length} 条消息；切换为按时间范围读取将清空消息选集。
-                <button type="button" className="wxv-link" onClick={clearSelectedMessages}>改为按范围读取</button>
+                {t("当前将使用已点选的")} {selectedMessages.length} {t("条消息；切换为按时间范围读取将清空消息选集。")}
+                <button type="button" className="wxv-link" onClick={clearSelectedMessages}>{t("改为按范围读取")}</button>
               </div>
             )}
             <div className="wxv-work-sessions">
               {sessions.map(session => (
                 <label key={session.username} className={`wxv-work-session ${workSelected.includes(session.username) ? 'on' : ''}`}>
                   <input type="checkbox" checked={workSelected.includes(session.username)} onChange={() => toggleWorkSession(session.username)} />
-                  <span className="wxv-work-session-text"><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {listTime(session.last_time)}</small></span>
+                  <span className="wxv-work-session-text"><strong>{session.display}</strong><small>{session.is_group ? t("群聊") : t("单聊")} · {listTime(session.last_time)}</small></span>
                 </label>
               ))}
             </div>
           </section>
 
           <div className="wxv-work-footer">
-            <span>{workSelected.length ? `将展开 ${workSelected.length} 个会话` : '请选择至少一个会话'}</span>
+            <span>{workSelected.length ? tf("将展开 {0} 个会话", workSelected.length) : t("请选择至少一个会话")}</span>
             <button type="button" className="wxv-btn primary" onClick={() => void loadWorkSelection()} disabled={!workSelected.length || busy === 'work'}>
-              {busy === 'work' ? '读取中…' : '展开并预览'}
+              {busy === 'work' ? t("读取中…") : t("展开并预览")}
             </button>
           </div>
         </>
@@ -3710,32 +3701,32 @@ const checkMark = (value: boolean | undefined) =>
           <div className="wxv-work-review-head">
             <div className="wxv-digest-stats">
               <span>{selectionTitle()}</span>
-              <span>{workGroups.length} 个会话</span>
-              <span>{workGroups.reduce((sum, group) => sum + group.messages.length, 0)} 条消息</span>
+              <span>{workGroups.length} {t("个会话")}</span>
+              <span>{workGroups.reduce((sum, group) => sum + group.messages.length, 0)} {t("条消息")}</span>
             </div>
-            <button type="button" className="wxv-link" onClick={() => setWorkPhase('select')}>返回调整</button>
+            <button type="button" className="wxv-link" onClick={() => setWorkPhase('select')}>{t("返回调整")}</button>
           </div>
           {renderAiSummary()}
           <div className="wxv-work-review">
             {workGroups.map(group => (
               <section key={group.session.username} className="wxv-work-group">
                 <header>
-                  <div><strong>{group.session.display}</strong><small>{group.session.is_group ? '群聊' : '单聊'} · {group.messages.length} 条</small></div>
-                  {group.truncated && <span className="wxv-work-truncated">已达单会话 5000 条上限</span>}
+                  <div><strong>{group.session.display}</strong><small>{group.session.is_group ? t("群聊") : t("单聊")} · {group.messages.length} {t("条")}</small></div>
+                  {group.truncated && <span className="wxv-work-truncated">{t("已达单会话 5000 条上限")}</span>}
                 </header>
                 {[...group.messages].reverse().map(message => (
                   <article key={`${group.session.username}-${message.local_id}-${message.time}`} className={`wxv-work-message ${message.is_self ? 'self' : ''}`}>
-                    <div><strong>{message.is_self ? '我' : message.sender_name || message.sender || '未知'}</strong><time>{dayLabel(toDate(message.time) ?? new Date())}</time></div>
+                    <div><strong>{message.is_self ? t("我") : message.sender_name || message.sender || t("未知")}</strong><time>{dayLabel(toDate(message.time) ?? new Date())}</time></div>
                     <p><Highlight text={message.text} keyword={workKeyword} /></p>
                   </article>
                 ))}
               </section>
             ))}
-            {!workGroups.some(group => group.messages.length > 0) && <p className="wxv-empty-line">当前筛选条件没有消息。</p>}
+            {!workGroups.some(group => group.messages.length > 0) && <p className="wxv-empty-line">{t("当前筛选条件没有消息。")}</p>}
           </div>
           {renderWorkInsights()}
           <div className="wxv-work-next">
-            <div><strong>下一步</strong><span>先核对原文，再选择处理方式</span></div>
+            <div><strong>{t("下一步")}</strong><span>{t("先核对原文，再选择处理方式")}</span></div>
             <div className="wxv-row">
               <button
                 type="button"
@@ -3749,7 +3740,7 @@ const checkMark = (value: boolean | undefined) =>
                 disabled={busy === 'explore' || busy === 'ai' || !workGroups.some(group => group.messages.length > 0)}
                 aria-expanded={actionPicker}
               >
-                {busy === 'ai' ? 'Agent 总结中…' : busy === 'explore' ? '探索中…' : workInsights || aiSummary ? '重新整理这段聊天' : '整理这段聊天'}
+                {busy === 'ai' ? t("Agent 总结中…") : busy === 'explore' ? t("探索中…") : workInsights || aiSummary ? t("重新整理这段聊天") : t("整理这段聊天")}
               </button>
             </div>
             {actionPicker && (
@@ -3765,11 +3756,11 @@ const checkMark = (value: boolean | undefined) =>
                 >
                   <span className="wxv-action-icon">{Icons.list}</span>
                   <span className="wxv-action-text">
-                    <strong>本地快速整理</strong>
-                    <small>关键词归类成风险 / 决定 / 待办，并找相关会话。不联网。</small>
+                    <strong>{t("本地快速整理")}</strong>
+                    <small>{t("关键词归类成风险 / 决定 / 待办，并找相关会话。不联网。")}</small>
                   </span>
                 </button>
-                <button
+                {canUseAi && <button
                   type="button"
                   className="wxv-action-option"
                   onClick={() => {
@@ -3780,18 +3771,18 @@ const checkMark = (value: boolean | undefined) =>
                     setAiConfirm(true);
                   }}
                   disabled={!aiReady}
-                  title={aiReady ? `使用 ${agentCurrent?.agent_name} 生成` : '先在左侧「Agent 集成」页面选择并测试一个 Agent'}
+                  title={aiReady ? tf("使用 {0} 生成", agentCurrent?.agent_name) : t("当前没有可用的 Agent")}
                 >
                   <span className="wxv-action-icon">{Icons.agent}</span>
                   <span className="wxv-action-text">
-                    <strong>AI 总结</strong>
+                    <strong>{t("AI 总结")}</strong>
                     <small>
                       {aiReady
-                        ? `交给 ${agentCurrent?.agent_name}，原文可能离开本机。`
-                        : '尚未配置可用的 Agent，请先在左侧「Agent 集成」页面配置。'}
+                        ? tf("交给 {0}，原文可能离开本机。", agentCurrent?.agent_name)
+                        : canConfigureAgent ? t("请在「设置 → Agent 集成」中配置可用的 Agent。") : t("当前没有可用的 Agent。")}
                     </small>
                   </span>
-                </button>
+                </button>}
               </div>
             )}
             {aiConfirm && createPortal((
@@ -3807,15 +3798,15 @@ const checkMark = (value: boolean | undefined) =>
                     <span className="wxv-modal-icon">{Icons.agent}</span>
                     <div className="wxv-modal-title">
                       <h3 id="ai-confirm-title">
-                        {aiReady ? `使用 ${agentCurrent?.agent_name} 生成总结` : '尚未配置可用的本地 Agent'}
+                        {aiReady ? tf("使用 {0} 生成总结", agentCurrent?.agent_name) : t("尚未配置可用的本地 Agent")}
                       </h3>
                       <p>
                         {aiReady
-                          ? '先核对范围，再把原文交给该 Agent。'
-                          : '请先在左侧「Agent 集成」页面选择并测试一个 Agent。'}
+                          ? t("先核对范围，再把原文交给该 Agent。")
+                          : t("当前没有可用的 Agent。")}
                       </p>
                     </div>
-                    <button type="button" className="wxv-modal-close" onClick={closeAiConfirm} aria-label="关闭">
+                    <button type="button" className="wxv-modal-close" onClick={closeAiConfirm} aria-label={t("关闭")}>
                       {Icons.close}
                     </button>
                   </header>
@@ -3824,31 +3815,31 @@ const checkMark = (value: boolean | undefined) =>
                     <>
                       <dl className="wxv-modal-stats">
                         <div>
-                          <dt>会话</dt>
+                          <dt>{t("会话")}</dt>
                           <dd>{aiPlan.sessions}</dd>
                         </div>
                         <div>
-                          <dt>消息</dt>
+                          <dt>{t("消息")}</dt>
                           <dd>{aiPlan.count}</dd>
                         </div>
                         <div>
-                          <dt>字数</dt>
-                          <dd>约 {Math.min(aiPlan.characters, AI_MAX_CHARS).toLocaleString('zh-CN')}</dd>
+                          <dt>{t("字数")}</dt>
+                          <dd>{t("约")} {Math.min(aiPlan.characters, AI_MAX_CHARS).toLocaleString(dateLocale())}</dd>
                         </div>
                       </dl>
                       {(aiPlan.capped || aiPlan.characters > AI_MAX_CHARS) && (
                         <p className="wxv-modal-note">
-                          {aiPlan.capped ? `每个会话最多取最近 ${AI_MESSAGES_PER_SESSION} 条。` : ''}
-                          {aiPlan.characters > AI_MAX_CHARS ? '超出上限的内容会按时间顺序截断。' : ''}
+                          {aiPlan.capped ? tf("每个会话最多取最近 {0} 条。", AI_MESSAGES_PER_SESSION) : ''}
+                          {aiPlan.characters > AI_MAX_CHARS ? t("超出上限的内容会按时间顺序截断。") : ''}
                         </p>
                       )}
                       <p className="wxv-modal-warn">
                         {Icons.warning}
-                        聊天原文会离开本机，交给该 Agent 处理。
+                        {t("聊天原文会离开本机，交给该 Agent 处理。")}
                       </p>
                       <footer className="wxv-modal-actions">
                         <button type="button" className="wxv-btn" onClick={closeAiConfirm} disabled={busy === 'ai'}>
-                          取消
+                          {t("取消")}
                         </button>
                         <button
                           type="button"
@@ -3856,14 +3847,14 @@ const checkMark = (value: boolean | undefined) =>
                           onClick={() => void runAiSummary()}
                           disabled={busy === 'ai' || !aiPlan.count}
                         >
-                          {busy === 'ai' ? '生成中…' : '确认生成'}
+                          {busy === 'ai' ? t("生成中…") : t("确认生成")}
                         </button>
                       </footer>
                     </>
                   ) : (
                     <footer className="wxv-modal-actions">
                       <button type="button" className="wxv-btn" onClick={closeAiConfirm}>
-                        知道了
+                        {t("知道了")}
                       </button>
                     </footer>
                   )}
@@ -3883,19 +3874,19 @@ const checkMark = (value: boolean | undefined) =>
       <aside className="wxv-rail">
         <div className="wxv-rail-head">
           <div>
-            <strong>{account?.id ?? '未发现账号'}</strong>
+            <strong>{account?.id ?? t("未发现账号")}</strong>
             <small>
               {ready
-                ? `${sessions.length} 个会话 · ${groups.length} 个群聊`
+                ? tf("{0} 个会话 · {1} 个群聊", sessions.length, groups.length)
                 : encryptedDbs.length
-                  ? `密钥 ${keyedCount}/${encryptedDbs.length}`
-                  : '等待扫描'}
+                  ? tf("密钥 {0}/{1}", keyedCount, encryptedDbs.length)
+                  : t("等待扫描")}
             </small>
             {ready && (
               <small className={`wxv-sync-status ${wechatEnabled ? syncState : 'error'}`}>
                 {!wechatEnabled
-                  ? '已断开 · 到「连接器」重新连接'
-                  : syncState === 'syncing' ? '正在同步最新消息…' : syncState === 'error' ? '同步暂不可用' : lastSyncAt ? `准实时同步 · ${timeOnly(Math.floor(lastSyncAt.getTime() / 1000))}` : '准实时同步已开启'}
+                  ? t("已断开 · 到「连接器」重新连接")
+                  : syncState === 'syncing' ? t("正在同步最新消息…") : syncState === 'error' ? t("同步暂不可用") : lastSyncAt ? tf("准实时同步 · {0}", timeOnly(Math.floor(lastSyncAt.getTime() / 1000))) : t("准实时同步已开启")}
               </small>
             )}
           </div>
@@ -3904,7 +3895,7 @@ const checkMark = (value: boolean | undefined) =>
               type="button"
               className={`wxv-sync-toggle ${liveSync ? 'on' : ''}`}
               onClick={() => setLiveSync(value => !value)}
-              title={liveSync ? '关闭准实时同步' : '开启准实时同步'}
+              title={liveSync ? t("关闭准实时同步") : t("开启准实时同步")}
               aria-pressed={liveSync}
             >
               {liveSync ? Icons.pause : Icons.play}
@@ -3915,7 +3906,7 @@ const checkMark = (value: boolean | undefined) =>
             className={`wxv-icon ${busy === 'scan' ? 'spin' : ''}`}
             onClick={() => void doScan(accountId)}
             disabled={busy === 'scan'}
-            title="重新扫描"
+            title={t("重新扫描")}
           >
             {Icons.refresh}
           </button>
@@ -3935,11 +3926,11 @@ const checkMark = (value: boolean | undefined) =>
             onKeyDown={e => {
               if (e.key === 'Enter') void runSearch();
             }}
-            placeholder={ready ? '搜索会话，回车检索聊天内容' : '搜索会话'}
+            placeholder={ready ? t("搜索会话，回车检索聊天内容") : t("搜索会话")}
             spellCheck={false}
           />
           {query && (
-            <button type="button" className="wxv-clear" onClick={clearSearch} aria-label="清空">
+            <button type="button" className="wxv-clear" onClick={clearSearch} aria-label={t("清空")}>
               {Icons.close}
             </button>
           )}
@@ -3947,16 +3938,16 @@ const checkMark = (value: boolean | undefined) =>
 
         <div className="wxv-tabs">
           <button type="button" className={tab === 'all' ? 'on' : ''} onClick={() => setTab('all')}>
-            全部 {sessions.length}
+            {t("全部")} {sessions.length}
           </button>
           <button type="button" className={tab === 'group' ? 'on' : ''} onClick={() => setTab('group')}>
-            群聊 {groups.length}
+            {t("群聊")} {groups.length}
           </button>
         </div>
 
         {ready ? (search ? renderSearchResults() : renderSessions()) : (
           <div className="wxv-rail-empty">
-            {busy === 'scan' ? '正在扫描微信数据目录…' : needsWhitelist ? '请先配置聊天白名单。' : '解密完成后，会话会出现在这里。'}
+            {busy === 'scan' ? t("正在扫描微信数据目录…") : needsWhitelist ? t("请先配置聊天白名单。") : t("解密完成后，会话会出现在这里。")}
           </div>
         )}
 
@@ -3975,34 +3966,34 @@ const checkMark = (value: boolean | undefined) =>
           renderWhitelistRequired()
         ) : locked ? (
           <div className="wxv-placeholder">
-            <h3>还没有可查看的聊天记录</h3>
-            <p className="wxv-muted">在「本地数据」里导入或捕获密钥，然后解密当前账号。</p>
+            <h3>{t("还没有可查看的聊天记录")}</h3>
+            <p className="wxv-muted">{t("在「本地数据」里导入或捕获密钥，然后解密当前账号。")}</p>
             {onOpenData && (
               <button type="button" className="wxv-btn primary" onClick={onOpenData}>
-                前往本地数据
+                {t("前往本地数据")}
               </button>
             )}
           </div>
         ) : (
           <div className="wxv-placeholder">
-            <h3>正在准备…</h3>
-            <p className="wxv-muted">首次解密需要读取整个数据库，请稍候。</p>
+            <h3>{t("正在准备…")}</h3>
+            <p className="wxv-muted">{t("首次解密需要读取整个数据库，请稍候。")}</p>
           </div>
         )}
         {notice && !wizard && <div className="wxv-toast">{notice}</div>}
         {error && isTauri() && !wizard && (
           <div className="wxv-toast error">
-            <span>{error}</span>
-            <button type="button" className="wxv-icon" onClick={() => setError('')} aria-label="关闭提示">
+            <span>{t(error)}</span>
+            <button type="button" className="wxv-icon" onClick={() => setError('')} aria-label={t("关闭提示")}>
               {Icons.close}
             </button>
           </div>
         )}
       </section>
 
-      {imageViewer && createPortal(<div className="wxv-image-viewer" role="dialog" aria-modal="true" aria-label="查看图片" onClick={closeImage}>
-        <button type="button" className="wxv-image-viewer-close" aria-label="关闭图片" onClick={closeImage} autoFocus>×</button>
-        {imageViewer.error ? <p role="alert">{imageViewer.error}</p> : imageViewer.src ? <img src={imageViewer.src} alt="聊天图片原图" onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: '图片加载失败。' })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>正在加载原图…</p>}
+      {imageViewer && createPortal(<div className="wxv-image-viewer" role="dialog" aria-modal="true" aria-label={t("查看图片")} onClick={closeImage}>
+        <button type="button" className="wxv-image-viewer-close" aria-label={t("关闭图片")} onClick={closeImage} autoFocus>×</button>
+        {imageViewer.error ? <p role="alert">{imageViewer.error}</p> : imageViewer.src ? <img src={imageViewer.src} alt={t("聊天图片原图")} onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: t("图片加载失败。") })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{t("正在加载原图…")}</p>}
       </div>, document.body)}
       {/* The capture guide needs the full column width; the digest drawer would clip it. */}
       {workOpen && !forceUnlock && renderWorkSelector()}

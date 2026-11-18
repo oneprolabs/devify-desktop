@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { apiBaseUrl } from './serviceUrl.ts';
 
 export type UploadScope = { usernames: string[]; since: number | null; until: number | null; base_url: string; message_selection?: Record<string, unknown[]> };
@@ -95,7 +96,7 @@ export function validateCloudPage(page: CloudPage, pageNumber: number, spaceId: 
     !Number.isSafeInteger(page.pagination.total) || page.pagination.total < 0 ||
     !Number.isSafeInteger(page.pagination.page_size) || page.pagination.page_size < 1 ||
     page.list.some(batch => batch.space_id !== spaceId || !Number.isSafeInteger(batch.id) || batch.id <= 0)) {
-    throw new Error('服务端分页响应无效或不属于当前空间');
+    throw new Error(t("服务端分页响应无效或不属于当前空间"));
   }
 }
 export function pollPagePlan(pageCount: number, selectedPage: number | undefined, activePages: number[], cursor: number): number[] {
@@ -110,7 +111,7 @@ export function pollPagePlan(pageCount: number, selectedPage: number | undefined
   return pages;
 }
 export async function fetchCloudPages(numbers: number[], spaceId: string, fetchPage: (page: number) => Promise<CloudPage>): Promise<CloudPage[]> {
-  if (numbers.length > 3 || numbers.some(number => !Number.isSafeInteger(number) || number < 1) || new Set(numbers).size !== numbers.length) throw new Error('分页范围无效');
+  if (numbers.length > 3 || numbers.some(number => !Number.isSafeInteger(number) || number < 1) || new Set(numbers).size !== numbers.length) throw new Error(t("分页范围无效"));
   // Wait for every request even when one fails; a new poll must not overlap
   // surviving requests from a failed Promise.all batch.
   const results = await Promise.allSettled(numbers.map(async number => { const page = await fetchPage(number); validateCloudPage(page, number, spaceId); return page; }));
@@ -142,7 +143,7 @@ export function validateCloudPrefixPage(page: CloudPage, number: number, spaceId
   const count = Math.max(0, Math.min(size, total - (number - 1) * size));
   if (number > last || page.list.length !== count || !!next !== (number < last) ||
       new Set(page.list.map(item => item.id)).size !== page.list.length) {
-    throw new Error('服务端分页正在变化或含重复记录');
+    throw new Error(t("服务端分页正在变化或含重复记录"));
   }
 }
 // Fast append only when both boundaries still match the displayed prefix.
@@ -173,19 +174,19 @@ export function rebuildNextPages(state: CloudRebuild): number[] {
 }
 export function advanceCloudRebuild(state: CloudRebuild, incoming: CloudPage[], spaceId: string): CloudRebuild {
   const numbers = rebuildNextPages(state);
-  if (incoming.length !== numbers.length) throw new Error('分页重建响应不完整');
+  if (incoming.length !== numbers.length) throw new Error(t("分页重建响应不完整"));
   const next = { ...state, pages: [...state.pages], verified: [...state.verified] };
   for (let i = 0; i < numbers.length; i++) {
     const page = incoming[i];
     validateCloudPrefixPage(page, numbers[i], spaceId);
     if (!next.target) next.target = Math.min(next.wanted, Math.max(1, Math.ceil(page.pagination.total / page.pagination.page_size)));
     const first = next.pages[0];
-    if (first && (first.pagination.total !== page.pagination.total || first.pagination.page_size !== page.pagination.page_size)) throw new Error('分页总数已变化');
+    if (first && (first.pagination.total !== page.pagination.total || first.pagination.page_size !== page.pagination.page_size)) throw new Error(t("分页总数已变化"));
     if (next.phase === 'collect') {
-      if (next.pages.some(previous => previous.list.some(item => page.list.some(batch => batch.id === item.id)))) throw new Error('分页含重复记录');
+      if (next.pages.some(previous => previous.list.some(item => page.list.some(batch => batch.id === item.id)))) throw new Error(t("分页含重复记录"));
       next.pages.push(page);
     } else {
-      if (!sameCloudLayout(next.pages[numbers[i] - 1], page)) throw new Error('分页内容已变化');
+      if (!sameCloudLayout(next.pages[numbers[i] - 1], page)) throw new Error(t("分页内容已变化"));
       next.verified.push(page);
     }
   }
@@ -203,14 +204,14 @@ export function localGroupKey(job: UploadJob): string {
   return job.manual_group ? `group:${JSON.stringify([job.account_id, job.manual_group])}` : `job:${job.id}`;
 }
 export function triggerLabel(trigger: string | null | undefined): string {
-  if (trigger === 'manual') return '手动';
-  if (trigger === 'scheduled') return '计划';
-  return trigger && trigger !== 'unknown' ? `未知类型（${trigger}）` : '未知';
+  if (trigger === 'manual') return t("手动");
+  if (trigger === 'scheduled') return t("计划");
+  return trigger && trigger !== 'unknown' ? tf("未知类型（{0}）", trigger) : t("未知");
 }
 export function analysisLabel(summary: AnalysisSummary | null | undefined): string {
-  if (!summary || !(typeof summary.job_count === 'number' && summary.job_count > 0)) return '服务端未报告已关联的分析任务';
-  const labels: Record<string, string> = { running: '进行中', failed: '失败', partial: '部分完成', ready: '就绪' };
-  return labels[summary.state ?? ''] ?? '状态未知';
+  if (!summary || !(typeof summary.job_count === 'number' && summary.job_count > 0)) return t("服务端未报告已关联的分析任务");
+  const labels: Record<string, string> = { running: t("进行中"), failed: t("失败"), partial: t("部分完成"), ready: t("就绪") };
+  return labels[summary.state ?? ''] ?? t("状态未知");
 }
 export function retryCandidate(settings: TaskSettings, id: string, userId: number | null, deviceId: string | null): UploadJob | undefined {
   return visibleLocalJobs(settings, userId, deviceId).find(job => job.id === id && job.status === 'failed'

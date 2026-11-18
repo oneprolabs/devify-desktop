@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { defaultSettings, mergeSettings, mergeSavedSettings, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
@@ -65,7 +66,7 @@ export function AgentSettings() {
       setAgents(await invoke<AgentInfo[]>('agent_scan'));
     } catch (e) {
       setAgents([]);
-      setError(`扫描本地 Agent 失败：${String(e)}`);
+      setError(tf("扫描本地 Agent 失败：{0}", String(e)));
     } finally {
       setScanning(false);
     }
@@ -102,7 +103,7 @@ export function AgentSettings() {
         language: voiceState.settings.language,
       });
       setVoiceState(next);
-      setVoiceNotice(next.selected ? `已保存，使用「${next.selected}」转写语音。` : '已保存，但本机还没有可用的转写引擎。');
+      setVoiceNotice(next.selected ? tf("已保存，使用「{0}」转写语音。", next.selected) : t("已保存，但本机还没有可用的转写引擎。"));
     } catch (e) {
       setVoiceError(String(e));
     } finally {
@@ -157,7 +158,7 @@ export function AgentSettings() {
       const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: { ...settings, user_settings_revision: confirmedRevision.current } })));
       confirmedRevision.current = saved.user_settings_revision;
       setSettings(current => mergeSavedSettings(saved, settings, current));
-      setNotice('Agent 配置已保存。聊天记录页的「AI 总结」会立即使用该配置。');
+      setNotice(t("Agent 配置已保存。聊天记录页的「AI 总结」会立即使用该配置。"));
       await scanAgents();
     } catch (e) {
       setSaveError(settingsSaveError(e));
@@ -180,10 +181,10 @@ export function AgentSettings() {
       const preview = result.output.length > 160 ? `${result.output.slice(0, 160)}…` : result.output;
       setTestResult({
         ok: true,
-        text: `已连接，用时 ${seconds} 秒（${result.command}）。返回：${preview}`,
+        text: tf("已连接，用时 {0} 秒（{1}）。返回：{2}", seconds, result.command, preview),
       });
     } catch (e) {
-      setTestResult({ ok: false, text: `测试失败：${String(e)}` });
+      setTestResult({ ok: false, text: tf("测试失败：{0}", String(e)) });
     } finally {
       setTesting(false);
     }
@@ -191,83 +192,82 @@ export function AgentSettings() {
 
   const timeout = Number.isFinite(agent.timeout_seconds) ? agent.timeout_seconds : MIN_TIMEOUT;
 
-  if (!loaded) return <div className="agent-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
+  if (!loaded) return <div className="agent-page">{error ? <div className="error">{t("设置加载失败：")}{t(error)} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
 
   return (
     <div className="agent-page">
       <section className="panel">
-        <h2>本地总结 Agent</h2>
+        <h2>{t("本地总结 Agent")}</h2>
         <p className="help">
-          扫描本机已安装的命令行 Agent，选择一个用于聊天记录总结。应用只负责把整理好的原文交给它，
-          登录状态、模型和额度仍由该 Agent 自己管理。
+          {t("扫描本机已安装的命令行 Agent，选择一个用于聊天记录总结。应用只负责把整理好的原文交给它，\n          登录状态、模型和额度仍由该 Agent 自己管理。")}
         </p>
         <div className="config warn">
-          聊天内容会通过所选 Agent 及其模型服务处理，可能离开本机。只在确认原文范围后再生成。
+          {t("聊天内容会通过所选 Agent 及其模型服务处理，可能离开本机。只在确认原文范围后再生成。")}
         </div>
 
         <div className="settings-subheading">
-          <strong>本地检测结果</strong>
-          <span>{scanning ? '正在扫描…' : `检测到 ${agents.filter(item => item.available).length} 个可用 Agent`}</span>
+          <strong>{t("本地检测结果")}</strong>
+          <span>{scanning ? t("正在扫描…") : tf("检测到 {0} 个可用 Agent", agents.filter(item => item.available).length)}</span>
         </div>
         <div className="agent-picker">
           <fieldset className="agent-options">
-            <legend>选择本地 Agent</legend>
+            <legend>{t("选择本地 Agent")}</legend>
             {agents.map(item => <label key={item.id} className={`agent-option${agent.provider_id === item.id ? ' selected' : ''}${item.available ? '' : ' unavailable'}`}>
               <input type="radio" name="local-agent" value={item.id} checked={agent.provider_id === item.id} disabled={scanning || !item.available} onChange={() => patchAgent({ provider_id: item.id })}/>
-              <span><strong>{item.name}</strong><small>{item.available ? '已检测到' : '未检测到'}{item.version ? ` · ${item.version}` : ''}</small></span>
+              <span><strong>{item.name}</strong><small>{item.available ? t("已检测到") : t("未检测到")}{item.version ? ` · ${item.version}` : ''}</small></span>
             </label>)}
           </fieldset>
           {selected && (
             <div className="agent-detail">
               <span className={`agent-state ${selected.available ? 'ok' : 'warn'}`}>
-                {selected.available ? '可用' : '未检测到'}
+                {selected.available ? t("可用") : t("未检测到")}
               </span>
               <span className="agent-detail-path mono">{selected.command ?? '—'}</span>
               <span className="agent-detail-note">{selected.version ? `${selected.version} · ${selected.note}` : selected.note}</span>
             </div>
           )}
-          {!agents.length && !scanning && <p className="help">没有检测到受支持的 Agent。</p>}
+          {!agents.length && !scanning && <p className="help">{t("没有检测到受支持的 Agent。")}</p>}
           <div className="agent-actions">
             <button type="button" className="secondary" onClick={() => void scanAgents()} disabled={scanning}>
-              {scanning ? '扫描中…' : '重新扫描'}
+              {scanning ? t("扫描中…") : t("重新扫描")}
             </button>
             <button type="button" className="primary" onClick={() => void test()} disabled={testing || !agent.provider_id}>
-              {testing ? '测试中…' : '测试连接'}
+              {testing ? t("测试中…") : t("测试连接")}
             </button>
           </div>
         </div>
         {testResult && <div className={`config ${testResult.ok ? 'ok' : 'warn'}`}>{testResult.text}</div>}
         {agent.provider_id && !selected?.available && (
           <p className="help">
-            已保存的「{agent.provider_id}」当前不可用，请重新选择，或在下方填写可执行文件路径。
+            {t("已保存的「")}{agent.provider_id}{t("」当前不可用，请重新选择，或在下方填写可执行文件路径。")}
           </p>
         )}
       </section>
 
       <section className="panel">
-        <h2>生成参数</h2>
+        <h2>{t("生成参数")}</h2>
         <div className="grid">
-          <label>可执行文件路径（可选）
+          <label>{t("可执行文件路径（可选）")}
             <input
               value={agent.command}
               onChange={event => patchAgent({ command: event.target.value })}
-              placeholder="留空则自动在 PATH 中查找"
+              placeholder={t("留空则自动在 PATH 中查找")}
               spellCheck={false}
             />
           </label>
-          <label>模型（可选）
+          <label>{t("模型（可选）")}
             <input
               list="agent-model-options"
               value={agent.model}
               onChange={event => patchAgent({ model: event.target.value })}
-              placeholder={models.length ? '从建议中选择，或直接填写 provider/model' : '留空使用该 Agent 的默认模型'}
+              placeholder={models.length ? t("从建议中选择，或直接填写 provider/model") : t("留空使用该 Agent 的默认模型")}
               spellCheck={false}
             />
             <datalist id="agent-model-options">
               {models.map(model => <option key={model} value={model} />)}
             </datalist>
           </label>
-          <label>超时（秒）
+          <label>{t("超时（秒）")}
             <input
               type="number"
               min={MIN_TIMEOUT}
@@ -280,40 +280,38 @@ export function AgentSettings() {
         <div className="agent-model-hint">
           <span>
             {loadingModels
-              ? '正在读取该 Agent 的模型列表…'
+              ? t("正在读取该 Agent 的模型列表…")
               : modelError
                 ? modelError
                 : models.length
-                  ? `已读取 ${models.length} 个模型，可在输入框中直接选择。`
+                  ? tf("已读取 {0} 个模型，可在输入框中直接选择。", models.length)
                   : agent.provider_id
-                    ? '该 Agent 不支持列出模型，请按它自己的配置填写。'
-                    : '先选择一个 Agent，再填写模型。'}
+                    ? t("该 Agent 不支持列出模型，请按它自己的配置填写。")
+                    : t("先选择一个 Agent，再填写模型。")}
           </span>
           <button type="button" className="secondary" onClick={() => void loadModels(agent)} disabled={!agent.provider_id.trim() || loadingModels}>
-            刷新模型
+            {t("刷新模型")}
           </button>
         </div>
-        <label className="agent-instructions">总结补充要求（可选）
+        <label className="agent-instructions">{t("总结补充要求（可选）")}
           <textarea
             rows={3}
             maxLength={2000}
             value={agent.instructions}
             onChange={event => patchAgent({ instructions: event.target.value })}
-            placeholder="例如：重点关注交付风险和负责人；忽略闲聊内容。"
+            placeholder={t("例如：重点关注交付风险和负责人；忽略闲聊内容。")}
           />
         </label>
         <p className="help">
-          不填模型时使用该 Agent 的默认模型；如果默认模型的凭据已失效（例如 OpenCode 的默认模型指向未登录的服务），
-          在这里选一个它已配置的模型即可。补充要求会追加到内置总结提示词，不能覆盖“只依据原文、不编造”的约束。超时时间限制在
-          {MIN_TIMEOUT}–{MAX_TIMEOUT} 秒；超时或失败不会写入任何总结结果。
+          {t("不填模型时使用该 Agent 的默认模型；如果默认模型的凭据已失效（例如 OpenCode 的默认模型指向未登录的服务），\n          在这里选一个它已配置的模型即可。补充要求会追加到内置总结提示词，不能覆盖“只依据原文、不编造”的约束。超时时间限制在")}
+          {MIN_TIMEOUT}–{MAX_TIMEOUT} {t("秒；超时或失败不会写入任何总结结果。")}
         </p>
       </section>
 
       <section className="panel">
-        <h2>语音转写</h2>
+        <h2>{t("语音转写")}</h2>
         <p className="help">
-          微信语音是 SILK v3，应用内置解码器把它转成 24 kHz WAV，再交给本机的转写命令行工具。
-          转写在本机执行，结果按账号和消息缓存，不会重复计算；开启上传后只提交转写文本，不上传原始语音。
+          {t("微信语音是 SILK v3，应用内置解码器把它转成 24 kHz WAV，再交给本机的转写命令行工具。\n          转写在本机执行，结果按账号和消息缓存，不会重复计算；开启上传后只提交转写文本，不上传原始语音。")}
         </p>
         <label className="confirm">
           <input
@@ -324,7 +322,7 @@ export function AgentSettings() {
               voice: { ...current.voice, auto_transcribe: event.target.checked },
             }))}
           />
-          <span>上传前自动转写新的语音</span>
+          <span>{t("上传前自动转写新的语音")}</span>
         </label>
         <label className="confirm">
           <input
@@ -335,21 +333,21 @@ export function AgentSettings() {
               voice: { ...current.voice, upload_transcripts: event.target.checked },
             }))}
           />
-          <span>将语音转写文本上传到服务端</span>
+          <span>{t("将语音转写文本上传到服务端")}</span>
         </label>
-        <p className="help">默认只上传转写文本，不上传原始语音文件。没有本地引擎或转写失败时，会保留待转写状态并在下次同步重试。</p>
+        <p className="help">{t("默认只上传转写文本，不上传原始语音文件。没有本地引擎或转写失败时，会保留待转写状态并在下次同步重试。")}</p>
         {voiceState ? (
           <>
             <div className="settings-subheading">
-              <strong>本机检测结果</strong>
+              <strong>{t("本机检测结果")}</strong>
               <span>
                 {voiceState.engines.filter(engine => engine.available).length
-                  ? `可用：${voiceState.engines.filter(engine => engine.available).map(engine => engine.label).join('、')}`
-                  : '没有检测到转写引擎'}
+                  ? tf("可用：{0}", voiceState.engines.filter(engine => engine.available).map(engine => engine.label).join('、'))
+                  : t("没有检测到转写引擎")}
               </span>
             </div>
             <div className="grid">
-              <label>转写引擎
+              <label>{t("转写引擎")}
                 <select
                   value={voiceState.settings.engine}
                   onChange={event =>
@@ -358,15 +356,15 @@ export function AgentSettings() {
                     )
                   }
                 >
-                  <option value="">自动选择（第一个可用）</option>
+                  <option value="">{t("自动选择（第一个可用）")}</option>
                   {voiceState.engines.map(engine => (
                     <option key={engine.id} value={engine.id} disabled={!engine.available}>
-                      {engine.label} · {engine.available ? '可用' : '未检测到'}
+                      {t(engine.label)} · {engine.available ? t("可用") : t("未检测到")}
                     </option>
                   ))}
                 </select>
               </label>
-              <label>模型 / 模型路径
+              <label>{t("模型 / 模型路径")}
                 <input
                   value={voiceState.settings.model}
                   onChange={event =>
@@ -374,11 +372,11 @@ export function AgentSettings() {
                       current ? { ...current, settings: { ...current.settings, model: event.target.value } } : current,
                     )
                   }
-                  placeholder="留空使用引擎默认值"
+                  placeholder={t("留空使用引擎默认值")}
                   spellCheck={false}
                 />
               </label>
-              <label>语言
+              <label>{t("语言")}
                 <input
                   value={voiceState.settings.language}
                   onChange={event =>
@@ -392,31 +390,31 @@ export function AgentSettings() {
               </label>
             </div>
             <p className="help">
-              {voiceState.engines.find(engine => engine.id === (voiceState.settings.engine || voiceState.selected))
-                ?.model_hint ?? '选择一个引擎后，这里会显示它的模型说明。'}
+              {t(voiceState.engines.find(engine => engine.id === (voiceState.settings.engine || voiceState.selected))
+                ?.model_hint || "选择一个引擎后，这里会显示它的模型说明。")}
             </p>
             <div className="agent-actions">
               <button type="button" className="secondary" onClick={() => void loadVoice()}>
-                重新检测
+                {t("重新检测")}
               </button>
               <button type="button" className="primary" onClick={() => void saveVoice()} disabled={voiceSaving}>
-                {voiceSaving ? '正在保存…' : '保存语音设置'}
+                {voiceSaving ? t("正在保存…") : t("保存语音设置")}
               </button>
             </div>
           </>
         ) : (
-          <p className="help">{voiceError || '正在检测本机转写引擎…'}</p>
+          <p className="help">{voiceError || t("正在检测本机转写引擎…")}</p>
         )}
         {voiceNotice && <div className="config ok">{voiceNotice}</div>}
         {voiceError && voiceState && <div className="config warn">{voiceError}</div>}
       </section>
 
       {notice && <div className="notice">{notice}</div>}
-      {error && <div className="error">{error}</div>}
+      {error && <div className="error">{t(error)}</div>}
       {saveError && <div className="error" role="alert">{saveError}</div>}
       <div className="page-actions">
         <button className="primary" disabled={saving} onClick={() => void save()}>
-          {saving ? '正在保存…' : '保存 Agent 配置'}
+          {saving ? t("正在保存…") : t("保存 Agent 配置")}
         </button>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { useCallback, useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
@@ -19,7 +20,7 @@ export function useConnectorDetect(kind: string, { refreshOnFocus = true }: { re
     try {
       setDetect(await invoke<ConnectorDetect>('connector_detect', { kind }));
     } catch (reason) {
-      setDetect({ state: 'not_installed', app_path: null, version: null, message: `无法检测：${String(reason)}` });
+      setDetect({ state: 'not_installed', app_path: null, version: null, message: tf("无法检测：{0}", String(reason)) });
     } finally {
       setChecking(false);
     }
@@ -34,7 +35,11 @@ export function useConnectorDetect(kind: string, { refreshOnFocus = true }: { re
     return () => window.removeEventListener('focus', onFocus);
   }, [recheck, refreshOnFocus]);
   const usable = detect?.state === 'installed' || detect?.state === 'not_required';
-  return { detect, checking, usable, recheck };
+  // An untrusted WeChat bundle is still sufficient for the read-only/import flow. The
+  // signature gate remains inside the in-app capture command, which is the only path that
+  // temporarily replaces the installed bundle.
+  const canProceed = usable || (kind === 'wechat' && detect?.state === 'untrusted');
+  return { detect, checking, usable, canProceed, recheck };
 }
 
 export const detectTitle: Record<DetectState, string> = {
@@ -48,11 +53,11 @@ export const detectTitle: Record<DetectState, string> = {
 /** Same wording for another source; `detectTitle` stays the WeChat table used by the wizard. */
 export function detectTitleFor(label: string, state: DetectState): string {
   return ({
-    installed: `已检测到${label}`,
-    not_installed: `未检测到${label}`,
-    untrusted: `检测到的${label}不是官方版本`,
-    unsupported: '当前系统暂不支持',
-    not_required: '无需检测',
+    installed: tf("已检测到{0}", label),
+    not_installed: tf("未检测到{0}", label),
+    untrusted: tf("检测到的{0}不是官方版本", label),
+    unsupported: t("当前系统暂不支持"),
+    not_required: t("无需检测"),
   } as Record<DetectState, string>)[state];
 }
 

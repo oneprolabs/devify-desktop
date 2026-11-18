@@ -249,12 +249,12 @@ fn refresh_blocked_by_upload_preserves_login_and_recovers_after_the_lease_ends()
     desktop_credentials::save(dir.path(), &original).unwrap();
     let before = desktop_credentials::generation().unwrap();
     let server = thread::spawn(move || {
-        for _ in 0..2 {
+        for _ in 0..1 {
             let (mut socket, _) = listener.accept().unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut request = [0u8; 4096];
             socket.read(&mut request).unwrap();
-            let body = r#"{"access":"synthetic-refreshed"}"#;
+            let body = r#"{"access":"synthetic-refreshed","refresh":"synthetic-rotated"}"#;
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         }
     });
@@ -263,7 +263,7 @@ fn refresh_blocked_by_upload_preserves_login_and_recovers_after_the_lease_ends()
         let lease = UPLOAD_IDENTITY_LOCK.read().await;
         let mut cleared = None;
         let error = devify_access_token_with_cleanup(dir.path(), &base, &mut cleared).await.unwrap_err();
-        assert!(matches!(error, DevifyTokenError::Unavailable(_)), "a successful remote refresh blocked by an upload is not a logout");
+        assert!(matches!(error, DevifyTokenError::Unavailable(_)), "an upload blocks remote token rotation without logging out");
         assert!(cleared.is_none());
         assert_eq!(desktop_credentials::generation().unwrap(), before);
         assert!(desktop_credentials::load(dir.path(), &base).unwrap() == original);
@@ -271,6 +271,7 @@ fn refresh_blocked_by_upload_preserves_login_and_recovers_after_the_lease_ends()
         drop(lease);
         assert_eq!(devify_access_token_with_cleanup(dir.path(), &base, &mut cleared).await.unwrap(), "synthetic-refreshed");
         assert_eq!(desktop_credentials::generation().unwrap(), before.wrapping_add(1));
+        assert_eq!(desktop_credentials::load(dir.path(), &base).unwrap().refresh, "synthetic-rotated");
         assert!(cleared.is_none());
     });
     server.join().unwrap();

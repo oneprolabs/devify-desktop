@@ -1,3 +1,4 @@
+import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -44,7 +45,7 @@ function useWechatProfiles(accounts: Account[]) {
 
 function WechatIdentity({ account, profile, source }: { account: Account; profile?: WechatProfile; source?: string }) {
   const whatsapp = source === 'whatsapp';
-  return <><span className={`wechat-account-avatar${whatsapp ? ' whatsapp' : ''}`}>{profile?.avatar ? <img src={profile.avatar} alt="" /> : <ConnectorIcon name={whatsapp ? 'WhatsApp' : '微信'} />}</span><span className="wechat-account-details"><strong>{profile?.nickname || (whatsapp ? 'WhatsApp' : '微信账号')}</strong><small>{whatsapp ? `WhatsApp${profile?.alias ? ` · ${profile.alias}` : ''}` : profile?.alias ? `微信号：${profile.alias}` : '微信号暂不可用'}</small><small>本机标识：{account.id}</small></span></>;
+  return <><span className={`wechat-account-avatar${whatsapp ? ' whatsapp' : ''}`}>{profile?.avatar ? <img src={profile.avatar} alt="" /> : <ConnectorIcon name={whatsapp ? 'WhatsApp' : '微信'} />}</span><span className="wechat-account-details"><strong>{profile?.nickname || (whatsapp ? 'WhatsApp' : t("微信账号"))}</strong><small>{whatsapp ? `WhatsApp${profile?.alias ? ` · ${profile.alias}` : ''}` : profile?.alias ? tf("微信号：{0}", profile.alias) : t("微信号暂不可用")}</small><small>{t("本机标识：")}{account.id}</small></span></>;
 }
 type DevifySpace = { id: string; name: string; kind: string; status: string; role?: string };
 
@@ -143,7 +144,7 @@ export function defaultSettings(): AppSettings {
     active_account_id: '',
     chat: { allowed_usernames: {}, initial_ranges: {}, sync_interval_seconds: 1800 },
     connectors: { waitlist: [], wechat_enabled: true, whatsapp_enabled: true },
-    devify: { base_url: 'https://aimychats.com/', device_label: 'AIMyChats', device_id: '', platform: '', active_space_id: null, recipient: '', subject: '微信工作日报' },
+    devify: { base_url: 'https://aimychats.com/', device_label: 'AIMyChats', device_id: '', platform: '', active_space_id: null, recipient: '', subject: t("微信工作日报") },
     voice: { auto_transcribe: true, upload_transcripts: true },
     sync: { enabled: false, last_run_at: null, last_status: null, last_error: null, last_message_count: 0 },
     language: { ui: '中文', summary: '跟随界面', ask: '跟随提问' },
@@ -188,7 +189,7 @@ function accountLabel(account: Account): string {
 
 export function requireSettingsRevision<T extends { user_settings_revision?: unknown }>(stored: T): T {
   if (!Number.isSafeInteger(stored?.user_settings_revision) || (stored.user_settings_revision as number) < 0) {
-    throw new Error('设置版本缺失或无效，请更新应用并重新打开页面。');
+    throw new Error(t("设置版本缺失或无效，请更新应用并重新打开页面。"));
   }
   return stored;
 }
@@ -206,9 +207,9 @@ export function isSettingsConflict(reason: unknown): boolean {
 export function settingsSaveError(reason: unknown): string {
   const message = settingsErrorMessage(reason);
   if (message.includes('SETTINGS_CONFLICT:')) {
-    return `设置已在其他页面或账号/空间中变化，未保存。请重新打开页面，确认当前账号和空间后重新操作。${message.split('SETTINGS_CONFLICT:').slice(1).join('SETTINGS_CONFLICT:')}`;
+    return tf("设置已在其他页面或账号/空间中变化，未保存。请重新打开页面，确认当前账号和空间后重新操作。{0}", message.split('SETTINGS_CONFLICT:').slice(1).join('SETTINGS_CONFLICT:'));
   }
-  return `保存失败：${message}。请检查当前账号和空间后重试。`;
+  return tf("保存失败：{0}。请检查当前账号和空间后重试。", message);
 }
 
 /** Apply a confirmed response without discarding edits made after the request began. */
@@ -290,11 +291,11 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
 
   // Same-day activity reads better with a clock than with a repeated date.
   const activityText = (seconds: number | null | undefined) => {
-    if (!seconds) return '无记录';
+    if (!seconds) return t("无记录");
     const date = new Date(seconds * 1000);
     return date.toDateString() === new Date().toDateString()
-      ? `今天 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
-      : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+      ? tf("今天 {0}", date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
+      : date.toLocaleDateString(dateLocale(), { month: 'numeric', day: 'numeric' });
   };
   const loadDates = async (username: string) => {
     setDateLoading(username); setError('');
@@ -313,7 +314,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
   const matchedCatalog = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return catalog.filter(session => !keyword || session.display.toLowerCase().includes(keyword) || session.username.toLowerCase().includes(keyword))
-      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0) || a.display.localeCompare(b.display, 'zh-Hans-CN'));
+      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0) || a.display.localeCompare(b.display, sortLocale()));
   }, [catalog, search]);
   const groupCount = useMemo(() => matchedCatalog.filter(session => session.is_group).length, [matchedCatalog]);
   // Official accounts / service sessions are filtered out of the catalog, so a whitelist
@@ -386,7 +387,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
       .catch(e => {
         if (!active || accountIdRef.current !== accountId) return;
         setCatalog([]);
-        setError(`无法读取该账号的会话候选：${String(e)}`);
+        setError(tf("无法读取该账号的会话候选：{0}", String(e)));
       })
       .finally(() => { if (active && accountIdRef.current === accountId) setCatalogLoading(false); });
     return () => { active = false; };
@@ -469,7 +470,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
         ? (settings.chat.allowed_usernames[accountId] ?? []).filter(username => catalogUsernames.has(username))
         : settings.chat.allowed_usernames[accountId];
       const invalidId = (keep ?? []).find(username => !username || new TextEncoder().encode(username).length > 512);
-      if (invalidId !== undefined) throw new Error(`会话 ID 无效或超过 512 字节：${invalidId.slice(0, 60) || '空 ID'}`);
+      if (invalidId !== undefined) throw new Error(tf("会话 ID 无效或超过 512 字节：{0}", invalidId.slice(0, 60) || '空 ID'));
       const submitted: AppSettings = {
         ...settings,
         user_settings_revision: confirmedRevision.current,
@@ -530,14 +531,14 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
     onScope={setHistoryScope} onFocus={id => { setFocusedSession(id); setHistoryScope('single'); }} onChange={applyHistoryRange}
     dateDetails={dateDetails[accountId] ?? {}} dateLoading={dateLoading} onLoadDates={id => void loadDates(id)} />;
 
-  if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
+  if (!loaded) return <div className="settings-page">{error ? <div className="error">{t("设置加载失败：")}{error} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
 
   const source = accounts.find(account => account.id === accountId)?.source === 'whatsapp' ? 'whatsapp' : 'wechat';
   const sourceName = source === 'whatsapp' ? 'WhatsApp' : '微信';
   const sourceAccounts = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === source);
   const editor = <>
-    {(!wizardWechat || accounts.length > 1 || !accountId) && <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name={sourceName} /></span><span className="wechat-account-details"><strong>聊天账号</strong><small>未检测到可用的聊天账号</small></span></>}{sourceAccounts.length > 1 && <AccountPicker accounts={sourceAccounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={changeAccount} />}</section>}
-    {source === 'whatsapp' && <p className="imports-hint">WhatsApp 目前支持手动备份。选择的账号和范围在保存成功后才生效。</p>}
+    {(!wizardWechat || accounts.length > 1 || !accountId) && <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name={sourceName} /></span><span className="wechat-account-details"><strong>{t("聊天账号")}</strong><small>{t("未检测到可用的聊天账号")}</small></span></>}{sourceAccounts.length > 1 && <AccountPicker accounts={sourceAccounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={changeAccount} />}</section>}
+    {source === 'whatsapp' && <p className="imports-hint">{t("WhatsApp 目前支持手动备份。选择的账号和范围在保存成功后才生效。")}</p>}
     <WizardImportScope catalog={catalog} selected={allowed} loading={catalogLoading} disabled={saving} accountId={accountId} onScope={setScopeSelection} selectionIssue={selectionIssue} onClearIssue={() => setSelectionIssue(null)} sourceName={sourceName}>
       <WizardSessionPicker items={visibleCatalog} total={matchedCatalog.length} groupCount={groupCount}
         selected={allowed} selectedCount={allowedCount} kind={kind} onKind={setKind} search={search} onSearch={setSearch}
@@ -545,28 +546,28 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
         focused={focused?.username ?? ''} onFocus={id => { setFocusedSession(id); setHistoryScope('single'); }} activity={activityText} sourceName={sourceName} />
     </WizardImportScope>
     {!catalogLoading && accountId && historyEditor}
-    {error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}{allowedCount > 1000 && <div className="error" role="alert">已超出 {allowedCount - 1000} 个会话，请取消选择后保存。</div>}
-    <div className="page-actions">{notice && <span className="imports-save-status" role="status">{Icons.check}<span>{notice}</span></span>}{wizard && onBack && <button type="button" className="wxv-btn" disabled={saving} onClick={onBack}>上一步</button>}<button className="primary" aria-busy={saving} disabled={saving || !accountId || catalogLoading || allowedCount > 1000 || (wizard && allowedCount === 0)} onClick={() => void save()}>{saving ? '正在保存…' : wizardWechat ? '下一步' : wizard ? '保存并继续' : '保存所选会话'}</button></div>
+    {error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}{allowedCount > 1000 && <div className="error" role="alert">{t("已超出")}{allowedCount - 1000} {t("个会话，请取消选择后保存。")}</div>}
+    <div className="page-actions">{notice && <span className="imports-save-status" role="status">{Icons.check}<span>{notice}</span></span>}{wizard && onBack && <button type="button" className="wxv-btn" disabled={saving} onClick={onBack}>{t("上一步")}</button>}<button className="primary" aria-busy={saving} disabled={saving || !accountId || catalogLoading || allowedCount > 1000 || (wizard && allowedCount === 0)} onClick={() => void save()}>{saving ? t("正在保存…") : wizardWechat ? t("下一步") : wizard ? t("保存并继续") : t("保存所选会话")}</button></div>
   </>;
   return <div className={`settings-page imports-page imports-v7${wizard ? ' wizard-imports' : ' imports-management'}`}>
-    <header className="page-head"><h2>{wizard ? '选择要备份的会话' : '导入管理'}</h2><p className="help">{wizard ? '只导入你确认的会话。会话较多时，可以通过「自定义」筛选和批量选择。' : '每个平台单独选择要备份的私聊和群聊。连接向导里也可以设置，修改后保存即可生效。'}</p></header>
+    <header className="page-head"><h2>{wizard ? t("选择要备份的会话") : t("导入管理")}</h2><p className="help">{wizard ? t("只导入你确认的会话。会话较多时，可以通过「自定义」筛选和批量选择。") : t("每个平台单独选择要备份的私聊和群聊。连接向导里也可以设置，修改后保存即可生效。")}</p></header>
     {wizard || !accounts.length ? editor : <div className="imports-platforms">{(['wechat', 'whatsapp'] as const).filter(platform => accounts.some(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === platform)).map(platform => {
       const list = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === platform);
-      const name = platform === 'whatsapp' ? 'WhatsApp' : '微信';
+      const name = platform === 'whatsapp' ? 'WhatsApp' : t("微信");
       const open = source === platform && importsExpanded;
       const count = list.reduce((total, account) => total + (account.id === accountId ? allowedCount : (settings.chat.allowed_usernames[account.id] ?? []).length), 0);
       return <section key={platform} className="imports-platform">
         <button type="button" className="imports-platform-head" aria-expanded={open} disabled={saving} onClick={() => {
           if (source === platform) setImportsExpanded(!importsExpanded);
           else { changeAccount(currentAccount(list, settings.active_account_id)!.id); setImportsExpanded(true); }
-        }}><span className="imports-platform-icon" data-source={platform} aria-hidden="true">{platform === 'whatsapp' ? 'W' : '微'}</span><span><strong>{name}</strong><small>已选 {count} 个会话 · {list.length} 个账号</small></span><svg className={open ? 'open' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
+        }}><span className="imports-platform-icon" data-source={platform} aria-hidden="true">{platform === 'whatsapp' ? 'W' : t("微")}</span><span><strong>{name}</strong><small>{t("已选")}{count} {t("个会话 ·")}{list.length} {t("个账号")}</small></span><svg className={open ? 'open' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
         {open && <div className="imports-platform-content">{editor}</div>}
       </section>;
     })}</div>}
   </div>;
 }
 
-export function StrategySettings({ title = '本地自动化', description = '每日总结在本机生成后投递到服务端。上传频率、上传时段由「备份周期」页面单独配置。' }: { title?: string; description?: string } = {}) {
+export function StrategySettings({ title = t("本地自动化"), description = t("每日总结在本机生成后投递到服务端。上传频率、上传时段由「备份周期」页面单独配置。") }: { title?: string; description?: string } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
   const saveLock = useRef(false);
@@ -595,9 +596,9 @@ export function StrategySettings({ title = '本地自动化', description = '每
       setSettings(current => mergeSavedSettings(saved, settings, current));
       try {
         const status = await invoke<{ message?: string }>('devify_daily_schedule_sync');
-        setNotice(status?.message || '日报计划已同步到服务端。');
+        setNotice(status?.message || t("日报计划已同步到服务端。"));
       } catch (syncError) {
-        setError(`设置已保存，但日报计划同步失败：${String(syncError)}`);
+        setError(tf("设置已保存，但日报计划同步失败：{0}", String(syncError)));
       }
     } catch (e) {
       setSaveError(settingsSaveError(e));
@@ -607,35 +608,35 @@ export function StrategySettings({ title = '本地自动化', description = '每
     }
   };
 
-  if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
+  if (!loaded) return <div className="settings-page">{error ? <div className="error">{t("设置加载失败：")}{t(error)} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
 
   return <div className="settings-page">
     <header className="page-head">
       <h2>{title}</h2>
-      <p className="help">{description}</p>
+      <p className="help">{t(description)}</p>
     </header>
     <section className="panel">
-      <label className="confirm"><input type="checkbox" checked={settings.automation.enabled} onChange={event => setSettings(current => ({ ...current, automation: { ...current.automation, enabled: event.target.checked } }))}/><span>启用自动化调度</span></label>
+      <label className="confirm"><input type="checkbox" checked={settings.automation.enabled} onChange={event => setSettings(current => ({ ...current, automation: { ...current.automation, enabled: event.target.checked } }))}/><span>{t("启用自动化调度")}</span></label>
       <div className="grid">
-        <label>日报时间
+        <label>{t("日报时间")}
           <input type="time" value={settings.automation.daily_time} onChange={event => setSettings(current => ({ ...current, automation: { ...current.automation, daily_time: event.target.value } }))}/>
         </label>
-        <label>每日日报
+        <label>{t("每日日报")}
           <select value={settings.automation.daily_summary_enabled ? 'on' : 'off'} onChange={event => setSettings(current => ({ ...current, automation: { ...current.automation, daily_summary_enabled: event.target.value === 'on' } }))}>
-            <option value="on">生成</option>
-            <option value="off">暂不生成</option>
+            <option value="on">{t("生成")}</option>
+            <option value="off">{t("暂不生成")}</option>
           </select>
         </label>
       </div>
-      <p className="help">日报计划保存在服务端，到点后由服务端基于已上传的聊天记录生成；应用关闭也会执行。请先在「账户」登录并选择空间，并确保需要的内容已经上传。</p>
-      {settings.automation.last_daily_run && <p className="muted">最近执行：{settings.automation.last_daily_run} · {DAILY_STATUS_LABEL[settings.automation.last_daily_status ?? ''] ?? '未知'}</p>}
+      <p className="help">{t("日报计划保存在服务端，到点后由服务端基于已上传的聊天记录生成；应用关闭也会执行。请先在「账户」登录并选择空间，并确保需要的内容已经上传。")}</p>
+      {settings.automation.last_daily_run && <p className="muted">{t("最近执行：")}{settings.automation.last_daily_run} · {DAILY_STATUS_LABEL[settings.automation.last_daily_status ?? ''] ?? t("未知")}</p>}
       {settings.automation.last_daily_error && <div className="config warn">{settings.automation.last_daily_error}</div>}
-      {settings.automation.last_schedule_error && <div className="config warn">计划同步失败：{settings.automation.last_schedule_error}</div>}
+      {settings.automation.last_schedule_error && <div className="config warn">{t("计划同步失败：")}{settings.automation.last_schedule_error}</div>}
     </section>
     {notice && <div className="notice">{notice}</div>}
-    {error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}
+    {error && <div className="error">{t(error)}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}
     <div className="page-actions">
-      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? '正在保存…' : '保存并同步日报计划'}</button>
+      <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? t("正在保存…") : t("保存并同步日报计划")}</button>
     </div>
   </div>;
 }
@@ -655,7 +656,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     if (draftDirty.current || pendingSaves.current || queueFailed.current) {
       if (confirmed.current && next.user_settings_revision > confirmed.current.user_settings_revision && !queueFailed.current) {
         queueFailed.current = true;
-        setSaveError('账号、空间或设置已变化，地址草稿未保存。请重新打开页面，确认当前账号和空间后重试。');
+        setSaveError(t("账号、空间或设置已变化，地址草稿未保存。请重新打开页面，确认当前账号和空间后重试。"));
       }
       return;
     }
@@ -666,7 +667,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     setLoaded(true);
   };
   const [profile, setProfile] = useState<{ display_name?: string; username?: string } | null>(initialUser ? { display_name: initialUser } : null);
-  const [wechatStatus, setWechatStatus] = useState('正在检查…');
+  const [wechatStatus, setWechatStatus] = useState(t("正在检查…"));
   const [wechatAccounts, setWechatAccounts] = useState<Account[]>([]);
   const wechatProfiles = useWechatProfiles(wechatAccounts);
   const [saving, setSaving] = useState(false);
@@ -681,8 +682,8 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
   useEffect(() => {
     let active = true;
     void invoke<ScanResult>('wechat_scan').then(scan => {
-      if (active) { setWechatAccounts(scan.accounts); setWechatStatus(scan.accounts.length ? `本机发现 ${scan.accounts.length} 个微信账号` : '未发现微信账号'); }
-    }).catch(() => { if (active) setWechatStatus('无法检查微信账号'); });
+      if (active) { setWechatAccounts(scan.accounts); setWechatStatus(scan.accounts.length ? tf("本机发现 {0} 个微信账号", scan.accounts.length) : t("未发现微信账号")); }
+    }).catch(() => { if (active) setWechatStatus(t("无法检查微信账号")); });
     return () => { active = false; };
   }, []);
 
@@ -723,12 +724,12 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
         setAuthenticated(true);
         await invoke<string | null>('devify_space_ensure').catch(() => null);
         acceptLoadedSettings(await invoke<AppSettings>('app_settings_get'));
-        setAuthStatus('服务端已登录。');
-        setSpacesStatus('正在读取可用空间…');
+        setAuthStatus(t("服务端已登录。"));
+        setSpacesStatus(t("正在读取可用空间…"));
         const available = await invoke<DevifySpace[]>('devify_spaces');
         if (!active) return;
         setSpaces(available);
-        setSpacesStatus(available.length ? `已读取 ${available.length} 个空间。` : '当前账号没有可用空间。');
+        setSpacesStatus(available.length ? tf("已读取 {0} 个空间。", available.length) : t("当前账号没有可用空间。"));
         if (!queueFailed.current) setError('');
       } catch (e) {
         if (active) setError(String(e));
@@ -751,11 +752,11 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     }
     while (pendingSaves.current) await saveQueue.current;
     if (queueFailed.current || draftDirty.current) {
-      setSaveError(current => current || '服务地址尚未确认保存，不能继续登录。请确认地址、账号和空间后重试。');
+      setSaveError(current => current || t("服务地址尚未确认保存，不能继续登录。请确认地址、账号和空间后重试。"));
       return;
     }
     setError('');
-    setAuthStatus('正在打开服务端登录…');
+    setAuthStatus(t("正在打开服务端登录…"));
     try {
       const url = await invoke<string>('devify_auth_start', { deviceLabel: settings.devify.device_label });
       await invoke('devify_auth_open', { url });
@@ -770,26 +771,26 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     try {
       await invoke('devify_logout');
       setAuthenticated(false);
-      if (draftDirty.current || pendingSaves.current) { queueFailed.current = true; setSaveError('登录状态已变化，地址草稿未保存。请重新打开页面并确认账号和空间。'); }
+      if (draftDirty.current || pendingSaves.current) { queueFailed.current = true; setSaveError(t("登录状态已变化，地址草稿未保存。请重新打开页面并确认账号和空间。")); }
       setSpaces([]);
       setSpacesStatus('');
-      setAuthStatus('已退出登录。');
+      setAuthStatus(t("已退出登录。"));
       window.dispatchEvent(new CustomEvent('aimychats:auth-changed', { detail: { authenticated: false } }));
     } catch (e) { setError(String(e)); }
   };
 
   const loadSpaces = async () => {
-    setSpacesStatus('正在读取可用空间…');
+    setSpacesStatus(t("正在读取可用空间…"));
     try {
       const available = await invoke<DevifySpace[]>('devify_spaces');
       setSpaces(available);
-      setSpacesStatus(available.length ? `已读取 ${available.length} 个空间。` : '当前账号没有可用空间。');
-    } catch (e) { setSpaces([]); setSpacesStatus('读取空间失败。'); setError(String(e)); }
+      setSpacesStatus(available.length ? tf("已读取 {0} 个空间。", available.length) : t("当前账号没有可用空间。"));
+    } catch (e) { setSpaces([]); setSpacesStatus(t("读取空间失败。")); setError(String(e)); }
   };
 
   const selectedSpace = spaces.find(space => space.id === settings.devify.active_space_id);
   const activeSpace = selectedSpace;
-  const platformName = ({ macos: 'macOS', windows: 'Windows', linux: 'Linux' } as Record<string, string>)[settings.devify.platform] || settings.devify.platform || '自动识别';
+  const platformName = ({ macos: 'macOS', windows: 'Windows', linux: 'Linux' } as Record<string, string>)[settings.devify.platform] || settings.devify.platform || t("自动识别");
 
   /** Queue blur saves against our own last confirmed revision, never a fresh external context. */
   const persist = (next: AppSettings) => {
@@ -808,36 +809,36 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
         if (!queueFailed.current) setSaveError('');
       } catch (reason) {
         queueFailed.current = true;
-        setSaveError(`${settingsSaveError(reason)} 地址草稿已保留；请重新打开页面确认后保存。`);
+        setSaveError(tf("{0} 地址草稿已保留；请重新打开页面确认后保存。", settingsSaveError(reason)));
       }
     }).finally(() => { pendingSaves.current -= 1; });
   };
 
-  if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
+  if (!loaded) return <div className="settings-page">{error ? <div className="error">{t("设置加载失败：")}{t(error)} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
 
   return <div className="settings-page account-settings">
     <header className="page-head">
-      <h2>账户</h2>
-      <p className="help">管理 AIMyChats 账号、服务连接和微信数据来源。</p>
+      <h2>{t("账户")}</h2>
+      <p className="help">{t("管理 AIMyChats 账号、服务连接和微信数据来源。")}</p>
     </header>
 
-    <section className="account-profile-card account-identity"><h3>AIMyChats 账户</h3><div className="account-profile-content">
-      <span className="account-profile-avatar">{(profile?.display_name || profile?.username || '账').slice(0, 1)}</span>
-      <span className="account-profile-info"><strong>{authenticated ? (profile?.display_name || profile?.username || '账号信息暂不可用') : '未登录'}</strong><small>{profile?.username ? `@${profile.username}` : 'AIMyChats 账号'}</small></span>
-      <span className={`account-login-status${connection === 'connected' ? ' is-active' : ''}`}><i/>{!authenticated ? '未登录' : connection === 'connected' ? '已登录 · 已连接' : '服务连接异常'}</span>
-      {authenticated ? <button type="button" className="plan-button account-auth-action" onClick={() => void logoutDevify()}>退出登录</button> : <button type="button" className="plan-button primary account-auth-action" onClick={() => void loginDevify()}>登录</button>}
+    <section className="account-profile-card account-identity"><h3>{t("AIMyChats 账户")}</h3><div className="account-profile-content">
+      <span className="account-profile-avatar">{(profile?.display_name || profile?.username || t("账")).slice(0, 1)}</span>
+      <span className="account-profile-info"><strong>{authenticated ? (profile?.display_name || profile?.username || t("账号信息暂不可用")) : t("未登录")}</strong><small>{profile?.username ? `@${profile.username}` : t("AIMyChats 账号")}</small></span>
+      <span className={`account-login-status${connection === 'connected' ? ' is-active' : ''}`}><i/>{!authenticated ? t("未登录") : connection === 'connected' ? t("已登录 · 已连接") : t("服务连接异常")}</span>
+      {authenticated ? <button type="button" className="plan-button account-auth-action" onClick={() => void logoutDevify()}>{t("退出登录")}</button> : <button type="button" className="plan-button primary account-auth-action" onClick={() => void loginDevify()}>{t("登录")}</button>}
     </div>{authStatus && <p className="account-auth-notice" role="status">{authStatus}</p>}</section>
-    <section className="account-service-card"><h3>服务与空间</h3><div className="plan-items">
+    <section className="account-service-card"><h3>{t("服务与空间")}</h3><div className="plan-items">
       <div className="plan-row">
         <div className="plan-row-label">
-          <span>服务地址</span>
-          <small>AIMyChats 服务的访问地址</small>
+          <span>{t("服务地址")}</span>
+          <small>{t("AIMyChats 服务的访问地址")}</small>
         </div>
         <div className="plan-row-control">
           <input
             className="plan-input"
             type="url"
-            aria-label="服务端地址"
+            aria-label={t("服务端地址")}
             placeholder="https://devify.example.com"
             value={settings.devify.base_url}
             onChange={event => { const baseUrl = event.target.value; draftDirty.current = true; draftUrl.current = baseUrl; setSettings(current => ({ ...current, devify: { ...current.devify, base_url: baseUrl } })); }}
@@ -848,30 +849,30 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
 
       <div className="plan-row">
         <div className="plan-row-label">
-          <span>当前空间</span>
-          <small>{activeSpace ? '聊天记录、事件与报告所属的空间' : (spacesStatus || '登录后自动选择个人空间')}</small>
+          <span>{t("当前空间")}</span>
+          <small>{activeSpace ? t("聊天记录、事件与报告所属的空间") : (spacesStatus || t("登录后自动选择个人空间"))}</small>
         </div>
         <div className="plan-row-control">
-          <span className="plan-kv">{activeSpace ? `${activeSpace.name} · ${activeSpace.role || activeSpace.kind}` : (authenticated ? (spacesStatus || '正在读取空间…') : '未登录')}</span>
+          <span className="plan-kv">{activeSpace ? `${activeSpace.name} · ${activeSpace.role || activeSpace.kind}` : (authenticated ? (spacesStatus || t("正在读取空间…")) : t("未登录"))}</span>
         </div>
       </div>
 
       <div className="plan-row">
         <div className="plan-row-label">
-          <span>当前设备</span>
-          <small>正在使用的设备</small>
+          <span>{t("当前设备")}</span>
+          <small>{t("正在使用的设备")}</small>
         </div>
         <div className="plan-row-control">
-          <span className="plan-kv">{[settings.devify.device_label || '本机', platformName].filter(Boolean).join(' · ')}</span>
+          <span className="plan-kv">{[settings.devify.device_label || t("本机"), platformName].filter(Boolean).join(' · ')}</span>
         </div>
       </div>
 
     </div></section>
 
-    <section className="account-profile-card account-wechat"><h3>微信数据来源</h3>{wechatAccounts.length ? wechatAccounts.map(account => <div key={account.id} className="wechat-source-account"><WechatIdentity account={account} profile={wechatProfiles[account.id]} source="wechat" /></div>) : <div><span className="wechat-account-avatar"><ConnectorIcon name="微信" /></span><span><strong>{wechatStatus}</strong><small>微信账号与 AIMyChats 账号相互独立，用于读取本机聊天记录。</small></span></div>}</section>
+    <section className="account-profile-card account-wechat"><h3>{t("微信数据来源")}</h3>{wechatAccounts.length ? wechatAccounts.map(account => <div key={account.id} className="wechat-source-account"><WechatIdentity account={account} profile={wechatProfiles[account.id]} source="wechat" /></div>) : <div><span className="wechat-account-avatar"><ConnectorIcon name="微信" /></span><span><strong>{wechatStatus}</strong><small>{t("微信账号与 AIMyChats 账号相互独立，用于读取本机聊天记录。")}</small></span></div>}</section>
 
     {notice && <div className="notice">{notice}</div>}
-    {error && <div className="error">{error}</div>}
+    {error && <div className="error">{t(error)}</div>}
     {saveError && <div className="error" role="alert">{saveError}</div>}
   </div>;
 }

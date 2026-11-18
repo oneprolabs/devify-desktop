@@ -422,9 +422,6 @@
 .sidebar-resize-handle:focus-visible { outline: 2px solid #74746e; outline-offset: -2px; }
 .chat-workbench-filters button { white-space: nowrap; }
 
-/* Sits inside the 49px page header row. `top:10px` put the 38px pill's bottom border exactly on
-   the header's border-bottom, so the two lines collided; 6px keeps a clear gap above it. */
-.update-available-notice { position:absolute; z-index:5; top:6px; right:18px; padding:8px 12px; border:1px solid #e6c9e2; border-radius:7px; background:#fff; color:#8e2187; cursor:pointer; }
 .about-update { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin:12px 0 16px; padding:12px 14px; border:1px solid #ecece8; border-radius:10px; background:#fafaf8; }
 .about-update-status { display:flex; align-items:center; gap:10px; flex:1 1 260px; min-width:0; }
 .about-update-status-text { display:flex; flex-direction:column; gap:2px; min-width:0; }
@@ -498,3 +495,27 @@
 .daily-wheel button.daily-wheel-current { background:#f8eef9; color:#98259c; font-weight:600; }
 .daily-picker-colon { margin-top:17px; color:#999; }
 .daily-picker-done { display:block; margin:9px 0 0 auto; padding:4px 10px; border:0; background:transparent; color:#a126a5; font-size:12px; cursor:pointer; }
+
+.auth-modal.update-dialog { width: min(604px, calc(100vw - 32px)); max-width: 604px; max-height: calc(100vh - 40px); overflow: auto; border-radius: 20px; }
+.update-dialog .auth-modal-body { padding: 23px 28px 27px; }
+.update-panel { display: grid; gap: 14px; min-width: 0; }
+.update-panel-identity { display: flex; align-items: center; gap: 14px; }
+.update-panel-identity > img { width: 46px; height: 46px; border-radius: 12px; }
+.update-panel-identity > div:not(.about-update-actions) { display: grid; gap: 2px; min-width: 0; }
+.update-panel-identity .about-update-actions { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 8px; margin-left: auto; flex: none; }
+.update-panel-identity strong { font-size: 18px; font-weight: 650; color: #262229; line-height: 1.25; }
+.update-panel-identity span { font-size: 13px; color: #8a8a85; }
+.update-release-notes { display: grid; gap: 8px; min-width: 0; }
+.update-release-notes h3 { font-size: 13px; margin: 0; color: #5f5f5a; font-weight: 600; }
+.update-note-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.update-note-list li { display: flex; gap: 8px; font-size: 13.5px; line-height: 1.55; color: #34342f; }
+.update-note-list li::before { content: ""; width: 5px; height: 5px; margin-top: 8px; border-radius: 50%; background: #8e2187; flex: none; }
+.update-next-step { margin: 0; padding: 0; background: none; color: #8a8a85; font-size: 13px; }
+.update-panel-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid #ece7ee; }
+.update-panel button { padding: 8px 14px; border: 1px solid #e6e0e8; border-radius: 8px; background: #fff; color: #332c36; font: inherit; font-size: 13px; cursor: pointer; }
+.update-panel button:hover { background: #f7f3f8; }
+.update-panel button.update-primary { color: #fff; background: #8e2187; border-color: #8e2187; }
+.update-panel button.update-primary:hover { background: #7a1b74; }
+.update-panel button.update-link { border-color: transparent; padding-left: 0; color: #8e2187; background: transparent; }
+.update-download { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.update-download progress { width: 100%; accent-color: #8e2187; }

@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { RailIcons } from './icons';
 import brandMark from './assets/app-mark-transparent.png';
 import { version } from '../src-tauri/tauri.conf.json';
@@ -26,27 +27,29 @@ const utilityItems = [
   { id: 'settings', label: '设置', icon: RailIcons.settings },
 ] as const;
 
-export function NavigationRail({ section, onNavigate, onAccount, authenticated, accountName = '', showBrand = true }: {
+export function NavigationRail({ section, onNavigate, onAccount, authenticated, accountName = '', showBrand = true, updateVersion, onUpdate }: {
   section: Section;
   onNavigate: (section: Section) => void;
   onAccount: () => void;
   authenticated: boolean;
   accountName?: string;
   showBrand?: boolean;
+  updateVersion?: string;
+  onUpdate?: () => void;
 }) {
   const avatar = accountAvatar(accountName);
   const navButton = (item: (typeof primaryItems)[number] | (typeof utilityItems)[number]) => <button
     key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ' prototype-nav-item-tasks' : ''}${section === item.id ? ' active' : ''}`}
-    title={item.label} aria-current={section === item.id ? 'page' : undefined} onClick={() => onNavigate(item.id)}
-  ><span className="prototype-nav-icon">{item.icon}</span><small>{item.label}</small></button>;
+    title={t(item.label)} aria-current={section === item.id ? 'page' : undefined} onClick={() => onNavigate(item.id)}
+  ><span className="prototype-nav-icon">{item.icon}</span><small>{t(item.label)}</small></button>;
 
-  return <aside className="prototype-rail" aria-label="主导航">
-    <button type="button" className="prototype-rail-mark" style={{ backgroundColor: avatar.color }} onClick={onAccount} disabled={!authenticated} aria-label="打开账户设置" title={accountName ? `${accountName} · 账户设置` : '账户设置'}>
+  return <aside className="prototype-rail" aria-label={t("主导航")}>
+    <button type="button" className="prototype-rail-mark" style={{ backgroundColor: avatar.color }} onClick={onAccount} disabled={!authenticated} aria-label={t("打开账户设置")} title={accountName ? tf("{0} · 账户设置", accountName) : t("账户设置")}>
       {avatar.initial ?? <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg>}
     </button>
-    <nav className="prototype-nav" aria-label="工作区">{primaryItems.map(navButton)}</nav>
+    <nav className="prototype-nav" aria-label={t("工作区")}>{primaryItems.map(navButton)}</nav>
     <div className="prototype-spacer" />
-    <nav className="prototype-nav" aria-label="应用">{utilityItems.map(navButton)}</nav>
-    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" /><small className="prototype-rail-version" aria-label={`版本 ${version}`}>v{version}</small></div>}
+    <nav className="prototype-nav" aria-label={t("应用")}>{utilityItems.map(navButton)}</nav>
+    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" /><small className="prototype-rail-version" aria-label={tf("版本 {0}", version)}>v{version}</small>{updateVersion && <button type="button" className="prototype-rail-update" onClick={onUpdate} title={tf("发现新版本 {0}，查看更新", updateVersion)}>{updateVersion}</button>}</div>}
   </aside>;
 }

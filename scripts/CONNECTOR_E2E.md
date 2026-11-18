@@ -18,4 +18,6 @@ Covered paths:
 - WhatsApp: system checks, activation, simultaneous private/group selection, range persistence and completion; no WeChat key/capture operations.
 - Schedule: save conflicts block editing, explicit reload restores the confirmed revision, WhatsApp remains manual-only, and unsupported email is hidden.
 
-These are browser UI end-to-end tests with an IPC boundary, not live macOS authorization, debugger attachment, real account login or server-upload tests. Run `cargo test --manifest-path src-tauri/Cargo.toml --lib` and the existing `scripts/test-*.mjs` regressions alongside them. Real permission restart, key capture and account-specific database compatibility still need a signed-client hardware acceptance run; do not report the isolated fixture as that acceptance.
+These are browser UI end-to-end tests with an IPC boundary, not live macOS authorization, debugger attachment, real account login or server-upload tests. Run `cargo test --manifest-path src-tauri/Cargo.toml --lib` and `npm run test:frontend` (Node 22.15+; includes the existing regression scripts) alongside them. Real permission restart, key capture and account-specific database compatibility still need a signed-client hardware acceptance run; do not report the isolated fixture as that acceptance.
+
+Post-merge checks also cover the upstream untrusted-signature import path and English navigation, backup schedule and history-range controls.

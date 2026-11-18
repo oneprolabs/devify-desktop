@@ -1,3 +1,4 @@
+import { t } from './locale';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { ChatAccount } from './connectorDetect';
 import wechatIcon from './assets/connectors/wechat.svg';
@@ -7,7 +8,7 @@ import './account-picker.css';
 const icons: Record<string, string> = { wechat: wechatIcon, whatsapp: whatsappIcon };
 const labels: Record<string, string> = { wechat: '微信', whatsapp: 'WhatsApp' };
 
-const sourceLabel = (source?: string) => labels[source ?? ''] ?? '聊天';
+const sourceLabel = (source?: string) => labels[source ?? ''] ?? t("聊天");
 /** `8615652425800@s.whatsapp.net` reads better as the bare number in a narrow picker. */
 const shortId = (id: string) => id.replace(/@s\.whatsapp\.net$/, '');
 const sourceIcon = (source?: string) => icons[source ?? ''] ?? wechatIcon;
@@ -19,7 +20,7 @@ const sourceIcon = (source?: string) => icons[source ?? ''] ?? wechatIcon;
  * renders a long JID as an unstyled strip. This keeps the logo, the friendly name and the
  * raw identifier on one line while staying keyboard accessible.
  */
-export function AccountPicker({ accounts, value, onChange, disabled, label = '聊天账号', nameFor }: {
+export function AccountPicker({ accounts, value, onChange, disabled, label = t("聊天账号"), nameFor }: {
   accounts: ChatAccount[];
   value: string;
   onChange: (id: string) => void;
@@ -77,7 +78,7 @@ export function AccountPicker({ accounts, value, onChange, disabled, label = '�
     <button
       type="button"
       className={`account-picker-trigger${open ? ' open' : ''}`}
-      aria-label={label}
+      aria-label={t(label)}
       aria-haspopup="listbox"
       aria-expanded={open}
       disabled={disabled}
@@ -86,12 +87,12 @@ export function AccountPicker({ accounts, value, onChange, disabled, label = '�
     >
       <span className="account-picker-icon" aria-hidden="true"><img src={sourceIcon(current?.source)} alt="" /></span>
       <span className="account-picker-text">
-        <strong>{current ? name(current) : '未选择账号'}</strong>
-        <small>{current ? `${sourceLabel(current.source)} · ${shortId(current.id)}` : '没有可用的聊天来源'}</small>
+        <strong>{current ? name(current) : t("未选择账号")}</strong>
+        <small>{current ? `${sourceLabel(current.source)} · ${shortId(current.id)}` : t("没有可用的聊天来源")}</small>
       </span>
       <svg className="account-picker-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
     </button>
-    {open && <div className="account-picker-menu" role="listbox" aria-label={label}>
+    {open && <div className="account-picker-menu" role="listbox" aria-label={t(label)}>
       {accounts.map((account, index) => <button
         key={account.id}
         type="button"

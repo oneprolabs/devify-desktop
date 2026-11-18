@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { useCallback, useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
@@ -202,10 +203,10 @@ export function usageOf(view: Entitlements | null, key: string): number | undefi
 
 /** Short human summary for settings, e.g. `Pro · 有效期至 2026-12-06`. */
 export function planLabel(view: Entitlements | null): string {
-  if (!view || !view.enforced) return '未启用订阅控制';
-  if (!view.plan) return '免费版';
+  if (!view || !view.enforced) return t("未启用订阅控制");
+  if (!view.plan) return t("免费版");
   const ended = view.plan.current_period_end
-    ? ` · 有效期至 ${view.plan.current_period_end.slice(0, 10)}`
+    ? tf(" · 有效期至 {0}", view.plan.current_period_end.slice(0, 10))
     : '';
-  return `${view.plan.name || view.plan.slug || '当前套餐'}${ended}`;
+  return tf("{0}{1}", view.plan.name || view.plan.slug || '当前套餐', ended);
 }

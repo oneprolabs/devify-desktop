@@ -1,3 +1,4 @@
+import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LoadingSkeleton } from './LoadingSkeleton';
 import { eventViewState, syncErrorMessage } from './chatPresentation';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
@@ -14,7 +15,7 @@ import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 import { requestFeedback } from './desktopInvoke';
-import { useInternalAccount } from './entitlements';
+import { useCapability, useInternalAccount } from './entitlements';
 import { currentAccount as pickAccount, type ChatAccount } from './connectorDetect';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null; community?: { id: string; name: string; is_parent: boolean } | null };
@@ -33,26 +34,26 @@ type View = 'events' | 'raw' | 'summary';
 type Filter = 'all' | 'pending' | 'local';
 const sessionKey = (accountId: string, username: string) => JSON.stringify([accountId, username]);
 
-const dateLabel = (value?: string | number | null) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '时间未知';
+const dateLabel = (value?: string | number | null) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("时间未知");
 const timeLabel = (value?: number | null) => {
   if (!value) return '';
   const date = new Date(value * 1000);
   const now = new Date();
   const sameDay = date.toDateString() === now.toDateString();
-  if (sameDay) return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  if (sameDay) return date.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
 };
 const dayLabel = (value?: string | null) => {
-  if (!value) return '时间未知';
+  if (!value) return t("时间未知");
   const date = new Date(value);
   const now = new Date();
-  const day = date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
-  if (date.toDateString() === now.toDateString()) return `${day} · 今天`;
+  const day = date.toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
+  if (date.toDateString() === now.toDateString()) return tf("{0} · 今天", day);
   const yesterday = new Date(now.getTime() - 86400000);
-  if (date.toDateString() === yesterday.toDateString()) return `${day} · 昨天`;
+  if (date.toDateString() === yesterday.toDateString()) return tf("{0} · 昨天", day);
   return day;
 };
-const statusLabel = (value?: string | null) => ({ open: '待我处理', in_progress: '推进中', done: '已完成' } as Record<string, string>)[value || ''] || '未标记';
+const statusLabel = (value?: string | null) => ({ open: t("待我处理"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("未标记");
 
 function StateDot({ done }: { done: boolean }) {
   return <svg className="chat-event-dot" viewBox="0 0 16 16" aria-hidden="true">
@@ -66,6 +67,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   // Local summaries are an internal-account feature: without the entitlement the summary tab
   // and its 整理工作内容 entry point disappear, leaving only records and cloud events.
   const { internal: internalAccount } = useInternalAccount();
+  const { allowed: workDigestGranted } = useCapability('ai.work_digest');
+  const canOrganize = internalAccount && workDigestGranted;
   useEffect(() => {
     if (!internalAccount) setView(current => (current === 'summary' ? 'raw' : current));
   }, [internalAccount]);
@@ -82,7 +85,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const accountId = selectedSession?.accountId ?? null;
-  const sourceLabel = selectedSession?.source === 'whatsapp' ? 'WhatsApp' : '微信';
+  const sourceLabel = selectedSession?.source === 'whatsapp' ? 'WhatsApp' : t("微信");
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState>>({});
   const [syncing, setSyncing] = useState(false);
@@ -125,12 +128,12 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       const list = results.flatMap(result => result.status === 'fulfilled'
         ? (result.value.sessions ?? []).map(session => ({ ...session, accountId: result.value.account.id, source: result.value.account.source ?? 'wechat' })) : []);
       list.sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0));
-      const failed = results.flatMap((result, index) => result.status === 'rejected' ? [accounts[index].source === 'whatsapp' ? 'WhatsApp' : '微信'] : []);
+      const failed = results.flatMap((result, index) => result.status === 'rejected' ? [accounts[index].source === 'whatsapp' ? 'WhatsApp' : t("微信")] : []);
       setSettings(stored);
       setSessions(list);
       setSelectedSession(current => list.find(item => item.accountId === current?.accountId && item.username === current?.username)
         ?? list.find(item => item.accountId === account?.id) ?? list[0] ?? null);
-      if (failed.length) setError(`${[...new Set(failed)].join('、')}会话读取失败，请刷新重试。`);
+      if (failed.length) setError(tf("{0}会话读取失败，请刷新重试。", [...new Set(failed)].join('、')));
       setAvatars({});
       for (const result of results) {
         if (result.status !== 'fulfilled' || !result.value.sessions.length) continue;
@@ -168,12 +171,12 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         for (let page = 1; page <= 100; page += 1) {
           const result = await invoke<Page<CloudConversation>>('devify_conversations', { spaceId, search: username, page, pageSize: 100 });
           if (cancelled) return;
-          if (!Array.isArray(result.list) || result.pagination?.next === undefined) throw new Error('无法完整读取云端会话，请重试。');
+          if (!Array.isArray(result.list) || result.pagination?.next === undefined) throw new Error(t("无法完整读取云端会话，请重试。"));
           const matches = result.list.filter(item => item.platform === (selectedSession?.source === 'whatsapp' ? 'whatsapp' : 'wechat') && item.source_namespace === accountId && item.source_conversation_id === username);
-          if (matches.length > 1) throw new Error('云端存在多个相同来源的会话，无法安全筛选事件。');
+          if (matches.length > 1) throw new Error(t("云端存在多个相同来源的会话，无法安全筛选事件。"));
           conversation = matches[0];
           if (conversation || !result.pagination?.next) break;
-          if (page === 100) throw new Error('云端会话过多，无法完整筛选事件。');
+          if (page === 100) throw new Error(t("云端会话过多，无法完整筛选事件。"));
         }
         if (!conversation) { setEventsScope(requestScope); setEvents([]); return; }
         const result = await invoke<Page<EventItem>>('devify_analysis_list', { kind: 'events', spaceId, page: 1, conversationId: conversation.id });
@@ -246,17 +249,17 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       setSyncBatchIds(result.error ? [] : ids);
       setSyncNoticePending(!result.error && ids.length > 0);
       setSyncNotice(result.error
-        ? (result.message_count ? `已提交 ${result.message_count} 条记录，部分会话未完成。 ` : '本次未提交记录。') + syncErrorMessage(result.error)
+        ? (result.message_count ? tf("已提交 {0} 条记录，部分会话未完成。 ", result.message_count) : t("本次未提交记录。")) + syncErrorMessage(result.error)
         : result.message_count
-          ? ids.length ? `已提交 ${result.message_count} 条记录，等待服务端处理。` : `已提交 ${result.message_count} 条记录，请在任务中查看状态。`
-          : '没有需要提交的新记录。');
+          ? ids.length ? tf("已提交 {0} 条记录，等待服务端处理。", result.message_count) : tf("已提交 {0} 条记录，请在任务中查看状态。", result.message_count)
+          : t("没有需要提交的新记录。"));
       await refreshUploadState();
     } catch (reason) {
       const confirmation = /^SYNC_SCOPE_CONFIRM:([a-f0-9]{64})$/.exec(String(reason));
-      setSyncNoticeError(!String(reason).includes('该账号正在上传'));
+      setSyncNoticeError(!String(reason).includes(t("该账号正在上传")));
       if (confirmation) {
         setSyncScopeConfirmation(confirmation[1]);
-        setSyncNotice('当前账号和空间没有可用的同步进度。请先检查首次上传范围，再开始同步。');
+        setSyncNotice(t("当前账号和空间没有可用的同步进度。请先检查首次上传范围，再开始同步。"));
       } else {
         setSyncNotice(syncErrorMessage(reason));
       }
@@ -284,17 +287,17 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         if (status === 'processing') { timer = window.setTimeout(() => void poll(), 5000); return; }
         setSyncBatchIds([]); setSyncNoticePending(false);
         if (status === 'completed') {
-          setSyncNotice('服务端已完成处理。');
+          setSyncNotice(t("服务端已完成处理。"));
           void refreshUploadState();
         } else {
           setSyncNoticeError(true);
           const failed = batches.find(batch => ['failed', 'cancelled'].includes(batch.status));
-          setSyncNotice(status === 'unknown' ? '暂时无法确认服务端处理状态，请查看任务。' : failed?.error_message ? `服务端处理未完成：${failed.error_message}` : '服务端处理未完成，请查看任务。');
+          setSyncNotice(status === 'unknown' ? t("暂时无法确认服务端处理状态，请查看任务。") : failed?.error_message ? tf("服务端处理未完成：{0}", failed.error_message) : t("服务端处理未完成，请查看任务。"));
         }
       } catch {
         if (!active) return;
         setSyncBatchIds([]); setSyncNoticePending(false); setSyncNoticeError(true);
-        setSyncNotice('暂时无法确认服务端处理状态，请查看任务。');
+        setSyncNotice(t("暂时无法确认服务端处理状态，请查看任务。"));
       }
     };
     void poll();
@@ -385,47 +388,47 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   };
   if (!isTauri()) return null;
 
-  const conversation = selectedSession?.display ?? '全部会话';
+  const conversation = selectedSession?.display ?? t("全部会话");
   const sessionMeta = (session: OwnedSession) => {
     const state = uploadStates[sessionKey(session.accountId, session.username)];
-    if (state?.state === 'pending') return { text: state.new_messages ? `本机新增待上传 · ${state.new_messages} 条` : '本机新增待上传', tone: 'pending' };
-    if (state?.state === 'local') return { text: '仅本机 · 未纳入上传', tone: 'local' };
-    if (state?.state === 'processing') return { text: '已提交 · 等待服务端处理', tone: 'pending' };
-    if (state?.state === 'failed') return { text: '上传失败 · 请检查任务', tone: 'pending' };
-    if (state?.state === 'history_failed') return { text: '历史任务未完成 · 请检查任务', tone: 'pending' };
-    if (state?.state === 'synced') return { text: '已同步 · 最近确认', tone: 'synced' };
-    return { text: '同步状态待确认', tone: 'local' };
+    if (state?.state === 'pending') return { text: state.new_messages ? tf("本机新增待上传 · {0} 条", state.new_messages) : t("本机新增待上传"), tone: 'pending' };
+    if (state?.state === 'local') return { text: t("仅本机 · 未纳入上传"), tone: 'local' };
+    if (state?.state === 'processing') return { text: t("已提交 · 等待服务端处理"), tone: 'pending' };
+    if (state?.state === 'failed') return { text: t("上传失败 · 请检查任务"), tone: 'pending' };
+    if (state?.state === 'history_failed') return { text: t("历史任务未完成 · 请检查任务"), tone: 'pending' };
+    if (state?.state === 'synced') return { text: t("已同步 · 最近确认"), tone: 'synced' };
+    return { text: t("同步状态待确认"), tone: 'local' };
   };
 
   return <div className="chat-workbench">
     <aside className="chat-workbench-sidebar">
       <header className="chat-workbench-sidebar-head">
-        <h1>聊天</h1>
-        <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)} aria-label="添加会话" title="添加会话"><span aria-hidden="true">＋</span></button></div>
-        <p>{loading && !sessions.length ? '正在读取会话…' : `${sessions.length} 个会话 · ${pendingCount} 个有新增待上传`}</p>
+        <h1>{t("聊天")}</h1>
+        <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)} aria-label={t("添加会话")} title={t("添加会话")}><span aria-hidden="true">＋</span></button></div>
+        <p>{loading && !sessions.length ? t("正在读取会话…") : tf("{0} 个会话 · {1} 个有新增待上传", sessions.length, pendingCount)}</p>
       </header>
-      <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话与聊天记录"/>
+      <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索会话与聊天记录")}/>
       <div className="chat-workbench-filters">
-        <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>全部 <small>{sessions.length}</small></button>
-        <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>待上传 <small>{pendingCount}</small></button>
-        <button type="button" className={filter === 'local' ? 'active' : ''} onClick={() => setFilter('local')}>仅本机 <small>{localCount}</small></button>
+        <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>{t("全部")} <small>{sessions.length}</small></button>
+        <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>{t("待传")} <small>{pendingCount}</small></button>
+        <button type="button" className={filter === 'local' ? 'active' : ''} onClick={() => setFilter('local')}>{t("只在本机")} <small>{localCount}</small></button>
       </div>
-      <div className="chat-workbench-session-label"><span>会话 · {visibleSessions.length}</span><span className="chat-workbench-list-tools">按最后更新 <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label="刷新会话" title="刷新会话">↻</button></span></div>
+      <div className="chat-workbench-session-label"><span>{t("会话 ·")} {visibleSessions.length}</span><span className="chat-workbench-list-tools">{t("按最后更新")} <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label={t("刷新会话")} title={t("刷新会话")}>↻</button></span></div>
       <div className="chat-workbench-sessions">
-        {loading && !sessions.length && <LoadingSkeleton label="正在加载会话" />}
-        {error && <p className="chat-workbench-load-error" role="alert">{error} <button type="button" onClick={() => void load()}>重试</button></p>}
+        {loading && !sessions.length && <LoadingSkeleton label={t("正在加载会话")} />}
+        {error && <p className="chat-workbench-load-error" role="alert">{t(error)} <button type="button" onClick={() => void load()}>{t("重试")}</button></p>}
         {sourceGroups.map(group => {
           const collapsed = multiSource && Boolean(collapsedSources[group.source]);
-          const label = group.source === 'whatsapp' ? 'WhatsApp' : '微信';
+          const label = group.source === 'whatsapp' ? 'WhatsApp' : t("微信");
           return <Fragment key={group.source}>
             {multiSource && <button type="button" className="chat-workbench-source-group" aria-expanded={!collapsed} onClick={() => setCollapsedSources(current => ({ ...current, [group.source]: !current[group.source] }))}>
               <img src={group.source === 'whatsapp' ? whatsappIcon : wechatIcon} alt=""/>
-              <span>{label}</span>
+              <span>{t(label)}</span>
               <small>{group.sessions.length}</small>
               <i aria-hidden="true">{collapsed ? '▸' : '▾'}</i>
             </button>}
             {!collapsed && groupSessions(group.sessions).map(item => <Fragment key={item.key}>
-              {item.name && <div className="chat-workbench-community-label">{item.name} · 社区</div>}
+              {item.name && <div className="chat-workbench-community-label">{item.name} {t("· 社区")}</div>}
               {item.sessions.map(session => {
                 const meta = sessionMeta(session);
                 const avatar = avatars[sessionKey(session.accountId, session.username)];
@@ -435,8 +438,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                     <i className="chat-workbench-avatar-badge" aria-hidden="true"><img src={session.source === 'whatsapp' ? whatsappIcon : wechatIcon} alt="" /></i>
                   </span>
                   <span className="chat-workbench-session-body">
-                    <span className="chat-workbench-session-line"><strong>{session.community?.is_parent ? '社区' : session.display}</strong><time>{timeLabel(session.last_time)}</time></span>
-                    <small>{session.preview ? (session.preview.length > 34 ? `${session.preview.slice(0, 34)}…` : session.preview) : '暂无消息预览'}</small>
+                    <span className="chat-workbench-session-line"><strong>{session.community?.is_parent ? t("社区") : session.display}</strong><time>{timeLabel(session.last_time)}</time></span>
+                    <small>{session.preview ? (session.preview.length > 34 ? `${session.preview.slice(0, 34)}…` : session.preview) : t("暂无消息预览")}</small>
                     <em className={meta.tone}>{meta.text}</em>
                   </span>
                 </button>;
@@ -444,7 +447,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             </Fragment>)}
           </Fragment>;
         })}
-        {!loading && !visibleSessions.length && <p className="chat-workbench-empty">没有符合条件的会话。</p>}
+        {!loading && !visibleSessions.length && <p className="chat-workbench-empty">{t("没有符合条件的会话。")}</p>}
       </div>
       <SidebarResizeHandle/>
     </aside>
@@ -453,39 +456,38 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       <header className="chat-workbench-head">
         <div className="chat-workbench-title">
           {selectedSession && <span className="chat-workbench-title-avatar" aria-hidden="true">{avatars[sessionKey(selectedSession.accountId, selectedSession.username)] ? <img src={avatars[sessionKey(selectedSession.accountId, selectedSession.username)]} alt=""/> : selectedSession.display.slice(0, 1)}</span>}
-          <div className="chat-workbench-title-text"><h2>{conversation}</h2>{selectedSession && <p>{sourceLabel}{selectedSession.is_group ? '群聊' : '单聊'}{selectedSession.is_group && selectedSession.member_count != null ? ` · ${selectedSession.member_count} 人` : ''}</p>}</div>
+          <div className="chat-workbench-title-text"><h2>{conversation}</h2>{selectedSession && <p>{sourceLabel}{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}</p>}</div>
         </div>
         <div className="chat-workbench-head-right">
-          <div className="chat-workbench-tabs" role="tablist" aria-label="聊天视图">
-            <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>原始记录</button>
-            <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>事件 <small>{scopedEvents.length}</small></button>
+          <div className="chat-workbench-tabs" role="tablist" aria-label={t("聊天视图")}>
+            <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>{t("原始记录")}</button>
+            <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>{t("事件")} <small>{scopedEvents.length}</small></button>
             {internalAccount && <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
-              聊天总结
+              {t("聊天总结")}
               {summaryBusy
-                ? <i className="chat-workbench-tab-spinner" aria-label="正在生成"/>
+                ? <i className="chat-workbench-tab-spinner" aria-label={t("正在生成")}/>
                 : scopedSummaries.length > 0 && <small>{scopedSummaries.length}</small>}
             </button>}
           </div>
-          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'} value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'}/>
+          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")} value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")}/>
           {chatState.active && <div className="chat-workbench-head-actions">
-            {chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>已选 {chatState.selected} 条</button>}
-            {internalAccount && chatState.agentReady && <button type="button" disabled={!chatState.messages} onClick={openWorkPanel}>整理工作内容</button>}
-            <button type="button" onClick={exportNotSupported}>导出</button>
+            {canOrganize && chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>{t("已选")} {chatState.selected} {t("条")}</button>}
+            <button type="button" onClick={exportNotSupported}>{t("导出")}</button>
           </div>}</div>
         </div>
       </header>
 
       <div className={`chat-workbench-pane${view === 'events' ? '' : ' is-hidden'}`}>
         <div className="chat-workbench-subline">
-          <span>{eventsLoading ? '正在同步事件…' : `${scopedEvents.length} 条事件`} · {sessions.length} 个会话 · 云端整理，可人工修改</span>
+          <span>{eventsLoading ? t("正在同步事件…") : tf("{0} 条事件", scopedEvents.length)} · {sessions.length} {t("个会话 · 云端整理，可人工修改")}</span>
         </div>
         <div className="chat-workbench-feed">
-          {eventsLoading && <LoadingSkeleton label="正在加载事件" kind="detail" />}
-          {(error || eventsError) && <div className="chat-workbench-error" role="alert"><span>{scopedEvents.length ? '事件刷新失败，显示的是上次读取结果。' : '暂时无法读取事件，请检查网络或稍后重试。'}</span> <button type="button" onClick={() => { if (error) void load(); else setEventRefresh(value => value + 1); }}>重试</button></div>}
+          {eventsLoading && <LoadingSkeleton label={t("正在加载事件")} kind="detail" />}
+          {(error || eventsError) && <div className="chat-workbench-error" role="alert"><span>{scopedEvents.length ? t("事件刷新失败，显示的是上次读取结果。") : t("暂时无法读取事件，请检查网络或稍后重试。")}</span> <button type="button" onClick={() => { if (error) void load(); else setEventRefresh(value => value + 1); }}>{t("重试")}</button></div>}
           {eventViewState(eventsLoading, error || eventsError, visibleEvents.length) === 'empty' && <div className="chat-workbench-empty-panel">
-            <h2>当前会话暂无事件</h2>
-            <p>上传当前会话并等待服务端分析后，相关事件会出现在这里。</p>
-            <button type="button" onClick={onNewUpload}>开始第一次上传</button>
+            <h2>{t("当前会话暂无事件")}</h2>
+            <p>{t("上传当前会话并等待服务端分析后，相关事件会出现在这里。")}</p>
+            <button type="button" onClick={onNewUpload}>{t("开始第一次上传")}</button>
           </div>}
           {eventGroups.map(([day, list]) => <section className="chat-event-day" key={day}>
             <div className="chat-event-divider"><span/>{dayLabel(list[0]?.last_activity_at || day)}<span/></div>
@@ -503,7 +505,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                   {event.content && <span className="chat-event-content">{event.content}</span>}
                   <span className="chat-event-foot">
                     <span>{dateLabel(event.last_activity_at || event.updated_at)}</span>
-                    <span className="chat-event-link">查看完整事件 →</span>
+                    <span className="chat-event-link">{t("查看完整事件 →")}</span>
                   </span>
                 </button>
               </div>;
@@ -512,26 +514,26 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         </div>
       </div>
 
-      {!rawMounted && view === 'raw' && <LoadingSkeleton label="正在加载聊天记录" kind="messages" />}
+      {!rawMounted && view === 'raw' && <LoadingSkeleton label={t("正在加载聊天记录")} kind="messages" />}
       {rawMounted && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
         {accountId === activeAccountId && selectedPending.length > 0 && <div className="chat-workbench-banner">
-          <span><i/>已选择的聊天中有 {selectedPending.length} 个会话{selectedPendingMessages ? `、${selectedPendingMessages} 条` : ''}新增记录待上传，{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? '将在满足条件时自动备份。' : '自动备份未开启，请点击立即上传。'}</span>
+          <span><i/>{t("已选择的聊天中有")} {selectedPending.length} {t("个会话")}{selectedPendingMessages ? tf("、{0} 条", selectedPendingMessages) : ''}{t("新增记录待上传，")}{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? t("将在满足条件时自动备份。") : t("自动备份未开启，请点击立即上传。")}</span>
           <div>
-            <button type="button" disabled={syncing} onClick={() => void syncNow()}>{syncing ? '正在提交…' : '立即上传'}</button>
-            <button type="button" className="primary" onClick={onSchedule}>备份周期</button>
+            <button type="button" disabled={syncing} onClick={() => void syncNow()}>{syncing ? t("正在提交…") : t("立即上传")}</button>
+            <button type="button" className="primary" onClick={onSchedule}>{t("备份周期")}</button>
           </div>
         </div>}
         {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}${syncScopeConfirmation ? ' is-confirmation' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
           <span className={`sync-feedback-icon${syncing || syncNoticePending ? ' is-loading' : ''}`} aria-hidden="true">{syncing || syncNoticePending ? '' : syncNoticeError ? '!' : '✓'}</span>
-          <span className="sync-feedback-text">{syncing ? '正在提交记录…' : syncNotice}</span>
+          <span className="sync-feedback-text">{syncing ? t("正在提交记录…") : syncNotice}</span>
           {syncScopeConfirmation ? <div className="sync-feedback-actions">
-            <button type="button" onClick={onOpenWhitelist}>检查上传范围</button>
-            <button type="button" onClick={() => void syncNow(syncScopeConfirmation)}>确认并开始同步</button>
+            <button type="button" onClick={onOpenWhitelist}>{t("检查上传范围")}</button>
+            <button type="button" onClick={() => void syncNow(syncScopeConfirmation)}>{t("确认并开始同步")}</button>
           </div> : <>
-            {!syncing && (syncNoticeError || syncNotice.includes('后台上传')) && <button type="button" onClick={onOpenTasks}>查看任务</button>}
-            {syncNoticeError && <button type="button" onClick={() => requestFeedback('upload', 'chat', syncBatchIds.slice(0, 20))}>反馈此问题</button>}
+            {!syncing && (syncNoticeError || syncNotice.includes(t("后台上传"))) && <button type="button" onClick={onOpenTasks}>{t("查看任务")}</button>}
+            {syncNoticeError && <button type="button" onClick={() => requestFeedback('upload', 'chat', syncBatchIds.slice(0, 20))}>{t("反馈此问题")}</button>}
           </>}
-          <button type="button" className="sync-feedback-close" onClick={() => setSyncToastVisible(false)} aria-label="关闭提示">×</button>
+          <button type="button" className="sync-feedback-close" onClick={() => setSyncToastVisible(false)} aria-label={t("关闭提示")}>×</button>
         </div>}
         {accountId && <WeChatLocal
           key={accountId}
@@ -564,7 +566,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       </div>
     </main>
 
-    {addingSession && <div className="chat-add-overlay" role="presentation"><section className="chat-add-dialog" role="dialog" aria-modal="true" aria-label="添加会话"><button type="button" className="chat-add-close" onClick={() => setAddingSession(false)} aria-label="关闭">×</button><WhitelistSettings onSaved={() => { setAddingSession(false); setSessionRevision(value => value + 1); void load(); }}/></section></div>}
+    {addingSession && <div className="chat-add-overlay" role="presentation"><section className="chat-add-dialog" role="dialog" aria-modal="true" aria-label={t("添加会话")}><button type="button" className="chat-add-close" onClick={() => setAddingSession(false)} aria-label={t("关闭")}>×</button><WhitelistSettings onSaved={() => { setAddingSession(false); setSessionRevision(value => value + 1); void load(); }}/></section></div>}
     {evidence && <EvidenceDrawer
       spaceId={settings?.devify?.active_space_id ?? null}
       target={evidence}

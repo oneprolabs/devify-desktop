@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 
 // Run through ego-browser nodejs: import this module, then pass an owned TaskSpace.
 // The fixture exercises production components and routing with strict, isolated IPC.
-export async function runConnectorE2E(task, base = 'http://localhost:1420') {
-  const page = task.page('p1');
+export async function runConnectorE2E(task, base = 'http://localhost:1420', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
   const click = name => page.click(`loc=role:button[name="${name}"]`);
   const ready = name => page.waitForFunction(text => [...document.querySelectorAll('button')].some(b => b.textContent?.trim() === text && !b.disabled), name);
   const state = () => page.evaluate(() => ({ errors: window.__E2E__.errors, settings: window.__E2E__.settings, writes: window.__E2E__.writes, calls: window.__E2E__.calls.map(x => x.command), opened: window.__E2E__.opened }));
@@ -110,5 +110,40 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420') {
   assert.ok(await page.evaluate(() => document.querySelector('.backup-manual-platform').textContent.includes('仅手动备份')));
   await clean();
   console.log('PASS schedule: conflict blocks edits, explicit reload recovers confirmed revision, WA is manual, email is hidden');
-  return { scenarios: 4, errors: (await state()).errors };
+  await start('?untrusted');
+  await page.click('loc=css:.connector-actions .connector-primary >> nth=0');
+  await page.waitForSelector('.wizard-method-options');
+  await page.snapshot({ scope: 'full_page' });
+  assert.ok(await page.evaluate(() => document.querySelector('.wizard-method').textContent.includes('签名待确认')));
+  assert.ok(await page.evaluate(() => !document.querySelector('.wizard-method').textContent.includes('· 官方签名')));
+  await page.click('loc=css:.wizard-method-option >> nth=1');
+  await click('下一步'); await ready('下一步：连接微信');
+  assert.ok(!(await state()).calls.includes('wechat_capture_prepare'), 'unconfirmed signatures can reach import checks without automatic re-signing');
+  await clean();
+  console.log('PASS upstream signature behavior: untrusted WeChat can reach manual import, without claiming official status or capturing');
+
+  await runConnectorEnglishSmoke(task, base, pageLabel);
+  return { scenarios: 6, errors: (await state()).errors };
+}
+
+export async function runConnectorEnglishSmoke(task, base = 'http://localhost:1420', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const click = name => page.click(`loc=role:button[name="${name}"]`);
+  const clean = async () => assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  await page.goto(`${base}/scripts/connectors-e2e.html?english`);
+  await page.waitForSelector('loc=role:button[name="Settings"]');
+  await click('Settings');
+  await page.waitForSelector('loc=role:button[name="Backup"]');
+  await click('Backup');
+  await page.waitForSelector('.backup-v7');
+  await page.snapshot({ scope: 'full_page' });
+  assert.ok(await page.evaluate(() => document.querySelector('.backup-v7').textContent.includes('Manual backups only')));
+  await click('Import');
+  await page.waitForSelector('.import-history-range');
+  assert.ok(await page.evaluate(() => document.querySelector('.import-history-range').textContent.includes('Chat history for the first backup')));
+  assert.equal(await page.evaluate(() => document.documentElement.lang), 'en');
+  await clean();
+  console.log('PASS upstream English interface: navigation, backup schedule and new history-range controls');
+  assert.ok(await page.evaluate(() => document.querySelector('.wechat-account-avatar img')?.getAttribute('src').includes('/wechat.svg')));
+  return { scenarios: 1, errors: await page.evaluate(() => window.__E2E__.errors) };
 }

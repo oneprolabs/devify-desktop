@@ -329,4 +329,3 @@
 .imports-v7 .import-history-range .imports-dates { margin: 12px 0; }
 .imports-v7 .import-history-range .imports-available { margin-top: 14px; padding-top: 14px; }
 @media (max-width: 700px) { .history-target-list { grid-template-columns: minmax(0, 1fr); } }
-
