@@ -290,7 +290,7 @@ export function ChatSummary({
     }
   }, [agentReady]);
   const buildLocal = async (usernames: string[]): Promise<NewSummaryRecord> => {
-    if (!accountId) throw new Error('还没有可用的微信账号。');
+    if (!accountId) throw new Error('还没有可用的聊天账号。');
     const selected = usernames
       .map(username => sessions.find(item => item.username === username))
       .filter((item): item is SummarySession => Boolean(item));
@@ -365,7 +365,7 @@ export function ChatSummary({
   };
 
   const buildAgent = async (usernames: string[]): Promise<NewSummaryRecord> => {
-    if (!accountId) throw new Error('还没有可用的微信账号。');
+    if (!accountId) throw new Error('还没有可用的聊天账号。');
     const result = await invoke<AgentSummary>('agent_summarize', {
       accountId,
       usernames,

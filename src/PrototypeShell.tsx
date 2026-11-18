@@ -12,7 +12,8 @@ import { DevifySettings, WhitelistSettings, type AppSettings } from './Settings'
 import { BackupSchedule } from './BackupSchedule';
 import { AnalysisSettings } from './AnalysisSettings';
 import { LanguageSettings } from './LanguageSettings';
-import { Icons, RailIcons } from './icons';
+import { Icons } from './icons';
+import { NavigationRail, type Section } from './NavigationRail';
 import { detectTitle, useConnectorDetect } from './connectorDetect';
 import { Connectors } from './Connectors';
 import { CloudAnalysisPage } from './CloudAnalysis';
@@ -32,10 +33,10 @@ import { shouldApplyAuthExpired } from './authEvents';
 import './prototype-shell.css';
 import './reference-theme.css';
 import './desktop-visual-refresh.css';
-import appIcon from './assets/app-icon.png';
+import './navigation-rail.css';
+import brandMark from './assets/app-mark-transparent.png';
 import wechatLogo from './assets/connectors/wechat.svg';
 
-type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'feedback' | 'about';
 
 function handleWindowDrag(event: MouseEvent<HTMLElement>) {
@@ -51,13 +52,6 @@ function handleWindowDrag(event: MouseEvent<HTMLElement>) {
   }
 }
 
-const sections: { id: Section; label: string; icon: ReactNode }[] = [
-  { id: 'chat', label: '聊天', icon: RailIcons.chat },
-  { id: 'events', label: '事件', icon: RailIcons.events },
-  { id: 'topics', label: '主题', icon: RailIcons.topics },
-  { id: 'reports', label: '报告', icon: RailIcons.reports },
-  { id: 'ask', label: '问答', icon: RailIcons.ask },
-];
 const settingsPages: { id: SettingsPage; label: string; group?: 'main' | 'local' }[] = [
   // The first six follow protype.html (连接器 / 导入管理 / 备份周期 / 智能分析 / 语言 / 账户);
   // the rest are pages this build has on top of the prototype.
@@ -110,6 +104,8 @@ export default function PrototypeShell() {
   useEffect(() => { void checkForUpdates(true); }, []);
   const [eventFocusId, setEventFocusId] = useState<number | null>(null);
   const [chatReady, setChatReady] = useState(false);
+  const [chatSource, setChatSource] = useState('wechat');
+  const [chatKey, setChatKey] = useState(0);
   const [firstBackupStep, setFirstBackupStep] = useState<'none' | 'select' | 'schedule' | 'confirm'>('none');
   const [startFirstBackup, setStartFirstBackup] = useState(false);
   const [backupPreview, setBackupPreview] = useState<AppSettings | null>(null);
@@ -261,7 +257,18 @@ export default function PrototypeShell() {
     if (authState !== 'authed') return;
     void refreshEntitlements();
   }, [authState]);
-  const handleChatReady = useCallback(() => setChatReady(true), []);
+  const handleChatReady = useCallback((source: string) => { setChatSource(source); setChatReady(true); }, []);
+  // WhatsApp has no key step: activate the local account, then remount the chat page so it
+  // re-reads sessions for the new source instead of keeping WeChat state.
+  const openWhatsApp = useCallback(async () => {
+    try {
+      const status = await invoke<{ account?: string | null }>('whatsapp_status');
+      if (status?.account) await invoke('chat_account_activate', { accountId: status.account });
+    } catch { /* the connectors page already shows the read error */ }
+    setSection('chat');
+    setChatReady(false);
+    setChatKey(value => value + 1);
+  }, []);
   // Agent 集成 (local summaries plus the access kit) is reserved for internal accounts, so both
   // of its settings pages disappear with the entitlement instead of showing an empty shell.
   const { internal: internalAccount, view: entitlements } = useInternalAccount();
@@ -287,24 +294,10 @@ export default function PrototypeShell() {
   const wizardPrev = () => { const index = wizardOrder.indexOf(wizardStep); if (index > 0) setWizard(wizardOrder[index - 1]); };
   const wizardNext = () => { const index = wizardOrder.indexOf(wizardStep); if (index >= 0 && index < wizardOrder.length - 1) setWizard(wizardOrder[index + 1]); };
   const openEvent = (eventId: number) => { setEventFocusId(eventId); setSection('events'); };
-  const navButton = (item: { id: Section; label: string; icon: ReactNode }) => <button
-    key={item.id} type="button" className={section === item.id ? 'prototype-nav-item active' : 'prototype-nav-item'}
-    aria-current={section === item.id ? 'page' : undefined}
-    onClick={() => { if (item.id !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(item.id); }}
-  ><span>{item.icon}</span><small>{item.label}</small></button>;
-
-  return <main className="prototype-shell" onMouseDown={handleWindowDrag}>
+  return <main className={`prototype-shell${isTauri() && /Mac/.test(navigator.platform) ? ' prototype-shell-macos' : ''}`} onMouseDown={handleWindowDrag}>
     <div className="prototype-titlebar" aria-hidden="true" />
-    <aside className="prototype-rail" aria-label="主导航">
-      {authState === 'authed' && <div className="prototype-account-wrap"><button type="button" className="prototype-account" onClick={() => openSettings('account')} aria-label="打开账户设置"><span className="prototype-account-avatar" aria-hidden="true">{(currentUser || '账').slice(0, 1).toUpperCase()}</span><span className="prototype-account-text" title={currentUser || undefined}>{currentUser || '账号信息暂不可用'}</span></button></div>}
-      <nav className="prototype-nav">{sections.map(navButton)}</nav>
-      <div className="prototype-spacer" />
-      <nav className="prototype-nav">
-        {navButton({ id: 'tasks', label: '任务', icon: RailIcons.tasks })}
-        {navButton({ id: 'settings', label: '设置', icon: RailIcons.settings })}
-      </nav>
-      <div className="prototype-rail-brand"><img src={appIcon} alt=""/><strong>AIMyChats</strong></div>
-    </aside>
+    <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
+      onNavigate={next => { if (next !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(next); }} />
     <section className="prototype-content">
       {update.status === 'available' && !(section === 'settings' && settingsPage === 'about') && <button type="button" className="update-available-notice" onClick={() => setUpdateDialogOpen(true)}>发现新版本 {update.version}，查看更新</button>}
       {updateDialogOpen && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setUpdateDialogOpen(false); }}>
@@ -316,7 +309,7 @@ export default function PrototypeShell() {
       {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
       {authState === 'unavailable' && <div className="auth-gate">
         <div className="auth-gate-card">
-          <span className="auth-gate-mark"><img src={appIcon} alt=""/></span>
+          <span className="auth-gate-mark"><img src={brandMark} alt=""/></span>
           <h1>服务端暂不可用</h1>
           <p>{authError || '服务端暂不可用，请稍后重试。'}</p>
           <p className="auth-gate-hint">已保存的登录状态不会丢失，服务恢复后点「重试」即可。</p>
@@ -328,9 +321,11 @@ export default function PrototypeShell() {
       {authState === 'anonymous' && <LoginGate notice={authNotice} onAuthenticated={handleAuthenticated}/>}
       {authState === 'authed' && <>
       <div style={{ display: section === 'chat' ? 'contents' : 'none' }} aria-hidden={section !== 'chat'}>
-        {chatReady && !wechatInstall.checking && !wechatInstall.usable && wechatInstall.detect && <div className="chat-install-banner" role="status"><span className="connector-install-icon" aria-hidden="true">!</span><span><strong>{detectTitle[wechatInstall.detect.state]}，已停止读取新消息。</strong>已有记录仍可查看，重新安装后到「设置 › 连接器」点「重新检查」。</span><button type="button" onClick={() => openSettings('connectors')}>去检查</button></div>}
+        {chatReady && chatSource !== 'whatsapp' && !wechatInstall.checking && !wechatInstall.usable && wechatInstall.detect && <div className="chat-install-banner" role="status"><span className="connector-install-icon" aria-hidden="true">!</span><span><strong>{detectTitle[wechatInstall.detect.state]}，已停止读取新消息。</strong>已有记录仍可查看，重新安装后到「设置 › 连接器」点「重新检查」。</span><button type="button" onClick={() => openSettings('connectors')}>去检查</button></div>}
         {!chatReady && firstBackupStep !== 'confirm' && <ChatEntry
+          key={`entry-${chatKey}`}
           onConnect={(connector) => connector && connector !== '微信' ? openSettings('connectors') : openSettings('connectors', true, false)}
+          onConnectWhatsApp={() => void openWhatsApp()}
           onImport={() => { setFirstBackupStep('select'); openSettings('imports'); }}
           onBackup={openNewUpload}
           onSchedule={() => openSettings('backup')}
@@ -345,7 +340,7 @@ export default function PrototypeShell() {
             <div className="first-backup-actions"><button className="chat-landing-primary" onClick={() => { setStartFirstBackup(true); setFirstBackupStep('none'); setChatReady(true); }}>立即开始首次备份 <span aria-hidden="true">→</span></button><button className="first-backup-later" onClick={() => { setFirstBackupStep('none'); setChatReady(true); }}>稍后自动备份</button></div>
           </section><p className="first-backup-note">备份进度可以在「任务」中查看，首次备份时间取决于记录数量和网络情况。</p>
         </div></div>}
-        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench visible={section === 'chat'} startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
+        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench key={`workbench-${chatKey}`} visible={section === 'chat'} startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
       </div>
       {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
       {section === 'settings' && <div className="prototype-settings-layout">
@@ -373,7 +368,7 @@ export default function PrototypeShell() {
             )}
             <div id="wizard-permission" className="wizard-anchor" /><div id="wizard-account" className="wizard-anchor" /><div id="wizard-key" className="wizard-anchor" /><div id="wizard-import" className="wizard-anchor" /><div id="wizard-done" className="wizard-anchor" />
             {wizardStep === 'wizard-done' ? <section className="wizard-complete"><div className="wizard-complete-mark">✓</div><h2>连接向导完成</h2><p>接下来请勾选要备份的会话。未勾选的聊天不会导入，也不会出现在备份里。</p><button type="button" className="wizard-next" disabled={connectionFinishing} onClick={() => void finishWechatGuide()}>{connectionFinishing ? '正在保存…' : '选择要备份的会话'}</button><button type="button" className="wizard-skip" disabled={connectionFinishing} onClick={() => void finishWechatGuide(true)}>跳过，暂不备份</button>{connectionFinishError && <p role="alert">{connectionFinishError}</p>}</section> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
-          </div> : <Connectors onOpenWechat={(configured) => { setWechatGuide(true); setWechatGuideEdit(configured); setWizardStep('wizard-method'); }} />)}
+          </div> : <Connectors onOpenWechat={(configured) => { setWechatGuide(true); setWechatGuideEdit(configured); setWizardStep('wizard-method'); }} onOpenWhatsApp={() => void openWhatsApp()} />)}
           {settingsPage === 'imports' && <WhitelistSettings onSaved={count => { if (firstBackupStep === 'select' && count > 0) { setFirstBackupStep('schedule'); setSettingsPage('backup'); } }} />}
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
           {settingsPage === 'analysis' && <AnalysisSettings />}

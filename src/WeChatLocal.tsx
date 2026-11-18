@@ -581,6 +581,7 @@ export default function WeChatLocal({
   onClearSearch,
   workRequest = 0,
   sessionRevision = 0,
+  accountId: pinnedAccountId,
   onChatState,
 }: {
   mode?: 'chat' | 'settings';
@@ -601,6 +602,8 @@ export default function WeChatLocal({
   /** Counters from the embedding page header's 整理工作内容 button. */
   workRequest?: number;
   sessionRevision?: number;
+  /** The account the embedding page already resolved (WeChat or WhatsApp). */
+  accountId?: string | null;
   /** Reports whether the page-level 整理/导出 actions may be shown at all. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
 } = {}) {
@@ -723,20 +726,20 @@ export default function WeChatLocal({
   useEffect(() => () => { voicePlayer.current?.pause(); }, [accountId, active?.username]);
 
   useEffect(() => {
-    void invoke<{ chat?: { sync_interval_seconds?: number }; connectors?: { wechat_enabled?: boolean } }>('app_settings_get')
+    void invoke<{ chat?: { sync_interval_seconds?: number }; connectors?: { wechat_enabled?: boolean; whatsapp_enabled?: boolean } }>('app_settings_get')
       // The chat view refreshes far more often than the backup job: the backup interval is
       // 30 minutes by default, which would make a live conversation look frozen. Keep the
       // on-screen cadence between 10 and 30 seconds.
       .then(value => {
         setSyncIntervalSeconds(Math.min(30, Math.max(10, value.chat?.sync_interval_seconds ?? 30)));
-        setWechatEnabled(value.connectors?.wechat_enabled ?? true);
+        setWechatEnabled(pinnedAccountId?.endsWith('@s.whatsapp.net') ? (value.connectors?.whatsapp_enabled ?? true) : (value.connectors?.wechat_enabled ?? true));
       })
       .catch(() => undefined);
     // Disconnecting happens on the settings page while this page can stay mounted, so a
     // return to the window re-reads the switch and stops the live poll.
     const loadConnection = () => {
-      void invoke<{ connectors?: { wechat_enabled?: boolean } }>('app_settings_get')
-        .then(value => setWechatEnabled(value.connectors?.wechat_enabled ?? true))
+      void invoke<{ connectors?: { wechat_enabled?: boolean; whatsapp_enabled?: boolean } }>('app_settings_get')
+        .then(value => setWechatEnabled(pinnedAccountId?.endsWith('@s.whatsapp.net') ? (value.connectors?.whatsapp_enabled ?? true) : (value.connectors?.wechat_enabled ?? true)))
         .catch(() => undefined);
     };
     // The agent can be configured from Settings while this page stays mounted, so a
@@ -753,7 +756,7 @@ export default function WeChatLocal({
       window.removeEventListener('focus', loadConnection);
       window.removeEventListener('focus', loadAgent);
     };
-  }, []);
+  }, [pinnedAccountId]);
 
   const account = useMemo(() => scan?.accounts.find(a => a.id === accountId) ?? null, [scan, accountId]);
   const encryptedDbs = useMemo(() => account?.dbs.filter(db => db.encrypted) ?? [], [account]);
@@ -833,11 +836,15 @@ export default function WeChatLocal({
     syncLock.current = true;
     setSyncState('syncing');
     try {
-      const outcomes = await invoke<DecryptOutcome[]>('wechat_sync', { accountId: account.id });
-      const usable = outcomes.some(outcome => outcome.status === 'ok' || outcome.status === 'cached');
-      if (!usable) {
-        setSyncState('error');
-        return;
+      // WhatsApp's store is already plaintext: there is nothing to decrypt, so the tick
+      // only re-reads the snapshot-backed session and message lists.
+      if (!account.id.endsWith('@s.whatsapp.net')) {
+        const outcomes = await invoke<DecryptOutcome[]>('wechat_sync', { accountId: account.id });
+        const usable = outcomes.some(outcome => outcome.status === 'ok' || outcome.status === 'cached');
+        if (!usable) {
+          setSyncState('error');
+          return;
+        }
       }
       const list = await invoke<SessionItem[]>('wechat_sessions', { accountId: account.id });
       setSessions(list);
@@ -938,8 +945,10 @@ export default function WeChatLocal({
       const detect = await invoke<{ state: string }>('connector_detect', { kind: 'wechat' });
       const result = await invoke<ScanResult>('wechat_scan');
       setScan(result);
-      const nextId = currentAccount(result.accounts, preferredId ?? settingsRef.current?.active_account_id ?? '')?.id ?? '';
-      if (nextId) await rememberAccount(nextId);
+      const nextId = pinnedAccountId
+        ? result.accounts.find(item => item.id === pinnedAccountId)?.id ?? ''
+        : currentAccount(result.accounts, preferredId ?? settingsRef.current?.active_account_id ?? '')?.id ?? '';
+      if (nextId && !pinnedAccountId) await rememberAccount(nextId);
       setAccountId(nextId);
       await refreshKeys();
       if (!result.accounts.length && detect?.state === 'installed') {
@@ -953,7 +962,7 @@ export default function WeChatLocal({
       setAccountSwitching(false);
       setBusy(null);
     }
-  }, [loadSessions, refreshKeys, rememberAccount]);
+  }, [loadSessions, refreshKeys, rememberAccount, pinnedAccountId]);
 
   useEffect(() => {
     void (async () => {
@@ -962,6 +971,22 @@ export default function WeChatLocal({
         await refreshSavedKeySource();
       } catch {
         /* not fatal */
+      }
+      // WhatsApp has no key, no capture and no database scan: the embedding page already
+      // resolved the account, so pin it and read the whitelisted sessions directly.
+      if (pinnedAccountId && pinnedAccountId.endsWith('@s.whatsapp.net')) {
+        setScan({
+          roots: [],
+          skipped: [],
+          accounts: [{ id: pinnedAccountId, dir: '', db_count: 0, encrypted_count: 0, total_bytes: 0, modified_at: null, dbs: [] }],
+        });
+        setAccountId(pinnedAccountId);
+        try {
+          settingsRef.current = requireSettingsRevision(await invoke<AppSettings>('app_settings_get'));
+          setWechatEnabled(settingsRef.current.connectors?.whatsapp_enabled !== false);
+        } catch { /* the session read below reports the real problem */ }
+        await loadSessions(pinnedAccountId);
+        return;
       }
       // Read the remembered account before scanning: with more than one WeChat account on
       // this Mac the saved choice decides which one opens, instead of asking every time.
@@ -972,9 +997,9 @@ export default function WeChatLocal({
         setError(`设置加载失败，无法选择微信账号：${String(reason)}。请重新打开页面。`);
       }
     })();
-    // Scan once on mount; account switching and manual rescans call doScan directly.
+    // Scan once per pinned account; account switching and manual rescans call doScan directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [pinnedAccountId]);
 
   /** Sessions and message senders are the only things that own an avatar on screen. */
   useEffect(() => {
@@ -1484,6 +1509,13 @@ export default function WeChatLocal({
   useEffect(() => {
     if (!account || !active || !messages.length) {
       setMediaByMessage({});
+      return;
+    }
+    // WhatsApp message types do not use WeChat's media identifiers. Its reader already
+    // supplies a readable label, so do not try to resolve them against a WeChat database.
+    if (account.id.endsWith('@s.whatsapp.net')) {
+      setMediaByMessage({});
+      setMediaScanComplete(true);
       return;
     }
     const since = messages[messages.length - 1].time;
@@ -3217,9 +3249,12 @@ const checkMark = (value: boolean | undefined) =>
       )}
       {orderedWithDates.map(({ message, divider, stamp }) => {
         const base = kindBase(message.kind);
-        const system = base === 10000 || base === 10002;
+        const isWhatsApp = message.source_shard === 'whatsapp';
+        const system = !isWhatsApp && (base === 10000 || base === 10002);
         const placeholder = isPlaceholder(message.text);
-        const media = !placeholder && base !== 1;
+        const media = !isWhatsApp && !placeholder && base !== 1;
+        const imageMessage = !isWhatsApp && base === 3;
+        const voiceMessage = !isWhatsApp && base === 34;
         const hit = !!highlightKeyword && contains(message.text, highlightKeyword);
         const selected = selectedMessages.some(item => messageKey(item.session.username, item.message) === messageKey(active?.username ?? '', message));
         const selectMessage = (extend = false) => toggleMessageSelection(message, extend);
@@ -3303,14 +3338,14 @@ const checkMark = (value: boolean | undefined) =>
                 {(onChatState || (active?.is_group && !message.is_self)) && (
                   <span className="wxv-sender">{message.is_self ? '我' : (message.sender_name || message.sender || '未知成员')}</span>
                 )}
-                <div className={`wxv-bubble ${base === 3 ? 'image-only' : ''} ${base === 34 ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
-                  {base === 3 || base === 34 ? null : placeholder ? (
+                <div className={`wxv-bubble ${imageMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
+                  {imageMessage || voiceMessage ? null : placeholder ? (
                     message.text
                   ) : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
                   )}
-                  {base === 3 && !mediaFor(message).length && <div className="wxv-attach image"><span className="wxv-image-placeholder" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true"/>}{mediaScanComplete ? '图片不可用' : '正在加载图片…'}</span></div>}
-                  {base === 34 && !mediaFor(message).length && <span className="wxv-attach-chip" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true" />}{mediaScanComplete ? '语音暂不可用' : '正在加载语音…'}</span>}
+                  {imageMessage && !mediaFor(message).length && <div className="wxv-attach image"><span className="wxv-image-placeholder" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true"/>}{mediaScanComplete ? '图片不可用' : '正在加载图片…'}</span></div>}
+                  {voiceMessage && !mediaFor(message).length && <span className="wxv-attach-chip" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true" />}{mediaScanComplete ? '语音暂不可用' : '正在加载语音…'}</span>}
                   {mediaFor(message).map(item => {
                     if (item.kind === 'voice') {
                       const text = voiceText[item.server_id_exact];
@@ -3773,7 +3808,7 @@ const checkMark = (value: boolean | undefined) =>
             {ready && (
               <small className={`wxv-sync-status ${wechatEnabled ? syncState : 'error'}`}>
                 {!wechatEnabled
-                  ? '微信已断开 · 到「连接器」重新连接'
+                  ? '已断开 · 到「连接器」重新连接'
                   : syncState === 'syncing' ? '正在同步最新消息…' : syncState === 'error' ? '同步暂不可用' : lastSyncAt ? `准实时同步 · ${timeOnly(Math.floor(lastSyncAt.getTime() / 1000))}` : '准实时同步已开启'}
               </small>
             )}

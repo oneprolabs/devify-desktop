@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { CollectionMessages, type MessageRef } from './CollectionMessages';
+import { AccountPicker } from './AccountPicker';
 import wechatIcon from './assets/connectors/wechat.svg';
+import whatsappIcon from './assets/connectors/whatsapp.svg';
 import './collection.css';
 
-type Account = { id: string; modified_at: number | null };
-type Scan = { accounts: Account[] };
+type Account = { id: string; modified_at?: number | null; source?: string; display?: string | null };
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null };
 type Settings = { active_account_id: string; devify: { active_space_id: string | null; base_url: string } };
-type Space = { id: string; name: string; is_global_admin: boolean; admin_takeover_active: boolean };
+type Space = { id: string; name: string };
 type Preview = { fingerprint: string; sessions: Array<{ username: string; display: string; message_count: number }>; message_count: number };
 function boundary(value: string, nextDay: boolean): number | null {
   if (!value) return null;
@@ -20,6 +21,13 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 function daysAgo(days: number): string { const date = new Date(); date.setDate(date.getDate() - days); return localDate(date); }
+function activityLabel(seconds: number | null | undefined): string {
+  if (!seconds) return '无记录';
+  const date = new Date(seconds * 1000);
+  return date.toDateString() === new Date().toDateString()
+    ? `今天 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+    : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+}
 export function Collection({ onSettings, onComplete }: { onSettings: () => void; onComplete: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -30,6 +38,8 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   const [space, setSpace] = useState<Space | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [messageSelection, setMessageSelection] = useState<Record<string, MessageRef[]>>({});
+  const [query, setQuery] = useState('');
+  const [kind, setKind] = useState<'all' | 'group' | 'direct'>('all');
   const [since, setSince] = useState(() => daysAgo(6));
   const [rangeMode, setRangeMode] = useState<'1' | '7' | 'custom'>('7');
   const [until, setUntil] = useState(() => daysAgo(0));
@@ -42,12 +52,12 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
     let active = true;
     void (async () => {
       try {
-        const [stored, scan] = await Promise.all([invoke<Settings>('app_settings_get'), invoke<Scan>('wechat_scan')]);
+        const [stored, found] = await Promise.all([invoke<Settings>('app_settings_get'), invoke<Account[]>('chat_accounts')]);
         if (!active) return;
         setSettings(stored);
-        const found = scan.accounts ?? [];
-        setAccounts(found);
-        const initial = found.find(item => item.id === stored.active_account_id) ?? [...found].sort((a, b) => (b.modified_at ?? 0) - (a.modified_at ?? 0))[0];
+        const accounts = found ?? [];
+        setAccounts(accounts);
+        const initial = accounts.find(item => item.id === stored.active_account_id) ?? [...accounts].sort((a, b) => (b.modified_at ?? 0) - (a.modified_at ?? 0))[0];
         setAccountId(initial?.id ?? '');
         if (stored.devify.active_space_id) {
           const spaces = await invoke<Space[]>('devify_spaces');
@@ -70,6 +80,9 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   }, [accountId]);
   const switchAccount = (id: string) => {
     setSessionLoading(true); setSessions([]); setPreview(null); setSelected([]); setMessageSelection({}); setSessionError(''); setAccountId(id);
+    // Multi-batch manual uploads only advance for the active account; switching the source
+    // here keeps the queue, the chat page and the next batch on the same account.
+    void invoke('chat_account_activate', { accountId: id }).catch(() => {});
   };
   const change = (id: string) => { setPreview(null); if (selected.includes(id)) setMessageSelection(current => { const next = { ...current }; delete next[id]; return next; }); setSelected(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]); };
   const setMode = (id: string, individual: boolean) => { setPreview(null); setMessageSelection(current => { const next = { ...current }; if (individual) next[id] = []; else delete next[id]; return next; }); };
@@ -99,8 +112,44 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
     catch (e) { setError(String(e)); setPreview(null); }
     finally { setBusy(false); }
   };
-  const visible = sessions;
-  const blocked = !space || (space.is_global_admin && !space.admin_takeover_active);
+  const groupCount = useMemo(() => sessions.filter(session => session.is_group).length, [sessions]);
+  // Filter first, then order by newest activity so the conversation that just received
+  // a message always sits at the top of whatever list the user is looking at.
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return sessions
+      .filter(session => (kind === 'all' || (kind === 'group' ? session.is_group : !session.is_group))
+        && (!needle || session.display.toLowerCase().includes(needle) || session.username.toLowerCase().includes(needle)))
+      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0) || a.display.localeCompare(b.display, 'zh-Hans-CN'));
+  }, [sessions, query, kind]);
+  const visibleSelected = useMemo(
+    () => visible.reduce((count, session) => count + (selected.includes(session.username) ? 1 : 0), 0),
+    [visible, selected],
+  );
+  // Bulk actions are scoped to the filtered list so hidden sessions keep their state.
+  const bulkSelect = (mode: 'select' | 'clear' | 'invert') => {
+    if (busy) return;
+    const names = visible.map(session => session.username);
+    const visibleNames = new Set(names);
+    const next = mode === 'select'
+      ? [...selected, ...names.filter(name => !selected.includes(name))]
+      : mode === 'clear'
+        ? selected.filter(name => !visibleNames.has(name))
+        : [...selected.filter(name => !visibleNames.has(name)), ...names.filter(name => !selected.includes(name))];
+    const removed = selected.filter(name => !next.includes(name));
+    setPreview(null);
+    setSelected(next);
+    if (removed.length) setMessageSelection(current => {
+      const copy = { ...current };
+      removed.forEach(name => delete copy[name]);
+      return copy;
+    });
+  };
+  // The client never special-cases platform admins: an account that can see a space in
+  // `devify_spaces` is a member of it, so upload permission is the server's call.
+  const blocked = !space;
+  const whatsappSource = accounts.find(account => account.id === accountId)?.source === 'whatsapp';
+  const bulkDisabled = busy || blocked || !isTauri();
   return <section className="collection">
     <header className="task-detail-bar">采集 <span>/</span> 新建采集</header>
     <div className="collection-body">
@@ -109,13 +158,22 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
       {!isTauri() && <p className="collection-notice">请在桌面应用中选择本机聊天。</p>}
       {loading && <p className="collection-notice">正在读取会话和上传空间…</p>}
       {error && <p className="collection-error" role="alert">{error}</p>}
-      {!loading && isTauri() && (!accountId || blocked) && <div className="collection-notice">{!accountId ? '请先连接微信并选择账号。' : space?.is_global_admin ? '请先在账户设置中接管目标空间。' : '请先登录并保存可用的上传目标空间。'} <button type="button" onClick={onSettings}>打开账户设置</button></div>}
-      {accounts.length > 0 && <div className="collection-account"><label>微信账号<select value={accountId} disabled={busy} onChange={event => switchAccount(event.target.value)}>{accounts.map(account => <option key={account.id} value={account.id}>{account.id}</option>)}</select></label><span>每次采集仅包含当前账号的白名单会话。</span></div>}
+      {!loading && isTauri() && (!accountId || blocked) && <div className="collection-notice">{!accountId ? '请先连接微信并选择账号。' : '请先登录并保存可用的上传目标空间。'} <button type="button" onClick={onSettings}>打开账户设置</button></div>}
+      {accounts.length > 0 && <div className="collection-account"><label>账号</label><AccountPicker accounts={accounts} value={accountId} disabled={busy} onChange={switchAccount} /><span>每次采集仅包含当前账号的白名单会话。</span></div>}
+      {whatsappSource && <p className="collection-notice">WhatsApp 先上传文字内容；图片、语音和文件暂不打包，消息里会保留「[图片]」这类标签。</p>}
       {sessionError && <p className="collection-error" role="alert">读取该账号会话失败：{sessionError}</p>}
       {sessionLoading && <p className="collection-notice">正在读取所选账号的会话…</p>}
-      <p className="collection-local-hint">以下为本机记录，用于选择上传范围，不代表已上传。</p>
+      <p className="collection-local-hint">以下为本机记录，用于选择上传范围，不代表已上传。按最近活跃排序，最新消息在前。</p>
+      <div className="collection-filter">
+        <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话名或 wxid" aria-label="搜索会话" disabled={busy} />
+        <div className="collection-pills" role="group" aria-label="按会话类型筛选">
+          <button type="button" className={kind === 'all' ? 'active' : ''} aria-pressed={kind === 'all'} onClick={() => setKind('all')}>全部 {sessions.length}</button>
+          <button type="button" className={kind === 'group' ? 'active' : ''} aria-pressed={kind === 'group'} onClick={() => setKind('group')}>群聊 {groupCount}</button>
+          <button type="button" className={kind === 'direct' ? 'active' : ''} aria-pressed={kind === 'direct'} onClick={() => setKind('direct')}>单聊 {sessions.length - groupCount}</button>
+        </div>
+      </div>
       <div className="collection-list">{visible.map(session => <div key={session.username} className={selected.includes(session.username) ? 'collection-session selected' : 'collection-session'}>
-        <div className="collection-row"><label className="collection-session-label"><input type="checkbox" checked={selected.includes(session.username)} disabled={busy} onChange={() => change(session.username)} /><img className="collection-source-icon" src={wechatIcon} alt="微信" /><span className="collection-name">{session.display}</span></label><small>{session.is_group ? '群聊' : '单聊'}</small></div>
+        <div className="collection-row"><label className="collection-session-label"><input type="checkbox" checked={selected.includes(session.username)} disabled={busy} onChange={() => change(session.username)} /><img className="collection-source-icon" src={whatsappSource ? whatsappIcon : wechatIcon} alt={whatsappSource ? 'WhatsApp' : '微信'} /><span className="collection-name">{session.display}</span></label><small>{session.is_group ? '群聊' : '单聊'} · {activityLabel(session.last_time)}</small></div>
         {selected.includes(session.username) && <div className="collection-session-options"><div className="collection-range">
           <button type="button" className={rangeMode === '1' ? 'active' : ''} disabled={busy} onClick={() => { if (recent(1)) setRangeMode('1'); }}>近 1 天</button>
           <button type="button" className={rangeMode === '7' ? 'active' : ''} disabled={busy} onClick={() => { if (recent(7)) setRangeMode('7'); }}>近 7 天</button>
@@ -124,8 +182,14 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
           <span>日期范围适用于所有已选会话</span>
         </div>{rangeMode === 'custom' && <div className="collection-custom-dates"><label>开始日期 <input type="date" value={since} disabled={busy} onChange={e => changeDates(e.target.value, until)} /></label><label>结束日期 <input type="date" value={until} disabled={busy} onChange={e => changeDates(since, e.target.value)} /></label></div>}</div>}
         {selected.includes(session.username) && Object.prototype.hasOwnProperty.call(messageSelection, session.username) && settings && <CollectionMessages accountId={accountId} username={session.username} since={boundary(since, false)} until={boundary(until, true)} selected={messageSelection[session.username]} busy={busy} onChange={items => { setPreview(null); setMessageSelection(current => ({ ...current, [session.username]: items })); }} />}
-      </div>)}{!loading && !sessionLoading && !sessionError && sessions.length === 0 && <p className="collection-notice">暂无可采集的白名单会话。</p>}</div>
-      {preview && <div className="collection-review" role="region" aria-label="上传预览"><h2>确认上传范围</h2><p>微信账号 {accountId} · 目标空间 {space?.name}</p><p>时间：{since || '不限起始'} 至 {until || '不限结束'} · {preview.sessions.length} 个会话 · {preview.message_count} 条消息</p><ul>{preview.sessions.map(item => <li key={item.username}>{item.display} · {item.message_count} 条</li>)}</ul><p>所选内容将上传至 {settings?.devify.base_url}，该空间的有效成员可查看。</p><button type="button" onClick={() => setPreview(null)} disabled={busy}>返回修改</button> <button type="button" className="collection-primary" onClick={() => void submit()} disabled={busy}>{busy ? '上传中…' : '确认上传'}</button></div>}
+      </div>)}{!loading && !sessionLoading && !sessionError && sessions.length === 0 && <p className="collection-notice">暂无可采集的白名单会话。</p>}{!sessionLoading && sessions.length > 0 && visible.length === 0 && <p className="collection-notice">没有符合当前筛选条件的会话。</p>}</div>
+      <div className="collection-bulk" role="group" aria-label="批量选择当前筛选结果">
+        <span>当前 {visible.length} 个 · 已选 {visibleSelected}</span>
+        <button type="button" disabled={bulkDisabled || !visible.length} onClick={() => bulkSelect('select')}>全选</button>
+        <button type="button" disabled={bulkDisabled || !visible.length} onClick={() => bulkSelect('invert')}>反选</button>
+        <button type="button" disabled={bulkDisabled || !visibleSelected} onClick={() => bulkSelect('clear')}>取消</button>
+      </div>
+      {preview && <div className="collection-review" role="region" aria-label="上传预览"><h2>确认上传范围</h2><p>{whatsappSource ? 'WhatsApp' : '微信'}账号 {accountId} · 目标空间 {space?.name}</p><p>时间：{since || '不限起始'} 至 {until || '不限结束'} · {preview.sessions.length} 个会话 · {preview.message_count} 条消息</p><ul>{preview.sessions.map(item => <li key={item.username}>{item.display} · {item.message_count} 条</li>)}</ul><p>所选内容将上传至 {settings?.devify.base_url}，该空间的有效成员可查看。</p><button type="button" onClick={() => setPreview(null)} disabled={busy}>返回修改</button> <button type="button" className="collection-primary" onClick={() => void submit()} disabled={busy}>{busy ? '上传中…' : '确认上传'}</button></div>}
     </div>
     <footer className="collection-footer"><span>已选择 {selected.length} 个会话{preview ? ` · ${preview.message_count} 条消息` : ''}</span><button type="button" className="collection-primary" disabled={busy || loading || sessionLoading || blocked || !accountId || !selected.length || Object.values(messageSelection).some(items => !items.length) || !isTauri()} onClick={() => void buildPreview()}>{busy && !preview ? '正在读取…' : '预览上传范围 ↑'}</button></footer>
   </section>;

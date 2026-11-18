@@ -472,6 +472,9 @@ pub struct ConnectorSettings {
     /// stored keys and decrypted snapshot, so reconnecting needs no new key import. Uploaded
     /// records on the server are never touched.
     pub wechat_enabled: bool,
+    /// Same switch for WhatsApp. Its database is plaintext, so disconnecting only stops
+    /// new reads; the copy under the app data directory stays until it is cleared.
+    pub whatsapp_enabled: bool,
 }
 
 impl Default for ConnectorSettings {
@@ -479,6 +482,7 @@ impl Default for ConnectorSettings {
         Self {
             waitlist: Vec::new(),
             wechat_enabled: true,
+            whatsapp_enabled: true,
         }
     }
 }

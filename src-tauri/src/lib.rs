@@ -38,6 +38,7 @@ pub(crate) mod http_client;
 pub mod perm;
 pub mod settings;
 pub mod wechat;
+pub mod whatsapp;
 
 pub mod mcp;
 mod network;
@@ -537,38 +538,6 @@ struct DevifySpace {
     kind: String,
     status: String,
     role: Option<String>,
-    #[serde(default)]
-    is_global_admin: bool,
-    #[serde(default)]
-    admin_takeover_active: bool,
-}
-
-#[tauri::command]
-async fn devify_space_takeover(
-    app: AppHandle,
-    space_id: String,
-    reason: String,
-) -> Result<(), String> {
-    if reason.trim().is_empty() {
-        return Err("请填写接管原因。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    let api_base = settings.devify.resolved_base_url()?;
-    let token = devify_access_token_async(&app_data(&app), &api_base).await?;
-    let response = http_client::api()
-        .post(format!(
-            "{}/api/v1/spaces/{space_id}/takeover",
-            api_base
-        ))
-        .bearer_auth(token)
-        .json(&serde_json::json!({"reason": reason.trim()}))
-        .send_traced_retrying(&app_data(&app), diagnostics::Module::App, RetryPolicy::WRITE)
-        .await
-        .map_err(|e| devify_network_message("接管空间失败", &e))?;
-    if !response.status().is_success() {
-        return Err(format!("接管空间失败：{}", response.status()));
-    }
-    Ok(())
 }
 
 /// Prefer the personal space the server creates for every account; fall back to the first
@@ -882,8 +851,8 @@ fn devify_response_error(
 }
 
 /// Translate server wording that means "pick another space" into something the
-/// user can act on. The API hides the space when the caller is not a member
-/// (or an admin without a takeover), so both cases share the same 404.
+/// user can act on. The API hides a space when the caller is not a member of it,
+/// so "not a member" and "gone" share the same 404.
 fn devify_friendly_error(status: reqwest::StatusCode, detail: &str) -> String {
     if status == reqwest::StatusCode::NOT_FOUND && detail.contains("Space not found") {
         return "当前 空间不存在或无权访问，请在「设置 / 账户」重新选择空间。".into();
@@ -2400,6 +2369,119 @@ fn prepare_upload_with_voice(
     })
 }
 
+
+/// WhatsApp counterpart of [`prepare_upload_with_voice`]'s data-collection half.
+///
+/// Only the collection step differs: the archive envelope is the same JSONL set, so batch
+/// creation, chunking, retry, coverage and the preview UI stay shared. WhatsApp media and
+/// voice are not packaged yet; a text label ("[图片] 报价.png") is uploaded instead, which
+/// keeps the transcript readable until attachment mapping lands.
+fn prepare_whatsapp_upload(
+    app_data: &Path,
+    account_id: &str,
+    space_id: &str,
+    base_url: &str,
+    usernames: &[String],
+    since: Option<i64>,
+    until: Option<i64>,
+    message_selection: &BTreeMap<String, Vec<settings::MessageRef>>,
+) -> Result<PreparedUpload, String> {
+    let unique: HashSet<&String> = usernames.iter().collect();
+    if unique.len() != usernames.len() {
+        return Err("会话列表包含重复项。".into());
+    }
+    if message_selection.keys().any(|name| !unique.contains(name)) {
+        return Err("消息选择包含未选择的会话。".into());
+    }
+    let selected = whatsapp::upload_conversations(app_data, usernames, since, until, message_selection)?;
+    let mut conversations = Vec::new();
+    let mut messages = Vec::new();
+    let mut parts = Vec::new();
+    let mut summary = Vec::new();
+    let mut latest_position: Option<(i64, i64)> = None;
+    let mut covered: BTreeMap<String, settings::SyncCursor> = BTreeMap::new();
+    for conversation in &selected {
+        let session = &conversation.session;
+        conversations.push(serde_json::json!({
+            "conversation_id": session.username,
+            "title": session.display,
+            "kind": if session.is_group { "group" } else { "direct" },
+            // The server uses this key to tell the user's own messages apart.
+            "self_sender_key": account_id,
+        }));
+        summary.push(UploadPreviewSession {
+            username: session.username.clone(),
+            display: session.display.clone(),
+            message_count: conversation.entries.len(),
+        });
+        if let Some((_, last)) = conversation.entries.last() {
+            covered.insert(
+                session.username.clone(),
+                settings::SyncCursor {
+                    time: last.time,
+                    local_id: last.local_id,
+                    boundary_count: Some(conversation.entries.iter().filter(|(_, item)| item.time == last.time).count()),
+                },
+            );
+        }
+        for (index, (message_key, message)) in conversation.entries.iter().enumerate() {
+            latest_position = Some(
+                latest_position.map_or((message.time, message.local_id), |current| {
+                    current.max((message.time, message.local_id))
+                }),
+            );
+            let sender_key = message
+                .sender
+                .clone()
+                .or_else(|| message.is_self.then(|| account_id.to_string()));
+            messages.push(serde_json::json!({
+                "conversation_id": session.username,
+                "message_key": message_key,
+                "source_message_id": message.local_id.to_string(),
+                "sender_key": sender_key,
+                "sender_name": message.sender_name,
+                "direction": if message.is_self { "outgoing" } else { "incoming" },
+                "occurred_at": chrono::DateTime::from_timestamp(message.time, 0).map(|value| value.to_rfc3339()),
+                "source_order": index as i64 + 1,
+                "record_kind": "message",
+                "source_fields": {"kind": message.kind},
+            }));
+            parts.push(serde_json::json!({
+                "conversation_id": session.username,
+                "message_key": message_key,
+                "part_key": "text-0",
+                "ordinal": 0,
+                "kind": "text",
+                "text": message.text,
+            }));
+        }
+    }
+    if messages.is_empty() {
+        return Err("所选会话在时间范围内没有可上传的消息。".into());
+    }
+    let fingerprint = upload_fingerprint(
+        &serde_json::json!({"account":account_id,"space":space_id,"base_url":base_url.trim_end_matches('/'),"since":since,"until":until,"conversations":conversations,"messages":messages,"parts":parts,"avatars":Vec::<serde_json::Value>::new(),"media_files":Vec::<serde_json::Value>::new()}),
+    );
+    let preview = UploadPreview {
+        fingerprint,
+        sessions: summary,
+        message_count: messages.len(),
+    };
+    Ok(PreparedUpload {
+        preview,
+        conversations,
+        messages,
+        parts,
+        avatars: Vec::new(),
+        avatar_files: Vec::new(),
+        media_files: Vec::new(),
+        voice_pending: BTreeMap::new(),
+        voice_processed: BTreeMap::new(),
+        latest_position,
+        covered,
+    })
+}
+
 fn validate_account_id(account_id: &str) -> Result<(), String> {
     let mut components = Path::new(account_id).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -2433,6 +2515,14 @@ fn validate_upload_scope(
 
 #[tauri::command]
 async fn wechat_collection_dates(app: AppHandle, account_id: String, usernames: Vec<String>) -> Result<BTreeMap<String, Vec<(String, usize)>>, String> {
+    if whatsapp::is_account(&account_id) {
+        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
+        if usernames.iter().any(|name| !allowed.contains(name)) { return Err("会话不在已选范围中。".into()); }
+        let data = app_data(&app);
+        return tauri::async_runtime::spawn_blocking(move || {
+            usernames.into_iter().map(|name| whatsapp::message_dates(&data, &name).map(|dates| (name, dates))).collect()
+        }).await.map_err(|e| format!("读取日期失败：{e}"))?;
+    }
     let allowed = allowed_usernames(&app, &account_id)?;
     if usernames.iter().any(|name| !allowed.contains(name)) { return Err("会话不在已选范围中。".into()); }
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
@@ -2442,6 +2532,12 @@ async fn wechat_collection_dates(app: AppHandle, account_id: String, usernames: 
 #[tauri::command]
 async fn wechat_catalog_dates(app: AppHandle, account_id: String, username: String) -> Result<Vec<(String, usize)>, String> {
     validate_account_id(&account_id)?;
+    if whatsapp::is_account(&account_id) {
+        let data = app_data(&app);
+        return tauri::async_runtime::spawn_blocking(move || whatsapp::message_dates(&data, &username))
+            .await
+            .map_err(|error| format!("读取日期失败：{error}"))?;
+    }
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     tauri::async_runtime::spawn_blocking(move || {
         if !query::is_chat_session(&cache, &username) { return Err("该会话不可用。".into()); }
@@ -2459,6 +2555,18 @@ async fn wechat_collection_messages(
 ) -> Result<Vec<MessageItem>, String> {
     if since.zip(until).is_some_and(|(start, end)| start >= end) {
         return Err("日期范围无效。".into());
+    }
+    if whatsapp::is_account(&account_id) {
+        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
+        if !allowed.contains(&username) {
+            return Err("该会话不在白名单中。".into());
+        }
+        let data = app_data(&app);
+        return tauri::async_runtime::spawn_blocking(move || {
+            whatsapp::messages_between(&data, &username, since, until, 5000)
+        })
+        .await
+        .map_err(|error| format!("读取消息失败：{error}"))?;
     }
     let allowed = allowed_usernames(&app, &account_id)?;
     if !allowed.contains(&username) {
@@ -2497,34 +2605,53 @@ async fn devify_upload_preview(
     if desktop_credentials::load(&data, &owner.base_url)?.access != token {
         return Err("登录状态已改变，请重新确认采集任务。".into());
     }
-    let cache = decrypt::cache_dir(&data, &account_id);
-    let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
     let base_url = owner.base_url.clone();
-    let voice_settings = latest.voice.clone();
-    let attachments = latest.backup.attachments.clone();
     let selection = message_selection.unwrap_or_default();
-    let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
     let data_for_prepare = data.clone();
-    let preview = tauri::async_runtime::spawn_blocking(move || {
-        prepare_upload_with_voice(
-            &data_for_prepare,
-            &cache,
-            &media_root,
-            &account_id,
-            &space_id,
-            &base_url,
-            &usernames,
-            since,
-            until,
-            &selection,
-            &voice_settings,
-            &attachments,
-            &legacy_keys,
-        )
-        .map(|prepared| prepared.preview)
-    })
-    .await
-    .map_err(|e| format!("读取上传预览失败：{e}"))??;
+    let whatsapp_source = whatsapp::is_account(&account_id);
+    let preview = if whatsapp_source {
+        tauri::async_runtime::spawn_blocking(move || {
+            prepare_whatsapp_upload(
+                &data_for_prepare,
+                &account_id,
+                &space_id,
+                &base_url,
+                &usernames,
+                since,
+                until,
+                &selection,
+            )
+            .map(|prepared| prepared.preview)
+        })
+        .await
+        .map_err(|e| format!("读取上传预览失败：{e}"))??
+    } else {
+        let cache = decrypt::cache_dir(&data, &account_id);
+        let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
+        let voice_settings = latest.voice.clone();
+        let attachments = latest.backup.attachments.clone();
+        let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
+        tauri::async_runtime::spawn_blocking(move || {
+            prepare_upload_with_voice(
+                &data_for_prepare,
+                &cache,
+                &media_root,
+                &account_id,
+                &space_id,
+                &base_url,
+                &usernames,
+                since,
+                until,
+                &selection,
+                &voice_settings,
+                &attachments,
+                &legacy_keys,
+            )
+            .map(|prepared| prepared.preview)
+        })
+        .await
+        .map_err(|e| format!("读取上传预览失败：{e}"))??
+    };
     validate_owner_state(&settings::load(&data)?, &owner, &token)?;
     if desktop_credentials::load(&data, &owner.base_url)?.access != token {
         return Err("登录状态已改变，请重新确认采集任务。".into());
@@ -2668,10 +2795,11 @@ async fn devify_upload_selected(
     }
     let message_selection = message_selection.unwrap_or_default();
     let (owner, owner_token) = verified_upload_identity(&app_data(&app), &account_id, &space_id).await?;
+    let whatsapp_source = whatsapp::is_account(&account_id);
+    let data = app_data(&app);
     let mut initial_baselines = BTreeMap::new();
     if initial_history.unwrap_or(false) {
         if !message_selection.is_empty() { return Err("首次历史上传请选择整段记录。".into()); }
-        let cache = decrypt::cache_dir(&app_data(&app), &account_id);
         for username in &usernames {
             if settings.sync.cursors_for_owner(&owner).is_some_and(|items| items.contains_key(username)) {
                 return Err("所选会话已有自动同步记录，不能重新设置首次范围。".into());
@@ -2679,17 +2807,39 @@ async fn devify_upload_selected(
             if settings.upload_queue.iter().any(|job| upload_job_in_sync_scope(job, &owner) && job.initial_baselines.contains_key(username)) {
                 return Err("所选会话已有尚未完成的首次历史上传，请先处理该任务。".into());
             }
-            let (time, local_id) = query::latest_position(&cache, username)?.ok_or("所选会话没有本地消息。")?;
-            let boundary_count = query::count_at_time(&cache, username, time)?;
+            let (time, local_id, boundary_count) = if whatsapp_source {
+                let (time, local_id) = whatsapp::latest_position(&data, username)?.ok_or("所选会话没有本地消息。")?;
+                (time, local_id, whatsapp::count_at_time(&data, username, time)?)
+            } else {
+                let cache = decrypt::cache_dir(&data, &account_id);
+                let (time, local_id) = query::latest_position(&cache, username)?.ok_or("所选会话没有本地消息。")?;
+                (time, local_id, query::count_at_time(&cache, username, time)?)
+            };
             initial_baselines.insert(username.clone(), settings::SyncCursor { time, local_id, boundary_count: Some(boundary_count) });
         }
     }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     let mut selected_refs = BTreeMap::new();
-    for username in &usernames {
-        let messages = collect_upload_messages(&cache, username, since, until, None)?;
-        let messages = filter_upload_messages(messages, message_selection.get(username).map(Vec::as_slice))?;
-        selected_refs.insert(username.clone(), messages.into_iter().map(|m| settings::MessageRef { local_id: m.local_id, time: m.time, source_shard: m.source_shard }).collect());
+    if whatsapp_source {
+        for username in &usernames {
+            let scope = message_selection
+                .get(username)
+                .map(|refs| BTreeMap::from([(username.clone(), refs.clone())]))
+                .unwrap_or_default();
+            let conversations = whatsapp::upload_conversations(&data, std::slice::from_ref(username), since, until, &scope)?;
+            let messages = conversations.into_iter().next().map(|item| item.entries).unwrap_or_default();
+            selected_refs.insert(username.clone(), messages.into_iter().map(|(_, message)| settings::MessageRef {
+                local_id: message.local_id,
+                time: message.time,
+                source_shard: message.source_shard,
+            }).collect());
+        }
+    } else {
+        let cache = decrypt::cache_dir(&data, &account_id);
+        for username in &usernames {
+            let messages = collect_upload_messages(&cache, username, since, until, None)?;
+            let messages = filter_upload_messages(messages, message_selection.get(username).map(Vec::as_slice))?;
+            selected_refs.insert(username.clone(), messages.into_iter().map(|m| settings::MessageRef { local_id: m.local_id, time: m.time, source_shard: m.source_shard }).collect());
+        }
     }
     let batches = manual_batch_plan(&selected_refs, SYNC_MESSAGES_PER_BATCH)?;
     if batches.len() > 1 {
@@ -2837,35 +2987,53 @@ async fn devify_upload_retry_preview(
     let _identity_guard = UPLOAD_IDENTITY_LOCK.read().await;
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
     let latest = settings::load(&data)?;
-    let cache = decrypt::cache_dir(&data, &job.account_id);
-    let voice_settings = latest.voice.clone();
-    let attachments = latest.backup.attachments.clone();
     let account_id = job.account_id.clone();
-    let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
-    let legacy_keys = load_legacy_upload_keys(&app, &job.space_id, &account_id, &scope.usernames, Some((&owner.base_url, &token))).await?;
     let data_for_prepare = data.clone();
     let scope_for_prepare = scope.clone();
     let space_id = job.space_id.clone();
-    let preview = tauri::async_runtime::spawn_blocking(move || {
-        prepare_upload_with_voice(
-            &data_for_prepare,
-            &cache,
-            &media_root,
-            &account_id,
-            &space_id,
-            &scope_for_prepare.base_url,
-            &scope_for_prepare.usernames,
-            scope_for_prepare.since,
-            scope_for_prepare.until,
-            &scope_for_prepare.message_selection,
-            &voice_settings,
-            &attachments,
-            &legacy_keys,
-        )
-        .map(|prepared| prepared.preview)
-    })
-    .await
-    .map_err(|e| format!("读取上传预览失败：{e}"))??;
+    let preview = if whatsapp::is_account(&account_id) {
+        tauri::async_runtime::spawn_blocking(move || {
+            prepare_whatsapp_upload(
+                &data_for_prepare,
+                &account_id,
+                &space_id,
+                &scope_for_prepare.base_url,
+                &scope_for_prepare.usernames,
+                scope_for_prepare.since,
+                scope_for_prepare.until,
+                &scope_for_prepare.message_selection,
+            )
+            .map(|prepared| prepared.preview)
+        })
+        .await
+        .map_err(|e| format!("读取上传预览失败：{e}"))??
+    } else {
+        let cache = decrypt::cache_dir(&data, &job.account_id);
+        let voice_settings = latest.voice.clone();
+        let attachments = latest.backup.attachments.clone();
+        let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
+        let legacy_keys = load_legacy_upload_keys(&app, &job.space_id, &account_id, &scope.usernames, Some((&owner.base_url, &token))).await?;
+        tauri::async_runtime::spawn_blocking(move || {
+            prepare_upload_with_voice(
+                &data_for_prepare,
+                &cache,
+                &media_root,
+                &account_id,
+                &space_id,
+                &scope_for_prepare.base_url,
+                &scope_for_prepare.usernames,
+                scope_for_prepare.since,
+                scope_for_prepare.until,
+                &scope_for_prepare.message_selection,
+                &voice_settings,
+                &attachments,
+                &legacy_keys,
+            )
+            .map(|prepared| prepared.preview)
+        })
+        .await
+        .map_err(|e| format!("读取上传预览失败：{e}"))??
+    };
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
     Ok(preview)
 }
@@ -3001,11 +3169,17 @@ fn validate_cloud_retry_context(
     Ok(())
 }
 
+/// The server stores the chat source on the batch; a WhatsApp upload must not be checked
+/// against a hard-coded `wechat`.
+fn expected_source_type(account_id: &str) -> &'static str {
+    if whatsapp::is_account(account_id) { "whatsapp" } else { "wechat" }
+}
+
 fn validate_remote_owner(owner: &settings::UploadOwner, batch_id: i64, batch: &serde_json::Value, key: Option<&str>) -> Result<(), String> {
     if batch_id <= 0 || batch.get("id").and_then(serde_json::Value::as_i64) != Some(batch_id)
         || batch.get("space_id").and_then(serde_json::Value::as_str) != Some(owner.space_id.as_str())
         || batch.get("uploaded_by_id").and_then(serde_json::Value::as_i64) != Some(owner.user_id)
-        || batch.get("source_type").and_then(serde_json::Value::as_str) != Some("wechat")
+        || batch.get("source_type").and_then(serde_json::Value::as_str) != Some(expected_source_type(&owner.account_id))
         || batch.get("source_account_id").and_then(serde_json::Value::as_str) != Some(owner.account_id.as_str())
         || batch.get("device_id").and_then(serde_json::Value::as_str) != Some(owner.device_id.as_str())
         || key.is_some_and(|expected| batch.get("idempotency_key").and_then(serde_json::Value::as_str) != Some(expected)) {
@@ -3024,7 +3198,7 @@ fn validate_cloud_retry_remote(
         || batch.get("id").and_then(serde_json::Value::as_i64) != Some(auth.batch_id)
         || batch.get("space_id").and_then(serde_json::Value::as_str) != Some(auth.space_id.as_str())
         || batch.get("uploaded_by_id").and_then(serde_json::Value::as_i64) != user_id
-        || batch.get("source_type").and_then(serde_json::Value::as_str) != Some("wechat")
+        || batch.get("source_type").and_then(serde_json::Value::as_str) != Some(expected_source_type(&auth.account_id))
         || batch.get("source_account_id").and_then(serde_json::Value::as_str) != Some(auth.account_id.as_str())
         || batch.get("device_id").and_then(serde_json::Value::as_str) != Some(auth.device_id.as_str())
         || batch.get("status").and_then(serde_json::Value::as_str) != Some("failed")
@@ -3205,10 +3379,13 @@ fn upload_create_body(
     device_id: &str,
     device_label: &str,
     platform: &str,
+    source_type: &str,
     trigger: UploadTrigger,
 ) -> serde_json::Value {
     serde_json::json!({
-        "source_type": "wechat",
+        // `source_type` is the chat source and must match the archive's `platform`;
+        // the batch's own `platform` stays the device platform (macOS/Windows).
+        "source_type": source_type,
         "trigger": trigger,
         "source_account_id": account_id,
         "idempotency_key": key,
@@ -3285,7 +3462,12 @@ async fn devify_upload_wechat(
     if usernames.is_empty() {
         return Err("请至少选择一个会话。".into());
     }
-    let allowed = allowed_usernames(&app, &account_id)?;
+    let whatsapp_source = whatsapp::is_account(&account_id);
+    let allowed = if whatsapp_source {
+        whatsapp_allowed_usernames(&app, &account_id)?
+    } else {
+        allowed_usernames(&app, &account_id)?
+    };
     if usernames.iter().any(|name| !allowed.contains(name)) {
         return Err("上传范围包含不在当前白名单中的会话。".into());
     }
@@ -3301,43 +3483,66 @@ async fn devify_upload_wechat(
         return Err("上传范围已改变，请重新创建采集任务。".into());
     }
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
-    let cache = decrypt::cache_dir(&data, &account_id);
     let base_url = expected_base_url
         .clone()
         .unwrap_or_else(|| current_settings.devify.base_url.clone());
     if !settings::same_service_url(&base_url, &current_settings.devify.base_url) {
         return Err("服务地址已更改，无法安全匹配旧消息。".into());
     }
-    let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
     let account_for_prepare = account_id.clone();
     let names_for_prepare = usernames.clone();
-    let voice_settings = current_settings.voice.clone();
-    let attachments = current_settings.backup.attachments.clone();
     let selection_for_prepare = message_selection.clone();
     let data_for_prepare = data.clone();
-    let cache_for_prepare = cache.clone();
-    let media_root_for_prepare = account_root(&account_id).unwrap_or_else(|_| cache.clone());
     let base_url_for_prepare = base_url.clone();
     let space_id_for_prepare = space_id.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_upload_with_voice(
-            &data_for_prepare,
-            &cache_for_prepare,
-            &media_root_for_prepare,
-            &account_for_prepare,
-            &space_id_for_prepare,
-            &base_url_for_prepare,
-            &names_for_prepare,
-            since,
-            until,
-            &selection_for_prepare,
-            &voice_settings,
-            &attachments,
-            &legacy_keys,
-        )
-    })
-    .await
-    .map_err(|e| format!("准备上传失败：{e}"))??;
+    let prepared = if whatsapp_source {
+        let account_wa = account_for_prepare.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            prepare_whatsapp_upload(
+                &data_for_prepare,
+                &account_wa,
+                &space_id_for_prepare,
+                &base_url_for_prepare,
+                &names_for_prepare,
+                since,
+                until,
+                &selection_for_prepare,
+            )
+        })
+        .await
+        .map_err(|e| format!("准备上传失败：{e}"))??
+    } else {
+        let cache = decrypt::cache_dir(&data, &account_id);
+        let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
+        let voice_settings = current_settings.voice.clone();
+        let attachments = current_settings.backup.attachments.clone();
+        let names = names_for_prepare.clone();
+        let base = base_url_for_prepare.clone();
+        let space = space_id_for_prepare.clone();
+        let selection = selection_for_prepare.clone();
+        let data_copy = data_for_prepare.clone();
+        let account_wechat = account_id.clone();
+        let media_root_for_prepare = account_root(&account_id).unwrap_or_else(|_| cache.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            prepare_upload_with_voice(
+                &data_copy,
+                &cache,
+                &media_root_for_prepare,
+                &account_wechat,
+                &space,
+                &base,
+                &names,
+                since,
+                until,
+                &selection,
+                &voice_settings,
+                &attachments,
+                &legacy_keys,
+            )
+        })
+        .await
+        .map_err(|e| format!("准备上传失败：{e}"))??
+    };
     validate_upload_batch_size(prepared.preview.message_count)?;
     verify_upload_preview(
         expected_fingerprint.as_deref(),
@@ -3361,9 +3566,13 @@ async fn devify_upload_wechat(
         voice_processed,
         ..
     } = prepared;
+    // The server rejects an archive whose `schema_version` does not match `platform`, so the
+    // source decides both. The JSONL layout itself is shared (conversations / messages /
+    // message_parts), which is why only the envelope label changes.
+    let source_platform = if whatsapp_source { "whatsapp" } else { "wechat" };
     let mut manifest = serde_json::json!({
-        "schema_version": "wechat.v1",
-        "platform": "wechat",
+        "schema_version": format!("{source_platform}.v1"),
+        "platform": source_platform,
         "source_namespace": account_id,
         "counts": { "conversations": conversations.len(), "messages": messages.len() },
         "scope": { "conversation_ids": usernames },
@@ -3408,7 +3617,13 @@ async fn devify_upload_wechat(
     }
     // The key must still identify the batch whose ownership was verified, before POST can
     // create anything. Otherwise a changed archive would silently create a new batch.
-    let key = format!("wechat-{}-{}", account_id, &package_key[..32]);
+    // The schema version is part of the key: an archive whose envelope was corrected must
+    // create a fresh batch instead of replaying the rejected one under the same key.
+    let key = if whatsapp_source {
+        format!("whatsapp.v1-{}-{}", account_id, &package_key[..32])
+    } else {
+        format!("wechat-{}-{}", account_id, &package_key[..32])
+    };
     if let Some(auth) = &cloud_retry {
         if auth.token != token || auth.user_id != owner.user_id || auth.device_id != owner.device_id {
             return Err("重试任务的登录用户或设备已改变。".into());
@@ -3460,6 +3675,7 @@ async fn devify_upload_wechat(
             &upload_device_id,
             &settings::resolved_device_label(&settings.devify),
             &upload_platform,
+            source_platform,
             trigger,
         ));
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
@@ -4714,6 +4930,23 @@ fn allowed_usernames(app: &AppHandle, account_id: &str) -> Result<HashSet<String
         .collect())
 }
 
+/// Whitelist for a WhatsApp account. Same policy shape as WeChat, separate connect switch.
+fn whatsapp_allowed_usernames(app: &AppHandle, account_id: &str) -> Result<HashSet<String>, String> {
+    validate_account_id(account_id)?;
+    let settings = settings::load(&app_data(app))?;
+    if !settings.connectors.whatsapp_enabled {
+        return Err("WhatsApp 已断开，已停止读取本机消息。".into());
+    }
+    Ok(settings
+        .chat
+        .allowed_usernames
+        .get(account_id)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect())
+}
+
 const DAILY_TOPIC_TITLE: &str = "微信工作日报";
 const DAILY_TOPIC_INSTRUCTION: &str =
     "根据已上传的微信聊天记录生成每日工作日报，汇总当天进展、待办和风险。";
@@ -5051,9 +5284,12 @@ async fn backup_tick(app: &AppHandle) {
     // otherwise a manual upload keeps its "not uploaded yet" badge forever.
     reconcile_upload_jobs(app).await;
     let Ok(value) = settings::load(&data) else { return; };
-    // A disconnected WeChat still gets its finished batches recorded, but nothing new is
-    // read from the local database or uploaded.
-    if !value.connectors.wechat_enabled {
+    // A disconnected source still gets its finished batches recorded, but nothing new is
+    // read from the local database or uploaded. WhatsApp has its own switch: its manual
+    // uploads must keep advancing even when WeChat itself is disconnected.
+    let whatsapp_source = whatsapp::is_account(&value.active_account_id);
+    let connected = if whatsapp_source { value.connectors.whatsapp_enabled } else { value.connectors.wechat_enabled };
+    if !connected {
         return;
     }
     if let Some(space) = value.devify.active_space_id.as_deref() {
@@ -5102,6 +5338,12 @@ async fn backup_tick(app: &AppHandle) {
                 }
             }
         }
+    }
+    // WhatsApp only supports manual upload from 导入管理. Its manual batches were handled
+    // above; the scheduled plan and the WeChat continuation queue must not run for it,
+    // otherwise every tick records a failure the user cannot act on.
+    if whatsapp_source {
+        return;
     }
     if !continuation_sessions(&value, &value.active_account_id).is_empty() {
         if entitlements::require(&data, &value.devify.base_url, capabilities::INGEST_UPLOAD).is_ok() && network::allow_upload(value.backup.wifi_only) {
@@ -5722,6 +5964,9 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
 async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_only: bool, scope_confirmation: Option<&str>) -> Result<ChatSyncSummary, String> {
     let data = app_data(app);
     let mut value = settings::load(&data)?;
+    if whatsapp::is_account(&value.active_account_id) {
+        return Err("WhatsApp 目前只支持在「导入管理」手动上传；自动备份尚未接入。".into());
+    }
     ensure_wechat_connected(app)?;
     if !manual && !value.sync.enabled {
         return Ok(ChatSyncSummary {
@@ -7397,6 +7642,73 @@ async fn wechat_scan() -> ScanResult {
     discover::scan()
 }
 
+#[derive(Serialize)]
+struct ChatAccount {
+    id: String,
+    /// `wechat` or `whatsapp` — the UI groups and labels by this instead of guessing.
+    source: String,
+    display: Option<String>,
+    modified_at: Option<u64>,
+}
+
+/// Every local source that currently has readable chat data, in one list.
+#[tauri::command]
+async fn chat_accounts() -> Vec<ChatAccount> {
+    let mut accounts = discover::scan()
+        .accounts
+        .into_iter()
+        .map(|account| ChatAccount {
+            id: account.id,
+            source: "wechat".into(),
+            display: None,
+            modified_at: account.modified_at,
+        })
+        .collect::<Vec<_>>();
+    if let Some(account) = whatsapp::account() {
+        if whatsapp::is_installed() {
+            let modified_at = whatsapp::data_dir()
+                .map(|dir| dir.join("ChatStorage.sqlite"))
+                .and_then(|path| std::fs::metadata(path).ok())
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|value| value.as_secs());
+            accounts.push(ChatAccount {
+                id: account.id,
+                source: "whatsapp".into(),
+                display: account.name.or_else(|| Some(account.phone)),
+                modified_at,
+            });
+        }
+    }
+    accounts
+}
+
+#[tauri::command]
+async fn whatsapp_status(app: AppHandle) -> whatsapp::Status {
+    let data = app_data(&app);
+    tauri::async_runtime::spawn_blocking(move || whatsapp::status(&data))
+        .await
+        .unwrap_or_else(|error| whatsapp::Status { error: Some(format!("读取 WhatsApp 状态失败：{error}")), ..Default::default() })
+}
+
+/// Remember which local account the chat page should show. The whitelist is per account,
+/// so switching source here is the only state the chat page needs to re-read.
+#[tauri::command]
+async fn chat_account_activate(app: AppHandle, account_id: String) -> Result<(), String> {
+    validate_account_id(&account_id)?;
+    let data = app_data(&app);
+    let available = discover::scan().accounts.iter().any(|account| account.id == account_id)
+        || whatsapp::account().is_some_and(|account| account.id == account_id);
+    if !available {
+        return Err("这个账号当前不可用，请重新检测本机聊天来源。".into());
+    }
+    settings::update(&data, |value| {
+        value.active_account_id = account_id.clone();
+        Ok(())
+    })
+    .map(|_| ())
+}
+
 #[tauri::command]
 async fn wechat_decrypt(
     app: AppHandle,
@@ -7729,6 +8041,16 @@ async fn wechat_voice_audio(
 #[tauri::command]
 async fn wechat_sessions(app: AppHandle, account_id: String) -> Result<Vec<SessionItem>, String> {
     validate_account_id(&account_id)?;
+    if whatsapp::is_account(&account_id) {
+        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
+        let data = app_data(&app);
+        return tauri::async_runtime::spawn_blocking(move || {
+            let list = whatsapp::sessions(&data)?;
+            Ok(list.into_iter().filter(|item| allowed.contains(&item.username)).collect())
+        })
+        .await
+        .map_err(|error| format!("读取 WhatsApp 会话失败：{error}"))?;
+    }
     let data = app_data(&app);
     // The session list is deliberately readable while disconnected: the chat screen still
     // renders its shell and the reconnect state, but no message content is returned.
@@ -8053,10 +8375,12 @@ async fn wechat_upload_state(
     usernames: Vec<String>,
 ) -> Result<Vec<SessionUploadState>, String> {
     validate_account_id(&account_id)?;
+    let whatsapp_source = whatsapp::is_account(&account_id);
     // Reconciliation runs in the scheduler; do not fan out its whole queue from a list read.
     let data = app_data(&app);
     let initial = settings::load(&data)?;
-    if !initial.connectors.wechat_enabled { return Ok(Vec::new()); }
+    let connected = if whatsapp_source { initial.connectors.whatsapp_enabled } else { initial.connectors.wechat_enabled };
+    if !connected { return Ok(Vec::new()); }
     let space_id = initial.devify.active_space_id.ok_or("请先选择 空间。")?;
     let (owner, token) = tokio::time::timeout(Duration::from_secs(5), verified_upload_identity(&data, &account_id, &space_id)).await
         .map_err(|_| "确认云端身份超时，请稍后重试。")??;
@@ -8064,7 +8388,11 @@ async fn wechat_upload_state(
     let deadline = tokio::time::Instant::now() + LEGACY_ADOPT_BUDGET;
     let _ = adopt_legacy_upload_history(&data, &owner, &token, deadline).await;
     let (value, uncertain, uncertain_all) = verified_coverage_settings(&data, &owner, &token).await?;
-    if !value.connectors.wechat_enabled { return Ok(Vec::new()); }
+    if whatsapp_source {
+        if !value.connectors.whatsapp_enabled { return Ok(Vec::new()); }
+    } else if !value.connectors.wechat_enabled {
+        return Ok(Vec::new());
+    }
     let allowed: HashSet<String> = value
         .chat
         .allowed_usernames
@@ -8087,17 +8415,31 @@ async fn wechat_upload_state(
     tauri::async_runtime::spawn_blocking(move || {
         let mut states = Vec::new();
         for username in requested {
-            // A conversation without a local table cannot say anything about new records;
-            // leaving it out keeps the client's last known badge instead of guessing.
-            let Ok(Some((time, local_id))) = query::latest_position(&cache, &username) else {
+            // A conversation without a local readable message cannot say anything about new
+            // records; leaving it out keeps the client's last known badge instead of guessing.
+            let position = if whatsapp_source {
+                whatsapp::latest_position(&data, &username)
+            } else {
+                query::latest_position(&cache, &username)
+            };
+            let Ok(Some((time, local_id))) = position else {
                 continue;
             };
+            let count_at = |time: i64| if whatsapp_source {
+                whatsapp::count_at_time(&data, &username, time)
+            } else {
+                query::count_at_time(&cache, &username, time)
+            };
+            let count_after = |time: i64, id: i64| if whatsapp_source {
+                whatsapp::count_after(&data, &username, time, id)
+            } else {
+                query::count_after(&cache, &username, time, id)
+            };
             let (state, new_messages) = match coverage.get(&username).copied() {
-                Some(position) if query::count_at_time(&cache, &username, time).ok().is_some_and(|count| position.covers_boundary((time, local_id), count)) => ("synced", 0),
+                Some(position) if count_at(time).ok().is_some_and(|count| position.covers_boundary((time, local_id), count)) => ("synced", 0),
                 Some(position) => (
                     "pending",
-                    query::count_after(&cache, &username, position.time, position.local_id)
-                        .unwrap_or(0).max(1),
+                    count_after(position.time, position.local_id).unwrap_or(0).max(1),
                 ),
                 None => ("local", 0),
             };
@@ -8130,6 +8472,14 @@ struct WechatAccountProfile {
 
 #[tauri::command]
 async fn wechat_account_profile(app: AppHandle, account_id: String) -> Option<WechatAccountProfile> {
+    if whatsapp::is_account(&account_id) {
+        let account = whatsapp::account()?;
+        return Some(WechatAccountProfile {
+            nickname: account.name.or_else(|| Some(account.phone)),
+            alias: Some(account.id),
+            avatar: None,
+        });
+    }
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     let profile = query::account_profile(&cache, &account_id)?;
     let avatar = wechat::avatar::avatars(&cache, &[profile.username]).into_iter().next().map(|item| item.data_url);
@@ -8144,6 +8494,9 @@ async fn wechat_avatars(
     account_id: String,
     usernames: Vec<String>,
 ) -> Vec<AvatarItem> {
+    if whatsapp::is_account(&account_id) {
+        return Vec::new();
+    }
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     wechat::avatar::avatars(&cache, &usernames)
         .into_iter()
@@ -8159,6 +8512,13 @@ async fn wechat_session_catalog(
     app: AppHandle,
     account_id: String,
 ) -> Result<Vec<SessionItem>, String> {
+    if whatsapp::is_account(&account_id) {
+        validate_account_id(&account_id)?;
+        let data = app_data(&app);
+        return tauri::async_runtime::spawn_blocking(move || whatsapp::sessions(&data))
+            .await
+            .map_err(|error| format!("读取 WhatsApp 会话失败：{error}"))?;
+    }
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     query::sessions(&cache)
 }
@@ -8173,6 +8533,22 @@ async fn wechat_messages(
     before_id: Option<i64>,
     before_shard: Option<String>,
 ) -> Result<Vec<MessageItem>, String> {
+    if whatsapp::is_account(&account_id) {
+        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
+        if !allowed.contains(&username) {
+            return Err("该会话不在当前策略白名单中。".into());
+        }
+        let cursor = before.map(|time| match before_id {
+            Some(id) => query::MessageCursor { time, local_id: id, source_shard: before_shard.unwrap_or_default() },
+            None => query::MessageCursor::before_time(time),
+        });
+        let data = app_data(&app);
+        return tauri::async_runtime::spawn_blocking(move || {
+            whatsapp::messages(&data, &username, limit.unwrap_or(100), cursor)
+        })
+        .await
+        .map_err(|error| format!("读取 WhatsApp 消息失败：{error}"))?;
+    }
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     if !query::is_chat_session(&cache, &username) {
         return Err("公众号、服务号和系统会话不在查看范围内。".into());
@@ -8203,6 +8579,20 @@ async fn wechat_search(
     groups_only: Option<bool>,
     max_sessions: Option<usize>,
 ) -> Result<SearchReport, String> {
+    if whatsapp::is_account(&account_id) {
+        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
+        let data = app_data(&app);
+        return tauri::async_runtime::spawn_blocking(move || {
+            let mut report = whatsapp::search(&data, &keyword, max_sessions.unwrap_or(200), Some(&allowed))?;
+            // Rust enforces the whitelist even though the search only ever returns names.
+            report.hits.retain(|hit| allowed.contains(&hit.username));
+            if !groups_only.unwrap_or(false) { return Ok(report); }
+            report.hits.retain(|hit| hit.is_group);
+            Ok(report)
+        })
+        .await
+        .map_err(|error| format!("搜索失败：{error}"))?;
+    }
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
     let allowed = allowed_usernames(&app, &account_id)?;
     query::search_filtered(
@@ -8387,7 +8777,13 @@ async fn agent_summarize(
     if value.agent.provider_id.trim().is_empty() {
         return Err("尚未在「Agent 总结」页面选择本地 Agent。".into());
     }
-    let allowed = allowed_usernames(&app, &account_id)?;
+    // Each source has its own connect switch, so a WhatsApp summary must not be refused
+    // just because WeChat happens to be disconnected.
+    let allowed = if whatsapp::is_account(&account_id) {
+        whatsapp_allowed_usernames(&app, &account_id)?
+    } else {
+        allowed_usernames(&app, &account_id)?
+    };
     if usernames.iter().any(|username| !allowed.contains(username)) {
         return Err("总结内容包含不在当前策略白名单中的会话。".into());
     }
@@ -8542,7 +8938,6 @@ pub fn run() {
             devify_question_detail,
             devify_question_ask,
             devify_note_detail,
-            devify_space_takeover,
             wechat_collection_messages,
             wechat_collection_dates,
             wechat_catalog_dates,
@@ -8557,6 +8952,9 @@ pub fn run() {
             app_settings_get,
             app_settings_save,
             wechat_scan,
+            chat_accounts,
+            whatsapp_status,
+            chat_account_activate,
             wechat_platform_capabilities,
             wechat_windows_key_scan,
             wechat_key_status,
@@ -8813,11 +9211,15 @@ mod upload_list_tests {
         assert_eq!(sync_upload_trigger(true, true, Some(false)), UploadTrigger::Scheduled);
         assert_eq!(sync_upload_trigger(true, true, None), UploadTrigger::Unknown);
         for (trigger, expected) in [(UploadTrigger::Manual, "manual"), (UploadTrigger::Scheduled, "scheduled"), (UploadTrigger::Unknown, "unknown")] {
-            let body = upload_create_body("account", "key", "device", "label", "mac", trigger);
+            let body = upload_create_body("account", "key", "device", "label", "mac", "wechat", trigger);
             assert_eq!(body["trigger"], expected);
             assert_eq!(body["source_type"], "wechat");
+            assert_eq!(body["platform"], "mac");
             assert_eq!(body["idempotency_key"], "key");
         }
+        let whatsapp = upload_create_body("8615652425800@s.whatsapp.net", "key", "device", "label", "macos", "whatsapp", UploadTrigger::Manual);
+        assert_eq!(whatsapp["source_type"], "whatsapp");
+        assert_eq!(whatsapp["platform"], "macos");
         let legacy: settings::ContinuationScope = serde_json::from_value(serde_json::json!({"space_id": "1", "base_url": "https://example.test"})).unwrap();
         assert_eq!(legacy.manual, None);
         let legacy_job: settings::UploadJob = serde_json::from_value(serde_json::json!({"id": "old"})).unwrap();
@@ -9155,6 +9557,113 @@ mod key_flow_tests {
         assert!(first["upload_item_path"].is_string());
         let second = result.parts.iter().find(|p| p["kind"] == "image" && p["message_key"] == "srv:202").unwrap();
         assert_eq!(second["binding_state"], "missing");
+    }
+
+
+    /// The WhatsApp prepare step must produce the same envelope the WeChat one does: one
+    /// conversation record, one message per row with a stable key, and a coverage cursor.
+    #[test]
+    fn whatsapp_prepare_builds_the_shared_archive_envelope() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("ChatStorage.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&source).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE ZWACHATSESSION (Z_PK INTEGER PRIMARY KEY, ZCONTACTJID VARCHAR, ZPARTNERNAME VARCHAR,
+                    ZLASTMESSAGEDATE TIMESTAMP, ZLASTMESSAGETEXT VARCHAR, ZUNREADCOUNT INTEGER);
+                CREATE TABLE ZWAMESSAGE (Z_PK INTEGER PRIMARY KEY, ZCHATSESSION INTEGER, ZISFROMME INTEGER,
+                    ZMESSAGETYPE INTEGER, ZMESSAGEDATE TIMESTAMP, ZFROMJID VARCHAR, ZTEXT VARCHAR, ZMEDIAITEM INTEGER,
+                    ZSTANZAID VARCHAR, ZGROUPEVENTTYPE INTEGER);
+                CREATE TABLE ZWAGROUPMEMBER (ZCHATSESSION INTEGER, ZMEMBERJID VARCHAR, ZCONTACTNAME VARCHAR,
+                    ZFIRSTNAME VARCHAR, ZISACTIVE INTEGER);
+                CREATE TABLE ZWAPROFILEPUSHNAME (ZJID VARCHAR, ZPUSHNAME VARCHAR);
+                CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZTITLE VARCHAR, ZVCARDNAME VARCHAR,
+                    ZLATITUDE FLOAT, ZLONGITUDE FLOAT);
+                INSERT INTO ZWACHATSESSION VALUES (1, '120363000000000001@g.us', '项目群', 816590732, NULL, 0);
+                INSERT INTO ZWAMESSAGE VALUES (1, 1, 0, 0, 816590670, '8613800000000@s.whatsapp.net', '你好', NULL, 'STANZA-A', 0);
+                INSERT INTO ZWAMESSAGE VALUES (2, 1, 1, 1, 816590671, '8615652425800@s.whatsapp.net', '看这个', 1, 'STANZA-B', 0);
+                INSERT INTO ZWAMESSAGE VALUES (3, 1, 0, 10, 816590672, '8613800000000@s.whatsapp.net', NULL, NULL, 'STANZA-C', 0);
+                INSERT INTO ZWAGROUPMEMBER VALUES (1, '8613800000000@s.whatsapp.net', '', '', 1);
+                "#,
+            )
+            .unwrap();
+        }
+        std::env::set_var("WECHATIFY_WHATSAPP_DB", &source);
+        let app_data = root.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let account = "8615652425800@s.whatsapp.net";
+        let prepared = prepare_whatsapp_upload(
+            &app_data,
+            account,
+            "space-1",
+            "https://example.test",
+            &["120363000000000001@g.us".to_string()],
+            None,
+            None,
+            &BTreeMap::new(),
+        );
+        std::env::remove_var("WECHATIFY_WHATSAPP_DB");
+        let prepared = prepared.unwrap();
+        assert_eq!(prepared.conversations.len(), 1);
+        assert_eq!(prepared.conversations[0]["kind"], "group");
+        assert_eq!(prepared.conversations[0]["self_sender_key"], account);
+        // The empty type-10 row is not uploadable; the image keeps its label as text.
+        assert_eq!(prepared.messages.len(), 2);
+        assert_eq!(prepared.messages[0]["message_key"], "srv:STANZA-A");
+        assert_eq!(prepared.messages[0]["direction"], "incoming");
+        assert_eq!(prepared.messages[1]["direction"], "outgoing");
+        assert_eq!(prepared.messages[1]["message_key"], "srv:STANZA-B");
+        assert_eq!(prepared.parts[1]["text"], "[图片]");
+        assert_eq!(prepared.preview.message_count, 2);
+        assert_eq!(prepared.preview.fingerprint.len(), 64);
+        let covered = prepared.covered.get("120363000000000001@g.us").unwrap();
+        assert_eq!(covered.local_id, 2);
+        assert_eq!(covered.boundary_count, Some(1));
+        assert_eq!(prepared.latest_position, Some((1794897871, 2)));
+    }
+
+    #[test]
+    fn whatsapp_upload_filters_by_message_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("ChatStorage.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&source).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE ZWACHATSESSION (Z_PK INTEGER PRIMARY KEY, ZCONTACTJID VARCHAR, ZPARTNERNAME VARCHAR,
+                    ZLASTMESSAGEDATE TIMESTAMP, ZLASTMESSAGETEXT VARCHAR, ZUNREADCOUNT INTEGER);
+                CREATE TABLE ZWAMESSAGE (Z_PK INTEGER PRIMARY KEY, ZCHATSESSION INTEGER, ZISFROMME INTEGER,
+                    ZMESSAGETYPE INTEGER, ZMESSAGEDATE TIMESTAMP, ZFROMJID VARCHAR, ZTEXT VARCHAR, ZMEDIAITEM INTEGER,
+                    ZSTANZAID VARCHAR);
+                INSERT INTO ZWACHATSESSION VALUES (1, '8613800000000@s.whatsapp.net', '张杭', 816590671, NULL, 0);
+                INSERT INTO ZWAMESSAGE VALUES (1, 1, 0, 0, 816590670, '8613800000000@s.whatsapp.net', '一', NULL, 'A');
+                INSERT INTO ZWAMESSAGE VALUES (2, 1, 0, 0, 816590671, '8613800000000@s.whatsapp.net', '二', NULL, 'B');
+                "#,
+            )
+            .unwrap();
+        }
+        std::env::set_var("WECHATIFY_WHATSAPP_DB", &source);
+        let app_data = root.path().join("app-data");
+        std::fs::create_dir_all(&app_data).unwrap();
+        let selection = BTreeMap::from([(
+            "8613800000000@s.whatsapp.net".to_string(),
+            vec![settings::MessageRef { local_id: 2, time: 1794897871, source_shard: "whatsapp".into() }],
+        )]);
+        let prepared = prepare_whatsapp_upload(
+            &app_data,
+            "8615652425800@s.whatsapp.net",
+            "space-1",
+            "https://example.test",
+            &["8613800000000@s.whatsapp.net".to_string()],
+            None,
+            None,
+            &selection,
+        );
+        std::env::remove_var("WECHATIFY_WHATSAPP_DB");
+        let prepared = prepared.unwrap();
+        assert_eq!(prepared.messages.len(), 1);
+        assert_eq!(prepared.parts[0]["text"], "二");
     }
 
     #[test]
@@ -9750,8 +10259,6 @@ mod space_tests {
             kind: kind.into(),
             status: "active".into(),
             role: None,
-            is_global_admin: false,
-            admin_takeover_active: false,
         }
     }
 

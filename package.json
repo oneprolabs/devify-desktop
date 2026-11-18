@@ -1,12 +1,13 @@
 {
   "name": "wechat-devify-bridge",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "preview:menu": "vite --open /scripts/navigation-preview.html",
     "stage:wxq": "node scripts/stage-wxq.mjs --prepare && cargo build --release --bin wxq --features aux-binaries --manifest-path src-tauri/Cargo.toml && node scripts/stage-wxq.mjs",
     "tauri": "tauri"
   },

@@ -41,3 +41,28 @@ export const detectTitle: Record<DetectState, string> = {
   unsupported: '当前系统暂不支持',
   not_required: '无需检测',
 };
+
+/** Same wording for another source; `detectTitle` stays the WeChat table used by the wizard. */
+export function detectTitleFor(label: string, state: DetectState): string {
+  return ({
+    installed: `已检测到${label}`,
+    not_installed: `未检测到${label}`,
+    untrusted: `检测到的${label}不是官方版本`,
+    unsupported: '当前系统暂不支持',
+    not_required: '无需检测',
+  } as Record<DetectState, string>)[state];
+}
+
+export type ChatAccount = {
+  id: string;
+  source?: 'wechat' | 'whatsapp' | string;
+  display?: string | null;
+  modified_at?: number | null;
+  encrypted_count?: number | null;
+};
+
+/** Newest active account first; the remembered one wins when it is still present. */
+export function currentAccount<T extends { id: string; modified_at?: number | null }>(accounts: T[], remembered?: string | null): T | undefined {
+  return accounts.find(account => account.id === remembered)
+    ?? [...accounts].sort((a, b) => (b.modified_at ?? 0) - (a.modified_at ?? 0))[0];
+}
