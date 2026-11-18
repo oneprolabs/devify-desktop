@@ -1,7 +1,6 @@
 import { t, tf, ctf } from './locale';
 import { RailIcons } from './icons';
 import brandMark from './assets/app-mark-transparent.png';
-import { version } from '../src-tauri/tauri.conf.json';
 
 const avatarColors = ['#7c4d80', '#3f6b8f', '#3f766b', '#8a5b42', '#5869a6', '#8a4764', '#72703e', '#486d92'];
 
@@ -50,6 +49,6 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
     <nav className="prototype-nav" aria-label={t("工作区")}>{primaryItems.map(navButton)}</nav>
     <div className="prototype-spacer" />
     <nav className="prototype-nav" aria-label={t("应用")}>{utilityItems.map(navButton)}</nav>
-    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" /><small className="prototype-rail-version" aria-label={tf("版本 {0}", version)}>v{version}</small>{updateVersion && <button type="button" className="prototype-rail-update" onClick={onUpdate} title={tf("发现新版本 {0}，查看更新", updateVersion)}>{updateVersion}</button>}</div>}
+    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" />{updateVersion && <button type="button" className="prototype-rail-update" onClick={onUpdate} title={tf("发现新版本 {0}，查看更新", updateVersion)}>{updateVersion}</button>}</div>}
   </aside>;
 }
