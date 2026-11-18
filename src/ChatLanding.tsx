@@ -12,7 +12,6 @@ type Connector = { name: string; description: string };
 const connectors: Connector[] = [
   { name: '微信', description: '读取本机微信聊天记录，也可以导入 JSON 文件' },
   { name: 'WhatsApp', description: '读取本机 WhatsApp 聊天记录，无需密钥' },
-  { name: '邮件', description: '用只读授权连接 Gmail、Outlook 或 IMAP 邮箱' },
 ];
 
 function steps(mode: HomeMode, source: string, sessions = 0, syncIntervalSeconds = 1800): Step[] {
@@ -63,7 +62,7 @@ export function ChatLanding({ mode, source = '微信', sessionCount, syncInterva
               </p>}
             </div>
             {isWhatsApp
-              ? <button type="button" className="chat-landing-primary" onClick={onConnectWhatsApp} disabled={!detect.usable && isTauri()}>{detect.usable ? '打开聊天' : '查看连接器'}</button>
+              ? <button type="button" className="chat-landing-primary" onClick={onConnectWhatsApp}>打开连接向导</button>
               : <button type="button" className="chat-landing-primary" onClick={() => onConnect(connector.name)} disabled={isWechat && !detect.usable && isTauri()}>{isWechat ? '打开连接向导' : '查看连接器'}</button>}
           </article>;
         })}
@@ -83,14 +82,14 @@ export function ChatLanding({ mode, source = '微信', sessionCount, syncInterva
   </div>;
 }
 
-export function ChatEntry({ onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule, onReady, onUnlock }: { onConnect: (connector?: string) => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void; onReady: (source: string) => void; onUnlock: () => void }) {
+export function ChatEntry({ visible = true, onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule, onReady, onUnlock }: { visible?: boolean; onConnect: (connector?: string) => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void; onReady: (source: string) => void; onUnlock: () => void }) {
   const [mode, setMode] = useState<HomeMode | null>(isTauri() ? null : 'new');
   const [source, setSource] = useState('微信');
   const [syncIntervalSeconds, setSyncIntervalSeconds] = useState(1800);
   const [sessionCount, setSessionCount] = useState(0);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri() || !visible) return;
     let active = true;
     void (async () => {
       try {
@@ -126,7 +125,7 @@ export function ChatEntry({ onConnect, onConnectWhatsApp, onImport, onBackup, on
       }
     })();
     return () => { active = false; };
-  }, [onReady, onUnlock]);
+  }, [visible, onReady, onUnlock]);
 
   if (!mode) return <div className="chat-landing chat-landing-checking"><div className="chat-landing-checking-card"><span className="chat-landing-checking-dot" /><p>正在检查本地聊天数据…</p></div></div>;
   return <ChatLanding mode={mode} source={source} sessionCount={sessionCount} syncIntervalSeconds={syncIntervalSeconds} onConnect={onConnect} onConnectWhatsApp={onConnectWhatsApp} onImport={onImport} onBackup={onBackup} onSchedule={onSchedule} />;

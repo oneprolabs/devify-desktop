@@ -4,6 +4,8 @@ import { desktopInvoke as invoke } from './desktopInvoke';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import WeChatLocal from './WeChatLocal';
+import { WhatsAppWizard } from './WhatsAppWizard';
+import { WeChatWizardComplete } from './WeChatWizardComplete';
 import { AgentHub } from './AgentHub';
 import { About, UpdatePanel } from './About';
 import { checkForUpdates, useUpdater } from './updater';
@@ -34,8 +36,9 @@ import './prototype-shell.css';
 import './reference-theme.css';
 import './desktop-visual-refresh.css';
 import './navigation-rail.css';
+import './connectors.css';
+import './wechat-wizard.css';
 import brandMark from './assets/app-mark-transparent.png';
-import wechatLogo from './assets/connectors/wechat.svg';
 
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'feedback' | 'about';
 
@@ -223,9 +226,9 @@ export default function PrototypeShell() {
       const connectors = (current.connectors ?? {}) as Record<string, unknown>;
       const sync = (current.sync ?? {}) as Record<string, unknown>;
       await invoke('app_settings_save', { value: { ...current, connectors: { ...connectors, wechat_enabled: true }, ...(skipBackup ? { sync: { ...sync, enabled: false } } : {}) } });
-      setWechatGuide(false);
+      if (skipBackup) setWechatGuide(false);
       if (skipBackup) { setFirstBackupStep('none'); setChatReady(true); setSection('chat'); }
-      else { setFirstBackupStep('select'); setSettingsPage('imports'); }
+      else { setWizard('wizard-sessions'); }
     } catch (error) { setConnectionFinishError(`无法启用微信连接：${String(error)}`); }
     finally { setConnectionFinishing(false); }
   };
@@ -258,34 +261,32 @@ export default function PrototypeShell() {
     void refreshEntitlements();
   }, [authState]);
   const handleChatReady = useCallback((source: string) => { setChatSource(source); setChatReady(true); }, []);
-  // WhatsApp has no key step: activate the local account, then remount the chat page so it
-  // re-reads sessions for the new source instead of keeping WeChat state.
-  const openWhatsApp = useCallback(async () => {
-    try {
-      const status = await invoke<{ account?: string | null }>('whatsapp_status');
-      if (status?.account) await invoke('chat_account_activate', { accountId: status.account });
-    } catch { /* the connectors page already shows the read error */ }
-    setSection('chat');
-    setChatReady(false);
-    setChatKey(value => value + 1);
-  }, []);
   // Agent 集成 (local summaries plus the access kit) is reserved for internal accounts, so both
   // of its settings pages disappear with the entitlement instead of showing an empty shell.
   const { internal: internalAccount } = useInternalAccount();
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('connectors');
   const [wechatGuide, setWechatGuide] = useState(false);
+  const [whatsappGuide, setWhatsappGuide] = useState(false);
   const [wechatGuideEdit, setWechatGuideEdit] = useState(false);
   const [wizardStep, setWizardStep] = useState('wizard-method');
-  const wechatInstall = useConnectorDetect('wechat');
+  const [wizardManual, setWizardManual] = useState(false);
+  const wechatInstall = useConnectorDetect('wechat', { refreshOnFocus: !(section === 'settings' && settingsPage === 'connectors' && (wechatGuide || whatsappGuide)) });
+  useEffect(() => {
+    if (section === 'settings' && settingsPage === 'connectors' && wechatGuide && wizardStep === 'wizard-permission') {
+      void wechatInstall.recheck();
+    }
+  }, [section, settingsPage, wechatGuide, wizardStep, wechatInstall.recheck]);
   const wizardBlocked = !wechatInstall.checking && !wechatInstall.usable;
-  const wizardOrder = ['wizard-method', 'wizard-permission', 'wizard-account', 'wizard-key', 'wizard-import', 'wx-connect-decrypt', 'wizard-done'];
-  const settingsNav = (wechatGuide ? wizardSettingsPages : settingsPages)
+  const wizardOrder = ['wizard-method', 'wizard-permission', 'wizard-connect', 'wizard-sessions', 'wizard-backup', 'wizard-done'];
+  const settingsNav = (wechatGuide || whatsappGuide ? wizardSettingsPages : settingsPages)
     .filter(item => internalAccount || (item.id !== 'agent' && item.id !== 'history'));
-  const openSettings = (page: SettingsPage, guide = false, edit = guide) => { setSettingsPage(page); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardStep('wizard-method'); setSection('settings'); };
+  const openSettings = (page: SettingsPage, guide = false, edit = guide) => { setSettingsPage(page); setWhatsappGuide(false); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); };
+  const handleChatUnlock = useCallback(() => { setSettingsPage('connectors'); setWhatsappGuide(false); setWechatGuide(true); setWechatGuideEdit(true); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
+  const openWhatsApp = () => { setSettingsPage('connectors'); setWechatGuide(false); setWhatsappGuide(true); setSection('settings'); };
+  const finishWhatsApp = () => { setWhatsappGuide(false); setChatReady(false); setChatSource('whatsapp'); setChatKey(value => value + 1); setSection('chat'); };
   const setWizard = (step: string) => {
     setWizardStep(step);
-    const target = step === 'wizard-permission' || step === 'wizard-account' ? 'wx-connect-account' : step === 'wizard-key' || step === 'wizard-import' ? 'wx-connect-key' : step === 'wx-connect-decrypt' ? 'wx-connect-decrypt' : step;
-    window.requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    window.requestAnimationFrame(() => document.querySelector('.prototype-settings-content')?.scrollTo({ top: 0, behavior: 'smooth' }));
   };
   const wizardPrev = () => { const index = wizardOrder.indexOf(wizardStep); if (index > 0) setWizard(wizardOrder[index - 1]); };
   const wizardNext = () => { const index = wizardOrder.indexOf(wizardStep); if (index >= 0 && index < wizardOrder.length - 1) setWizard(wizardOrder[index + 1]); };
@@ -306,9 +307,9 @@ export default function PrototypeShell() {
       {authState === 'unavailable' && <div className="auth-gate">
         <div className="auth-gate-card">
           <span className="auth-gate-mark"><img src={brandMark} alt=""/></span>
-          <h1>服务端暂不可用</h1>
+          <h1>暂时无法验证登录</h1>
           <p>{authError || '服务端暂不可用，请稍后重试。'}</p>
-          <p className="auth-gate-hint">已保存的登录状态不会丢失，服务恢复后点「重试」即可。</p>
+          <p className="auth-gate-hint">已保存的登录状态会保留，请根据上方提示处理后重试。</p>
           <button type="button" className="auth-gate-primary" onClick={checkAuth}>重试</button>
           <button type="button" className="auth-gate-secondary" onClick={() => { setAuthNotice(''); setAuthState('anonymous'); }}>返回登录</button>
           <button type="button" className="auth-gate-secondary" onClick={() => requestFeedback('login', 'login')}>反馈此问题</button>
@@ -320,13 +321,14 @@ export default function PrototypeShell() {
         {chatReady && chatSource !== 'whatsapp' && !wechatInstall.checking && !wechatInstall.usable && wechatInstall.detect && <div className="chat-install-banner" role="status"><span className="connector-install-icon" aria-hidden="true">!</span><span><strong>{detectTitle[wechatInstall.detect.state]}，已停止读取新消息。</strong>已有记录仍可查看，重新安装后到「设置 › 连接器」点「重新检查」。</span><button type="button" onClick={() => openSettings('connectors')}>去检查</button></div>}
         {!chatReady && firstBackupStep !== 'confirm' && <ChatEntry
           key={`entry-${chatKey}`}
+          visible={section === 'chat'}
           onConnect={(connector) => connector && connector !== '微信' ? openSettings('connectors') : openSettings('connectors', true, false)}
           onConnectWhatsApp={() => void openWhatsApp()}
           onImport={() => { setFirstBackupStep('select'); openSettings('imports'); }}
           onBackup={openNewUpload}
           onSchedule={() => openSettings('backup')}
           onReady={handleChatReady}
-          onUnlock={() => openSettings('connectors', true, true)}
+          onUnlock={handleChatUnlock}
         />}
         {firstBackupStep === 'confirm' && <div className="chat-landing"><div className="chat-landing-inner first-backup-inner">
           <header className="chat-landing-head"><p className="chat-landing-eyebrow">首次备份　·　最后一步</p><h1>准备好首次备份</h1><p>设置已保存，确认后就可以开始备份聊天记录。</p></header>
@@ -348,23 +350,31 @@ export default function PrototypeShell() {
             const divider = !wechatGuide && item.group === 'local' && list[index - 1]?.group === 'main';
             return <Fragment key={item.id}>
               {divider && <div className="prototype-settings-divider" aria-hidden="true"/>}
-              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { setSettingsPage(item.id); setWechatGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}><span className="settings-nav-icon">{settingsIcons[item.id]}</span>{item.label}</button>
+              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { setSettingsPage(item.id); setWechatGuide(false); setWhatsappGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}><span className="settings-nav-icon">{settingsIcons[item.id]}</span>{item.label}</button>
             </Fragment>;
           })}
         </aside>
         <div className="prototype-settings-content">
-          {settingsPage === 'connectors' && (wechatGuide ? <div className="wechat-wizard">
+          {settingsPage === 'connectors' && (whatsappGuide ? <WhatsAppWizard onBack={() => setWhatsappGuide(false)} onOpenChat={finishWhatsApp} /> : wechatGuide ? <div className="wechat-wizard">
             <button type="button" className="connector-back" onClick={() => setWechatGuide(false)}>← 返回连接器</button>
-            <header className="wizard-connector-head"><span className="connector-mark green"><img src={wechatLogo} alt="" /></span><div><strong>{wechatGuideEdit ? '重新配置' : '连接向导'}</strong><h2>微信</h2><p>读取本机数据库，只读，不改动微信</p></div></header>
+            <header className="wizard-connector-head"><span className="wizard-connector-mark" aria-hidden="true">微</span><div><strong>{wechatGuideEdit ? '重新配置' : '连接向导'}</strong><h2>微信</h2><p>读取本机数据库，只读，不改动微信</p></div></header>
             <nav className="wizard-stepper" aria-label="微信连接向导">{[
-              ['wizard-method','接入方式'], ['wizard-permission','系统授权'], ['wizard-account','账号扫描'], ['wizard-key','获取密钥'], ['wizard-import','导入校验'], ['wx-connect-decrypt','解密记录'], ['wizard-done','完成'],
+              ['wizard-method','接入方式'], ['wizard-permission','系统检查'], ['wizard-connect','连接微信'], ['wizard-sessions','选择会话'], ['wizard-backup','备份周期'], ['wizard-done','完成'],
             ].map(([id,label], index) => { const current = wizardOrder.indexOf(wizardStep); const complete = index < current; return <button key={id} type="button" className={`${wizardStep === id ? 'active ' : ''}${complete ? 'complete' : ''}`} aria-current={wizardStep === id ? 'step' : undefined} onClick={() => setWizard(id)} disabled={index > current || wizardBlocked}><span>{complete ? Icons.check : index + 1}</span>{label}</button>; })}</nav>
             {wizardStep === 'wizard-method' && (
-            <section id="wizard-method" className="wizard-method"><div><h2>选择接入方式</h2><p>微信的数据库是加密的。两种方式都只读，不会改动微信，也不需要你的微信密码。</p></div>{wizardBlocked && wechatInstall.detect && <div className="wizard-install-block" role="alert"><span className="connector-install-icon" aria-hidden="true">!</span><div><strong>{detectTitle[wechatInstall.detect.state]}，暂时无法继续</strong><p>{wechatInstall.detect.message}</p><div className="wizard-install-actions"><button type="button" className="connector-quiet" onClick={() => void wechatInstall.recheck()} disabled={wechatInstall.checking}>重新检测</button>{wechatInstall.detect.state === 'not_installed' && <a className="connector-link" href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">前往下载微信 ↗</a>}</div></div></div>}{!wizardBlocked && wechatInstall.detect?.version && <p className="wizard-install-ok"><span className="good" />已检测到微信 {wechatInstall.detect.version} · 官方签名</p>}<div className="wizard-method-options"><button type="button" className="wizard-method-option selected" disabled={wizardBlocked} onClick={() => setWizard('wizard-permission')}><strong>自动读取本机数据库 <em>推荐</em></strong><span>持续读取本机数据库；只需完成系统授权，再按原有引导获取并校验密钥。整个流程不需要修改系统完整性保护。</span></button><button type="button" className="wizard-method-option" disabled={wizardBlocked} onClick={() => setWizard('wizard-key')}><strong>导入可信密钥文件 <em>无需改系统设置</em></strong><span>不动系统设置、不捕获微信进程；选择可信密钥文件后逐库校验，再解密聊天记录。</span></button></div><p className="wizard-method-note">仅用于读取与校验，不会修改微信数据库。</p><div className="wizard-method-footer"><span className="wizard-next-hint">{wizardBlocked ? '安装并检测通过后才能继续' : '接下来：系统授权'}</span><button type="button" className="wizard-next" disabled={wizardBlocked} onClick={() => setWizard('wizard-permission')}>下一步</button></div></section>
+            <section id="wizard-method" className="wizard-method"><div><h2>选择接入方式</h2><p>两种方式都只读取聊天记录，也不需要你的微信密码。</p></div>{wizardBlocked && wechatInstall.detect && <div className="wizard-install-block" role="alert"><span className="connector-install-icon" aria-hidden="true">!</span><div><strong>{detectTitle[wechatInstall.detect.state]}，暂时无法继续</strong><p>{wechatInstall.detect.message}</p><div className="wizard-install-actions"><button type="button" className="connector-quiet" onClick={() => void wechatInstall.recheck()} disabled={wechatInstall.checking}>重新检测</button>{wechatInstall.detect.state === 'not_installed' && <a className="connector-link" href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">前往下载微信 ↗</a>}</div></div></div>}{!wizardBlocked && wechatInstall.detect?.version && <p className="wizard-install-ok"><span className="good" />已检测到微信 {wechatInstall.detect.version} · 官方签名</p>}<div className="wizard-method-options"><button type="button" className={`wizard-method-option${!wizardManual ? ' selected' : ''}`} aria-pressed={!wizardManual} disabled={wizardBlocked} onClick={() => setWizardManual(false)}><strong>自动读取本机数据库 <em>推荐</em></strong><span>完成系统检查后，按步骤连接微信，读取本机聊天记录。</span></button><button type="button" className={`wizard-method-option${wizardManual ? ' selected' : ''}`} aria-pressed={wizardManual} disabled={wizardBlocked} onClick={() => setWizardManual(true)}><strong>导入可信密钥文件 <em>已有文件时使用</em></strong><span>选择已准备好的文件，校验后读取本机聊天记录。</span></button></div><p className="wizard-method-note">仅用于读取与校验，不会修改微信数据库。</p><div className="wizard-method-footer"><span className="wizard-next-hint">{wizardBlocked ? '安装并检测通过后才能继续' : '接下来：系统检查'}</span><button type="button" className="wizard-next" disabled={wizardBlocked} onClick={() => setWizard('wizard-permission')}>下一步</button></div></section>
             )}
             <div id="wizard-permission" className="wizard-anchor" /><div id="wizard-account" className="wizard-anchor" /><div id="wizard-key" className="wizard-anchor" /><div id="wizard-import" className="wizard-anchor" /><div id="wizard-done" className="wizard-anchor" />
-            {wizardStep === 'wizard-done' ? <section className="wizard-complete"><div className="wizard-complete-mark">✓</div><h2>连接向导完成</h2><p>接下来请勾选要备份的会话。未勾选的聊天不会导入，也不会出现在备份里。</p><button type="button" className="wizard-next" disabled={connectionFinishing} onClick={() => void finishWechatGuide()}>{connectionFinishing ? '正在保存…' : '选择要备份的会话'}</button><button type="button" className="wizard-skip" disabled={connectionFinishing} onClick={() => void finishWechatGuide(true)}>跳过，暂不备份</button>{connectionFinishError && <p role="alert">{connectionFinishError}</p>}</section> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
-          </div> : <Connectors onOpenWechat={(configured) => { setWechatGuide(true); setWechatGuideEdit(configured); setWizardStep('wizard-method'); }} onOpenWhatsApp={() => void openWhatsApp()} />)}
+            {wizardStep === 'wizard-sessions' ? <section className="wizard-settings-step">
+              <WhitelistSettings wizard onBack={() => setWizard('wizard-connect')} onSaved={count => { if (count > 0) setWizard('wizard-backup'); }} />
+              <button type="button" className="wizard-skip" disabled={connectionFinishing} onClick={() => void finishWechatGuide(true)}>暂不备份，进入聊天</button>
+            </section> : wizardStep === 'wizard-backup' ? <section className="wizard-settings-step">
+              <BackupSchedule wizard onBack={() => setWizard('wizard-sessions')} onOpenConnectors={() => setWizard('wizard-connect')} onContinue={() => setWizard('wizard-done')} />
+            </section> : wizardStep === 'wizard-done' ? <WeChatWizardComplete edit={wechatGuideEdit} onBack={() => setWizard('wizard-connect')} onFinish={() => { setWechatGuide(false); setFirstBackupStep('none'); setChatReady(true); setChatKey(value => value + 1); setSection('chat'); }} /> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} wizardManual={wizardManual} wizardFinishing={connectionFinishing}
+              wizardInstall={{ ready: wechatInstall.checking ? null : wechatInstall.usable, message: wechatInstall.detect?.message ?? '' }} onWizardInstallRecheck={() => wechatInstall.recheck()}
+              onWizardStep={step => { if (step === 'wizard-sessions') void finishWechatGuide(); else setWizard(step); }} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
+            {connectionFinishError && <p className="wizard-save-error" role="alert">{connectionFinishError}</p>}
+          </div> : <Connectors onOpenWechat={(configured) => { setWechatGuide(true); setWechatGuideEdit(configured); setWizardManual(false); setWizardStep('wizard-method'); }} onOpenWhatsApp={() => void openWhatsApp()} />)}
           {settingsPage === 'imports' && <WhitelistSettings onSaved={count => { if (firstBackupStep === 'select' && count > 0) { setFirstBackupStep('schedule'); setSettingsPage('backup'); } }} />}
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
           {settingsPage === 'analysis' && <AnalysisSettings />}

@@ -1,0 +1,107 @@
+/* V7 catalogue only. Connection guides and shared connector icons keep their styles. */
+.prototype-settings-content .connector-page.connector-catalog {
+  width: 100%;
+  max-width: 864px;
+  margin: 0 auto;
+  padding: 32px 32px 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+  color: #1a1a19;
+}
+.connector-page.connector-catalog > section { margin: 0; display: flex; flex-direction: column; gap: 14px; }
+.connector-page.connector-catalog h2 { margin: 0; font-size: 18px; line-height: 26px; font-weight: 600; }
+.connector-page.connector-catalog .connector-hero {
+  min-height: 0;
+  padding: 32px 36px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  border-radius: 18px;
+  background: #1b1b1f;
+  color: #fff;
+}
+.connector-page.connector-catalog .connector-hero-copy { flex: 1 1 320px; min-width: 0; }
+.connector-page.connector-catalog .connector-hero p { display: block; margin: 0; color: #e85bc4; font-size: 12px; line-height: 17px; letter-spacing: .12em; }
+.connector-page.connector-catalog .connector-hero h1 { padding-top: 10px; margin: 0; font-size: 28px; font-weight: 600; line-height: 1.3; letter-spacing: normal; }
+.connector-page.connector-catalog .connector-hero-copy > span { display: block; max-width: none; padding-top: 10px; color: #c9c9d2; font-size: 14px; line-height: 1.8; }
+.connector-page.connector-catalog .connector-hero-marks { display: flex; flex: none; align-items: center; padding-left: 10px; }
+.connector-page.connector-catalog .connector-tile {
+  display: flex;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+}
+.connector-page.connector-catalog .connector-hero-marks .connector-tile { flex-basis: 54px; width: 54px; height: 54px; margin-left: -10px; border-radius: 14px; box-shadow: 0 0 0 3px #1b1b1f; font-size: 23px; }
+.connector-page.connector-catalog .connector-hero-marks .connector-tile:nth-child(n+4) { opacity: .5; }
+.connector-page.connector-catalog .connector-grid { width: 100%; max-width: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 12px; }
+.connector-page.connector-catalog .connector-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  border: 1px solid #e6e6e3;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: none;
+  text-align: left;
+}
+.connector-page.connector-catalog .connector-card-head { display: flex; flex-direction: row; align-items: center; gap: 12px; }
+.connector-page.connector-catalog .connector-card-head > div { flex: 1; min-width: 0; }
+.connector-page.connector-catalog .connector-card-head h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 21px; }
+.connector-page.connector-catalog .connector-state { padding-top: 2px; margin: 0; color: #5f5f5a; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.connector-page.connector-catalog .connector-state span { vertical-align: 1px; }
+.connector-page.connector-catalog .connector-card > .connector-description { display: block; flex: 1; margin: 0; color: #4f4f4a; font-size: 12.5px; line-height: 1.6; }
+.connector-page.connector-catalog .connector-card > .connector-capabilities { display: block; margin: 0; color: #6c6c67; font-size: 12px; line-height: 1.6; }
+.connector-page.connector-catalog .connector-install-meta { margin: 0; color: #74746e; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.connector-page.connector-catalog .connector-install-details { color: #74746e; font-size: 11px; line-height: 1.6; }
+.connector-page.connector-catalog .connector-install-details summary { cursor: pointer; }
+.connector-page.connector-catalog .connector-install-details .connector-install-meta { padding-top: 4px; }
+.connector-page.connector-catalog .connector-install-details button,
+.connector-page.connector-catalog .connector-install-check button { margin-top: 8px; padding: 4px 0; border: 0; background: transparent; font: inherit; cursor: pointer; }
+.connector-page.connector-catalog .connector-card > .connector-actions { margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+.connector-page.connector-catalog .connector-actions button { min-height: 30px; padding: 6px 14px; border-radius: 999px; font: inherit; font-size: 12px; line-height: 16px; white-space: nowrap; }
+.connector-page.connector-catalog .connector-primary { background: #a3279a; border: 1px solid #a3279a; color: #fff; }
+.connector-page.connector-catalog .connector-primary:hover { background: #8e2187; }
+.connector-page.connector-catalog .connector-configured { background: #fff; border-color: #d9d9d5; color: #3a3a37; }
+.connector-page.connector-catalog .connector-configured:hover { background: #f5f5f3; }
+.connector-page.connector-catalog .connector-quiet { padding-left: 6px; padding-right: 6px; color: #5f5f5a; }
+.connector-page.connector-catalog .connector-quiet:hover { background: #f5f5f3; }
+.connector-page.connector-catalog .connector-actions button:disabled { opacity: .5; cursor: default; }
+.connector-page.connector-catalog .connector-actions button:focus-visible { outline: 2px solid #a3279a; outline-offset: 3px; }
+.connector-page.connector-catalog .connector-notify { width: auto; margin: 0; align-self: flex-start; border: 1px solid #d9d9d5; background: #fff; color: #3a3a37; box-shadow: none; }
+.connector-page.connector-catalog .connector-notify:hover { background: #f5f5f3; }
+.connector-page.connector-catalog .connector-notify.on { background: #f6e7f4; border-color: #a3279a; color: #a3279a; }
+.connector-page.connector-catalog .connector-card.future .connector-tile { opacity: .85; }
+.connector-page.connector-catalog .connector-card.future .connector-description { min-height: 40px; }
+.connector-page.connector-catalog .connector-section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.connector-page.connector-catalog .connector-section-description { margin: 0; color: #5f5f5a; font-size: 13px; line-height: 1.6; }
+.connector-page.connector-catalog .connector-developer { border-style: dashed; border-color: #cfcfca; background: #fbfbfa; }
+.connector-page.connector-catalog .connector-developer .connector-tile { border: 1.5px solid #a3279a; color: #a3279a; font-size: 22px; }
+.connector-page.connector-catalog .connector-developer .connector-notify { border-color: #a3279a; color: #a3279a; }
+.connector-page.connector-catalog .connector-confirm { margin: 0; }
+.connector-page.connector-catalog .connector-error { margin: 0; }
+.connector-page.connector-catalog .connector-install-check { margin: 0; }
+.connector-page.connector-catalog .connector-install-check p { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 1050px) {
+  .connector-page.connector-catalog .connector-hero { padding: 28px; gap: 24px; }
+  .connector-page.connector-catalog .connector-hero h1 { font-size: 26px; }
+}
+@media (max-width: 700px) {
+  .prototype-settings-content .connector-page.connector-catalog { padding: 24px 20px 48px; gap: 32px; }
+  .connector-page.connector-catalog .connector-hero { padding: 24px; }
+  .connector-page.connector-catalog .connector-hero-copy { flex-basis: 100%; }
+  .connector-page.connector-catalog .connector-hero-marks .connector-tile { flex-basis: 44px; width: 44px; height: 44px; font-size: 20px; }
+}

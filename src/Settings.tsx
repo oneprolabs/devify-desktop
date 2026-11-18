@@ -7,6 +7,10 @@ import { sameServiceUrl, storedBaseUrl } from './serviceUrl.ts';
 import type { UploadOwner } from './taskCloud';
 import { AccountPicker } from './AccountPicker';
 import { ConnectorIcon } from './Connectors';
+import { WizardSessionPicker } from './WizardSessionPicker';
+import { WizardImportScope } from './WizardImportScope';
+import { Icons } from './icons';
+import { ImportHistoryRange, presetHistoryRange, type HistoryRange, type HistoryChoice, type HistoryScope } from './ImportHistoryRange';
 
 type SessionItem = {
   username: string;
@@ -251,7 +255,7 @@ export function mergeSettings(stored: AppSettings): AppSettings {
   };
 }
 
-export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => void } = {}) {
+export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wechat', onBack }: { onSaved?: (count: number) => void; wizard?: boolean; wizardSource?: 'wechat' | 'whatsapp'; onBack?: () => void } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
   const saveLock = useRef(false);
@@ -276,17 +280,14 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [saveError, setSaveError] = useState('');
-  const [dateDetails, setDateDetails] = useState<Record<string, Array<[string, number]>>>({});
+  const [selectionIssue, setSelectionIssue] = useState<{ attempted: number } | null>(null);
+  const [importsExpanded, setImportsExpanded] = useState(true);
+  const [dateDetails, setDateDetails] = useState<Record<string, Record<string, Array<[string, number]>>>>({});
   const [dateLoading, setDateLoading] = useState('');
   const [focusedSession, setFocusedSession] = useState('');
-  const [customRanges, setCustomRanges] = useState<Record<string, boolean>>({});
+  const [historyChoices, setHistoryChoices] = useState<Record<string, Record<string, HistoryChoice>>>({});
+  const [historyScope, setHistoryScope] = useState<HistoryScope>('selected');
 
-  const dateText = (seconds: number | null | undefined, end = false) => {
-    if (seconds == null) return '';
-    const date = new Date(seconds * 1000);
-    if (end) date.setDate(date.getDate() - 1);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  };
   // Same-day activity reads better with a clock than with a repeated date.
   const activityText = (seconds: number | null | undefined) => {
     if (!seconds) return '无记录';
@@ -295,19 +296,11 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
       ? `今天 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
       : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
   };
-  const setDate = (username: string, key: 'since' | 'until', text: string) => {
-    const date = text ? new Date(`${text}T00:00:00`) : null;
-    if (date && key === 'until') date.setDate(date.getDate() + 1);
-    setSettings(current => {
-      const range = current.chat.initial_ranges[accountId]?.[username] ?? { since: null, until: null };
-      return { ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges, [accountId]: { ...current.chat.initial_ranges[accountId], [username]: { ...range, [key]: date ? Math.floor(date.getTime() / 1000) : null } } } } };
-    });
-  };
   const loadDates = async (username: string) => {
     setDateLoading(username); setError('');
-    try { const dates = await invoke<Array<[string, number]>>('wechat_catalog_dates', { accountId, username }); setDateDetails(current => ({ ...current, [username]: dates })); }
-    catch (reason) { setError(`读取有记录的日期失败：${String(reason)}`); }
-    finally { setDateLoading(''); }
+    try { const dates = await invoke<Array<[string, number]>>('wechat_catalog_dates', { accountId, username }); setDateDetails(current => ({ ...current, [accountId]: { ...current[accountId], [username]: dates } })); }
+    catch (reason) { if (accountIdRef.current === accountId) setError(`读取有记录的日期失败：${String(reason)}`); }
+    finally { if (accountIdRef.current === accountId) setDateLoading(''); }
   };
 
   const allowed = useMemo(
@@ -352,7 +345,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
         ]);
         setSyncIdentity(identity);
         const next = mergeSettings(requireSettingsRevision(stored));
-        const list = scan ?? [];
+        const list = wizard ? (scan ?? []).filter(account => wizardSource === 'whatsapp' ? account.source === 'whatsapp' : account.source !== 'whatsapp') : scan ?? [];
         confirmedRevision.current = next.user_settings_revision;
         setSettings(next);
         setLoaded(true);
@@ -374,7 +367,22 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
     setCatalogLoading(true);
     setError('');
     void invoke<SessionItem[]>('wechat_session_catalog', { accountId })
-      .then(items => { if (active && accountIdRef.current === accountId) setCatalog(items); })
+      .then(items => {
+        if (!active || accountIdRef.current !== accountId) return;
+        setCatalog(items);
+        // Offer the complete current catalog only for an unconfigured account. Nothing
+        // is persisted until Next; existing saved choices and the backend cap stay intact.
+        setSettings(current => {
+          const selected = current.chat.allowed_usernames[accountId]
+            ?? (wizard && wizardSource === 'wechat' && items.length > 0 && items.length <= 1000 ? items.map(item => item.username) : []);
+          const ranges = { ...current.chat.initial_ranges[accountId] };
+          for (const username of selected) if (!ranges[username] && !currentCursors?.[username]) ranges[username] = presetHistoryRange('7');
+          return { ...current, chat: { ...current.chat,
+            allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: selected },
+            initial_ranges: { ...current.chat.initial_ranges, [accountId]: ranges },
+          } };
+        });
+      })
       .catch(e => {
         if (!active || accountIdRef.current !== accountId) return;
         setCatalog([]);
@@ -385,56 +393,78 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
   }, [accountId]);
 
   const visibleUsernames = useMemo(() => visibleCatalog.map(session => session.username), [visibleCatalog]);
-  const visibleSelectedCount = useMemo(
-    () => visibleUsernames.reduce((count, username) => count + (allowed.has(username) ? 1 : 0), 0),
-    [visibleUsernames, allowed],
-  );
-
   // Bulk actions only touch what the current search/type filter shows, so "全选"
   // after filtering never silently changes sessions the user cannot see.
-  const setVisibleSelection = (mode: 'select' | 'clear' | 'invert') => {
+  const setVisibleSelection = (mode: 'select' | 'clear' | 'invert', usernames = visibleUsernames) => {
+    setNotice('');
     const next = new Set(settings.chat.allowed_usernames[accountId] ?? []);
     if (mode === 'select') {
-      visibleUsernames.forEach(username => next.add(username));
+      usernames.forEach(username => next.add(username));
     } else if (mode === 'clear') {
-      visibleUsernames.forEach(username => next.delete(username));
+      usernames.forEach(username => next.delete(username));
     } else {
-      visibleUsernames.forEach(username => (next.has(username) ? next.delete(username) : next.add(username)));
+      usernames.forEach(username => (next.has(username) ? next.delete(username) : next.add(username)));
     }
     if (next.size > 1000) {
-      setSaveError('选择后将超过 1000 个会话上限，请缩小筛选范围或手动选择。');
+      setSelectionIssue({ attempted: next.size });
+      setSaveError('');
       return;
     }
+    setSelectionIssue(null);
     setSaveError('');
-    setSettings(current => ({ ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] } } }));
+    setSettings(current => {
+      const ranges = { ...current.chat.initial_ranges[accountId] };
+      for (const username of next) if (!ranges[username] && !currentCursors?.[username]) ranges[username] = presetHistoryRange('7');
+      return { ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] }, initial_ranges: { ...current.chat.initial_ranges, [accountId]: ranges } } };
+    });
   };
 
   const toggleUsername = (username: string) => {
-    if (!allowed.has(username) && allowedCount >= 1000) { setSaveError('每个账号最多选择 1000 个会话，请先取消其他会话。'); return; }
+    setNotice('');
+    if (!allowed.has(username) && allowedCount >= 1000) {
+      setSelectionIssue({ attempted: allowedCount + 1 });
+      setSaveError('');
+      return;
+    }
+    setSelectionIssue(null);
     setSaveError('');
     if (!allowed.has(username)) setFocusedSession(username);
     setSettings(current => {
       const next = new Set(current.chat.allowed_usernames[accountId] ?? []);
       if (next.has(username)) next.delete(username);
       else next.add(username);
-      return { ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] } } };
+      const ranges = { ...current.chat.initial_ranges[accountId] };
+      if (next.has(username) && !ranges[username] && !currentCursors?.[username]) ranges[username] = presetHistoryRange('7');
+      return { ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] }, initial_ranges: { ...current.chat.initial_ranges, [accountId]: ranges } } };
     });
+  };
+
+  const setScopeSelection = (group: boolean, select: boolean) => {
+    setHistoryScope('selected');
+    setVisibleSelection(select ? 'select' : 'clear', catalog.filter(item => item.is_group === group).map(item => item.username));
   };
 
   const save = async () => {
     if (!loaded || !accountId || catalogLoading || confirmedRevision.current === null || saveLock.current) return;
     saveLock.current = true;
     setSaving(true);
+    setSelectionIssue(null);
     setSaveError('');
     setError('');
     setNotice('');
     try {
-      const missingRange = (settings.chat.allowed_usernames[accountId] ?? []).some(username => {
-        const range = settings.chat.initial_ranges[accountId]?.[username];
-        return customRanges[`${accountId}\0${username}`] === true && range?.since == null && range?.until == null && !currentCursors?.[username];
-      });
-      if (missingRange) throw new Error('请选择自定义历史范围的开始或结束日期，或勾选上传全部历史记录。');
-      if (Object.values(settings.chat.initial_ranges[accountId] ?? {}).some(range => range.since != null && range.until != null && range.since >= range.until)) throw new Error('历史记录结束日期不能早于开始日期。');
+      // Saving submits every account draft, so validate all selected drafts too.
+      const missingRange = Object.entries(historyChoices).some(([id, choices]) =>
+        (settings.chat.allowed_usernames[id] ?? []).some(username => {
+          const range = settings.chat.initial_ranges[id]?.[username];
+          return choices[username] === 'custom' && range?.since == null && range?.until == null;
+        }));
+      if (missingRange) throw new Error('请选择自定义范围的开始或结束日期，或选择「全部历史」。');
+      const invalidRange = Object.entries(settings.chat.allowed_usernames).some(([id, usernames]) => usernames.some(username => {
+        const range = settings.chat.initial_ranges[id]?.[username];
+        return range?.since != null && range.until != null && range.since >= range.until;
+      }));
+      if (invalidRange) throw new Error('历史记录结束日期不能早于开始日期。');
       const keep = catalog.length
         ? (settings.chat.allowed_usernames[accountId] ?? []).filter(username => catalogUsernames.has(username))
         : settings.chat.allowed_usernames[accountId];
@@ -452,7 +482,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
       const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: submitted })));
       confirmedRevision.current = saved.user_settings_revision;
       setSettings(current => mergeSavedSettings(saved, settings, current));
-      setNotice('微信导入范围已保存，重新打开聊天记录页面后立即生效。');
+      setNotice(`已保存 ${(keep ?? []).length} 个会话，重新打开聊天记录页面后生效。`);
       onSaved?.((keep ?? []).length);
     } catch (e) {
       setSaveError(settingsSaveError(e));
@@ -462,54 +492,77 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
     }
   };
 
-  const focused = visibleCatalog.find(session => session.username === focusedSession) ?? visibleCatalog[0];
-  const focusedRange = focused ? settings.chat.initial_ranges[accountId]?.[focused.username] : undefined;
-  const alreadySynced = focused && !!currentCursors?.[focused.username];
-  const customRangeKey = focused ? `${accountId}\0${focused.username}` : '';
-  const isCustomRange = customRanges[customRangeKey] ?? (focusedRange?.since != null || focusedRange?.until != null);
-  const setUploadAllHistory = (uploadAll: boolean) => {
-    if (!focused) return;
-    setCustomRanges(current => ({ ...current, [customRangeKey]: !uploadAll }));
-    if (uploadAll) setSettings(current => ({ ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges, [accountId]: { ...current.chat.initial_ranges[accountId], [focused.username]: { since: null, until: null } } } } }));
+  const focused = catalog.find(session => session.username === focusedSession) ?? catalog.find(session => allowed.has(session.username));
+  const applyHistoryRange = (usernames: string[], range: HistoryRange, choice: HistoryChoice) => {
+    if (saveLock.current || accountIdRef.current !== accountId) return;
+    const targets = usernames.filter(username => allowed.has(username) && catalogUsernames.has(username) && !currentCursors?.[username]);
+    if (!targets.length) return;
+    setNotice('');
+    setSaveError('');
+    setHistoryChoices(current => ({ ...current, [accountId]: { ...current[accountId], ...Object.fromEntries(targets.map(username => [username, choice])) } }));
+    setSettings(current => ({ ...current, chat: { ...current.chat, initial_ranges: { ...current.chat.initial_ranges,
+      [accountId]: { ...current.chat.initial_ranges[accountId], ...Object.fromEntries(targets.map(username => [username, { ...range }])) },
+    } } }));
   };
+
+  const changeAccount = (id: string) => {
+    if (saveLock.current) return;
+    accountIdRef.current = id;
+    setCatalog([]);
+    setCatalogLoading(Boolean(id));
+    setAccountId(id);
+    setFocusedSession('');
+    setHistoryScope('selected');
+    setDateLoading('');
+    setSelectionIssue(null);
+    setSaveError('');
+    setNotice('');
+    setSearch('');
+    setKind('all');
+    // Keep all account drafts in the same form; save once using its confirmed revision.
+    setSettings(current => ({ ...current, active_account_id: id }));
+  };
+
+  const wizardWechat = wizard && wizardSource === 'wechat';
+  const historyEditor = <ImportHistoryRange selected={catalog.filter(item => allowed.has(item.username))} focused={focused}
+    synced={new Set(Object.keys(currentCursors ?? {}).filter(username => !!currentCursors?.[username]))}
+    scope={historyScope} ranges={settings.chat.initial_ranges[accountId] ?? {}} choices={historyChoices[accountId] ?? {}} disabled={saving}
+    onScope={setHistoryScope} onFocus={id => { setFocusedSession(id); setHistoryScope('single'); }} onChange={applyHistoryRange}
+    dateDetails={dateDetails[accountId] ?? {}} dateLoading={dateLoading} onLoadDates={id => void loadDates(id)} />;
 
   if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
 
-  return <div className="settings-page imports-page">
-    <header className="page-head"><h2>导入管理</h2><p className="help">选择要导入的会话，并为每个会话设置首次上传的历史日期范围。</p></header>
-    <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={accounts.find(account => account.id === accountId)?.source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name="微信" /></span><span className="wechat-account-details"><strong>聊天账号</strong><small>未检测到可用的聊天账号</small></span></>}{accounts.length > 1 && <AccountPicker accounts={accounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={id => {
-      if (saveLock.current) return;
-      accountIdRef.current = id;
-      setCatalog([]);
-      setCatalogLoading(Boolean(id));
-      setAccountId(id);
-      setFocusedSession('');
-      // Saved with the rest of this form; a separate write would bump the settings revision
-      // and make the save below conflict.
-      setSettings(current => ({ ...current, active_account_id: id }));
-    }} />}</section>
-    <p className="imports-hint">首次历史日期范围仅用于第一次上传；后续自动备份会继续同步新增消息。选择的账号和范围在保存成功后才生效。</p>
-    <div className="imports-workspace">
-      <div className="imports-choices"><input className="plan-input imports-search" type="search" value={search} placeholder="搜索会话名或 wxid" aria-label="搜索会话" onChange={event => setSearch(event.target.value)}/>
-        <div className="imports-activity">按最近活跃排序，最新消息在前</div>
-        <div className="plan-pills" role="group" aria-label="按会话类型筛选">
-          <button type="button" aria-pressed={kind === 'all'} className={kind === 'all' ? 'on' : ''} onClick={() => setKind('all')}>全部 {matchedCatalog.length}</button>
-          <button type="button" aria-pressed={kind === 'group'} className={kind === 'group' ? 'on' : ''} onClick={() => setKind('group')}>群聊 {groupCount}</button>
-          <button type="button" aria-pressed={kind === 'direct'} className={kind === 'direct' ? 'on' : ''} onClick={() => setKind('direct')}>单聊 {matchedCatalog.length - groupCount}</button>
-        </div>
-        <div className="imports-list">{visibleCatalog.map(session => <div key={session.username} className={`imports-choice${focused?.username === session.username ? ' selected' : ''}`}><input type="checkbox" aria-label={`导入 ${session.display}`} checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><button type="button" onClick={() => setFocusedSession(session.username)}><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></button><time className="imports-last-active">{activityText(session.last_time)}</time></div>)}
-        {!accountId && <p className="plan-empty">未发现聊天账号，请先完成连接。</p>}{accountId && catalogLoading && <p className="plan-empty">正在加载会话…</p>}{accountId && !catalogLoading && !visibleCatalog.length && <p className="plan-empty">没有符合条件的会话。</p>}</div>
-        <div className="imports-bulk" role="group" aria-label="批量选择当前筛选结果">
-          <span>当前 {visibleCatalog.length} 个 · 已选 {visibleSelectedCount}</span>
-          <button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection('select')}>全选</button>
-          <button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection('invert')}>反选</button>
-          <button type="button" disabled={!visibleSelectedCount} onClick={() => setVisibleSelection('clear')}>取消</button>
-        </div>
-      </div>
-      <section className="imports-detail">{focused ? <><header><h3>{focused.display}</h3><p>{focused.is_group ? '群聊' : '单聊'} · {focused.username}</p></header>{!allowed.has(focused.username) ? <p className="help">勾选此会话后，可以设置首次上传的历史范围。</p> : alreadySynced ? <p className="help">此会话已有同步进度，首次历史范围不再生效。</p> : <><h3>首次上传范围</h3><label className="imports-all-history"><input type="checkbox" checked={!isCustomRange} onChange={e => setUploadAllHistory(e.target.checked)}/><span><strong>上传全部历史记录</strong><small>首次上传该会话的全部本机历史记录。</small></span></label>{isCustomRange && <><p className="help">选择首次上传的历史日期范围；可只填写开始日期或结束日期。</p><div className="imports-dates"><label>开始日期<input type="date" value={dateText(focusedRange?.since)} onChange={e => setDate(focused.username, 'since', e.target.value)}/></label><span>至</span><label>结束日期<input type="date" value={dateText(focusedRange?.until, true)} onChange={e => setDate(focused.username, 'until', e.target.value)}/></label></div><div className="imports-available"><strong>有记录的日期</strong><button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(focused.username)}>{dateLoading === focused.username ? '正在读取…' : '查看日期'}</button>{dateDetails[focused.username] && (dateDetails[focused.username].length ? <><p className="imports-date-hint">选择日期作为开始日期，结束日期保持不变。</p><div className="imports-date-list" aria-label="选择有记录的开始日期">{dateDetails[focused.username].map(([day]) => <button type="button" key={day} className={dateText(focusedRange?.since) === day ? 'selected' : ''} aria-pressed={dateText(focusedRange?.since) === day} onClick={() => setDate(focused.username, 'since', day)}>{day}</button>)}</div></> : <p>没有可用记录</p>)}</div></>}</>}</> : <p className="help">选择一个会话，查看并设置首次上传的日期范围。</p>}</section>
-    </div>
-    {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}{allowedCount > 1000 && <div className="error" role="alert">已超出 {allowedCount - 1000} 个会话，请取消选择后保存。</div>}
-    <div className="page-actions"><button className="primary" disabled={saving || !accountId || catalogLoading || allowedCount > 1000} onClick={() => void save()}>{saving ? '正在保存…' : '保存所选会话'}</button><span>已选 {allowedCount} / 1000 个会话</span></div>
+  const source = accounts.find(account => account.id === accountId)?.source === 'whatsapp' ? 'whatsapp' : 'wechat';
+  const sourceName = source === 'whatsapp' ? 'WhatsApp' : '微信';
+  const sourceAccounts = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === source);
+  const editor = <>
+    {(!wizardWechat || accounts.length > 1 || !accountId) && <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name={sourceName} /></span><span className="wechat-account-details"><strong>聊天账号</strong><small>未检测到可用的聊天账号</small></span></>}{sourceAccounts.length > 1 && <AccountPicker accounts={sourceAccounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={changeAccount} />}</section>}
+    {source === 'whatsapp' && <p className="imports-hint">WhatsApp 目前支持手动备份。选择的账号和范围在保存成功后才生效。</p>}
+    <WizardImportScope catalog={catalog} selected={allowed} loading={catalogLoading} disabled={saving} accountId={accountId} onScope={setScopeSelection} selectionIssue={selectionIssue} onClearIssue={() => setSelectionIssue(null)} sourceName={sourceName}>
+      <WizardSessionPicker items={visibleCatalog} total={matchedCatalog.length} groupCount={groupCount}
+        selected={allowed} selectedCount={allowedCount} kind={kind} onKind={setKind} search={search} onSearch={setSearch}
+        loading={catalogLoading} disabled={saving} accountId={accountId} onToggle={toggleUsername} onBulk={setVisibleSelection}
+        focused={focused?.username ?? ''} onFocus={id => { setFocusedSession(id); setHistoryScope('single'); }} activity={activityText} sourceName={sourceName} />
+    </WizardImportScope>
+    {!catalogLoading && accountId && historyEditor}
+    {error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}{allowedCount > 1000 && <div className="error" role="alert">已超出 {allowedCount - 1000} 个会话，请取消选择后保存。</div>}
+    <div className="page-actions">{notice && <span className="imports-save-status" role="status">{Icons.check}<span>{notice}</span></span>}{wizard && onBack && <button type="button" className="wxv-btn" disabled={saving} onClick={onBack}>上一步</button>}<button className="primary" aria-busy={saving} disabled={saving || !accountId || catalogLoading || allowedCount > 1000 || (wizard && allowedCount === 0)} onClick={() => void save()}>{saving ? '正在保存…' : wizardWechat ? '下一步' : wizard ? '保存并继续' : '保存所选会话'}</button></div>
+  </>;
+  return <div className={`settings-page imports-page imports-v7${wizard ? ' wizard-imports' : ' imports-management'}`}>
+    <header className="page-head"><h2>{wizard ? '选择要备份的会话' : '导入管理'}</h2><p className="help">{wizard ? '只导入你确认的会话。会话较多时，可以通过「自定义」筛选和批量选择。' : '每个平台单独选择要备份的私聊和群聊。连接向导里也可以设置，修改后保存即可生效。'}</p></header>
+    {wizard || !accounts.length ? editor : <div className="imports-platforms">{(['wechat', 'whatsapp'] as const).filter(platform => accounts.some(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === platform)).map(platform => {
+      const list = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === platform);
+      const name = platform === 'whatsapp' ? 'WhatsApp' : '微信';
+      const open = source === platform && importsExpanded;
+      const count = list.reduce((total, account) => total + (account.id === accountId ? allowedCount : (settings.chat.allowed_usernames[account.id] ?? []).length), 0);
+      return <section key={platform} className="imports-platform">
+        <button type="button" className="imports-platform-head" aria-expanded={open} disabled={saving} onClick={() => {
+          if (source === platform) setImportsExpanded(!importsExpanded);
+          else { changeAccount(currentAccount(list, settings.active_account_id)!.id); setImportsExpanded(true); }
+        }}><span className="imports-platform-icon" data-source={platform} aria-hidden="true">{platform === 'whatsapp' ? 'W' : '微'}</span><span><strong>{name}</strong><small>已选 {count} 个会话 · {list.length} 个账号</small></span><svg className={open ? 'open' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
+        {open && <div className="imports-platform-content">{editor}</div>}
+      </section>;
+    })}</div>}
   </div>;
 }
 

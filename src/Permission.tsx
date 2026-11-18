@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { WizardActionButton } from './WizardActionButton';
 
 type PlatformCapabilities = { platform: string; key_acquisition: string; supports_memory_scan: boolean; supports_macos_capture: boolean; supports_key_import: boolean };
 type DiskAccess = {
@@ -14,8 +15,6 @@ type DiskAccess = {
   detail: string;
 };
 
-const POLL_MS = 2500;
-
 /**
  * macOS has no consent alert for Full Disk Access and no API to request it: the switch only
  * moves when the user flips it in System Settings, and the grant is bound to the app's location
@@ -25,7 +24,14 @@ const POLL_MS = 2500;
  *
  * Renders nothing once the probe can actually read WeChat's container.
  */
-export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
+export type DiskAccessCheck = { granted: boolean | null; platform: string | null; error: string };
+
+export function DiskAccessCard({ onRescan, compact = false, checkOnEntry = true, onCheck }: {
+  onRescan?: () => void;
+  compact?: boolean;
+  checkOnEntry?: boolean;
+  onCheck?: (check: DiskAccessCheck) => void;
+}) {
   const [access, setAccess] = useState<DiskAccess | null>(null);
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [error, setError] = useState('');
@@ -46,15 +52,16 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (checkOnEntry) void refresh();
+  }, [checkOnEntry, refresh]);
 
-  // The switch is flipped in another app, so the only way to notice is to look again.
   useEffect(() => {
-    if (access?.granted) return;
-    const timer = window.setInterval(() => void refresh(), POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [access?.granted, refresh]);
+    onCheck?.({
+      granted: error ? null : platform?.platform === 'windows' ? true : access?.granted ?? null,
+      platform: platform?.platform ?? null,
+      error,
+    });
+  }, [access, platform, error, onCheck]);
 
   const copyPath = async () => {
     try {
@@ -76,6 +83,19 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
 
   const fromImage = access?.location === 'volumes' || access?.location === 'translocated';
   const misplaced = Boolean(access && access.bundled && !fromImage && !access.installed);
+
+  if (compact) return <div className="wx-setup-permission">
+    {!access && !error ? <p role="status">正在检查读取权限…</p> : <>
+      <p>{fromImage || misplaced ? '请先将 AIMyChats 移到「应用程序」，从那里重新打开。' : '请在「完全磁盘访问权限」中打开 AIMyChats 的开关。'}</p>
+      <p><strong>授权后，请在系统提示中选择「退出并重新打开」。</strong>若没有弹窗，请按 ⌘Q 退出 AIMyChats，再重新打开后继续。</p>
+      <div className="wx-setup-actions">
+        <WizardActionButton className="wxv-btn primary" busyLabel="正在打开系统设置…" onAction={() => invoke('perm_open_settings').catch(e => setError(String(e)))}>打开系统设置</WizardActionButton>
+        <WizardActionButton className="wxv-btn" busyLabel="正在检测权限…" onAction={async () => { await refresh(); await onRescan?.(); }}>重新检测</WizardActionButton>
+      </div>
+      <details><summary>找不到 AIMyChats？</summary><p>在权限列表中点「+」，添加「应用程序」中的 AIMyChats，再打开开关。</p><button type="button" className="wxv-btn" onClick={() => void invoke('perm_reveal_app').catch(e => setError(String(e)))}>在 Finder 中显示</button></details>
+      {error && <p role="alert">未能完成权限检查，请点「重新检测」。</p>}
+    </>}
+  </div>;
 
   return (
     <div className="wxv-keyguide attention perm-card">
@@ -114,10 +134,10 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
         </li>
         <li>确认 AIMyChats 右侧的开关是打开的。</li>
         <li>
-          回到 AIMyChats，<strong>按 ⌘Q 完全退出再重新打开</strong>。权限只在应用启动时生效，
-          只关窗口或切回前台不会刷新。
+          授权后，请在系统提示中选择<strong>「退出并重新打开」</strong>。若没有弹窗，
+          请按 ⌘Q 完全退出 AIMyChats，再重新打开后继续。
         </li>
-        <li>重新打开后回到这一步，点「重新检测」——能读到微信目录时这张提示会自动消失。</li>
+        <li>重新打开后会自动检测权限；也可以回到这一步点「重新检测」。</li>
       </ol>
 
       <div className="perm-path">
@@ -145,7 +165,6 @@ export function DiskAccessCard({ onRescan }: { onRescan?: () => void }) {
         <button type="button" className="wxv-btn" onClick={() => void copyPath()}>
           {copied ? '已复制' : '复制程序路径'}
         </button>
-        <span className="perm-poll">每 {POLL_MS / 1000} 秒自动检测</span>
       </div>
 
       <details className="perm-more">

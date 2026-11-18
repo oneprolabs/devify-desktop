@@ -73,7 +73,8 @@ fn devify_network_message(context: &str, error: &reqwest::Error) -> String {
 }
 
 /// Errors raised while resolving a desktop token. `Unavailable` must not be
-/// treated as "the session expired": the server simply could not be reached.
+/// treated as "the session expired": validation or credential persistence may
+/// be temporarily blocked, including by an upload's fixed-identity lease.
 #[derive(Debug)]
 enum DevifyTokenError {
     Message(String),
@@ -324,8 +325,9 @@ async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_ge
     if let Some(new_refresh) = data.get("refresh").and_then(|v| v.as_str()) {
         tokens.refresh = new_refresh.to_string();
     }
-    if !desktop_credentials::save_if_current(app_data, token_generation, &original_tokens, &tokens)? {
-        return Err("服务端登录状态已改变，请重新操作。".into());
+    if !desktop_credentials::save_if_current(app_data, token_generation, &original_tokens, &tokens)
+        .map_err(DevifyTokenError::Unavailable)? {
+        return Err(DevifyTokenError::Unavailable("登录状态已改变，请重新检查。".into()));
     }
     Ok(new_access.to_string())
 }
@@ -498,10 +500,10 @@ async fn devify_upload_list(
     let base_url = upload_list_base_url(&settings, &space_id)?;
     let token = match devify_access_token_async(&data, &base_url).await {
         Ok(token) => token,
-        // Only a network failure gets the "check the connection" wording; an expired
-        // session must still tell the user to sign in again.
-        Err(DevifyTokenError::Unavailable(_)) => {
-            return Err("刷新服务端登录状态失败，请检查网络连接。".into());
+        // A temporary failure can also be a credential-write conflict with an upload.
+        // Preserve its actionable cause rather than mislabelling it as a network error.
+        Err(DevifyTokenError::Unavailable(message)) => {
+            return Err(message);
         }
         Err(error) => return Err(error.to_string()),
     };
@@ -4831,6 +4833,7 @@ struct AppInfo {
     version: String,
     platform: String,
     arch: String,
+    os_version: String,
 }
 
 #[tauri::command]
@@ -4840,6 +4843,7 @@ fn app_info() -> AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         platform: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
+        os_version: feedback::os_version(),
     }
 }
 
@@ -6968,6 +6972,14 @@ async fn wechat_capture_restore(
     })?
 }
 
+/// Explicitly retain a verified official update and archive the conflicting old transaction.
+#[tauri::command]
+async fn wechat_capture_accept_official(app: AppHandle) -> Result<capture::AcceptOfficialResult, capture::CaptureError> {
+    let root = capture_root(&app);
+    tauri::async_runtime::spawn_blocking(move || capture::accept_official_installation(Path::new(capture::WECHAT_APP), &root))
+        .await.map_err(|error| capture::CaptureError::new("command_failed", format!("微信校验任务异常结束：{error}")))?
+}
+
 /// Delete one account's decrypted snapshot. Returns how many databases it contained.
 fn clear_account_cache(data: &Path, account: &str) -> Result<usize, String> {
     let dir = decrypt::cache_dir(data, account);
@@ -8619,6 +8631,7 @@ pub fn run() {
             wechat_capture_preflight,
             wechat_capture_start,
             wechat_capture_restore,
+            wechat_capture_accept_official,
             wechat_clear_keys,
             wechat_import_keys,
             wechat_import_saved_key,

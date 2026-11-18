@@ -75,7 +75,7 @@ export function UpdatePanel() {
           <button type="button" className="update-primary" onClick={() => void installUpdate(true)}>仍然安装</button>
           <button type="button" onClick={dismissInstallBlockers}>稍后</button>
         </div> : null}
-        {update.status === 'downloading' && update.progress != null && <div className="about-update-progress" role="progressbar" aria-valuenow={update.progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${update.progress}%` }}/></div>}
+        {update.status === 'downloading' && update.progress != null && <div className="about-update-progress" role="progressbar" aria-valuenow={update.progress} aria-valuemin={0} aria-valuemax={100}><span style={{ transform: `scaleX(${update.progress / 100})` }}/></div>}
       </div></>;
 }
 

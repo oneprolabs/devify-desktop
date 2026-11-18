@@ -7,6 +7,8 @@ import { desktopInvoke as invoke } from './desktopInvoke';
 import './wechat.css';
 import { Icons } from './icons';
 import { DiskAccessCard } from './Permission';
+import { WeChatSetupChecklist } from './WeChatSetupChecklist';
+import { capturePrerequisiteFailure, checkWeChatStep, type WeChatAction, type StepContext } from './wechatStepGuard';
 import {
   HISTORY_KIND_LABEL,
   HISTORY_LIMIT,
@@ -571,6 +573,11 @@ export default function WeChatLocal({
   onOpenWhitelist,
   wizard = false,
   wizardStep = 'wizard-method',
+  wizardManual = false,
+  wizardFinishing = false,
+  wizardInstall = { ready: null, message: '' },
+  onWizardInstallRecheck,
+  onWizardStep,
   onWizardBack,
   onWizardNext,
   openSummary = false,
@@ -590,6 +597,11 @@ export default function WeChatLocal({
   onOpenWhitelist?: () => void;
   wizard?: boolean;
   wizardStep?: string;
+  wizardManual?: boolean;
+  wizardFinishing?: boolean;
+  wizardInstall?: { ready: boolean | null; message: string };
+  onWizardInstallRecheck?: () => void;
+  onWizardStep?: (step: string) => void;
   onWizardBack?: () => void;
   onWizardNext?: () => void;
   openSummary?: boolean;
@@ -677,8 +689,13 @@ export default function WeChatLocal({
   const [fixingPermissions, setFixingPermissions] = useState(false);
   /** In-app capture: environment/state from the backend plus the step currently running. */
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null);
+  const [captureStatusChecking, setCaptureStatusChecking] = useState(false);
+  const [captureStatusError, setCaptureStatusError] = useState('');
+  const [recoveryNotice, setRecoveryNotice] = useState('');
+  const [recoveryError, setRecoveryError] = useState('');
+  const captureStatusRequest = useRef(0);
   const [captureBusy, setCaptureBusy] = useState<
-    'prepare' | 'open' | 'confirm' | 'preflight' | 'start' | 'restore' | null
+    'prepare' | 'open' | 'confirm' | 'preflight' | 'start' | 'restore' | 'accept-official' | null
   >(null);
   const [captureOutcome, setCaptureOutcome] = useState<CaptureImport | null>(null);
   /** The user has to acknowledge that WeChat will be re-signed and re-logged-in. */
@@ -789,8 +806,10 @@ export default function WeChatLocal({
       }
       sourceSeen.current = { exists: next.exists, modifiedAt: next.modified_at ?? null };
       setSavedKeySource(next);
+      return next;
     } catch {
       /* The probe is advisory: a missing home directory must not block the page. */
+      return null;
     }
   }, []);
 
@@ -1014,11 +1033,11 @@ export default function WeChatLocal({
   // While the guide is open (or before any key exists) watch the extractor's well-known
   // output file. It is a cheap local stat; no chat data and no passphrase is read here.
   useEffect(() => {
-    if (!showKeyGuide && !noKeysYet) return;
+    if (wizard || (!showKeyGuide && !noKeysYet)) return;
     void refreshSavedKeySource();
     const timer = window.setInterval(() => void refreshSavedKeySource(), 3000);
     return () => window.clearInterval(timer);
-  }, [showKeyGuide, noKeysYet, refreshSavedKeySource]);
+  }, [wizard, showKeyGuide, noKeysYet, refreshSavedKeySource]);
 
   const switchAccount = useCallback(
     async (nextId: string) => {
@@ -1146,23 +1165,43 @@ export default function WeChatLocal({
   };
 
   const refreshCaptureStatus = useCallback(async () => {
+    const request = ++captureStatusRequest.current;
+    setCaptureStatusChecking(true);
     try {
-      setCaptureStatus(await invoke<CaptureStatus>('wechat_capture_status'));
-    } catch {
-      /* The status probe is advisory; a transient failure must not cover the guide. */
+      const status = await invoke<CaptureStatus>('wechat_capture_status');
+      if (request !== captureStatusRequest.current) return status;
+      setCaptureStatus(status);
+      setCaptureStatusError('');
+      return status;
+    } catch (reason) {
+      if (request === captureStatusRequest.current) setCaptureStatusError(String(reason));
+    } finally {
+      if (request === captureStatusRequest.current) setCaptureStatusChecking(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!showKeyGuide && !noKeysYet) return;
+    if (wizard || (!showKeyGuide && !noKeysYet)) return;
     void refreshCaptureStatus();
     const timer = window.setInterval(() => void refreshCaptureStatus(), 1500);
     return () => window.clearInterval(timer);
-  }, [showKeyGuide, noKeysYet, refreshCaptureStatus]);
+  }, [wizard, showKeyGuide, noKeysYet, refreshCaptureStatus]);
+
+  useEffect(() => {
+    if (wizard && wizardStep === 'wizard-permission') void refreshCaptureStatus();
+  }, [wizard, wizardStep, refreshCaptureStatus]);
+
+  const captureRunning = captureBusy === 'start' || captureStatus?.stage === 'capturing';
+  useEffect(() => {
+    if (!wizard || !captureRunning) return;
+    const timer = window.setInterval(() => void refreshCaptureStatus(), 1500);
+    return () => window.clearInterval(timer);
+  }, [wizard, captureRunning, refreshCaptureStatus]);
 
   /** Verify, back up and temporarily re-sign WeChat. Nothing is launched here. */
   const prepareCapture = async () => {
     setError('');
+    setRecoveryNotice('');
     setLaunchDiagnosis(null);
     setNotice('正在校验微信签名并建立原版备份，可能需要几分钟，请不要关闭窗口…');
     setCaptureBusy('prepare');
@@ -1179,6 +1218,7 @@ export default function WeChatLocal({
       );
     } catch (e) {
       setError(captureErrorText(e));
+      return capturePrerequisiteFailure(e);
     } finally {
       setCaptureBusy(null);
       await refreshCaptureStatus();
@@ -1236,6 +1276,7 @@ export default function WeChatLocal({
       }
     } catch (e) {
       setError(captureErrorText(e));
+      return capturePrerequisiteFailure(e);
     } finally {
       setCaptureBusy(null);
       await refreshCaptureStatus();
@@ -1252,6 +1293,7 @@ export default function WeChatLocal({
       setNotice(`断点可用（${result.pbkdf_locations} 处）。现在请在微信里退出账号，然后启动监测。`);
     } catch (e) {
       setError(captureErrorText(e));
+      return capturePrerequisiteFailure(e);
     } finally {
       setCaptureBusy(null);
       await refreshCaptureStatus();
@@ -1286,6 +1328,7 @@ export default function WeChatLocal({
       await refreshSavedKeySource();
     } catch (e) {
       setError(captureErrorText(e));
+      return capturePrerequisiteFailure(e);
     } finally {
       setCaptureBusy(null);
       await refreshCaptureStatus();
@@ -1295,6 +1338,7 @@ export default function WeChatLocal({
   /** Cancel an in-flight capture or recover from a failed one. */
   const restoreWeChat = async () => {
     setError('');
+    setRecoveryError('');
     setLaunchDiagnosis(null);
     setCaptureBusy('restore');
     try {
@@ -1306,10 +1350,25 @@ export default function WeChatLocal({
       );
       await refreshCaptureStatus();
     } catch (e) {
-      setError(captureErrorText(e));
+      setError(captureErrorText(e)); setRecoveryError(captureErrorText(e));
+      await refreshCaptureStatus();
     } finally {
       setCaptureBusy(null);
     }
+  };
+
+  /** Resolve an official update without overwriting it with an old backup. */
+  const acceptOfficialWeChat = async () => {
+    if (captureBusy) return;
+    setError(''); setRecoveryError(''); setRecoveryNotice(''); setLaunchDiagnosis(null); setCaptureBusy('accept-official');
+    try {
+      await invoke('wechat_capture_accept_official');
+      setNotice('已保留当前官方微信和原备份，可以重新连接。');
+      setRecoveryNotice('已校验并保留当前官方微信，原备份已保留。请完成系统检查后继续连接。');
+      await refreshCaptureStatus();
+      onWizardStep?.('wizard-permission');
+    } catch (e) { setError(captureErrorText(e)); setRecoveryError(captureErrorText(e)); }
+    finally { setCaptureBusy(null); }
   };
 
   /** Drop every view derived from the decrypted snapshot (used when that snapshot is deleted). */
@@ -2465,18 +2524,18 @@ const checkMark = (value: boolean | undefined) =>
     ? keyImport.accounts.find(entry => entry.selected && entry.matched + entry.already > 0)
     : undefined;
 
-  const renderUnlock = () => {
+  const renderUnlock = (step = wizardStep) => {
     const usableDb = (rel: string) => outcomes.some(outcome =>
       outcome.rel === rel && (outcome.status === 'ok' || outcome.status === 'cached'));
     const decryptedForWizard = usableDb('session/session.db') && outcomes.some(outcome =>
       /^message\/message_\d+\.db$/.test(outcome.rel) && (outcome.status === 'ok' || outcome.status === 'cached'));
-    const wizardCanNext = !wizard || (wizardStep === 'wizard-permission' || wizardStep === 'wizard-account'
+    const wizardCanNext = !wizard || (step === 'wizard-permission' || step === 'wizard-account'
       ? Boolean(account)
-      : wizardStep === 'wizard-key'
+      : step === 'wizard-key'
         ? Boolean(savedKeySource?.exists || captureOutcome?.matched || keyedCount > 0)
-        : wizardStep === 'wizard-import'
+        : step === 'wizard-import'
           ? keyedCount > 0
-          : wizardStep === 'wx-connect-decrypt'
+          : step === 'wx-connect-decrypt'
             ? ready || decryptedForWizard
             : true);
     return (
@@ -2512,8 +2571,8 @@ const checkMark = (value: boolean | undefined) =>
         <li id="wx-connect-account" className={account ? 'done' : ''}>
           <span className="wxv-step-no">{account ? Icons.check : '1'}</span>
           <div>
-            <strong>{wizard && wizardStep === 'wizard-permission' ? '系统授权' : wizard && wizardStep === 'wizard-account' ? '账号扫描' : scan && scan.accounts.length > 1 ? '选择账号' : '当前账号'}</strong>
-            {wizard && wizardStep === 'wizard-permission' ? (
+            <strong>{wizard && step === 'wizard-permission' ? '系统授权' : wizard && step === 'wizard-account' ? '账号扫描' : scan && scan.accounts.length > 1 ? '选择账号' : '当前账号'}</strong>
+            {wizard && step === 'wizard-permission' ? (
               <>
                 <p className="wxv-muted">先确认 AIMyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。</p>
                 <DiskAccessCard onRescan={() => void doScan()} />
@@ -2553,7 +2612,7 @@ const checkMark = (value: boolean | undefined) =>
                 <p className="wxv-muted">
                   {busy === 'scan' ? '正在定位微信目录…' : '没有发现账号目录，请确认微信已登录过。'}
                 </p>
-                {busy !== 'scan' && <DiskAccessCard onRescan={() => void doScan()} />}
+                {!wizard && busy !== 'scan' && <DiskAccessCard onRescan={() => void doScan()} />}
               </>
             )}
           </div>
@@ -2562,7 +2621,7 @@ const checkMark = (value: boolean | undefined) =>
         <li id="wx-connect-key" className={keyedCount > 0 ? 'done' : ''}>
           <span className="wxv-step-no">{keyedCount > 0 ? Icons.check : '2'}</span>
           <div>
-            <strong>{wizard && wizardStep === 'wizard-import' ? '导入校验' : '获取密钥'}</strong>
+            <strong>{wizard && step === 'wizard-import' ? '导入校验' : '获取密钥'}</strong>
             <p className="wxv-muted">
               支持账号口令（64 位十六进制，逐库 PBKDF2 派生）、内存密钥 <code>x'&lt;hex&gt;'</code>、或口令 JSON
               <code>{'{"passphrase":"…"}'}</code>。导入时只保留通过第 1 页 HMAC 校验的内容。
@@ -2951,7 +3010,7 @@ const checkMark = (value: boolean | undefined) =>
                   )}
 
                   <div id="wizard-detail-key-import" className="wxv-keyguide-step">
-                    <strong>{wizard && wizardStep === 'wizard-import' ? '导入校验' : '4 · 导入并校验'}</strong>
+                    <strong>{wizard && step === 'wizard-import' ? '导入校验' : '4 · 导入并校验'}</strong>
                     <p className="wxv-muted">
                       {captureOutcome?.matched
                         ? '本次捕获的口令已通过消息库与会话库校验，并已逐库导入保存。'
@@ -3132,7 +3191,7 @@ const checkMark = (value: boolean | undefined) =>
         <li id="wx-connect-decrypt" className={ready ? 'done' : ''}>
           <span className="wxv-step-no">{ready ? Icons.check : '3'}</span>
           <div>
-            <strong>{wizard && wizardStep === 'wx-connect-decrypt' ? '解密记录' : '解密并打开'}</strong>
+            <strong>{wizard && step === 'wx-connect-decrypt' ? '解密记录' : '解密并打开'}</strong>
             <p className="wxv-muted">
               解密会逐页校验，任一页失败即整体失败，不会产出半成品。已解密过的库直接复用缓存。
             </p>
@@ -3196,11 +3255,11 @@ const checkMark = (value: boolean | undefined) =>
         </li>
       </ol>
 
-      {wizard && wizardStep !== 'wizard-method' && (
+      {wizard && step !== 'wizard-method' && (
         <div className="wizard-detail-actions">
           <button type="button" className="wxv-btn" onClick={onWizardBack}>上一步</button>
           <button type="button" className="wxv-btn primary" onClick={onWizardNext} disabled={!wizardCanNext}>
-            {wizardStep === 'wizard-permission' ? '下一步：账号扫描' : wizardStep === 'wizard-account' ? '下一步：获取密钥' : wizardStep === 'wizard-key' ? '下一步：导入校验' : wizardStep === 'wizard-import' ? '下一步：解密记录' : '下一步：完成'}
+            {step === 'wizard-permission' ? '下一步：账号扫描' : step === 'wizard-account' ? '下一步：获取密钥' : step === 'wizard-key' ? '下一步：导入校验' : step === 'wizard-import' ? '下一步：解密记录' : '下一步：完成'}
           </button>
         </div>
       )}
@@ -3226,6 +3285,39 @@ const checkMark = (value: boolean | undefined) =>
     </div>
   );
   };
+
+  const renderSetupChecklist = () => <WeChatSetupChecklist
+    accountId={accountId} accounts={scan?.accounts ?? []} scanLoaded={scan !== null}
+    busy={busy} switching={accountSwitching} keyedCount={keyedCount} keyStatusLoaded={keyStatus !== null}
+    savedKey={savedKeySource} freshKey={freshSource} decrypted={ready || (
+      outcomes.some(item => item.rel === 'session/session.db' && (item.status === 'ok' || item.status === 'cached')) &&
+      outcomes.some(item => /^message\/message_\d+\.db$/.test(item.rel) && (item.status === 'ok' || item.status === 'cached'))
+    )}
+    capture={captureStatus} captureChecking={captureStatusChecking} captureError={captureStatusError} captureBusy={captureBusy} windowsBusy={windowsScanBusy}
+    install={wizardInstall} onInstallRecheck={() => onWizardInstallRecheck?.()}
+    launchDiagnosis={launchDiagnosis} error={error} recoveryError={recoveryError} recoveryNotice={recoveryNotice} manual={wizardManual} permissionPhase={wizardStep === 'wizard-permission'} finishing={wizardFinishing}
+    onPermissionNext={() => onWizardStep?.('wizard-connect')} onFixPermissions={fixKeyPermissions}
+    onSystemBack={() => onWizardStep?.('wizard-permission')}
+    onScan={() => doScan(accountId)} onChooseAccount={id => void switchAccount(id)}
+    onCaptureRefresh={refreshCaptureStatus} onPrepare={prepareCapture}
+    onOpen={openCaptureWeChat} onConfirmLogin={confirmCaptureLaunch}
+    onPreflight={runCapturePreflight} onCapture={startCapture}
+    onCheckStep={(action: WeChatAction, context: StepContext) => checkWeChatStep(action, {
+      ...context, accountId, transactionId: captureStatus?.transaction_id ?? null,
+      manual: wizardManual, reuseConnection: keyedCount > 0 || Boolean(savedKeySource?.exists),
+      capture: async () => { const status = await refreshCaptureStatus(); if (!status) throw new Error('连接状态检查未完成'); return status; },
+      accountExists: async () => { const result = await invoke<ScanResult>('wechat_scan'); setScan(result); return result.accounts.some(item => item.id === accountId); },
+      keys: async () => { const result = await invoke<KeyStatus>('wechat_key_status'); setKeyStatus(result); return result.keys.filter(key => key.account === accountId).length; },
+      source: async () => { const result = await refreshSavedKeySource(); if (!result) throw new Error('连接文件检查未完成'); return result; },
+      chats: async () => { await invoke<SessionItem[]>('wechat_sessions', { accountId }); },
+    })}
+    onRestartConnection={async () => { setError(''); setLaunchDiagnosis(null); await refreshCaptureStatus(); }}
+    onCheckConnectionResult={async () => { await Promise.all([refreshCaptureStatus(), refreshKeys(), refreshSavedKeySource()]); }}
+    onRestore={restoreWeChat} onAcceptOfficial={acceptOfficialWeChat} onOpenSecurity={openPrivacySecuritySettings}
+    onWindowsScan={scanWindowsKeys} onImportSaved={importSavedKey}
+    onImport={file => importKeys(file)} onDecrypt={decrypt}
+    onComplete={() => onWizardStep?.('wizard-sessions')} onBack={() => onWizardStep?.(wizardStep === 'wizard-permission' ? 'wizard-method' : 'wizard-permission')}
+  />;
 
   /* ── chat pane ───────────────────────────────────────────────────────────── */
 
@@ -3787,7 +3879,7 @@ const checkMark = (value: boolean | undefined) =>
   /* ── shell ───────────────────────────────────────────────────────────────── */
 
   return (
-    <div className={`wxv ${mode === 'settings' ? 'mode-settings' : ''} ${wizard ? 'wizard-mode' : ''} ${workOpen && !forceUnlock ? 'with-digest' : ''} pane-${mobilePane}`} data-wizard-step={wizardStep}>
+    <div className={`wxv ${mode === 'settings' ? 'mode-settings' : ''} ${wizard ? 'wizard-mode' : ''} ${workOpen && !forceUnlock ? 'with-digest' : ''} pane-${mobilePane}`} data-wizard-step={wizard && wizardStep !== 'wizard-method' ? 'wizard-checklist' : wizardStep}>
       <aside className="wxv-rail">
         <div className="wxv-rail-head">
           <div>
@@ -3872,7 +3964,7 @@ const checkMark = (value: boolean | undefined) =>
 
       <section className="wxv-main">
         {mode === 'settings' ? (
-          renderUnlock()
+          wizard && wizardStep !== 'wizard-method' ? renderSetupChecklist() : renderUnlock()
         ) : ready ? (
           renderChat()
         ) : !account && busy !== 'scan' ? (
@@ -3898,7 +3990,7 @@ const checkMark = (value: boolean | undefined) =>
           </div>
         )}
         {notice && !wizard && <div className="wxv-toast">{notice}</div>}
-        {error && isTauri() && (
+        {error && isTauri() && !wizard && (
           <div className="wxv-toast error">
             <span>{error}</span>
             <button type="button" className="wxv-icon" onClick={() => setError('')} aria-label="关闭提示">

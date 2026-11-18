@@ -1,0 +1,53 @@
+/* V7: one platform panel, with compact rows shared by settings and the wizard. */
+.backup-page.backup-v7 .page-head { margin-bottom: 18px; }
+.backup-page.backup-v7 .page-head h2 { margin: 0; font-size: 18px; line-height: 1.4; }
+.backup-page.backup-v7 .page-head .help { margin: 6px 0 0; color: #5f5f5a; font-size: 13px; line-height: 1.6; }
+.backup-page.backup-v7 .backup-list { max-width: none; gap: 12px; }
+.backup-page.backup-v7 .plan-plat { border: 1px solid #e6e6e3; border-radius: 14px; background: #fff; box-shadow: none; overflow: hidden; }
+.backup-page.backup-v7 .plan-plat-head { padding: 16px 18px; border: 0; border-radius: 0; background: #fff; }
+.backup-page.backup-v7 .plan-plat-title small { flex-wrap: wrap; color: #4f4f4a; font-size: 13px; line-height: 1.6; }
+.backup-page.backup-v7 .plan-plat-title i { font-size: 11.5px; }
+.backup-page.backup-v7 .plan-rows { display: block; padding: 2px 18px 14px; border-radius: 0; background: #fbfbfa; box-shadow: none; }
+.backup-page.backup-v7 .plan-plat-head + .plan-rows { box-shadow: inset 0 1px #f0f0ee; }
+.backup-page.backup-v7 .plan-row { display: flex; flex-direction: row; align-items: center; gap: 24px; margin: 0; padding: 12px 0; border: 0; border-bottom: 1px solid #f0f0ee; background: transparent; }
+.backup-page.backup-v7 .plan-row-label { flex: 1; min-width: 0; }
+.backup-page.backup-v7 .plan-row-label > span { color: #1a1a19; font-size: 14px; font-weight: 400; line-height: 1.6; }
+.backup-page.backup-v7 .plan-row-label small { margin: 0; padding-top: 2px; color: #5f5f5a; font-size: 12.5px; line-height: 1.6; }
+.backup-page.backup-v7 .plan-row-control { flex: 0 1 auto; min-width: 0; max-width: 460px; }
+.backup-page.backup-v7 .plan-pills { justify-content: flex-end; gap: 6px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.backup-page.backup-v7 .plan-pills button { padding: 3px 10px; border: 1px solid #d9d9d5; border-radius: 999px; background: #fff; color: #3a3a37; box-shadow: none; font: inherit; font-size: 12px; line-height: 18px; }
+.backup-page.backup-v7 .plan-pills button.on { border-color: #a3279a; background: #a3279a; color: #fff; }
+.backup-page.backup-v7 .plan-pills button:hover:not(:disabled):not(.on) { border-color: #a3279a; color: #a3279a; }
+.backup-page.backup-v7 .plan-pills button.on:hover:not(:disabled) { background: #8e2187; }
+.backup-page.backup-v7 .plan-switch { width: 34px; height: 20px; min-height: 0; padding: 0; border: 0; background: #cfcfca; }
+.backup-page.backup-v7 .plan-switch.on { background: #1a1a19; }
+.backup-page.backup-v7 .plan-switch span { top: 3px; left: 3px; width: 14px; height: 14px; box-shadow: none; transform: translateX(0); transition: transform .15s ease; }
+.backup-page.backup-v7 .plan-switch.on span { left: 3px; transform: translateX(14px); }
+.backup-page.backup-v7 .plan-rows:disabled { opacity: .45; }
+.backup-page.backup-v7 .plan-step { gap: 8px; }
+.backup-page.backup-v7 .plan-step > button { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 26px; height: 26px; min-height: 0; padding: 0; border: 1px solid #d9d9d5; border-radius: 50%; background: #fff; box-shadow: none; font: inherit; font-size: 15px; line-height: 1; }
+.backup-page.backup-v7 .plan-step > .plan-unit { width: auto; height: 26px; padding: 3px 10px; border-radius: 999px; font-size: 12px; line-height: 18px; }
+.backup-page.backup-v7 .plan-step b { font-variant-numeric: tabular-nums; }
+.backup-page.backup-v7 .plan-chip { font-size: 12px; line-height: 18px; }
+.backup-page.backup-v7 .plan-times .plan-add { padding: 4px 10px; font-size: 12px; }
+.backup-page.backup-v7 .plan-times input, .backup-page.backup-v7 .plan-window input { box-sizing: border-box; width: 112px; height: 30px; padding: 3px 6px; border: 1px solid #d9d9d5; border-radius: 6px; background: #fff; box-shadow: none; color: #1a1a19; font-size: 12.5px; }
+.backup-page.backup-v7 .plan-window, .backup-page.backup-v7 .plan-kv { color: #4f4f4a; font-size: 13px; line-height: 1.6; }
+.backup-page.backup-v7 button:focus-visible, .backup-page.backup-v7 input:focus-visible { outline: 2px solid #a3279a; outline-offset: 2px; }
+.backup-page.backup-v7 input:focus { border-color: #a3279a; box-shadow: none; }
+.backup-page.backup-v7 .backup-manual-platform > p { margin: 0; padding: 12px 18px; border-top: 1px solid #f0f0ee; background: #fbfbfa; color: #5f5f5a; font-size: 12.5px; line-height: 1.6; }
+.backup-page.backup-v7 .plan-mark > .connector-icon { width: 25px; height: 25px; }
+.backup-page.backup-v7 .plan-off { box-shadow: none; }
+.backup-page.backup-v7 .plan-off .plan-mark { width: 32px; height: 32px; border-radius: 9px; }
+.backup-page.backup-v7 .plan-off strong { font-size: 14px; }
+.backup-page.backup-v7 .plan-off small { font-size: 12.5px; }
+.backup-page.backup-v7 .plan-off button { font-size: 12px; }
+.backup-page.backup-v7 .plan-off-head { font-size: 13px; }
+.wechat-wizard .backup-v7.wizard-backup-page .page-head h2 { font-size: 20px; }
+.wechat-wizard .backup-v7.wizard-backup-page .plan-plat { border: 0; border-radius: 0; background: #fff; overflow: visible; }
+.wechat-wizard .backup-v7.wizard-backup-page .backup-list { border-top: 1px solid #f0f0ee; }
+.wechat-wizard .backup-v7.wizard-backup-page .plan-rows { padding: 0; background: #fff; }
+@media (max-width: 760px) {
+  .backup-page.backup-v7 .plan-row { flex-wrap: wrap; gap: 10px; }
+  .backup-page.backup-v7 .plan-row-label { flex-basis: 100%; }
+  .backup-page.backup-v7 .plan-row-control, .backup-page.backup-v7 .plan-pills { justify-content: flex-start; max-width: 100%; }
+}

@@ -24,7 +24,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState<'' | 'password' | 'browser'>('');
+  const [busy, setBusy] = useState<'' | 'password' | 'browser' | 'session'>('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -32,6 +32,8 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [serverDraft, setServerDraft] = useState('');
   const [serverStatus, setServerStatus] = useState('');
   const completed = useRef(false);
+  const mounted = useRef(true);
+  const sessionCheckLock = useRef(false);
   const settingsRef = useRef<GateSettings | null>(null);
   const draftRef = useRef('');
   const saveLock = useRef(false);
@@ -66,10 +68,14 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     return () => { active = false; cleanDeepLink?.(); cleanLoopback?.(); };
   }, [finishBrowserLogin]);
 
-  useEffect(() => () => {
-    // Leaving the gate (or closing the app) must release the loopback port so
-    // the next login attempt is not blocked by a stale listener.
-    void invoke('devify_auth_cancel').catch(() => {});
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      // A completed login must retain its generation. An abandoned browser
+      // attempt still releases its loopback listener and invalidates callbacks.
+      if (!completed.current) void invoke('devify_auth_cancel').catch(() => {});
+    };
   }, []);
 
   useEffect(() => {
@@ -111,6 +117,24 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   }, [busy]);
 
   const idOk = /^[a-z0-9._-]{3,}$/i.test(username);
+  const retrySavedSession = async () => {
+    if (sessionCheckLock.current || busy !== '') return;
+    sessionCheckLock.current = true;
+    setBusy('session');
+    setError('');
+    try {
+      const status = await invoke<{ authenticated: boolean; unavailable?: boolean; error?: string }>('devify_auth_status');
+      if (!mounted.current) return;
+      if (status.authenticated) {
+        if (completed.current) return;
+        completed.current = true;
+        onAuthenticated();
+      } else {
+        setError(status.unavailable ? status.error || '暂时无法验证登录，请稍后重试。' : '没有可用的已保存登录，请重新登录。');
+      }
+    } catch (reason) { if (mounted.current) setError(String(reason)); }
+    finally { sessionCheckLock.current = false; if (mounted.current) setBusy(''); }
+  };
   const submitLogin = async () => {
     setBusy('password');
     setError('');
@@ -273,7 +297,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       {notice && <p className="auth-gate-error" role="alert">{notice}</p>}
       {busy === 'browser'
         ? <div className="auth-gate-waiting" role="status"><span className="auth-gate-pulse"/><span>正在等待浏览器完成授权…</span></div>
-        : <button type="button" className="auth-gate-primary" disabled={!settingsLoaded || serverSaving} onClick={() => {
+        : <button type="button" className="auth-gate-primary" disabled={!settingsLoaded || serverSaving || busy !== ''} onClick={() => {
             if (!settingsLoaded) return;
             if (!baseUrl.trim()) {
               setServerOpen(true);
@@ -283,6 +307,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
             setPopup(true); setError(''); setInfo('');
           }}>登录…</button>}
       {busy === 'browser' && <button type="button" className="auth-gate-secondary" onClick={() => void cancelBrowserLogin()}>取消</button>}
+      {busy !== 'browser' && <button type="button" className="auth-gate-secondary" disabled={!settingsLoaded || serverSaving || busy !== ''} aria-busy={busy === 'session'} onClick={() => void retrySavedSession()}>{busy === 'session' ? '正在检查…' : '重新检查已有登录'}</button>}
       {error && <p className="auth-gate-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>反馈此问题</button></p>}
       <div className="auth-gate-server">
         {serverOpen || !baseUrl

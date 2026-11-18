@@ -1209,12 +1209,6 @@
 .chat-install-banner { display: flex; align-items: center; gap: 10px; margin: 10px 16px 0; padding: 9px 12px; border: 1px solid #f0d9b8; border-radius: 9px; background: #faf0e1; color: #6b4510; font-size: 13px; }
 .chat-install-banner span:nth-child(2) { flex: 1; }
 .chat-install-banner button { border: 1px solid #e3c597; border-radius: 6px; padding: 4px 10px; background: #fff; color: #6b4510; font: inherit; cursor: pointer; }
-.connector-page .connector-card:not(.future) > .connector-install-check,
-.connector-page .connector-card:not(.future) > .connector-install-meta { grid-column: 1 / -1; order: 2; margin: 0; }
-.connector-page .connector-card:not(.future) > .connector-card-head { order: 0; }
-.connector-page .connector-card:not(.future) > .connector-actions { order: 1; }
-.connector-page .connector-card:not(.future) > .connector-description { order: 3; }
-.connector-page .connector-install-banner { box-sizing: border-box; max-width: 640px; margin-bottom: 12px; }
 .chat-landing-connector .connector-brand { width: 40px; height: 40px; border-radius: 11px; background: #fff; border: 1px solid #e9e9e6; color: #63748c; }
 .chat-landing-connector .connector-brand img, .chat-landing-connector .connector-brand svg { display: block; width: 26px; height: 26px; object-fit: contain; }
 .chat-landing-connector.blocked { box-shadow: inset 0 0 0 1px #f0d9b8; background: #fffdf9; }
