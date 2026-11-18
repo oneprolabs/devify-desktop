@@ -248,8 +248,34 @@ fn device_session_from_response(data: &serde_json::Value, device_id: &str) -> Re
 /// Uploads hold a read lease over the fixed credential/context; identity changes fail
 /// rather than switching the user, service or device in the middle of an upload.
 pub(crate) static UPLOAD_IDENTITY_LOCK: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+/// Signing out must not wait for a background batch to finish, so it bumps this counter and
+/// every in-flight upload stops at its next checkpoint instead of holding the read lease.
+/// Uploads capture the value when they start; a bump also stops the sync loop from opening
+/// another batch, which keeps the drain short even for long uploads.
+static UPLOAD_ABORT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static CREDENTIAL_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static AUTH_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Shown when a sign-out or logout-driven cancellation stopped an upload on purpose.
+const UPLOAD_ABORTED_MESSAGE: &str = "已退出登录，上传已取消。";
+
+fn upload_epoch() -> u64 {
+    UPLOAD_ABORT_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// An upload may only commit while the login it was verified against is still current.
+fn upload_aborted_since(epoch: u64, current: u64) -> bool {
+    epoch != current
+}
+
+fn upload_aborted(epoch: u64) -> bool {
+    upload_aborted_since(epoch, upload_epoch())
+}
+
+/// Ask every in-flight upload to stop at its next checkpoint.
+fn abort_in_flight_uploads() {
+    UPLOAD_ABORT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
 
 async fn devify_access_token_async(app_data: &Path, base_url: &str) -> Result<String, DevifyTokenError> {
     devify_access_token_with_cleanup(app_data, base_url, &mut None).await
@@ -1648,13 +1674,15 @@ async fn fixed_identity_get(data: &Path, base: &str, token: &str, path: &str) ->
 }
 
 /// Read existing legacy message keys before assigning new identities. Never assume that a
-/// historic `src:<local_id>` belongs to the earliest or latest local shard.
-async fn load_legacy_upload_keys(app: &AppHandle, space_id: &str, account_id: &str, usernames: &[String], fixed: Option<(&str, &str)>) -> Result<LegacyUploadKeys, String> {
+/// historic `src:<local_id>` belongs to the earliest or latest local shard. `epoch` is the
+/// sign-out generation captured by the caller, so a scan never outlives its login.
+async fn load_legacy_upload_keys(app: &AppHandle, space_id: &str, account_id: &str, usernames: &[String], fixed: Option<(&str, &str)>, epoch: u64) -> Result<LegacyUploadKeys, String> {
     let mut result = LegacyUploadKeys::new();
     for username in usernames {
         let encoded: String = url::form_urlencoded::byte_serialize(username.as_bytes()).collect();
         let mut conversation = None;
         for page in 1..=100 {
+            if upload_aborted(epoch) { return Err(UPLOAD_ABORTED_MESSAGE.into()); }
             let path = format!("/api/v1/spaces/{space_id}/conversations?search={encoded}&page={page}&page_size=100");
             let data = if let Some((base, token)) = fixed { fixed_identity_get(&app_data(app), base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
             let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端会话列表。")?;
@@ -1670,28 +1698,92 @@ async fn load_legacy_upload_keys(app: &AppHandle, space_id: &str, account_id: &s
             if next.is_null() { break; }
             if page == 100 { return Err("云端会话列表过长，无法完整校验旧消息。".into()); }
         }
-        let mut keys = ExistingUploadKeys::default();
         if let Some(id) = conversation {
-            for page in 1..=10000 {
-                let path = format!("/api/v1/spaces/{space_id}/conversations/{id}/messages?page={page}&page_size=100");
-                let data = if let Some((base, token)) = fixed { fixed_identity_get(&app_data(app), base, token, &path).await? } else { devify_json_request(app, reqwest::Method::GET, path, None).await? };
-                let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端消息列表。")?;
-                for item in items {
-                    let key = item.get("message_key").and_then(|v| v.as_str()).unwrap_or_default();
-                    if key.starts_with("srv:") || key.starts_with("local:") { keys.stable.insert(key.to_string()); }
-                    if let Some(id) = key.strip_prefix("src:").and_then(|s| s.parse::<i64>().ok()) {
-                        let time = item.get("occurred_at").and_then(|v| v.as_str()).and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok()).map(|v| v.timestamp());
-                        if keys.legacy.insert(id, time).is_some() { return Err("云端存在冲突的旧消息标识，无法安全上传。".into()); }
-                    }
-                }
-                let next = data.pointer("/pagination/next").ok_or("云端消息分页信息不完整，无法安全校验旧消息。")?;
-                if next.is_null() { break; }
-                if page == 10000 { return Err("云端消息过多，无法完整校验旧消息。".into()); }
-            }
+            let scan = LegacyPageScan { app: app.clone(), fixed: fixed.map(|(base, token)| (base.to_string(), token.to_string())), space_id: space_id.to_string(), conversation_id: id };
+            let keys = scan.existing_keys(epoch).await?;
+            result.insert(username.clone(), keys);
+        } else {
+            result.insert(username.clone(), ExistingUploadKeys::default());
         }
-        result.insert(username.clone(), keys);
     }
     Ok(result)
+}
+
+/// Pages of one cloud conversation, fetched in bounded parallel chunks. Every page is an
+/// independent read and the key set is order-independent, so the scan keeps the same result
+/// while finishing in a fraction of the sequential time.
+const LEGACY_KEY_SCAN_CONCURRENCY: u32 = 6;
+const LEGACY_KEY_SCAN_MAX_PAGES: u32 = 10000;
+
+#[derive(Clone)]
+struct LegacyPageScan {
+    app: AppHandle,
+    fixed: Option<(String, String)>,
+    space_id: String,
+    conversation_id: i64,
+}
+
+impl LegacyPageScan {
+    async fn page(&self, page: u32) -> Result<serde_json::Value, String> {
+        let path = format!("/api/v1/spaces/{}/conversations/{}/messages?page={page}&page_size=100", self.space_id, self.conversation_id);
+        match &self.fixed {
+            Some((base, token)) => fixed_identity_get(&app_data(&self.app), base, token, &path).await,
+            None => devify_json_request(&self.app, reqwest::Method::GET, path, None).await,
+        }
+    }
+
+    async fn existing_keys(&self, epoch: u64) -> Result<ExistingUploadKeys, String> {
+        let mut keys = ExistingUploadKeys::default();
+        let mut page: u32 = 1;
+        loop {
+            if upload_aborted(epoch) { return Err(UPLOAD_ABORTED_MESSAGE.into()); }
+            if page > LEGACY_KEY_SCAN_MAX_PAGES { return Err("云端消息过多，无法完整校验旧消息。".into()); }
+            let last = (page + LEGACY_KEY_SCAN_CONCURRENCY - 1).min(LEGACY_KEY_SCAN_MAX_PAGES);
+            let handles: Vec<_> = (page..=last)
+                .map(|page| {
+                    let scan = self.clone();
+                    (page, tauri::async_runtime::spawn(async move { scan.page(page).await }))
+                })
+                .collect();
+            let mut pages = Vec::with_capacity(handles.len());
+            for (_, handle) in handles {
+                pages.push(match handle.await {
+                    Ok(result) => result,
+                    Err(error) => Err(format!("读取云端消息失败：{error}")),
+                });
+            }
+            if merge_legacy_pages(pages, &mut keys)? { break; }
+            page = last + 1;
+        }
+        Ok(keys)
+    }
+}
+
+/// Merge one chunk of fetched pages in page order. Pages prefetched past the end cannot
+/// change the key set, so only the first page that reports no successor matters.
+fn merge_legacy_pages(pages: Vec<Result<serde_json::Value, String>>, keys: &mut ExistingUploadKeys) -> Result<bool, String> {
+    let mut finished = false;
+    for result in pages {
+        if finished { continue; }
+        let data = result?;
+        let items = data.get("list").and_then(|v| v.as_array()).ok_or("无法读取云端消息列表。")?;
+        collect_existing_keys(items, keys)?;
+        let next = data.pointer("/pagination/next").ok_or("云端消息分页信息不完整，无法安全校验旧消息。")?;
+        if next.is_null() { finished = true; }
+    }
+    Ok(finished)
+}
+
+fn collect_existing_keys(items: &[serde_json::Value], keys: &mut ExistingUploadKeys) -> Result<(), String> {
+    for item in items {
+        let key = item.get("message_key").and_then(|v| v.as_str()).unwrap_or_default();
+        if key.starts_with("srv:") || key.starts_with("local:") { keys.stable.insert(key.to_string()); }
+        if let Some(id) = key.strip_prefix("src:").and_then(|s| s.parse::<i64>().ok()) {
+            let time = item.get("occurred_at").and_then(|v| v.as_str()).and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok()).map(|v| v.timestamp());
+            if keys.legacy.insert(id, time).is_some() { return Err("云端存在冲突的旧消息标识，无法安全上传。".into()); }
+        }
+    }
+    Ok(())
 }
 
 fn upload_fingerprint(value: &serde_json::Value) -> String {
@@ -2594,6 +2686,7 @@ async fn devify_upload_preview(
     message_selection: Option<BTreeMap<String, Vec<settings::MessageRef>>>,
 ) -> Result<UploadPreview, String> {
     let data = app_data(&app);
+    let upload_epoch_at_start = upload_epoch();
     let settings = settings::load(&data)?;
     validate_upload_scope(&settings, &account_id, &space_id, &usernames)?;
     entitlements::require(&data, &settings.devify.base_url, capabilities::INGEST_UPLOAD)?;
@@ -2630,7 +2723,7 @@ async fn devify_upload_preview(
         let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
         let voice_settings = latest.voice.clone();
         let attachments = latest.backup.attachments.clone();
-        let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
+        let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token)), upload_epoch_at_start).await?;
         tauri::async_runtime::spawn_blocking(move || {
             prepare_upload_with_voice(
                 &data_for_prepare,
@@ -2969,6 +3062,7 @@ async fn devify_upload_retry_preview(
     job_id: String,
 ) -> Result<UploadPreview, String> {
     let data = app_data(&app);
+    let upload_epoch_at_start = upload_epoch();
     let settings = settings::load(&data)?;
     let job = settings
         .upload_queue
@@ -3012,7 +3106,7 @@ async fn devify_upload_retry_preview(
         let voice_settings = latest.voice.clone();
         let attachments = latest.backup.attachments.clone();
         let media_root = account_root(&account_id).unwrap_or_else(|_| cache.clone());
-        let legacy_keys = load_legacy_upload_keys(&app, &job.space_id, &account_id, &scope.usernames, Some((&owner.base_url, &token))).await?;
+        let legacy_keys = load_legacy_upload_keys(&app, &job.space_id, &account_id, &scope.usernames, Some((&owner.base_url, &token)), upload_epoch_at_start).await?;
         tauri::async_runtime::spawn_blocking(move || {
             prepare_upload_with_voice(
                 &data_for_prepare,
@@ -3462,6 +3556,7 @@ async fn devify_upload_wechat(
     if usernames.is_empty() {
         return Err("请至少选择一个会话。".into());
     }
+    let upload_epoch_at_start = upload_epoch();
     let whatsapp_source = whatsapp::is_account(&account_id);
     let allowed = if whatsapp_source {
         whatsapp_allowed_usernames(&app, &account_id)?
@@ -3513,7 +3608,7 @@ async fn devify_upload_wechat(
         .map_err(|e| format!("准备上传失败：{e}"))??
     } else {
         let cache = decrypt::cache_dir(&data, &account_id);
-        let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token))).await?;
+        let legacy_keys = load_legacy_upload_keys(&app, &space_id, &account_id, &usernames, Some((&owner.base_url, &token)), upload_epoch_at_start).await?;
         let voice_settings = current_settings.voice.clone();
         let attachments = current_settings.backup.attachments.clone();
         let names = names_for_prepare.clone();
@@ -3638,6 +3733,7 @@ async fn devify_upload_wechat(
     }
     // Record the exact ZIP and the possibility of a sent request *before* POST. If the
     // response is lost, the unknown batch cannot be blindly created a second time.
+    if upload_aborted(upload_epoch_at_start) { return Err(UPLOAD_ABORTED_MESSAGE.into()); }
     settings::update(&data, |current| {
         let job = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
         validate_owned_job(current, job, &owner, &token, &scope)?;
@@ -3751,6 +3847,7 @@ async fn devify_upload_wechat(
             .mime_str("application/zip")
             .map_err(|e| e.to_string())?,
     );
+    if upload_aborted(upload_epoch_at_start) { return Err(UPLOAD_ABORTED_MESSAGE.into()); }
     validate_live_owned_job(&data, &job_id, &owner, &token, &scope)?;
     if let Some(auth) = &cloud_retry {
         validate_live_cloud_retry(&data, auth)?;
@@ -4534,20 +4631,17 @@ async fn devify_login_password(
     })
 }
 
+/// How long a sign-out waits for an abandoned upload to release the identity lease. The
+/// abort epoch usually returns control within one page fetch; the budget only covers a
+/// packaging step that cannot be interrupted.
+const LOGOUT_UPLOAD_DRAIN_BUDGET: Duration = Duration::from_secs(5);
+
 #[tauri::command]
 async fn devify_logout(app: AppHandle) -> Result<(), String> {
     let data = app_data(&app);
-    let _identity = UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "正在处理上传任务，请稍后再退出登录。")?;
-    let settings = settings::load(&data)?;
-    if logout_has_active_upload(&settings.upload_queue) {
-        return Err("仍有上传任务未完成，请等待任务完成后再退出登录。".into());
-    }
-    let base = settings.devify.resolved_base_url()?;
-    let stored = desktop_credentials::load(&data, &base).ok();
-    desktop_credentials::clear_with_identity_lock(&data)?;
-    drop(_identity);
+    let cleared = sign_out_local_session(&data).await?;
     reconcile_local_service(&app).await;
-    if let Some(credentials) = stored {
+    if let Some((base, credentials)) = cleared {
         if let (Some(secret), Some(device_id)) = (credentials.device_session, credentials.session_device_id) {
             let _ = http_client::strict().delete(format!("{base}/api/v1/auth/desktop/session/refresh"))
                 .json(&serde_json::json!({"device_id": device_id, "session": secret}))
@@ -4557,8 +4651,47 @@ async fn devify_logout(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn logout_has_active_upload(jobs: &[settings::UploadJob]) -> bool {
-    jobs.iter().any(|job| matches!(job.status.as_str(), "queued" | "running" | "uploading" | "processing"))
+/// Clear the local session for a sign-out. An in-flight upload is abandoned instead of making
+/// the user wait for the next batch: the next login resumes from the saved cursor, and an
+/// archive that never reached the server is rebuilt from local messages. Returns the cleared
+/// credentials so the caller can revoke the device session.
+async fn sign_out_local_session(data: &Path) -> Result<Option<(String, desktop_credentials::Credentials)>, String> {
+    abort_in_flight_uploads();
+    let identity = tokio::time::timeout(LOGOUT_UPLOAD_DRAIN_BUDGET, UPLOAD_IDENTITY_LOCK.write()).await.ok();
+    let settings = settings::load(data)?;
+    let base = settings.devify.resolved_base_url().ok();
+    let stored = base.as_deref().and_then(|base| desktop_credentials::load(data, base).ok());
+    // Anything still active is marked interrupted, so the next login neither waits on it nor
+    // reports it as a running upload.
+    let _ = settings::update(data, |current| {
+        for job in current.upload_queue.iter_mut() {
+            abandon_upload_for_logout(job);
+        }
+        Ok(())
+    });
+    // Clearing bumps the credential generation, so a late write from the abandoned upload
+    // fails its compare-and-set even when the lease could not be drained in time.
+    desktop_credentials::clear_with_identity_lock(data)?;
+    drop(identity);
+    Ok(base.and_then(|base| stored.map(|credentials| (base, credentials))))
+}
+
+/// Signing out ends uploads that are still in flight. A batch that never reached the server
+/// is released for the next login; one that may exist keeps the existing remote lookup path
+/// instead of a blind rebuild.
+fn abandon_upload_for_logout(job: &mut settings::UploadJob) -> bool {
+    if !matches!(job.status.as_str(), "queued" | "running" | "uploading" | "processing") {
+        return false;
+    }
+    job.status = "failed".into();
+    if job.create_started == Some(true) {
+        job.message = "退出登录时上传已中断，重新登录后会自动核对云端批次。".into();
+    } else {
+        job.legacy_failure_confirmed = true;
+        job.message = "退出登录时上传已中断，重新登录后会自动继续。".into();
+    }
+    job.updated_at = chrono::Utc::now().to_rfc3339();
+    true
 }
 
 #[cfg(test)]
@@ -4566,15 +4699,127 @@ mod logout_queue_tests {
     use super::*;
 
     #[test]
-    fn blocks_only_unfinished_uploads() {
+    fn signing_out_interrupts_unfinished_uploads() {
         for status in ["queued", "running", "uploading", "processing"] {
-            let job = settings::UploadJob { status: status.into(), ..Default::default() };
-            assert!(logout_has_active_upload(&[job]));
+            let mut job = settings::UploadJob { status: status.into(), ..Default::default() };
+            assert!(abandon_upload_for_logout(&mut job));
+            assert_eq!(job.status, "failed");
+            assert!(job.legacy_failure_confirmed);
         }
         for status in ["completed", "failed", "cancelled"] {
-            let job = settings::UploadJob { status: status.into(), ..Default::default() };
-            assert!(!logout_has_active_upload(&[job]));
+            let mut job = settings::UploadJob { status: status.into(), ..Default::default() };
+            assert!(!abandon_upload_for_logout(&mut job));
+            assert_eq!(job.status, status);
         }
+    }
+
+    #[test]
+    fn interrupted_create_keeps_the_remote_lookup_path() {
+        let mut job = settings::UploadJob { status: "running".into(), create_started: Some(true), ..Default::default() };
+        assert!(abandon_upload_for_logout(&mut job));
+        assert_eq!(job.status, "failed");
+        assert!(!job.legacy_failure_confirmed);
+        assert!(job.message.contains("核对云端批次"));
+    }
+
+    #[test]
+    fn an_upload_only_stops_after_its_epoch_moves() {
+        assert!(!upload_aborted_since(3, 3));
+        assert!(upload_aborted_since(3, 4));
+    }
+
+    #[test]
+    fn signing_out_waits_for_an_upload_that_releases_the_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let base = "https://example.test";
+        let mut value = settings::AppSettings::default();
+        value.active_account_id = "wechat-a".into();
+        value.devify.base_url = base.into();
+        value.devify.active_space_id = Some("7".into());
+        value.upload_queue = vec![settings::UploadJob {
+            id: "sync-1".into(), account_id: "wechat-a".into(), space_id: "7".into(),
+            status: "running".into(), ..Default::default()
+        }];
+        settings::save(data, &value).unwrap();
+        desktop_credentials::save(data, &desktop_credentials::Credentials {
+            base_url: base.into(), access: "access".into(), refresh: "refresh".into(),
+            device_session: None, session_device_id: None,
+        }).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            // A running sync holds the read lease for a moment; sign-out waits instead of failing.
+            let lease = UPLOAD_IDENTITY_LOCK.read().await;
+            let release = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                drop(lease);
+            });
+            let started = std::time::Instant::now();
+            let cleared = sign_out_local_session(data).await.unwrap();
+            assert!(cleared.is_some());
+            assert!(started.elapsed() < LOGOUT_UPLOAD_DRAIN_BUDGET);
+            release.await.unwrap();
+        });
+        assert!(desktop_credentials::load(data, base).is_err());
+        let saved = settings::load(data).unwrap();
+        assert_eq!(saved.upload_queue[0].status, "failed");
+        assert!(saved.upload_queue[0].legacy_failure_confirmed);
+    }
+}
+
+#[cfg(test)]
+mod legacy_key_scan_tests {
+    use super::*;
+
+    fn page(keys: &[(&str, &str)], more: bool) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({
+            "list": keys.iter().map(|(key, at)| serde_json::json!({"message_key": key, "occurred_at": at})).collect::<Vec<_>>(),
+            "pagination": {"next": if more { serde_json::json!(2) } else { serde_json::Value::Null }},
+        }))
+    }
+
+    #[test]
+    fn merges_pages_in_order() {
+        let mut keys = ExistingUploadKeys::default();
+        let finished = merge_legacy_pages(vec![
+            page(&[("src:7", "2026-01-01T00:00:00Z"), ("srv:9", "2026-01-01T00:00:00Z")], true),
+            page(&[("local:a:8:2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z")], false),
+        ], &mut keys).unwrap();
+        assert!(finished);
+        assert!(keys.legacy.contains_key(&7));
+        assert!(keys.stable.contains("srv:9"));
+        assert!(keys.stable.contains("local:a:8:2026-01-02T00:00:00Z"));
+    }
+
+    #[test]
+    fn pages_prefetched_past_the_end_are_ignored() {
+        // Page 2 repeats `src:7` with another time; a sequential scan never reads it.
+        let mut keys = ExistingUploadKeys::default();
+        let finished = merge_legacy_pages(vec![
+            page(&[("src:7", "2026-01-01T00:00:00Z")], false),
+            page(&[("src:7", "2025-01-01T00:00:00Z")], true),
+        ], &mut keys).unwrap();
+        assert!(finished);
+        assert_eq!(keys.legacy.get(&7), Some(&Some(1_767_225_600)));
+    }
+
+    #[test]
+    fn conflicting_legacy_ids_still_stop_the_upload() {
+        let mut keys = ExistingUploadKeys::default();
+        let error = merge_legacy_pages(vec![
+            page(&[("src:7", "2026-01-01T00:00:00Z")], true),
+            page(&[("src:7", "2026-01-01T00:00:05Z")], false),
+        ], &mut keys).unwrap_err();
+        assert_eq!(error, "云端存在冲突的旧消息标识，无法安全上传。");
+    }
+
+    #[test]
+    fn a_missing_pagination_block_is_not_guessed() {
+        let mut keys = ExistingUploadKeys::default();
+        let error = merge_legacy_pages(vec![
+            Ok(serde_json::json!({"list": []})),
+        ], &mut keys).unwrap_err();
+        assert_eq!(error, "云端消息分页信息不完整，无法安全校验旧消息。");
     }
 }
 
@@ -5975,6 +6220,8 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
 async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_only: bool, scope_confirmation: Option<&str>) -> Result<ChatSyncSummary, String> {
     let data = app_data(app);
     let mut value = settings::load(&data)?;
+    // Captured once: a sign-out must stop this whole run, not just the batch in flight.
+    let upload_epoch_at_start = upload_epoch();
     if whatsapp::is_account(&value.active_account_id) {
         return Err("WhatsApp 目前只支持在「导入管理」手动上传；自动备份尚未接入。".into());
     }
@@ -6106,6 +6353,8 @@ async fn perform_chat_sync_inner(app: &AppHandle, manual: bool, continuation_onl
     };
 
     'users: for username in &whitelist {
+        // A sign-out ends the run instead of opening another batch that would hold the lease.
+        if upload_aborted(upload_epoch_at_start) { break; }
         if !manual && uploaded >= SYNC_UPLOADS_PER_TICK {
             break;
         }
@@ -8424,6 +8673,9 @@ async fn wechat_upload_state(
     if requested.is_empty() {
         return Ok(Vec::new());
     }
+    // The remaining work only reads the local database, so the sign-out lease is released
+    // before a long list scan can hold it.
+    drop(_identity_guard);
     let cache = decrypt::cache_dir(&data, &account_id);
     tauri::async_runtime::spawn_blocking(move || {
         let mut states = Vec::new();
