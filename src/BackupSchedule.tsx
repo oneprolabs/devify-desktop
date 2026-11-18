@@ -5,6 +5,8 @@ import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
 import { ConnectorIcon } from './Connectors';
 import { createSettingsSaveQueue, settingsUserRevision, type SettingsSaveQueue } from './settingsSaveQueue';
+import { WizardActionButton } from './WizardActionButton';
+import './backup-schedule.css';
 
 type ChatAccount = { id: string; source: string };
 
@@ -105,9 +107,10 @@ function formatInterval(seconds: number): string {
   return tf("每 {0} 分钟", Math.round(seconds / 60));
 }
 
-export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnectors?: () => void; onContinue?: () => void }) {
+export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, onBack }: { onOpenConnectors?: () => void; onContinue?: () => void; wizard?: boolean; onBack?: () => void }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [connected, setConnected] = useState(false);
+  const [whatsappConnected, setWhatsappConnected] = useState(false);
   // The plan opens expanded, matching the settings screen the design was drawn for; the
   // header folds it down to the summary line once it is configured.
   const [open, setOpen] = useState(true);
@@ -146,7 +149,8 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
         setSavePending(state.saving || state.pending > 0);
         if (state.error) setError(tf("保存失败，修改尚未确认：{0}", String(state.error)));
       });
-      setConnected((scan ?? []).length > 0);
+      setConnected((scan ?? []).some(account => account.source !== 'whatsapp' && (!wizard || account.id === stored.active_account_id)));
+      setWhatsappConnected((scan ?? []).some(account => account.source === 'whatsapp'));
       setError('');
       setReady(true);
     } catch (e) {
@@ -154,7 +158,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
     } finally {
       if (active.current && request === loadId.current) setLoading(false);
     }
-  }, []);
+  }, [wizard]);
 
   useEffect(() => {
     active.current = true;
@@ -168,6 +172,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
   // status is polled instead of being frozen at mount time.
   const [runStatus, setRunStatus] = useState<AppSettings['sync'] | null>(null);
   useEffect(() => {
+    if (wizard) return;
     let active = true;
     const load = async () => {
       try {
@@ -189,7 +194,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
       window.clearInterval(timer);
       window.removeEventListener('focus', onFocus);
     };
-  }, []);
+  }, [wizard]);
   const syncState = runStatus ?? settings.sync;
   const lastRun = syncState.last_run_at ? new Date(syncState.last_run_at) : null;
 
@@ -239,27 +244,27 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
     ? t("，该时段暂停上传，结束后自动补传")
     : t("，其余时间攒着，到点集中上传");
 
-  if (!ready) return <div className="settings-page backup-page"><h2>{t("备份周期")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{t(error)}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
+  if (!ready) return <div className="settings-page backup-page backup-v7"><h2>{t("备份周期")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{error}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
 
-  return <div className="settings-page backup-page">
+  return <div className={`settings-page backup-page backup-v7${wizard ? ' wizard-backup-page' : ''}`}>
     <header className="page-head">
-      <h2>{t("备份周期")}</h2>
-      <p className="help">{t("选择聊天记录自动备份的时间与范围，只上传已导入会话的新增消息。")}</p>
+      <h2>{wizard ? t("设置备份周期") : t("备份周期")}</h2>
+      <p className="help">{wizard ? t("设置微信的备份时间与上传内容，之后可以在「备份周期」里修改。") : t("选择聊天记录自动备份的时间与范围，只上传已导入会话的新增消息。")}</p>
     </header>
 
     <fieldset disabled={blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+    {wizard && !connected && <div role="alert"><p>{t("未能确认当前微信账号的连接状态，请重新检查或返回连接步骤。")}</p><button type="button" onClick={() => void load()}>{t("重新检查")}</button><button type="button" onClick={onOpenConnectors}>{t("返回连接步骤")}</button></div>}
     <div className="backup-list">
       {connected && <section className={`plan-plat${open ? ' open' : ''}`}>
-        <div className="backup-section backup-master"><h3>{t("自动备份")}</h3><div className="plan-plat-head">
+        {wizard ? <Row label={t("自动备份")} desc={t("关闭后，只在手动备份时上传")}><Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label={t("微信自动备份")} /></Row> : <div className="plan-plat-head">
           <span className="plan-mark"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
           <button type="button" className="plan-plat-title" aria-expanded={open} onClick={() => setOpen(!open)}>
-            <strong>{t("微信自动备份")}</strong>
+            <strong>{t("微信")}</strong>
             <small><span>{summary}</span><i>{open ? t("收起") : t("编辑")}</i></small>
           </button>
           <Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label={t("微信自动备份")}/>
-        </div></div>
-        {open && <div className={`plan-rows${settings.sync.enabled ? '' : ' off'}`}>
-          <div className="backup-section"><h3>{t("备份频率")}</h3>
+        </div>}
+        {(wizard || open) && <fieldset disabled={!settings.sync.enabled} className={`plan-rows${settings.sync.enabled ? '' : ' off'}`} style={{ border: 0, margin: 0, minWidth: 0 }}>
           <Row label={t("备份方式")}>
             <Pills label={t("备份方式")} value={plan.mode} options={MODES} onChange={mode => setPlan({ mode })}/>
           </Row>
@@ -301,11 +306,6 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
               >{t("添加")}</button>
             </div>
           </Row>}
-          </div><div className="backup-section"><h3>{t("上传内容")}</h3>
-          <Row label={t("上传内容")} desc={t("选择备份时包含的消息和附件")}>
-            <Pills label={t("上传内容")} value={plan.attachments} options={ATTACHMENTS} onChange={attachments => setPlan({ attachments })}/>
-          </Row>
-          </div><div className="backup-section"><h3>{t("网络与时间限制")}</h3>
           <Row label={t("限制上传时间")} desc={t("只在允许的时间段上传，或避开某个时间段")}>
             <Switch checked={plan.window_enabled} onChange={window_enabled => setPlan({ window_enabled })} label={t("限制上传时间")}/>
           </Row>
@@ -344,30 +344,37 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
           <Row label={t("仅在 Wi-Fi 下上传")}>
             <Switch checked={plan.wifi_only} onChange={wifi_only => setPlan({ wifi_only })} label={t("仅在 Wi-Fi 下上传")}/>
           </Row>
+          <Row label={t("附件")}><Pills label={t("上传内容")} value={plan.attachments} options={ATTACHMENTS} onChange={attachments => setPlan({ attachments })}/></Row>
           {settings.sync.enabled && plan.mode === 'interval' && <Row label={t("下次备份")}>
             <span className="plan-kv">{nextRunLabel(plan, intervalSeconds, lastRun)}</span>
           </Row>}
-          </div>
-        </div>}
+        </fieldset>}
         {open && syncState.last_error && <div className="backup-error">{syncState.last_error}</div>}
       </section>}
 
-      <div className="plan-off-head">{t("未连接")}</div>
+      {!wizard && <>
+      {whatsappConnected && <section className="plan-plat backup-manual-platform"><div className="plan-plat-head">
+        <span className="plan-mark alt"><ConnectorIcon name="WhatsApp" /></span>
+        <div className="plan-plat-title"><strong>WhatsApp</strong><small>{t("仅手动备份")}</small></div>
+        <span className="plan-kv">{t("已连接")}</span>
+      </div><p>{t("在聊天页面选择已导入的会话后，手动上传新增消息。")}</p></section>}
+      {(!connected || !whatsappConnected) && <div className="plan-off-head">{t("未连接")}</div>}
       {!connected && <div className="plan-off">
         <span className="plan-mark dim"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
         <div><strong>{t("微信")}</strong><small>{t("连接后可单独设置备份周期")}</small></div>
         <button type="button" onClick={onOpenConnectors}>{t("打开连接向导")}</button>
       </div>}
-      {[{ name: 'WhatsApp', hint: t("尚未接入") }, { name: '邮件', hint: t("尚未接入") }].map(item => <div className="plan-off" key={item.name}>
-        <ConnectorIcon name={item.name} />
-        <div><strong>{item.name}</strong><small>{t("连接后可单独设置备份周期")}</small></div>
-        <button type="button" className="ghost" onClick={onOpenConnectors}>{t(item.hint)}</button>
-      </div>)}
+      {!whatsappConnected && <div className="plan-off">
+        <span className="plan-mark alt dim"><ConnectorIcon name="WhatsApp" /></span>
+        <div><strong>WhatsApp</strong><small>{t("连接后可手动备份聊天记录")}</small></div>
+        <button type="button" onClick={onOpenConnectors}>{t("打开连接向导")}</button>
+      </div>}
+      </>}
     </div>
 
     </fieldset>
-    {onContinue && <div className="page-actions"><button type="button" className="primary" disabled={!connected || !settings.sync.enabled || plan.mode === 'manual' || blocked || savePending} onClick={onContinue}>{t("保存并继续")}</button>{(!settings.sync.enabled || plan.mode === 'manual') && <span>{t("请开启自动备份并选择备份周期。")}</span>}</div>}
-    {error && <div className="error" role="alert">{t(error)}</div>}
+    {onContinue && <div className="page-actions">{wizard && onBack && <button type="button" className="wxv-btn" disabled={savePending} onClick={onBack}>{t("上一步")}</button>}<WizardActionButton className="primary" loading={savePending} busyLabel={t("正在保存…")} disabled={!connected || (!wizard && (!settings.sync.enabled || plan.mode === 'manual')) || blocked || savePending} onAction={onContinue}>{wizard ? t("下一步") : t("保存并继续")}</WizardActionButton>{!wizard && (!settings.sync.enabled || plan.mode === 'manual') && <span>{t("请开启自动备份并选择备份周期。")}</span>}</div>}
+    {error && <div className="error" role="alert">{error}</div>}
     {blocked && <div><p>{t("当前修改未确认保存；重新加载会放弃这些修改。")}</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? t("正在加载…") : t("放弃未保存修改并重新加载")}</button></div>}
   </div>;
 }

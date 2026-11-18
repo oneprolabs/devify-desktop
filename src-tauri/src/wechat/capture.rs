@@ -2906,6 +2906,68 @@ pub struct RestoreResult {
     pub verified: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AcceptOfficialResult {
+    pub version: String,
+    pub build: String,
+    pub archive_path: String,
+}
+
+fn can_accept_official(state: &CaptureState, signature: &Signature) -> bool {
+    state.stage == "external_install_conflict"
+        && state.recovery_error_code.as_deref() == Some("external_install_conflict")
+        && signature.is_tencent_official()
+        && !signature.cdhash.is_empty()
+}
+
+/// Keep an independently installed Tencent bundle. This is an explicit user action,
+/// separate from restore: neither this app nor its old ZIP is copied over WeChat.
+/// Move the active record last so any failure keeps recovery available. All assets
+/// (including the original ZIP and same-volume restore slot) remain preserved.
+pub fn accept_official_installation(app: &Path, root: &Path) -> CaptureResult<AcceptOfficialResult> {
+    let _lock = acquire_lock(root)?;
+    let app = normalize_app(Some(app))?;
+    let state = read_state(root).ok_or_else(|| CaptureError::new(
+        "in_place_recovery_state_missing", "未找到待处理的恢复记录，请重新检查微信状态。",
+    ))?;
+    let signature = inspect_signature(&app, true)?;
+    if Path::new(&state.wechat_app_path) != app || !can_accept_official(&state, &signature) {
+        return Err(CaptureError::new("official_install_not_verified",
+            "无法确认当前微信为可保留的腾讯官方版本。请保留原备份，重新安装官方微信后再检查。"));
+    }
+    let identity = bundle_identity(&app, &signature)?;
+    let archive = unique_dir(&root.join("history"), "official-install")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&archive, fs::Permissions::from_mode(0o700))
+            .map_err(|error| CaptureError::new("state_archive_failed", format!("无法保护恢复记录：{error}")))?;
+    }
+    // Deep verification is mandatory here; the lightweight status flag is not authority.
+    let checked = inspect_signature(&app, true)?;
+    if !can_accept_official(&state, &checked) || bundle_identity(&app, &checked)? != identity {
+        return Err(CaptureError::new("external_install_conflict", "校验期间微信发生变化，请重新检查后继续。"));
+    }
+    archive_recovery_record(root, &archive)?;
+    Ok(AcceptOfficialResult { version: identity.version, build: identity.build, archive_path: archive.to_string_lossy().to_string() })
+}
+
+fn archive_recovery_record(root: &Path, archive: &Path) -> CaptureResult<()> {
+    for path in [ready_path(root), preflight_path(root), result_path(root), state_path(root)] {
+        let metadata = match path.symlink_metadata() {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && path != state_path(root) => continue,
+            Err(error) => return Err(CaptureError::new("state_archive_failed", format!("无法读取恢复记录：{error}"))),
+        };
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(CaptureError::new("state_archive_failed", "恢复记录路径异常，已停止处理并保留原文件。"));
+        }
+        fs::rename(&path, archive.join(path.file_name().unwrap())).map_err(|error|
+            CaptureError::new("state_archive_failed", format!("无法归档恢复记录，请重试：{error}")))?;
+    }
+    Ok(())
+}
+
 fn safe_backup_from_state(state: &CaptureState, backup_root: &Path) -> CaptureResult<PathBuf> {
     let candidate = PathBuf::from(&state.backup_path);
     let root = fs::canonicalize(backup_root).unwrap_or_else(|_| backup_root.to_path_buf());
@@ -3184,6 +3246,60 @@ fn terminate_stale_lldb(root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepting_an_official_update_archives_records_and_preserves_backups() {
+        let root = std::env::temp_dir().join(format!("wxcap-accept-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let archive = root.join("history/official-update");
+        fs::create_dir_all(&archive).unwrap();
+        let state: CaptureState = serde_json::from_value(serde_json::json!({
+            "schema_version": STATE_SCHEMA, "stage": "external_install_conflict",
+            "created_at": 1, "transaction_id": "old", "owner_pid": 42,
+            "wechat_app_path": WECHAT_APP, "backup_path": "original.zip",
+            "backup_root": "/tmp", "backup_created": true,
+            "version": "4.2.0", "build": "270351", "official_cdhash": "aa",
+            "recovery_error_code": "external_install_conflict"
+        })).unwrap();
+        let official = parse_codesign_output("Identifier=com.tencent.xinWeChat\nTeamIdentifier=5A4RE8SF68\nCDHash=abcdef\nflags=0x10000(runtime)\n");
+        assert!(can_accept_official(&state, &official));
+        let mut unrelated = state.clone();
+        unrelated.stage = "capturing".into();
+        assert!(!can_accept_official(&unrelated, &official), "an active capture cannot be abandoned");
+        let mut invalid = official.clone(); invalid.valid = false;
+        assert!(!can_accept_official(&state, &invalid));
+        let mut adhoc = official.clone(); adhoc.ad_hoc = true;
+        assert!(!can_accept_official(&state, &adhoc));
+        let mut other_team = official.clone(); other_team.team_identifier = "another".into();
+        assert!(!can_accept_official(&state, &other_team));
+        write_state(&root, &state).unwrap();
+        let original = fs::read(state_path(&root)).unwrap();
+        fs::write(result_path(&root), b"old-result").unwrap();
+        fs::write(ready_path(&root), b"ready").unwrap();
+        fs::write(root.join("original.zip"), b"backup").unwrap();
+        archive_recovery_record(&root, &archive).unwrap();
+        assert!(read_state(&root).is_none(), "old recovery must stop blocking the next connection");
+        assert_eq!(fs::read(archive.join(STATE_NAME)).unwrap(), original);
+        assert_eq!(fs::read(archive.join(RESULT_NAME)).unwrap(), b"old-result");
+        assert_eq!(fs::read(root.join("original.zip")).unwrap(), b"backup");
+        assert!(!ready_path(&root).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_archive_input_keeps_the_active_recovery_record() {
+        let root = std::env::temp_dir().join(format!("wxcap-archive-unsafe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let archive = root.join("history"); fs::create_dir_all(&archive).unwrap();
+        fs::write(state_path(&root), b"state").unwrap();
+        fs::write(root.join("keep"), b"keep").unwrap();
+        std::os::unix::fs::symlink(root.join("keep"), result_path(&root)).unwrap();
+        assert!(archive_recovery_record(&root, &archive).is_err());
+        assert_eq!(fs::read(state_path(&root)).unwrap(), b"state");
+        assert_eq!(fs::read(root.join("keep")).unwrap(), b"keep");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn only_a_matching_full_length_result_can_be_resumed() {

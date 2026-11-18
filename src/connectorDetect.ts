@@ -10,8 +10,8 @@ export type ConnectorDetect = {
   message: string;
 };
 
-/** Re-checked on mount, on window focus and on demand, so a reinstall is picked up without a restart. */
-export function useConnectorDetect(kind: string) {
+/** Catalogs refresh on focus; guided flows can keep checks explicit. */
+export function useConnectorDetect(kind: string, { refreshOnFocus = true }: { refreshOnFocus?: boolean } = {}) {
   const [detect, setDetect] = useState<ConnectorDetect | null>(null);
   const [checking, setChecking] = useState(isTauri());
   const recheck = useCallback(async () => {
@@ -27,10 +27,13 @@ export function useConnectorDetect(kind: string) {
   }, [kind]);
   useEffect(() => {
     void recheck();
+  }, [recheck]);
+  useEffect(() => {
+    if (!refreshOnFocus) return;
     const onFocus = () => { void recheck(); };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [recheck]);
+  }, [recheck, refreshOnFocus]);
   const usable = detect?.state === 'installed' || detect?.state === 'not_required';
   // An untrusted WeChat bundle is still sufficient for the read-only/import flow. The
   // signature gate remains inside the in-app capture command, which is the only path that

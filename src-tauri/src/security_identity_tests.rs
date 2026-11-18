@@ -240,6 +240,44 @@ fn refresh_server_error_keeps_credentials_and_reports_unavailable() {
 }
 
 #[test]
+fn refresh_blocked_by_upload_preserves_login_and_recovers_after_the_lease_ends() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    settings_for(dir.path(), &base);
+    let original = credentials(&base, "synthetic-expired");
+    desktop_credentials::save(dir.path(), &original).unwrap();
+    let before = desktop_credentials::generation().unwrap();
+    let server = thread::spawn(move || {
+        for _ in 0..1 {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = [0u8; 4096];
+            socket.read(&mut request).unwrap();
+            let body = r#"{"access":"synthetic-refreshed","refresh":"synthetic-rotated"}"#;
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let lease = UPLOAD_IDENTITY_LOCK.read().await;
+        let mut cleared = None;
+        let error = devify_access_token_with_cleanup(dir.path(), &base, &mut cleared).await.unwrap_err();
+        assert!(matches!(error, DevifyTokenError::Unavailable(_)), "an upload blocks remote token rotation without logging out");
+        assert!(cleared.is_none());
+        assert_eq!(desktop_credentials::generation().unwrap(), before);
+        assert!(desktop_credentials::load(dir.path(), &base).unwrap() == original);
+        assert!(desktop_credentials::begin_auth_attempt().is_err(), "keep the upload identity guard intact");
+        drop(lease);
+        assert_eq!(devify_access_token_with_cleanup(dir.path(), &base, &mut cleared).await.unwrap(), "synthetic-refreshed");
+        assert_eq!(desktop_credentials::generation().unwrap(), before.wrapping_add(1));
+        assert_eq!(desktop_credentials::load(dir.path(), &base).unwrap().refresh, "synthetic-rotated");
+        assert!(cleared.is_none());
+    });
+    server.join().unwrap();
+}
+
+#[test]
 fn invalid_refresh_response_does_not_log_out_or_discard_credentials() {
     for body in ["not json", "{}", r#"{"access":""}"#] {
         let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();

@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "preview:menu": "vite --open /scripts/navigation-preview.html",
     "stage:wxq": "node scripts/stage-wxq.mjs --prepare && cargo build --release --bin wxq --features aux-binaries --manifest-path src-tauri/Cargo.toml && node scripts/stage-wxq.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:frontend": "node scripts/test-frontend.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

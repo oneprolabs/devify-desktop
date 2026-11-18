@@ -13,7 +13,6 @@ type Connector = { name: string; description: string };
 const connectors: Connector[] = [
   { name: '微信', description: '读取本机微信聊天记录，也可以导入 JSON 文件' },
   { name: 'WhatsApp', description: '读取本机 WhatsApp 聊天记录，无需密钥' },
-  { name: '邮件', description: '用只读授权连接 Gmail、Outlook 或 IMAP 邮箱' },
 ];
 
 function steps(mode: HomeMode, source: string, sessions = 0, syncIntervalSeconds = 1800): Step[] {
@@ -48,7 +47,7 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
 
       {isNew ? <section className="chat-landing-connectors" aria-label={t("连接聊天来源")}>
         {connectors.map(connector => {
-          const isWechat = connector.name === '微信';
+          const isWechat = connector.name === "微信";
           const isWhatsApp = connector.name === 'WhatsApp';
           const detect = isWhatsApp ? whatsapp : wechat;
           const canProceed = isWechat ? detect.canProceed : detect.usable;
@@ -57,7 +56,7 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
             <ConnectorIcon name={connector.name} />
             <div>
               <h2>{connector.name}</h2>
-              {missing ? <p className="chat-landing-install"><span />{detectTitleFor(connector.name, missing.state)}：{missing.message}</p>
+              {missing ? <p className="chat-landing-install"><span />{detectTitleFor(connector.name, missing.state)}：{t(missing.message)}</p>
                 : <p>{detect.checking ? tf("正在检测本机{0}…", connector.name) : connector.description}</p>}
               {missing && <p className="chat-landing-install-actions">
                 <button type="button" onClick={() => void detect.recheck()}>{t("重新检查")}</button>
@@ -65,7 +64,7 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
               </p>}
             </div>
             {isWhatsApp
-              ? <button type="button" className="chat-landing-primary" onClick={onConnectWhatsApp} disabled={!detect.usable && isTauri()}>{detect.usable ? t("打开聊天") : t("查看连接器")}</button>
+              ? <button type="button" className="chat-landing-primary" onClick={onConnectWhatsApp}>{t("打开连接向导")}</button>
               : <button type="button" className="chat-landing-primary" onClick={() => onConnect(connector.name)} disabled={isWechat && !detect.canProceed && isTauri()}>{isWechat ? t("打开连接向导") : t("查看连接器")}</button>}
           </article>;
         })}
@@ -78,7 +77,7 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
 
       <section className="chat-landing-steps" aria-labelledby="chat-landing-steps-title">
         <h2 id="chat-landing-steps-title">{t("开始前的四步")}</h2>
-        <ol>{steps(mode, source, sessionCount, syncIntervalSeconds).map(step => <li key={step.number} className={step.state}><span>{step.state === 'done' ? '✓' : step.number}</span><div><strong>{step.title}</strong><p>{t(step.description)}</p></div></li>)}</ol>
+        <ol>{steps(mode, source, sessionCount, syncIntervalSeconds).map(step => <li key={step.number} className={step.state}><span>{step.state === 'done' ? '✓' : step.number}</span><div><strong>{t(step.title)}</strong><p>{t(step.description)}</p></div></li>)}</ol>
       </section>
       <p className="chat-landing-after">{t("完成后，「聊天」这里会显示：按会话整理的聊天记录，可以搜索、查看原文。")}</p>
     </div>

@@ -25,6 +25,20 @@ export function ConnectorIcon({ name }: { name: string }) {
     : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></svg>}</span>;
 }
 
+const connectorTiles: Record<string, [string, string, string]> = {
+  微信: ['微', '#47c86e', '#008b4e'], WhatsApp: ['W', '#00c0a0', '#007570'],
+  Telegram: ['T', '#51bfee', '#0089ca'],
+  Slack: ['S', '#b865cb', '#693996'], 飞书: ['飞', '#26b7d3', '#2971c6'],
+  钉钉: ['钉', '#ed9d44', '#d55c13'], 企业微信: ['企', '#00b4bc', '#007994'],
+  Discord: ['D', '#7180ec', '#5349b9'], LINE: ['L', '#86cf57', '#229944'],
+};
+
+/** The V7 catalogue uses letter tiles; shared brand icons elsewhere stay unchanged. */
+function ConnectorTile({ name }: { name: string }) {
+  const [letter, from, to] = connectorTiles[name];
+  return <span className="connector-tile" style={{ backgroundImage: `linear-gradient(135deg, ${from}, ${to})` }} aria-hidden="true">{letter}</span>;
+}
+
 type Scan = { accounts: Array<{ id: string }> };
 type KeyStatus = { keys: Array<{ account: string }> };
 type Probe = { accounts: number; verifiedAccounts: number };
@@ -40,15 +54,14 @@ type WhatsAppStatus = {
   error: string | null;
 };
 
-type Connector = { name: string; description: string; capabilities: string; local?: boolean };
+type Connector = { name: string; description: string; capabilities: string };
 const futureConnectors: Connector[] = [
-  { name: '邮件', description: '连接邮箱，整理邮件对话', capabilities: '历史记录 · 邮件夹' },
-  { local: true, name: 'Telegram', description: '读取群组与私聊', capabilities: '' },
-  { local: true, name: 'Slack', description: '读取工作区频道与私信', capabilities: '' },
-  { local: true, name: '飞书', description: '读取群聊与话题', capabilities: '' },
-  { local: true, name: '钉钉', description: '读取群消息', capabilities: '' },
-  { local: true, name: '企业微信', description: '读取客户群与内部群', capabilities: '' },
-  { local: true, name: 'Discord', description: '读取服务器频道', capabilities: '' },
+  { name: 'Telegram', description: '读取群组与私聊', capabilities: '' },
+  { name: 'Slack', description: '读取工作区频道与私信', capabilities: '' },
+  { name: '飞书', description: '读取群聊与话题', capabilities: '' },
+  { name: '钉钉', description: '读取群消息', capabilities: '' },
+  { name: '企业微信', description: '读取客户群与内部群', capabilities: '' },
+  { name: 'Discord', description: '读取服务器频道', capabilities: '' },
   { name: 'LINE', description: '导入聊天文本', capabilities: '' },
 ];
 
@@ -172,13 +185,29 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
   const recheckAll = () => { void install.recheck(); void refresh(); };
   const hasHistory = Boolean(probe?.verifiedAccounts);
 
-  return <div className="connector-page">
+  const interestButton = (name: string) => <button
+    type="button"
+    className={`connector-notify${waitlist.includes(name) ? ' on' : ''}`}
+    aria-label={`${waitlist.includes(name) ? t("取消关注") : t("关注")}${name}`}
+    aria-pressed={waitlist.includes(name)}
+    disabled={!settingsLoaded}
+    onClick={() => toggleWaitlist(name)}
+  >{waitlist.includes(name) !== confirmedWaitlist.includes(name) ? (waitlist.includes(name) ? t("已关注（未保存）") : t("未关注（未保存）")) : waitlist.includes(name) ? t("已关注") : t("关注进展")}</button>;
+
+  const futureCard = (connector: Connector) => <article key={connector.name} className="connector-card future">
+    <div className="connector-card-head"><ConnectorTile name={connector.name} /><div><h3>{t(connector.name)}</h3><p className="connector-state">{t("尚未接入")}</p></div></div>
+    <p className="connector-description">{t(connector.description)}</p>
+    {connector.capabilities && <p className="connector-capabilities">{connector.capabilities}</p>}
+    <div className="connector-actions">{interestButton(connector.name)}</div>
+  </article>;
+
+  return <div className="connector-page connector-catalog">
     <header className="connector-hero">
-      <div><p>CONNECTORS</p><h1>{t("连接器")}</h1><span>{t("连接并管理聊天平台，选择要导入的会话。")}</span></div>
-      <div className="connector-hero-marks" aria-hidden="true">{['微信', 'WhatsApp', '邮件', 'Telegram', 'Slack', '飞书'].map(name => <ConnectorIcon key={name} name={name} />)}</div>
+      <div className="connector-hero-copy"><p>CONNECTORS</p><h1>{t("你所有的对话，汇到一处")}</h1><span>{t("微信和 WhatsApp 已开放。想要其他来源，可以先关注，后续在这里查看接入进展。")}</span></div>
+      <div className="connector-hero-marks" aria-hidden="true">{['微信', 'WhatsApp', 'Telegram', 'Slack', '飞书'].map(name => <ConnectorTile key={name} name={name} />)}</div>
     </header>
     <section aria-labelledby="connector-available">
-      <h2 id="connector-available">{t("聊天来源")}</h2>
+      <h2 id="connector-available">{t("已开放")}</h2>
       {missing && enabled && hasHistory && <div className="connector-install-banner" role="status">
         <span className="connector-install-icon" aria-hidden="true">!</span>
         <div><strong>{t("未检测到微信，已停止读取新消息")}</strong><p>{t("已导入的聊天记录仍可查看，云端记录不受影响。重新安装微信后点「重新检查」即可恢复。")}</p></div>
@@ -187,7 +216,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
       <div className="connector-grid">
         <article className={`connector-card${enabled ? '' : ' off'}${missing ? ' blocked' : ''}`}>
           <div className="connector-card-head">
-            <ConnectorIcon name="微信" />
+            <ConnectorTile name="微信" />
             <div>
               <h3>{t("微信")}</h3>
               <p className="connector-state">
@@ -197,27 +226,23 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
             </div>
           </div>
           {missing && !(enabled && hasHistory) ? <div className="connector-install-check">
-            <p>{install.detect!.message}</p>
+            <p>{t(install.detect!.message)}</p>
             {install.detect!.app_path && <p className="connector-install-path">{t("检测位置：")}{install.detect!.app_path}</p>}
-          </div> : signatureWarning ? <div className="connector-install-check">
-            <p>{t("当前无法确认微信是腾讯官方签名版本。仍可导入可信密钥并读取本机数据库；应用内获取密钥需要官方签名。")}</p>
-            {install.detect?.app_path && <p className="connector-install-path">{t("检测位置：")}{install.detect.app_path}</p>}
-          </div> : <p className="connector-description">
+            <button type="button" className="connector-quiet" onClick={recheckAll} disabled={loading || install.checking}>{t("重新检查")}</button>
+          </div> : signatureWarning ? <div className="connector-install-check"><p>{t('检测到微信，但签名尚未确认。可继续查看已有记录或导入密钥文件；自动连接仍需确认官方版本。')}</p><button type="button" className="connector-quiet" onClick={recheckAll} disabled={loading || install.checking}>{t('重新检查')}</button></div> : <p className="connector-description">
             {enabled
-              ? t("读取本机数据库，只读，不改动聊天数据")
+              ? t("读取本机数据库，只读，不改动微信")
               : t("本机密钥与解密快照仍然保留，重新连接不需要再次导入；云端已上传的记录保持不变。")}
           </p>}
-          {!missing && !signatureWarning && install.detect?.version && <p className="connector-install-meta">{t("微信")} {install.detect.version} {t("· 官方签名 ·")} {install.detect.app_path}</p>}
+          {!missing && !signatureWarning && install.detect?.version && <details className="connector-install-details"><summary>{t("微信")}{install.detect.version} {t("· 官方签名")}</summary><p className="connector-install-meta">{install.detect.app_path}</p><button type="button" className="connector-quiet" onClick={recheckAll} disabled={loading || install.checking}>{t("重新检查")}</button></details>}
           <p className="connector-capabilities">{t("历史记录 · 群聊 · 增量同步")}</p>
           <div className="connector-actions">
             {enabled ? <>
-              <button type="button" className="connector-primary" onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))} disabled={!install.canProceed} title={missing ? t("请先安装微信") : undefined}>{probe?.verifiedAccounts ? t("重新配置") : t("打开连接向导")}</button>
-              {isTauri() && <button type="button" className="connector-quiet" onClick={recheckAll} disabled={loading || install.checking}>{t("重新检查")}</button>}
+              <button type="button" className={`connector-primary${probe?.verifiedAccounts ? ' connector-configured' : ''}`} onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))} disabled={!install.canProceed} title={missing ? t("请先安装微信") : undefined}>{probe?.verifiedAccounts ? t("重新配置") : t("打开连接向导")}</button>
               {missing && install.detect!.state === 'not_installed' && <a className="connector-link" href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">{t("前往下载微信 ↗")}</a>}
-              {isTauri() && (!missing || hasHistory) && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving || !settingsLoaded}>{t("断开连接")}</button>}
+              {isTauri() && (!missing || hasHistory) && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving || !settingsLoaded}>{t("断开")}</button>}
             </> : <>
               <button type="button" className="connector-primary" onClick={() => void setConnected(true)} disabled={saving || !settingsLoaded}>{saving ? t("连接中…") : t("重新连接")}</button>
-              {isTauri() && <button type="button" className="connector-quiet" onClick={() => void refresh()} disabled={loading}>{t("重新检查")}</button>}
             </>}
           </div>
           {enabled && confirming && <div className="connector-confirm" role="dialog" aria-label={t("确认断开微信连接")}>
@@ -235,7 +260,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
         </article>
         <article className={`connector-card${whatsappEnabled ? '' : ' off'}${whatsappMissing ? ' blocked' : ''}`}>
           <div className="connector-card-head">
-            <ConnectorIcon name="WhatsApp" />
+            <ConnectorTile name="WhatsApp" />
             <div>
               <h3>WhatsApp</h3>
               <p className="connector-state">
@@ -249,25 +274,24 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
             </div>
           </div>
           {whatsappMissing ? <div className="connector-install-check">
-            <p>{whatsappInstall.detect!.message}</p>
+            <p>{t(whatsappInstall.detect!.message)}</p>
             {whatsappInstall.detect!.app_path && <p className="connector-install-path">{t("检测位置：")}{whatsappInstall.detect!.app_path}</p>}
+            <button type="button" className="connector-quiet" onClick={() => { void whatsappInstall.recheck(); void refreshWhatsapp(); }} disabled={whatsappBusy || whatsappInstall.checking}>{t("重新检查")}</button>
           </div> : <p className="connector-description">
             {whatsappEnabled
-              ? t("读取本机 WhatsApp 数据库，只读，不改动聊天数据；不需要密钥或解密。")
+              ? t("读取桌面版本地数据，只读，无需解密")
               : t("已断开读取；本机聊天数据不会被修改，重新连接即可继续读取。")}
           </p>}
-          {!whatsappMissing && whatsappInstall.detect?.version && <p className="connector-install-meta">WhatsApp {whatsappInstall.detect.version} {t("· 官方签名 ·")} {whatsappInstall.detect.app_path}</p>}
+          {!whatsappMissing && whatsappInstall.detect?.version && <details className="connector-install-details"><summary>WhatsApp {whatsappInstall.detect.version} {t("· 官方签名")}</summary><p className="connector-install-meta">{whatsappInstall.detect.app_path}</p><button type="button" className="connector-quiet" onClick={() => { void whatsappInstall.recheck(); void refreshWhatsapp(); }} disabled={whatsappBusy || whatsappInstall.checking}>{t("重新检查")}</button></details>}
           {whatsapp?.error && <p className="connector-error" role="alert">{whatsapp.error}</p>}
           <p className="connector-capabilities">{t("历史记录 · 群聊 · 手动备份")}</p>
           <div className="connector-actions">
             {whatsappEnabled ? <>
-              <button type="button" className="connector-primary" onClick={onOpenWhatsApp} disabled={!whatsappInstall.usable || whatsappBusy} title={whatsappMissing ? t("请先安装 WhatsApp") : undefined}>{t("查看聊天")}</button>
-              {isTauri() && <button type="button" className="connector-quiet" onClick={() => { void whatsappInstall.recheck(); void refreshWhatsapp(); }} disabled={whatsappBusy || whatsappInstall.checking}>{t("重新检查")}</button>}
+              <button type="button" className={`connector-primary${whatsapp?.account && !whatsapp.error ? ' connector-configured' : ''}`} onClick={onOpenWhatsApp}>{whatsapp?.account && !whatsapp.error ? t("重新配置") : t("打开连接向导")}</button>
               {whatsappMissing && whatsappInstall.detect!.state === 'not_installed' && <a className="connector-link" href="https://www.whatsapp.com/download" target="_blank" rel="noreferrer">{t("前往下载 WhatsApp ↗")}</a>}
-              {isTauri() && !whatsappMissing && <button type="button" className="connector-quiet danger" onClick={() => setWhatsappConnected(false)} disabled={saving || !settingsLoaded}>{t("断开连接")}</button>}
+              {isTauri() && !whatsappMissing && <button type="button" className="connector-quiet danger" onClick={() => setWhatsappConnected(false)} disabled={saving || !settingsLoaded}>{t("断开")}</button>}
             </> : <>
-              <button type="button" className="connector-primary" onClick={() => setWhatsappConnected(true)} disabled={saving || !settingsLoaded}>{saving ? t("连接中…") : t("重新连接")}</button>
-              {isTauri() && <button type="button" className="connector-quiet" onClick={() => void refreshWhatsapp()} disabled={whatsappBusy}>{t("重新检查")}</button>}
+              <button type="button" className="connector-primary" onClick={onOpenWhatsApp}>{t("打开连接向导")}</button>
             </>}
           </div>
         </article>
@@ -276,21 +300,14 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
       {saveError && <p className="connector-error" role="alert">{saveError}</p>}
     </section>
     <section aria-labelledby="connector-upcoming">
-      <div className="connector-section-head"><h2 id="connector-upcoming">{t("其他来源")}</h2></div>
-      <p className="connector-section-description">{t("未来可连接更多平台，统一管理你的聊天记录。")}</p>
-      <div className="connector-grid">{futureConnectors.map(connector => <article key={connector.name} className="connector-card future">
-        <div className="connector-card-head"><ConnectorIcon name={connector.name} /><div><h3>{connector.name}</h3><p className="connector-state">{t("尚未接入")}</p></div></div>
-        <p className="connector-description">{t(connector.description)}</p>
-        {connector.capabilities && <p className="connector-capabilities">{connector.capabilities}</p>}
-        <p className="connector-install-meta">{connector.local ? t("接入时会先检测本机是否安装桌面版") : t("无需安装本机应用")}</p>
-        <div className="connector-actions"><button
-          type="button"
-          className={`connector-notify${waitlist.includes(connector.name) ? ' on' : ''}`}
-          aria-pressed={waitlist.includes(connector.name)}
-          disabled={!settingsLoaded}
-          onClick={() => toggleWaitlist(connector.name)}
-        >{waitlist.includes(connector.name) !== confirmedWaitlist.includes(connector.name) ? (waitlist.includes(connector.name) ? t("已加入（未保存）") : t("未加入（未保存）")) : waitlist.includes(connector.name) ? t("已加入，上线通知你") : t("通知我")}</button></div>
-      </article>)}</div>
+      <div className="connector-section-head"><h2 id="connector-upcoming">{t("即将支持")}</h2><p className="connector-section-description">{t("关注你期待的来源")}</p></div>
+      <div className="connector-grid">{futureConnectors.map(futureCard)}
+        <article className="connector-card connector-developer">
+          <div className="connector-card-head"><span className="connector-tile" aria-hidden="true">＋</span><div><h3>{t("自己写一个")}</h3><p className="connector-state">{t("即将开放")}</p></div></div>
+          <p className="connector-description">{t("连接器扩展接口正在规划中，未来可通过扩展包接入更多来源。")}</p>
+          <div className="connector-actions">{interestButton(t("自定义连接器"))}</div>
+        </article>
+      </div>
     </section>
   </div>;
 }

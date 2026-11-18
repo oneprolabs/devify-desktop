@@ -65,7 +65,7 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
 }
 
 /// OS release of the machine that produced the report, for example `macOS 14.5 (23F79)`.
-fn os_version() -> String {
+pub(crate) fn os_version() -> String {
     #[cfg(target_os = "macos")]
     {
         let product = command_stdout("/usr/bin/sw_vers", &["-productVersion"]).unwrap_or_default();
