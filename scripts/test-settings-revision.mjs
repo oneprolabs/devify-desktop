@@ -85,6 +85,13 @@ const mockedRequire = id => {
     currentAccount: (accounts, remembered) => accounts.find(item => item.id === remembered) ?? accounts[0],
   };
   if (id === './serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
+  if (id === './locale') return {
+    t: text => text,
+    tf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
+    ctf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
+    dateLocale: () => 'zh-CN',
+    sortLocale: () => 'zh-Hans-CN',
+  };
   if (id.endsWith('.svg') || id.endsWith('.png')) return id;
   if (id.endsWith('.css')) return {};
   throw Error(`unexpected import ${id}`);
@@ -228,6 +235,7 @@ wxContext.loadSessions = async () => [];
 wxContext.requireSettingsRevision = requireSettingsRevision;
 wxContext.settingsSaveError = settingsSaveError;
 wxContext.isSettingsConflict = module.exports.isSettingsConflict;
+wxContext.tf = (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? ''));
 wxContext.useCallback = fn => fn;
 let wxSave = deferred();
 wxContext.invoke = (_command, args) => { wxContext.sent = args.value; return wxSave.promise; };

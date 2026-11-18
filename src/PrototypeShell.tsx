@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { desktopInvoke as invoke } from './desktopInvoke';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -305,11 +305,17 @@ export default function PrototypeShell() {
   const settingsNav = (wechatGuide ? wizardSettingsPages : settingsPages)
     .filter(item => item.id === 'agent' ? showAgentHub : item.id !== 'history' || internalAccount);
   const openSettings = (page: SettingsPage, guide = false, edit = guide) => { setSettingsPage(page); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardStep('wizard-method'); setSection('settings'); };
-  const setWizard = (step: string) => {
-    setWizardStep(step);
-    const target = step === 'wizard-permission' || step === 'wizard-account' ? 'wx-connect-account' : step === 'wizard-key' || step === 'wizard-import' ? 'wx-connect-key' : step === 'wx-connect-decrypt' ? 'wx-connect-decrypt' : step;
-    window.requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  };
+  const settingsContentRef = useRef<HTMLDivElement | null>(null);
+  const setWizard = (step: string) => setWizardStep(step);
+  // Every step swaps the single card inside the same surface, so the old card disappears
+  // before the new one is laid out. The previous implementation animated to the next anchor
+  // with `scrollIntoView({behavior:'smooth'})`, which scrolled the viewport across that
+  // collapsed area and read as the whole panel flashing white. Pin the surface to the top
+  // after the commit instead: instant, and the new card is always fully in view.
+  useLayoutEffect(() => {
+    if (!wechatGuide) return;
+    settingsContentRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, [wechatGuide, wizardStep]);
   const wizardPrev = () => { const index = wizardOrder.indexOf(wizardStep); if (index > 0) setWizard(wizardOrder[index - 1]); };
   const wizardNext = () => { const index = wizardOrder.indexOf(wizardStep); if (index >= 0 && index < wizardOrder.length - 1) setWizard(wizardOrder[index + 1]); };
   const openEvent = (eventId: number) => { setEventFocusId(eventId); setSection('events'); };
@@ -375,7 +381,7 @@ export default function PrototypeShell() {
             </Fragment>;
           })}
         </aside>
-        <div className="prototype-settings-content">
+        <div className="prototype-settings-content" ref={settingsContentRef}>
           {settingsPage === 'connectors' && (wechatGuide ? <div className="wechat-wizard">
             <button type="button" className="connector-back" onClick={() => setWechatGuide(false)}>{t("← 返回连接器")}</button>
             <header className="wizard-connector-head"><span className="connector-mark green"><img src={wechatLogo} alt="" /></span><div><strong>{wechatGuideEdit ? t("重新配置") : t("连接向导")}</strong><h2>{t("微信")}</h2><p>{t("读取本机数据库，只读，不改动微信")}</p></div></header>
