@@ -87,9 +87,11 @@ export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [
     setBusy(true); setError(''); setNotice('');
     try {
       await save(draft);
-      await invoke<FeedbackReport>('feedback_submit', { draft });
+      const result = await invoke<FeedbackReport>('feedback_submit', { draft });
       recordDiagnostic({ module: 'feedback', operation: 'success' });
-      setNotice(t("反馈已提交。处理进度可在「我的反馈」查看。"));
+      setNotice(result.diagnostics_dropped
+        ? t("反馈已提交，但当前服务端不支持诊断日志，本次日志未上传。")
+        : t("反馈已提交。处理进度可在「我的反馈」查看。"));
       setDraft(null);
       setDraft(await invoke<FeedbackDraft>('feedback_draft_get'));
     } catch (value) {
