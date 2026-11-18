@@ -93,6 +93,8 @@
 .prototype-rail-brand { display: flex; flex: none; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 40px; padding-top: 8px; border-top: 1px solid #303034; }
 .prototype-rail-brand img { display: block; width: 32px; height: 26px; object-fit: contain; }
 .prototype-rail-version { color: #fff; font: 400 10px/1.2 var(--font); white-space: nowrap; }
+.prototype-rail-update { margin-top: 2px; padding: 2px 6px; border: 0; border-radius: 999px; background: #a3279a; color: #fff; font: 600 10px/1.2 var(--font); cursor: pointer; white-space: nowrap; }
+.prototype-rail-update:hover { background: #8e2187; }
 
 /* The updated prototype reserves 48px for the native macOS traffic lights. */
 .prototype-shell-macos .prototype-titlebar {

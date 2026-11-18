@@ -139,14 +139,17 @@ function isoWeek(date: Date): number {
   return Math.ceil((((target.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
 }
 
+function reportKind(report: ReportItem): string {
+  if (report.title.includes("周报")) return "周报";
+  if (report.title.includes("月报")) return "月报";
+  if (report.title.includes("日报")) return "日报";
+  return "报告";
+}
 function reportType(report: ReportItem): string {
-  if (report.title.includes(t("周报"))) return t("周报");
-  if (report.title.includes(t("月报"))) return t("月报");
-  if (report.title.includes(t("日报"))) return t("日报");
-  return t("报告");
+  return t(reportKind(report));
 }
 function reportBadge(report: ReportItem): string {
-  return { 日报: t("日"), 周报: t("周"), 月报: t("月") }[reportType(report)] ?? t("报");
+  return { 日报: t("日"), 周报: t("周"), 月报: t("月") }[reportKind(report)] ?? t("报");
 }
 function sectionItems(report: ReportItem): string[] {
   return (report.sections ?? []).flatMap(section => (section.items ?? []).map(item => item.title));
@@ -168,7 +171,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
   const [openNotes, setOpenNotes] = useState<Record<number, boolean>>({});
   const [reloadKey, setReloadKey] = useState(0);
   const [creating, setCreating] = useState(false);
-  const [genType, setGenType] = useState(t("日报"));
+  const [genType, setGenType] = useState("日报");
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState('');
   const [relations, setRelations] = useState<EventRelationRecord[]>([]);
@@ -506,10 +509,10 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
   const cycleStatus = () => setFilter(current => kind === 'reports' ? current : current === 'all' ? 'open' : current === 'open' ? 'done' : 'all');
   const filterLabel = kind === 'events'
     ? (filter === 'open' ? t("未完成") : filter === 'done' ? t("已完成") : t("全部"))
-    : (filter === 'all' ? t("全部") : filter);
+    : t(filter === 'all' ? "全部" : filter);
   const filterPills: Array<[string, string, number]> = kind === 'events'
     ? [['all', t("全部"), items.length], ['open', t("未完成"), counts.open], ['done', t("已完成"), counts.done]]
-    : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportType(item as ReportItem) === value).length]);
+    : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportKind(item as ReportItem) === value).length]);
 
   const pageTitle = t(copy.title);
   const pageEmpty = t(copy.empty);
@@ -603,13 +606,13 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
             <span className="report-create-label">{t("类型")}</span>
             <div className="report-create-field">
               <div className="report-seg" role="group" aria-label={t("报告类型")}>
-                {[t("日报"), t("周报"), t("月报")].map(type => <button
+                {["日报", "周报", "月报"].map(type => <button
                   key={type}
                   type="button"
                   aria-pressed={genType === type}
                   className={genType === type ? 'on' : ''}
                   onClick={() => setGenType(type)}
-                >{type}</button>)}
+                >{t(type)}</button>)}
               </div>
               <small>{t(genRange(genType).hint)}</small>
             </div>

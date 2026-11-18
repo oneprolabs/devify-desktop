@@ -38,9 +38,16 @@ function platformLabel(platform: string, arch: string): string {
   return `${name} · ${chip}`;
 }
 
+const RELEASE_NOTES: Record<string, string> = {
+  "Feedback reports keep the host details when a server cannot accept diagnostics, and the form now says so when the log is not uploaded. Includes the English interface from 0.1.12.": "反馈在服务端收不到诊断信息时，仍会保留本机上的详情；日志没有上传时，表单会说明这一点。这一版也包含 0.1.12 的英文界面。",
+  "Setup steps no longer flash a blank panel when you continue. Signing out now cancels a running backup right away instead of blocking the logout, and the next sign-in resumes it. Preparing a large chat history is faster because existing cloud message keys are read in parallel.": "继续设置时不再闪过空白页。退出登录会马上取消正在进行的备份，不再挡住退出；下次登录会接着备份。准备大量聊天记录时会并行读取已有的云端消息标识，因此更快。",
+};
+
 function updateNoteLines(notes?: string): string[] {
   if (!notes?.trim()) return [];
   const plain = notes.replace(/\s+/g, ' ').trim();
+  const known = RELEASE_NOTES[plain];
+  if (known) return [t(known)];
   if (/whatsapp/i.test(plain) && /whitelist/i.test(plain) && /group header|groups sessions by source/i.test(plain)) {
     return [
       t("新增 WhatsApp 只读来源，可浏览、搜索并上传本机文字会话，白名单规则与微信相同。"),
@@ -113,6 +120,8 @@ export function About() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState('');
   const hideOffer = updateLater && update.status === 'available';
+  const releaseNotes = updateNoteLines(update.notes);
+  const showingRelease = releaseNotes.length > 0 && ['available', 'downloading', 'downloaded', 'installing', 'installed'].includes(update.status);
 
   useEffect(() => {
     invoke<AppInfo>('app_info')
@@ -146,13 +155,15 @@ export function About() {
     </section>
 
     <section className="panel">
-      <h2>{t("这一版包含什么")}</h2>
-      <ul className="about-highlights">
+      <h2>{showingRelease ? tf("{0} 包含什么", update.version) : t("这一版包含什么")}</h2>
+      {showingRelease ? <ul className="about-checklist">
+        {releaseNotes.map(line => <li key={line}>{line}</li>)}
+      </ul> : <ul className="about-highlights">
         {HIGHLIGHTS.map(([title, text]) => <li key={title}>
           <strong>{t(title)}</strong>
           <span>{t(text)}</span>
         </li>)}
-      </ul>
+      </ul>}
     </section>
 
     <section className="panel">

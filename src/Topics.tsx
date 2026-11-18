@@ -30,7 +30,14 @@ type Topic = {
 type Settings = { devify?: { base_url?: string; active_space_id: string | null } };
 
 const periods = [{ value: 'day', label: '每天' }, { value: 'week', label: '每周' }, { value: 'month', label: '每月' }];
-const periodLabel = (value: string) => periods.find(item => item.value === value)?.label ?? value;
+const periodLabel = (value: string) => t(periods.find(item => item.value === value)?.label ?? value);
+function savedCopy(value: string): string {
+  const folded = value.trim().replace(/！/g, '!');
+  const translated = t(folded);
+  if (translated !== folded) return translated;
+  if (folded.startsWith('总结每日工作内容')) return t('总结每日工作内容!');
+  return value;
+}
 const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("尚未执行");
 const statusLabel = (value?: string | null) => ({ open: t("待我处理"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("已匹配");
 
@@ -164,7 +171,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
           >
             <span className={`topic-side-dot${topic.enabled ? ' on' : ''}`} aria-hidden="true"/>
             <span>
-              <strong>{topic.title}</strong>
+              <strong>{t(topic.title)}</strong>
               <small>{periodLabel(topic.period)} · {topic.last_run_at ? dateLabel(topic.last_run_at) : t("尚未执行")}</small>
             </span>
           </button>)}
@@ -176,7 +183,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
 
     <main className="topic-main">
       <header className="topic-top">
-        <div className="topic-crumbs">{t("主题订阅")} <span>/</span> {creating ? t("新建") : (detail?.title ?? t("全部"))}</div>
+        <div className="topic-crumbs">{t("主题订阅")} <span>/</span> {creating ? t("新建") : (detail ? t(detail.title) : t("全部"))}</div>
         <div className="topic-top-actions">
           {!creating && detail && <>
             <button type="button" onClick={() => void toggle(detail)}>{detail.enabled ? t("暂停") : t("启用")}</button>
@@ -237,9 +244,9 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
       {spaceId && !creating && detailLoading && <LoadingSkeleton label={t("正在加载主题详情")} kind="detail" />}
       {spaceId && !creating && detail && !detailLoading && <div className="topic-detail-wrap">
         <span className={`topic-state${detail.enabled ? ' on' : ''}`}>{detail.enabled ? t("运行中") : t("已暂停")}</span>
-        <h1>{detail.title}</h1>
+        <h1>{t(detail.title)}</h1>
         <div className="topic-meta">{periodLabel(detail.period)}{detail.time_local ? ` · ${detail.time_local.slice(0, 5)}` : ''} {t("· 上次执行")} {dateLabel(detail.last_run_at)}</div>
-        <div className="topic-instruction">{detail.instruction}</div>
+        <div className="topic-instruction">{savedCopy(detail.instruction)}</div>
         {detail.last_error && <p className="topic-error">{t("上次执行失败：")}{detail.last_error}</p>}
 
         <section className="topic-block">

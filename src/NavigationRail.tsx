@@ -27,13 +27,15 @@ const utilityItems = [
   { id: 'settings', label: '设置', icon: RailIcons.settings },
 ] as const;
 
-export function NavigationRail({ section, onNavigate, onAccount, authenticated, accountName = '', showBrand = true }: {
+export function NavigationRail({ section, onNavigate, onAccount, authenticated, accountName = '', showBrand = true, updateVersion, onUpdate }: {
   section: Section;
   onNavigate: (section: Section) => void;
   onAccount: () => void;
   authenticated: boolean;
   accountName?: string;
   showBrand?: boolean;
+  updateVersion?: string;
+  onUpdate?: () => void;
 }) {
   const avatar = accountAvatar(accountName);
   const navButton = (item: (typeof primaryItems)[number] | (typeof utilityItems)[number]) => <button
@@ -48,6 +50,6 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
     <nav className="prototype-nav" aria-label={t("工作区")}>{primaryItems.map(navButton)}</nav>
     <div className="prototype-spacer" />
     <nav className="prototype-nav" aria-label={t("应用")}>{utilityItems.map(navButton)}</nav>
-    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" /><small className="prototype-rail-version" aria-label={tf("版本 {0}", version)}>v{version}</small></div>}
+    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" /><small className="prototype-rail-version" aria-label={tf("版本 {0}", version)}>v{version}</small>{updateVersion && <button type="button" className="prototype-rail-update" onClick={onUpdate} title={tf("发现新版本 {0}，查看更新", updateVersion)}>{updateVersion}</button>}</div>}
   </aside>;
 }
