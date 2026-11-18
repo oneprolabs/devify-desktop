@@ -5,7 +5,7 @@ import wechatIcon from './assets/connectors/wechat.svg';
 import { ConnectorIcon } from './Connectors';
 import { createSettingsSaveQueue, settingsUserRevision, type SettingsSaveQueue } from './settingsSaveQueue';
 
-type ScanResult = { accounts: Array<{ id: string }> };
+type ChatAccount = { id: string; source: string };
 
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 /** The design's stepper allows 1–999 of the selected unit. */
@@ -128,7 +128,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
     try {
       const [stored, scan] = await Promise.all([
         invoke<AppSettings>('app_settings_get'),
-        invoke<ScanResult>('wechat_scan').catch(() => ({ accounts: [] })),
+        invoke<ChatAccount[]>('chat_accounts').catch(() => []),
       ]);
       settingsUserRevision(stored);
       if (!active.current || request !== loadId.current) return;
@@ -145,7 +145,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue }: { onOpenConnect
         setSavePending(state.saving || state.pending > 0);
         if (state.error) setError(`保存失败，修改尚未确认：${String(state.error)}`);
       });
-      setConnected((scan.accounts ?? []).length > 0);
+      setConnected((scan ?? []).length > 0);
       setError('');
       setReady(true);
     } catch (e) {

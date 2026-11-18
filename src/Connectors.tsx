@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from './Settings';
-import { detectTitle, useConnectorDetect } from './connectorDetect';
+import { detectTitle, detectTitleFor, useConnectorDetect } from './connectorDetect';
 import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import telegramIcon from './assets/connectors/telegram.svg';
@@ -27,10 +27,20 @@ export function ConnectorIcon({ name }: { name: string }) {
 type Scan = { accounts: Array<{ id: string }> };
 type KeyStatus = { keys: Array<{ account: string }> };
 type Probe = { accounts: number; verifiedAccounts: number };
+type WhatsAppStatus = {
+  installed: boolean;
+  app_path: string | null;
+  version: string | null;
+  account: string | null;
+  name: string | null;
+  sessions: number;
+  messages: number;
+  last_message_at: number | null;
+  error: string | null;
+};
 
 type Connector = { name: string; description: string; capabilities: string; local?: boolean };
 const futureConnectors: Connector[] = [
-  { local: true, name: 'WhatsApp', description: '读取桌面版本地数据', capabilities: '历史记录 · 群聊 · 增量同步' },
   { name: '邮件', description: '连接邮箱，整理邮件对话', capabilities: '历史记录 · 邮件夹' },
   { local: true, name: 'Telegram', description: '读取群组与私聊', capabilities: '' },
   { local: true, name: 'Slack', description: '读取工作区频道与私信', capabilities: '' },
@@ -41,8 +51,12 @@ const futureConnectors: Connector[] = [
   { name: 'LINE', description: '导入聊天文本', capabilities: '' },
 ];
 
-export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolean) => void }) {
+export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (configured: boolean) => void; onOpenWhatsApp: () => void }) {
   const install = useConnectorDetect('wechat');
+  const whatsappInstall = useConnectorDetect('whatsapp');
+  const [whatsapp, setWhatsapp] = useState<WhatsAppStatus | null>(null);
+  const [whatsappEnabled, setWhatsappEnabled] = useState(true);
+  const [whatsappBusy, setWhatsappBusy] = useState(false);
   const [probe, setProbe] = useState<Probe | null>(null);
   const [waitlist, setWaitlist] = useState<string[]>([]);
   const [confirmedWaitlist, setConfirmedWaitlist] = useState<string[]>([]);
@@ -70,6 +84,7 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
         setWaitlist(settings.connectors.waitlist);
         setConfirmedWaitlist(settings.connectors.waitlist);
         setEnabled(settings.connectors.wechat_enabled);
+        setWhatsappEnabled(settings.connectors.whatsapp_enabled !== false);
       })
       .catch(reason => setError(`设置加载失败：${String(reason)}，请重新打开页面。`));
   }, []);
@@ -130,8 +145,28 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const refreshWhatsapp = useCallback(async () => {
+    if (!isTauri()) return;
+    setWhatsappBusy(true);
+    try {
+      setWhatsapp(await invoke<WhatsAppStatus>('whatsapp_status'));
+    } catch (e) {
+      setWhatsapp(null);
+      setError(`无法检查 WhatsApp 连接状态：${String(e)}`);
+    } finally {
+      setWhatsappBusy(false);
+    }
+  }, []);
+  useEffect(() => { void refreshWhatsapp(); }, [refreshWhatsapp]);
+
+  const setWhatsappConnected = (next: boolean) => {
+    if (!isTauri() || !confirmed.current || queueFailed.current) return;
+    enqueueConnectorSave({ whatsapp_enabled: next }, () => setWhatsappEnabled(next));
+  };
+
   const status = !isTauri() ? '请在桌面应用中检查' : loading ? '正在检查…' : error ? '状态检查失败' : !probe?.accounts ? '未发现账号' : probe.verifiedAccounts ? `已校验 ${probe.verifiedAccounts} 个账号的密钥` : `发现 ${probe.accounts} 个账号，待校验密钥`;
   const missing = !install.checking && !install.usable && install.detect;
+  const whatsappMissing = !whatsappInstall.checking && !whatsappInstall.usable && whatsappInstall.detect;
   const recheckAll = () => { void install.recheck(); void refresh(); };
   const hasHistory = Boolean(probe?.verifiedAccounts);
 
@@ -141,7 +176,7 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
       <div className="connector-hero-marks" aria-hidden="true">{['微信', 'WhatsApp', '邮件', 'Telegram', 'Slack', '飞书'].map(name => <ConnectorIcon key={name} name={name} />)}</div>
     </header>
     <section aria-labelledby="connector-available">
-      <h2 id="connector-available">微信</h2>
+      <h2 id="connector-available">聊天来源</h2>
       {missing && enabled && hasHistory && <div className="connector-install-banner" role="status">
         <span className="connector-install-icon" aria-hidden="true">!</span>
         <div><strong>未检测到微信，已停止读取新消息</strong><p>已导入的聊天记录仍可查看，云端记录不受影响。重新安装微信后点「重新检查」即可恢复。</p></div>
@@ -192,6 +227,44 @@ export function Connectors({ onOpenWechat }: { onOpenWechat: (configured: boolea
               <button type="button" className="connector-quiet" onClick={() => setConfirming(false)} disabled={saving || !settingsLoaded}>取消</button>
             </div>
           </div>}
+        </article>
+        <article className={`connector-card${whatsappEnabled ? '' : ' off'}${whatsappMissing ? ' blocked' : ''}`}>
+          <div className="connector-card-head">
+            <ConnectorIcon name="WhatsApp" />
+            <div>
+              <h3>WhatsApp</h3>
+              <p className="connector-state">
+                <span className={whatsappMissing ? 'bad' : whatsappEnabled && whatsapp?.sessions ? 'good' : ''} />
+                {whatsappInstall.checking || whatsappBusy ? '正在检测本机 WhatsApp…'
+                  : whatsappMissing ? detectTitleFor('WhatsApp', whatsappInstall.detect!.state)
+                    : !whatsappEnabled ? '已断开 · 停止读取本机消息'
+                      : whatsapp?.error ? '读取失败'
+                        : whatsapp?.sessions ? `${whatsapp.name ?? '已登录'} · ${whatsapp.sessions} 个会话 · ${whatsapp.messages} 条消息` : '已连接 · 还没有会话'}
+              </p>
+            </div>
+          </div>
+          {whatsappMissing ? <div className="connector-install-check">
+            <p>{whatsappInstall.detect!.message}</p>
+            {whatsappInstall.detect!.app_path && <p className="connector-install-path">检测位置：{whatsappInstall.detect!.app_path}</p>}
+          </div> : <p className="connector-description">
+            {whatsappEnabled
+              ? '读取本机 WhatsApp 数据库，只读，不改动聊天数据；不需要密钥或解密。'
+              : '已断开读取；本机聊天数据不会被修改，重新连接即可继续读取。'}
+          </p>}
+          {!whatsappMissing && whatsappInstall.detect?.version && <p className="connector-install-meta">WhatsApp {whatsappInstall.detect.version} · 官方签名 · {whatsappInstall.detect.app_path}</p>}
+          {whatsapp?.error && <p className="connector-error" role="alert">{whatsapp.error}</p>}
+          <p className="connector-capabilities">历史记录 · 群聊 · 手动备份</p>
+          <div className="connector-actions">
+            {whatsappEnabled ? <>
+              <button type="button" className="connector-primary" onClick={onOpenWhatsApp} disabled={!whatsappInstall.usable || whatsappBusy} title={whatsappMissing ? '请先安装 WhatsApp' : undefined}>查看聊天</button>
+              {isTauri() && <button type="button" className="connector-quiet" onClick={() => { void whatsappInstall.recheck(); void refreshWhatsapp(); }} disabled={whatsappBusy || whatsappInstall.checking}>重新检查</button>}
+              {whatsappMissing && whatsappInstall.detect!.state === 'not_installed' && <a className="connector-link" href="https://www.whatsapp.com/download" target="_blank" rel="noreferrer">前往下载 WhatsApp ↗</a>}
+              {isTauri() && !whatsappMissing && <button type="button" className="connector-quiet danger" onClick={() => setWhatsappConnected(false)} disabled={saving || !settingsLoaded}>断开连接</button>}
+            </> : <>
+              <button type="button" className="connector-primary" onClick={() => setWhatsappConnected(true)} disabled={saving || !settingsLoaded}>{saving ? '连接中…' : '重新连接'}</button>
+              {isTauri() && <button type="button" className="connector-quiet" onClick={() => void refreshWhatsapp()} disabled={whatsappBusy}>重新检查</button>}
+            </>}
+          </div>
         </article>
       </div>
       {error && <p className="connector-error" role="alert">{error}</p>}

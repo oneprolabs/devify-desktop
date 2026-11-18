@@ -38,10 +38,11 @@ impl ConnectorDetect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectorKind {
     Wechat,
+    Whatsapp,
 }
 
 impl ConnectorKind {
-    pub const ALL: &'static [ConnectorKind] = &[ConnectorKind::Wechat];
+    pub const ALL: &'static [ConnectorKind] = &[ConnectorKind::Wechat, ConnectorKind::Whatsapp];
 
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|kind| kind.id() == value)
@@ -50,12 +51,14 @@ impl ConnectorKind {
     pub fn id(self) -> &'static str {
         match self {
             ConnectorKind::Wechat => "wechat",
+            ConnectorKind::Whatsapp => "whatsapp",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             ConnectorKind::Wechat => "微信",
+            ConnectorKind::Whatsapp => "WhatsApp",
         }
     }
 }
@@ -71,6 +74,7 @@ pub struct Environment {
 pub fn detect(kind: ConnectorKind, env: &Environment) -> ConnectorDetect {
     match kind {
         ConnectorKind::Wechat => detect_wechat(env),
+        ConnectorKind::Whatsapp => detect_whatsapp(),
     }
 }
 
@@ -150,6 +154,86 @@ fn detect_wechat(_env: &Environment) -> ConnectorDetect {
         message: "当前系统没有微信桌面版的检测方式，暂不支持读取本机微信。".into(),
     }
 }
+
+/// WhatsApp's Developer ID identity. The Mac app stores its store in plaintext, so the
+/// vendor signature is the only signal that the binary was not swapped for something else.
+const WHATSAPP_TEAM: &str = "57T9237FN3";
+const WHATSAPP_IDENTIFIER: &str = "net.whatsapp.WhatsApp";
+
+#[cfg(target_os = "macos")]
+fn detect_whatsapp() -> ConnectorDetect {
+    let app = PathBuf::from(crate::whatsapp::APP_BUNDLE);
+    let app = app.is_dir().then_some(app);
+    let has_data = crate::whatsapp::data_dir()
+        .map(|dir| dir.join("ChatStorage.sqlite"))
+        .is_some_and(|path| path.is_file());
+    classify_macos_whatsapp(
+        app.as_deref(),
+        has_data,
+        |path| capture::inspect_signature(path, false).ok(),
+        |path| capture::bundle_version(path).ok().map(|value| value.short),
+        |_| crate::whatsapp::bundle_version(),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_whatsapp() -> ConnectorDetect {
+    ConnectorDetect {
+        state: DetectState::Unsupported,
+        app_path: None,
+        version: None,
+        message: "WhatsApp 接入当前只支持 macOS 版桌面应用。".into(),
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn classify_macos_whatsapp(
+    app: Option<&Path>,
+    has_data: bool,
+    inspect: impl Fn(&Path) -> Option<capture::Signature>,
+    version: impl Fn(&Path) -> Option<String>,
+    fallback_version: impl Fn(&Path) -> Option<String>,
+) -> ConnectorDetect {
+    let Some(app) = app else {
+        if has_data {
+            return ConnectorDetect {
+                state: DetectState::Installed,
+                app_path: None,
+                version: None,
+                message: "已找到本机 WhatsApp 数据，可以直接读取。".into(),
+            };
+        }
+        return not_installed(
+            "没有在「应用程序」中找到 WhatsApp。请先安装 WhatsApp Mac 版并登录一次，再回来点「重新检查」。",
+        );
+    };
+    let found = |state: DetectState, message: &str| ConnectorDetect {
+        state,
+        app_path: Some(app.to_string_lossy().to_string()),
+        version: version(app).or_else(|| fallback_version(app)),
+        message: message.to_string(),
+    };
+    let official = inspect(app).is_some_and(|signature| {
+        signature.valid
+            && !signature.ad_hoc
+            && signature.team_identifier == WHATSAPP_TEAM
+            && signature.identifier == WHATSAPP_IDENTIFIER
+    });
+    if !official {
+        return found(
+            DetectState::Untrusted,
+            "这个 WhatsApp.app 不是 WhatsApp Inc. 官方签名，可能被修改或来自非官方渠道。为保护聊天数据，请从 WhatsApp 官网重新安装。",
+        );
+    }
+    if !has_data {
+        return found(
+            DetectState::Installed,
+            "已检测到 WhatsApp，但还没有可读取的聊天数据。请先登录一次并打开聊天列表。",
+        );
+    }
+    found(DetectState::Installed, "已检测到官方签名的 WhatsApp 和本机聊天数据。")
+}
+
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const WINDOWS_REGISTRY_KEYS: &[&str] = &[
@@ -259,7 +343,72 @@ mod tests {
             let result = detect(*kind, &Environment::default());
             assert!(!result.message.is_empty(), "{} has no message", kind.id());
         }
-        assert_eq!(ConnectorKind::parse("whatsapp"), None);
+        assert_eq!(ConnectorKind::parse("telegram"), None);
+    }
+
+    fn whatsapp_signature(team: &str, identifier: &str, ad_hoc: bool) -> capture::Signature {
+        capture::Signature {
+            valid: true,
+            ad_hoc,
+            hardened_runtime: true,
+            team_identifier: team.into(),
+            identifier: identifier.into(),
+            cdhash: "abc".into(),
+        }
+    }
+
+    #[test]
+    fn missing_whatsapp_is_not_installed() {
+        let result = classify_macos_whatsapp(None, false, |_| None, |_| None, |_| None);
+        assert_eq!(result.state, DetectState::NotInstalled);
+        assert!(!result.usable());
+    }
+
+    #[test]
+    fn whatsapp_data_without_the_bundle_is_still_usable() {
+        let result = classify_macos_whatsapp(None, true, |_| None, |_| None, |_| None);
+        assert_eq!(result.state, DetectState::Installed);
+        assert!(result.usable());
+    }
+
+    #[test]
+    fn only_the_whatsapp_inc_signature_counts() {
+        let root = tempfile::tempdir().unwrap();
+        let app = app_dir(root.path(), "WhatsApp.app");
+        let official = classify_macos_whatsapp(
+            Some(&app),
+            true,
+            |_| Some(whatsapp_signature(WHATSAPP_TEAM, WHATSAPP_IDENTIFIER, false)),
+            |_| Some("26.45.21".into()),
+            |_| None,
+        );
+        assert_eq!(official.state, DetectState::Installed);
+        assert_eq!(official.version.as_deref(), Some("26.45.21"));
+
+        for signature in [
+            whatsapp_signature(WHATSAPP_TEAM, WHATSAPP_IDENTIFIER, true),
+            whatsapp_signature("AAAAAAAAAA", WHATSAPP_IDENTIFIER, false),
+            whatsapp_signature(WHATSAPP_TEAM, "net.whatsapp.Impostor", false),
+        ] {
+            let result = classify_macos_whatsapp(Some(&app), true, |_| Some(signature.clone()), |_| None, |_| None);
+            assert_eq!(result.state, DetectState::Untrusted);
+            assert!(!result.usable());
+        }
+    }
+
+    #[test]
+    fn signed_whatsapp_without_data_is_installed_but_asks_for_login() {
+        let root = tempfile::tempdir().unwrap();
+        let app = app_dir(root.path(), "WhatsApp.app");
+        let result = classify_macos_whatsapp(
+            Some(&app),
+            false,
+            |_| Some(whatsapp_signature(WHATSAPP_TEAM, WHATSAPP_IDENTIFIER, false)),
+            |_| None,
+            |_| None,
+        );
+        assert_eq!(result.state, DetectState::Installed);
+        assert!(result.message.contains("登录"));
     }
 
     #[test]

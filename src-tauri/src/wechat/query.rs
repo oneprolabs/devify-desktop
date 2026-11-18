@@ -21,6 +21,15 @@ pub struct SessionItem {
     pub member_count: Option<i64>,
     pub preview: Option<String>,
     pub unread: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community: Option<CommunityInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CommunityInfo {
+    pub id: String,
+    pub name: String,
+    pub is_parent: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -660,6 +669,7 @@ pub fn sessions_filtered(
                 username,
                 display,
                 last_time,
+                community: None,
             }
         })
         .collect();
