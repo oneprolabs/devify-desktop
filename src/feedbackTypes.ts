@@ -16,6 +16,7 @@ export type FeedbackDraft = {
 export type FeedbackReport = {
   id: string; category: string; description: string; status: string;
   reply: string; fix_version: string; created_at: string;
+  diagnostics_dropped?: boolean;
 };
 export const feedbackCategories: Record<string, string> = { wechat: '连接微信', backup: '聊天备份', upload: '上传分析', login: '登录', interface: '界面异常', other: '其他问题' };
 // From the reporter's side "received" and "processing" are the same phase — we have it and

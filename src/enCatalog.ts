@@ -447,6 +447,7 @@ export const en: Record<string, string> = {
   "请先保存或取消截图编辑。": "Save or cancel the screenshot edit first.",
   "最多添加 3 张截图。": "You can add up to 3 screenshots.",
   "反馈已提交。处理进度可在「我的反馈」查看。": "Feedback sent. Track it in Your feedback.",
+  "反馈已提交，但当前服务端不支持诊断日志，本次日志未上传。": "Feedback sent, but this server cannot store diagnostics, so the log was not uploaded.",
   "已新建反馈。": "New feedback started.",
   "保存并关闭反馈": "Save and close",
   "反馈导航": "Feedback",

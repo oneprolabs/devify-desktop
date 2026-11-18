@@ -542,6 +542,26 @@ fn unsupported_field(status: reqwest::StatusCode, body: &str) -> bool {
     status.as_u16() == 400 && body.contains("不支持的诊断字段")
 }
 
+/// Attempts to make in order, each `(host environment, diagnostics)`.
+///
+/// Old servers reject an unknown context key and a server that only knows the
+/// structured diagnostics rejects the text shape, both with the same message.
+/// Shedding one field group at a time keeps whichever half the server supports:
+/// dropping both at once silently loses the host versions as well as the log.
+fn fallback_attempts(draft: &Draft) -> Vec<(bool, bool)> {
+    let mut attempts = vec![(true, true)];
+    if draft.diagnostics.is_some() {
+        // The log is the newest and largest field, so try without it first: a
+        // server that accepts the host environment keeps it in the report.
+        attempts.push((true, false));
+        // Then retry the log against a legacy context, in case the host
+        // versions were what the server rejected.
+        attempts.push((false, true));
+    }
+    attempts.push((false, false));
+    attempts
+}
+
 /// Send one draft, degrading gracefully on older servers. Split from
 /// [`feedback_submit`] so tests can drive the real request bytes without
 /// inventing a Tauri app handle.
@@ -552,41 +572,37 @@ async fn send_feedback(
     draft: &Draft,
 ) -> Result<serde_json::Value, String> {
     let screenshots = draft.screenshots.len();
-    let (mut status, mut body) = post_feedback(
-        root,
-        base,
-        token,
-        feedback_form(draft, true, true)?,
-        screenshots,
-    )
-    .await?;
-    // A server that predates the host environment fields rejects unknown context keys.
-    // Resend the legacy context so the report still arrives instead of failing outright.
-    if unsupported_field(status, &body) {
-        (status, body) = post_feedback(
+    let attempts = fallback_attempts(draft);
+    let last = attempts.len() - 1;
+    let mut sent = attempts[0];
+    let mut response = None;
+    for (index, attempt) in attempts.into_iter().enumerate() {
+        sent = attempt;
+        let posted = post_feedback(
             root,
             base,
             token,
-            feedback_form(draft, false, true)?,
+            feedback_form(draft, attempt.0, attempt.1)?,
             screenshots,
         )
         .await?;
+        let retry = index < last && unsupported_field(posted.0, &posted.1);
+        response = Some(posted);
+        if !retry {
+            break;
+        }
     }
-    // Then a server that predates text diagnostics: keep the report, drop only the
-    // log. Losing the log is better than blocking a bug report on an old server.
-    if unsupported_field(status, &body) && draft.diagnostics.is_some() {
-        (status, body) = post_feedback(
-            root,
-            base,
-            token,
-            feedback_form(draft, false, false)?,
-            screenshots,
-        )
-        .await?;
-    }
-    let result = feedback_data(status, &body)?;
+    let (status, body) = response.expect("the attempt list is never empty");
+    let mut result = feedback_data(status, &body)?;
     if result.get("id").and_then(|v| v.as_str()).is_none() {
         return Err("反馈响应缺少编号，草稿已保留。".into());
+    }
+    // A report that arrives without its log must not be reported as complete:
+    // the form turns this flag into an explicit notice.
+    if !sent.1 && draft.diagnostics.is_some() {
+        if let Some(object) = result.as_object_mut() {
+            object.insert("diagnostics_dropped".into(), serde_json::Value::Bool(true));
+        }
     }
     Ok(result)
 }
@@ -920,6 +936,7 @@ mod tests {
         ));
         let value = result.unwrap();
         assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000001");
+        assert!(value.get("diagnostics_dropped").is_none());
 
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 1);
@@ -989,10 +1006,10 @@ mod tests {
     fn old_servers_still_receive_the_report_without_text_diagnostics() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        // This server accepts the host versions but not the text log.
         let server = serve(
             listener,
             vec![
-                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
                 (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
                 (200, r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000003"}}"#.into()),
             ],
@@ -1006,22 +1023,93 @@ mod tests {
             "secret-token",
             &draft,
         ));
-        assert_eq!(result.unwrap()["id"], "4d1c9f1e-0000-4000-8000-000000000003");
+        let value = result.unwrap();
+        assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000003");
+        assert_eq!(value["diagnostics_dropped"], true);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        let first = String::from_utf8_lossy(&requests[0].2).into_owned();
+        let second = String::from_utf8_lossy(&requests[1].2).into_owned();
+        assert!(first.contains(r#""os_version""#));
+        assert!(first.contains(r#""schema_version":2"#));
+        // Only the log is dropped; the environment survives the retry.
+        assert!(second.contains(r#""os_version":"macOS 27.2.1 (26B131)""#));
+        assert!(second.contains(r#""wechat_version":"4.2.0""#));
+        assert!(!second.contains(r#""diagnostics""#));
+        assert!(second.contains(&draft.client_id));
+    }
+
+    #[test]
+    fn old_servers_without_host_versions_keep_the_text_diagnostics() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        // This server rejects the host versions but accepts schema 2 diagnostics.
+        let server = serve(
+            listener,
+            vec![
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (200, r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000004"}}"#.into()),
+            ],
+        );
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = reproducible_draft();
+        draft.diagnostics = Some(diagnostics::snapshot(root.path(), 0));
+        let result = runtime().block_on(send_feedback(
+            root.path(),
+            &format!("http://{address}"),
+            "secret-token",
+            &draft,
+        ));
+        let value = result.unwrap();
+        assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000004");
+        assert!(value.get("diagnostics_dropped").is_none());
 
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 3);
-        let first = String::from_utf8_lossy(&requests[0].2).into_owned();
         let second = String::from_utf8_lossy(&requests[1].2).into_owned();
         let third = String::from_utf8_lossy(&requests[2].2).into_owned();
-        assert!(first.contains(r#""os_version""#));
-        assert!(first.contains(r#""schema_version":2"#));
-        // The second attempt drops the new context fields but keeps the log.
-        assert!(!second.contains(r#""os_version""#));
-        assert!(second.contains(r#""schema_version":2"#));
-        // The third keeps the report and drops only the diagnostics.
+        assert!(second.contains(r#""os_version""#));
+        assert!(!second.contains(r#""diagnostics""#));
+        // The third attempt drops only the context fields and keeps the log.
         assert!(!third.contains(r#""os_version""#));
-        assert!(!third.contains(r#""diagnostics""#));
-        assert!(third.contains(&draft.client_id));
+        assert!(!third.contains(r#""wechat_version""#));
+        assert!(third.contains(r#""schema_version":2"#));
+    }
+
+    #[test]
+    fn servers_without_either_extension_still_keep_the_report() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = serve(
+            listener,
+            vec![
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (400, r#"{"message":"包含不支持的诊断字段。"}"#.into()),
+                (200, r#"{"data":{"id":"4d1c9f1e-0000-4000-8000-000000000005"}}"#.into()),
+            ],
+        );
+        let root = tempfile::tempdir().unwrap();
+        let mut draft = reproducible_draft();
+        draft.diagnostics = Some(diagnostics::snapshot(root.path(), 0));
+        let result = runtime().block_on(send_feedback(
+            root.path(),
+            &format!("http://{address}"),
+            "secret-token",
+            &draft,
+        ));
+        let value = result.unwrap();
+        assert_eq!(value["id"], "4d1c9f1e-0000-4000-8000-000000000005");
+        assert_eq!(value["diagnostics_dropped"], true);
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 4);
+        let fourth = String::from_utf8_lossy(&requests[3].2).into_owned();
+        assert!(!fourth.contains(r#""os_version""#));
+        assert!(!fourth.contains(r#""diagnostics""#));
+        assert!(fourth.contains(&draft.client_id));
     }
 
     #[test]
