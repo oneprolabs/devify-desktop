@@ -85,14 +85,16 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
   </div>;
 }
 
-export function ChatEntry({ onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule, onReady, onUnlock }: { onConnect: (connector?: string) => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void; onReady: (source: string) => void; onUnlock: () => void }) {
+export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule, onReady, onUnlock }: { visible: boolean; onConnect: (connector?: string) => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void; onReady: (source: string) => void; onUnlock: () => void }) {
   const [mode, setMode] = useState<HomeMode | null>(isTauri() ? null : 'new');
   const [source, setSource] = useState(t("微信"));
   const [syncIntervalSeconds, setSyncIntervalSeconds] = useState(1800);
   const [sessionCount, setSessionCount] = useState(0);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    // The shell caches the chat entry while Settings is open. A hidden entry must not
+    // redirect back to the first wizard step when its unfinished account still looks locked.
+    if (!visible || !isTauri()) return;
     let active = true;
     void (async () => {
       try {
@@ -128,7 +130,7 @@ export function ChatEntry({ onConnect, onConnectWhatsApp, onImport, onBackup, on
       }
     })();
     return () => { active = false; };
-  }, [onReady, onUnlock]);
+  }, [visible, onReady, onUnlock]);
 
   if (!mode) return <div className="chat-landing chat-landing-checking"><div className="chat-landing-checking-card"><span className="chat-landing-checking-dot" /><p>{t("正在检查本地聊天数据…")}</p></div></div>;
   return <ChatLanding mode={mode} source={source} sessionCount={sessionCount} syncIntervalSeconds={syncIntervalSeconds} onConnect={onConnect} onConnectWhatsApp={onConnectWhatsApp} onImport={onImport} onBackup={onBackup} onSchedule={onSchedule} />;

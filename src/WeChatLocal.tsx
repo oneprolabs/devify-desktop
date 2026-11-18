@@ -628,7 +628,8 @@ export default function WeChatLocal({
   const [applyWal, setApplyWal] = useState(true);
   const [onlyChat, setOnlyChat] = useState(true);
 
-  const [busy, setBusy] = useState<'scan' | 'import' | 'decrypt' | 'messages' | 'search' | 'work' | 'explore' | 'ai' | null>(null);
+  const [busy, setBusy] = useState<'scan' | 'import' | 'messages' | 'search' | 'work' | 'explore' | 'ai' | null>(null);
+  const [decrypting, setDecrypting] = useState(false);
   const [outcomes, setOutcomes] = useState<DecryptOutcome[]>([]);
   const [showLog, setShowLog] = useState(false);
 
@@ -1390,10 +1391,10 @@ export default function WeChatLocal({
   };
 
   const decrypt = async () => {
-    if (!account) return;
+    if (!account || accountSwitching || decrypting) return;
     setError('');
     setNotice('');
-    setBusy('decrypt');
+    setDecrypting(true);
     try {
       const result = await invoke<DecryptOutcome[]>('wechat_decrypt', {
         accountId: account.id,
@@ -1405,7 +1406,6 @@ export default function WeChatLocal({
       const failed = result.length - ok;
       setNotice(tf("解密完成：{0} 个数据库可用{1}。", ok, failed ? `，${failed} 个失败或缺少密钥` : ''));
       if (ok > 0) {
-        setBusy('messages');
         await loadSessions(account.id);
       } else if (result.length > 0) {
         // Nothing decrypted at all: the most likely cause is a key for another account or a
@@ -1417,7 +1417,7 @@ export default function WeChatLocal({
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy(null);
+      setDecrypting(false);
     }
   };
 
@@ -2484,7 +2484,7 @@ const checkMark = (value: boolean | undefined) =>
         : wizardStep === 'wizard-import'
           ? keyedCount > 0
           : wizardStep === 'wx-connect-decrypt'
-            ? ready || decryptedForWizard
+            ? !decrypting && (ready || decryptedForWizard)
             : true);
     return (
     <div className="wxv-onboard">
@@ -3132,9 +3132,9 @@ const checkMark = (value: boolean | undefined) =>
                 type="button"
                 className="wxv-btn primary"
                 onClick={() => void decrypt()}
-                disabled={!account || busy === 'decrypt' || keyedCount === 0}
+                disabled={!account || accountSwitching || decrypting || keyedCount === 0}
               >
-                {busy === 'decrypt' ? t("解密中…") : t("解密当前账号")}
+                {decrypting ? t("解密中…") : t("解密当前账号")}
               </button>
               <label className="wxv-check">
                 <input type="checkbox" checked={onlyChat} onChange={e => setOnlyChat(e.target.checked)} />
@@ -3144,7 +3144,7 @@ const checkMark = (value: boolean | undefined) =>
                 <input type="checkbox" checked={applyWal} onChange={e => setApplyWal(e.target.checked)} />
                 {t("尝试回填 WAL")}
               </label>
-              <button type="button" className="wxv-btn" onClick={() => void clearCache()}>
+              <button type="button" className="wxv-btn" disabled={decrypting} onClick={() => void clearCache()}>
                 {t("清理解密缓存")}
               </button>
             </div>
