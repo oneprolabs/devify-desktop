@@ -3,11 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   HISTORY_KIND_LABEL,
   SummaryDetail,
+  renderAgentMarkdown,
   type NewSummaryRecord,
   type SummaryRecord,
 } from './summary';
 import { classifyWorkText, extractWorkTerms } from './workInsights';
 import { currentSessionSummaries } from './chatPresentation';
+import { useCapability, useInternalAccount } from './entitlements';
 
 /** Minimal conversation shape shared with the chat page. */
 export type SummarySession = {
@@ -140,43 +142,35 @@ async function fetchRange(
 type CardItem = { text: string; tag?: string };
 type CardSection = { title: string; items: CardItem[] };
 
-/** Agent output is Markdown; the card only needs short plain sentences. */
-function plainText(value: string): string {
-  return value
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/[*`~]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+type MarkdownSection = { title: string; markdown: string };
+type CardContent = { lead: string; sections: Array<CardSection | MarkdownSection> };
 
-function parseOutput(output: string): { lead: string; sections: CardSection[] } {
-  const lines = output.replace(/\r\n?/g, '\n').split('\n');
-  let lead = '';
-  const sections: CardSection[] = [];
-  let current: CardSection | null = null;
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-    const heading = /^#{1,4}\s+(.*)$/.exec(line);
+function parseOutput(output: string): CardContent {
+  const overview: string[] = [];
+  const sections: Array<{ title: string; lines: string[] }> = [];
+  let lines = overview;
+  let inCode = false;
+  for (const raw of output.replace(/\r\n?/g, '\n').split('\n')) {
+    const heading = !inCode && /^#{1,4}\s+(.+?)\s*#*\s*$/.exec(raw.trim());
     if (heading) {
-      const title = plainText(heading[1]);
-      // 「概览」 is the lead paragraph of the card, not its own section.
-      current = title === '概览' ? null : { title, items: [] };
-      if (current) sections.push(current);
-      continue;
+      if (heading[1] === '概览') {
+        lines = overview;
+      } else {
+        lines = [];
+        sections.push({ title: heading[1], lines });
+      }
+    } else {
+      if (/^\s*\`\`\`/.test(raw)) inCode = !inCode;
+      lines.push(raw);
     }
-    const bullet = /^[-*+]\s+(.*)$/.exec(line) ?? /^\d+[.)]\s+(.*)$/.exec(line);
-    const text = plainText(bullet ? bullet[1] : line);
-    if (!text) continue;
-    if (!current) {
-      lead = lead ? `${lead} ${text}` : text;
-      continue;
-    }
-    if (bullet || !current.items.length) current.items.push({ text });
-    else current.items[current.items.length - 1].text += ` ${text}`;
   }
-  return { lead, sections: sections.filter(section => section.items.length > 0) };
+  return {
+    lead: overview.join('\n').trim(),
+    sections: sections.flatMap(({ title, lines }) => {
+      const markdown = lines.join('\n').trim();
+      return markdown ? [{ title, markdown }] : [];
+    }),
+  };
 }
 
 function localCard(record: SummaryRecord): { lead: string; sections: CardSection[] } {
@@ -213,7 +207,7 @@ function localCard(record: SummaryRecord): { lead: string; sections: CardSection
   return { lead, sections };
 }
 
-function cardContent(record: SummaryRecord) {
+function cardContent(record: SummaryRecord): CardContent {
   if (record.kind === 'local') return localCard(record);
   if (record.output) {
     const parsed = parseOutput(record.output);
@@ -283,7 +277,18 @@ export function ChatSummary({
   const bounds = rangeBounds(range);
   const chatUsernames = useMemo(() => session ? [session.username] : [], [session]);
 
-  const agentReady = Boolean(agent?.configured && agent.available);
+  const { internal } = useInternalAccount();
+  const { allowed: aiGranted } = useCapability('ai.agent_summary');
+  const { allowed: canConfigureAgent } = useCapability('ai.local_agent');
+  const aiAllowed = internal && aiGranted;
+  const agentReady = aiAllowed && Boolean(agent?.configured && agent.available);
+
+  useEffect(() => {
+    if (!agentReady) {
+      setMode('local');
+      setConfirmAi(false);
+    }
+  }, [agentReady]);
   const buildLocal = async (usernames: string[]): Promise<NewSummaryRecord> => {
     if (!accountId) throw new Error('还没有可用的微信账号。');
     const selected = usernames
@@ -397,6 +402,10 @@ export function ChatSummary({
 
   const generate = useCallback(async () => {
     if (busy) return;
+    if (mode === 'ai' && !agentReady) {
+      setError('当前无法使用 AI 总结。');
+      return;
+    }
     if (!chatUsernames.length) {
       setError('请至少选择一个聊天。');
       return;
@@ -419,7 +428,7 @@ export function ChatSummary({
     } finally {
       setBusy(false);
     }
-  }, [busy, chatUsernames, mode, bounds.label, bounds.since, bounds.until, accountId, sessions, onReload]);
+  }, [busy, chatUsernames, mode, agentReady, bounds.label, bounds.since, bounds.until, accountId, sessions, onReload]);
 
   const startGenerate = () => {
     if (mode === 'ai' && !confirmAi) {
@@ -484,43 +493,34 @@ export function ChatSummary({
 
         <div className="chat-summary-row">
           <span className="chat-summary-label">方式</span>
-          <div className="chat-summary-time">
-            <div className="chat-summary-pills">
-              <button type="button" className={mode === 'local' ? 'on' : ''} onClick={() => { setMode('local'); setConfirmAi(false); }}>本地整理</button>
-              <button
-                type="button"
-                className={mode === 'ai' ? 'on' : ''}
-                onClick={() => { setMode('ai'); setError(''); }}
-                disabled={!agentReady}
-                title={agentReady ? `使用 ${agent?.agent_name}` : '先在「Agent 集成」页面配置并测试一个本地 Agent'}
-              >AI 总结</button>
-            </div>
-            <span className="chat-summary-hint">
-              {mode === 'ai'
-                ? (agentReady ? `由 ${agent?.agent_name} 生成，原文可能离开本机` : '尚未配置可用的本地 Agent')
-                : '规则归类，不联网，结果只保存在本机'}
-            </span>
+          <div className="chat-summary-methods" role="group" aria-label="总结方式">
+            <button type="button" aria-pressed={mode === 'local'} className={mode === 'local' ? 'on' : ''} onClick={() => { setMode('local'); setConfirmAi(false); setError(''); }}>
+              本地整理<small>按关键词</small>
+            </button>
+            {aiAllowed && <button type="button" aria-pressed={mode === 'ai'} disabled={!agentReady} className={mode === 'ai' ? 'on' : ''} onClick={() => { setMode('ai'); setError(''); }}>
+              本地 Agent<small>{agentReady ? '本机整理' : '未配置'}</small>
+            </button>}
           </div>
         </div>
 
         <p className="chat-summary-note">
-          将总结「{bounds.label}」的 {chatUsernames.length} 个聊天，结果保存到「总结记录」，最多保留最近 50 条。
+          只保存在本机，最多 50 条 · {bounds.label} · {session?.display ?? '请选择会话'}
         </p>
 
         {error && <p className="chat-summary-error">{error}</p>}
 
         {confirmAi && <div className="chat-summary-confirm">
-          <span>原文会交给本机 Agent「{agent?.agent_name}」，可能发送到该 Agent 配置的模型服务。</span>
+          <span>用本机 Agent「{agent?.agent_name}」整理。</span>
           <button type="button" onClick={() => setConfirmAi(false)}>取消</button>
           <button type="button" className="primary" onClick={() => void generate()}>确认生成</button>
         </div>}
 
-        <div className="chat-summary-actions">
+        {!confirmAi && <div className="chat-summary-actions">
           <button type="button" onClick={() => { setOpen(false); setConfirmAi(false); setError(''); }}>取消</button>
           <button type="button" className="primary" onClick={startGenerate} disabled={busy || !chatUsernames.length}>
             {busy ? '生成中…' : '开始生成'}
           </button>
-        </div>
+        </div>}
       </section>}
 
       {notice && <p className="chat-summary-notice">{notice}</p>}
@@ -546,10 +546,14 @@ export function ChatSummary({
             {record.agent_name && <span className="chat-summary-kind">{record.agent_name}{record.model ? ` · ${record.model}` : ''}</span>}
             <span className="chat-summary-card-meta">{record.messages} 条消息 · {record.created_at}</span>
           </header>
-          {content.lead && <p className="chat-summary-lead">{content.lead}</p>}
+          {content.lead && (record.output && record.kind !== 'local'
+            ? <div className="chat-summary-markdown wxv-ai-body">{renderAgentMarkdown(content.lead)}</div>
+            : <p className="chat-summary-lead">{content.lead}</p>)}
           {sections.map(section => <section className="chat-summary-section" key={section.title}>
             <h4>{section.title}</h4>
-            {section.items.map((item, index) => <div className="chat-summary-item" key={`${section.title}-${index}`}>
+            {'markdown' in section
+              ? <div className="chat-summary-markdown wxv-ai-body">{renderAgentMarkdown(section.markdown)}</div>
+              : section.items.map((item, index) => <div className="chat-summary-item" key={`${section.title}-${index}`}>
               <i>•</i>
               <span>
                 {item.tag && <em className={`chat-summary-tag ${item.tag}`}>{item.tag}</em>}
@@ -573,7 +577,7 @@ export function ChatSummary({
         {query.trim()
           ? `没有匹配「${query.trim()}」的总结记录。`
           : summaryScopeEmpty(Boolean(session), summaries.length)}<br/>
-        选好范围后在本机生成，结果只保存在本机。
+        选择时间范围后生成总结。
       </div>}
     </div>
 

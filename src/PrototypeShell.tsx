@@ -27,7 +27,7 @@ import { requestFeedback } from './desktopInvoke';
 import { registerDevifyDevice } from './devifyDevice';
 import { clearTaskSnapshot } from './taskSnapshot';
 import { clearPageSnapshots } from './pageSnapshots';
-import { refreshEntitlements, useInternalAccount } from './entitlements';
+import { granted, refreshEntitlements, useInternalAccount } from './entitlements';
 import { shouldApplyAuthExpired } from './authEvents';
 import './prototype-shell.css';
 import './reference-theme.css';
@@ -264,8 +264,12 @@ export default function PrototypeShell() {
   const handleChatReady = useCallback(() => setChatReady(true), []);
   // Agent 集成 (local summaries plus the access kit) is reserved for internal accounts, so both
   // of its settings pages disappear with the entitlement instead of showing an empty shell.
-  const { internal: internalAccount } = useInternalAccount();
+  const { internal: internalAccount, view: entitlements } = useInternalAccount();
+  const showAgentHub = internalAccount && (granted(entitlements, 'ai.local_agent') || granted(entitlements, 'bridge.agent_cli'));
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('connectors');
+  useEffect(() => {
+    if ((settingsPage === 'agent' && !showAgentHub) || (settingsPage === 'history' && !internalAccount)) setSettingsPage('connectors');
+  }, [settingsPage, showAgentHub, internalAccount]);
   const [wechatGuide, setWechatGuide] = useState(false);
   const [wechatGuideEdit, setWechatGuideEdit] = useState(false);
   const [wizardStep, setWizardStep] = useState('wizard-method');
@@ -273,7 +277,7 @@ export default function PrototypeShell() {
   const wizardBlocked = !wechatInstall.checking && !wechatInstall.usable;
   const wizardOrder = ['wizard-method', 'wizard-permission', 'wizard-account', 'wizard-key', 'wizard-import', 'wx-connect-decrypt', 'wizard-done'];
   const settingsNav = (wechatGuide ? wizardSettingsPages : settingsPages)
-    .filter(item => internalAccount || (item.id !== 'agent' && item.id !== 'history'));
+    .filter(item => item.id === 'agent' ? showAgentHub : item.id !== 'history' || internalAccount);
   const openSettings = (page: SettingsPage, guide = false, edit = guide) => { setSettingsPage(page); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardStep('wizard-method'); setSection('settings'); };
   const setWizard = (step: string) => {
     setWizardStep(step);
@@ -302,11 +306,11 @@ export default function PrototypeShell() {
       <div className="prototype-rail-brand"><img src={appIcon} alt=""/><strong>AIMyChats</strong></div>
     </aside>
     <section className="prototype-content">
-      {update.status === 'available' && <button type="button" className="update-available-notice" onClick={() => { if (authState === 'authed') { setSettingsPage('about'); setWechatGuide(false); setSection('settings'); } else setUpdateDialogOpen(true); }}>发现新版本 {update.version}，查看更新</button>}
+      {update.status === 'available' && !(section === 'settings' && settingsPage === 'about') && <button type="button" className="update-available-notice" onClick={() => setUpdateDialogOpen(true)}>发现新版本 {update.version}，查看更新</button>}
       {updateDialogOpen && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setUpdateDialogOpen(false); }}>
         <section className="auth-modal update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
           <header className="auth-modal-head"><span id="update-dialog-title">软件更新</span><button type="button" aria-label="关闭更新" autoFocus onClick={() => setUpdateDialogOpen(false)}>×</button></header>
-          <div className="auth-modal-body"><UpdatePanel /></div>
+          <div className="auth-modal-body"><UpdatePanel onClose={() => setUpdateDialogOpen(false)} /></div>
         </section>
       </div>}
       {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
@@ -376,7 +380,7 @@ export default function PrototypeShell() {
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && internalAccount && <HistoryPage />}
-          {settingsPage === 'agent' && internalAccount && <AgentHub />}
+          {settingsPage === 'agent' && showAgentHub && <AgentHub />}
           {settingsPage === 'feedback' && <FeedbackSettings />}
           {settingsPage === 'about' && <About />}
         </div>

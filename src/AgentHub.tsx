@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AgentSettings } from './AgentSettings';
 import { AgentAccess } from './AgentAccess';
-import { useEntitlements } from './entitlements';
+import { granted, useInternalAccount } from './entitlements';
 
 type Section = 'summary' | 'access';
 
@@ -16,20 +16,18 @@ const SECTIONS: Array<{ id: Section; label: string; hint: string }> = [
  */
 export function AgentHub() {
   const [section, setSection] = useState<Section>('summary');
-  // 工具接入 installs a read-only CLI into other agents; the server only grants it to
-  // accounts on the internal plan, so the tab is absent for everyone else.
-  const { view } = useEntitlements();
-  const internal = view?.internal === true;
-  const sections = internal ? SECTIONS : SECTIONS.filter(item => item.id !== 'access');
-  const active: Section = sections.some(item => item.id === section) ? section : 'summary';
+  const { internal, view } = useInternalAccount();
+  const sections = SECTIONS.filter(item => internal && granted(view, item.id === 'summary' ? 'ai.local_agent' : 'bridge.agent_cli'));
+  const active = sections.find(item => item.id === section)?.id ?? sections[0]?.id;
+  if (!active) return null;
 
   return <div className="settings-page agent-hub">
     <div className="hub-head">
       <h2>Agent 集成</h2>
       <p className="help">
-        {internal
-          ? <>一端把整理好的聊天交给本机 Agent 生成总结，另一端把只读 CLI <code>wxq</code> 与三个 <code>SKILL.md</code> 安装到你正在使用的 Agent。两处配置互不影响，随时可以切换。</>
-          : <>把整理好的聊天交给本机 Agent 生成总结。工具接入仅对内部账号开放。</>}
+        {sections.length === 2
+          ? '配置本机总结 Agent，或向其他 Agent 安装只读工具。'
+          : sections[0].hint}
       </p>
     </div>
     <div className="agent-hub-choices" role="tablist" aria-label="Agent 集成分区">

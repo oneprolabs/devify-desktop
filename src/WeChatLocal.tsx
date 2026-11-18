@@ -18,7 +18,7 @@ import {
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
 import { exportNotSupported } from './toast';
-import { useInternalAccount } from './entitlements';
+import { useCapability, useInternalAccount } from './entitlements';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
 
 type DbFile = {
@@ -606,6 +606,11 @@ export default function WeChatLocal({
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
   const { internal: internalAccount } = useInternalAccount();
+  const { allowed: workDigestGranted } = useCapability('ai.work_digest');
+  const { allowed: aiSummaryGranted } = useCapability('ai.agent_summary');
+  const { allowed: canConfigureAgent } = useCapability('ai.local_agent');
+  const canOrganize = internalAccount && workDigestGranted;
+  const canUseAi = internalAccount && aiSummaryGranted;
   const [env, setEnv] = useState<WechatEnv | null>(null);
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
@@ -1734,6 +1739,7 @@ export default function WeChatLocal({
   };
 
   const openWorkPicker = () => {
+    if (!canOrganize) return;
     setWorkPhase('select');
     setWorkOpen(true);
     setError('');
@@ -1960,7 +1966,7 @@ export default function WeChatLocal({
     };
   }, [workGroups]);
 
-  const aiReady = Boolean(agentCurrent?.configured && agentCurrent.available);
+  const aiReady = canUseAi && Boolean(agentCurrent?.configured && agentCurrent.available);
 
   const saveHistory = async (record: NewSummaryRecord) => {
     try {
@@ -2026,7 +2032,7 @@ export default function WeChatLocal({
   const runAiSummary = async () => {
     if (!account) return;
     if (!agentCurrent?.configured || !agentCurrent.available) {
-      setError('尚未配置可用的本地 Agent。请先在左侧「Agent 集成」页面选择并测试。');
+      setError(canConfigureAgent ? '请在「设置 → Agent 集成」中配置可用的 Agent。' : '当前无法使用 AI 总结。');
       return;
     }
     if (!aiPlan.items.length) {
@@ -2245,10 +2251,10 @@ export default function WeChatLocal({
   // Header buttons live in the embedding page. They are requests, not state, so a click
   // while the pane is hidden still opens the drawer / downloads once the chat is ready.
   useEffect(() => {
-    if (!workRequest || workRequest === handledWorkRequest.current || !ready) return;
+    if (!canOrganize || !workRequest || workRequest === handledWorkRequest.current || !ready) return;
     handledWorkRequest.current = workRequest;
     openWorkPicker();
-  }, [workRequest, ready]);
+  }, [workRequest, ready, canOrganize]);
 
   useEffect(() => {
     onChatState?.({
@@ -3422,7 +3428,7 @@ const checkMark = (value: boolean | undefined) =>
                 已选 {selectedMessages.length} 条
               </button>
             )}
-            {internalAccount && (
+            {canOrganize && (
               <button type="button" className="wxv-btn" onClick={openWorkPicker} disabled={!messages.length}>
                 整理工作内容
               </button>
@@ -3642,7 +3648,7 @@ const checkMark = (value: boolean | undefined) =>
                     <small>关键词归类成风险 / 决定 / 待办，并找相关会话。不联网。</small>
                   </span>
                 </button>
-                <button
+                {canUseAi && <button
                   type="button"
                   className="wxv-action-option"
                   onClick={() => {
@@ -3653,7 +3659,7 @@ const checkMark = (value: boolean | undefined) =>
                     setAiConfirm(true);
                   }}
                   disabled={!aiReady}
-                  title={aiReady ? `使用 ${agentCurrent?.agent_name} 生成` : '先在左侧「Agent 集成」页面选择并测试一个 Agent'}
+                  title={aiReady ? `使用 ${agentCurrent?.agent_name} 生成` : '当前没有可用的 Agent'}
                 >
                   <span className="wxv-action-icon">{Icons.agent}</span>
                   <span className="wxv-action-text">
@@ -3661,10 +3667,10 @@ const checkMark = (value: boolean | undefined) =>
                     <small>
                       {aiReady
                         ? `交给 ${agentCurrent?.agent_name}，原文可能离开本机。`
-                        : '尚未配置可用的 Agent，请先在左侧「Agent 集成」页面配置。'}
+                        : canConfigureAgent ? '请在「设置 → Agent 集成」中配置可用的 Agent。' : '当前没有可用的 Agent。'}
                     </small>
                   </span>
-                </button>
+                </button>}
               </div>
             )}
             {aiConfirm && createPortal((
@@ -3685,7 +3691,7 @@ const checkMark = (value: boolean | undefined) =>
                       <p>
                         {aiReady
                           ? '先核对范围，再把原文交给该 Agent。'
-                          : '请先在左侧「Agent 集成」页面选择并测试一个 Agent。'}
+                          : '当前没有可用的 Agent。'}
                       </p>
                     </div>
                     <button type="button" className="wxv-modal-close" onClick={closeAiConfirm} aria-label="关闭">
