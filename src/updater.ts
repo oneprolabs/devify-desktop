@@ -8,6 +8,7 @@ type Status = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'do
 type Snapshot = { status: Status; version?: string; currentVersion?: string; notes?: string; progress?: number; error?: string; blockers?: string[] };
 let snapshot: Snapshot = { status: 'idle' };
 let update: Update | null = null;
+let checkInFlight: Promise<void> | undefined;
 const listeners = new Set<() => void>();
 function setSnapshot(next: Snapshot) { snapshot = next; listeners.forEach(listener => listener()); }
 
@@ -28,21 +29,35 @@ function friendlyUpdateError(error: unknown): string {
 }
 export function useUpdater() { return useSyncExternalStore(listener => { listeners.add(listener); return () => listeners.delete(listener); }, () => snapshot, () => snapshot); }
 
-export async function checkForUpdates(silent = false) {
-  if (!isTauri() || ['checking', 'downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) return;
-  setSnapshot({ status: 'checking' });
+export function checkForUpdates(silent = false): Promise<void> {
+  if (checkInFlight) return checkInFlight;
+  if (!isTauri() || ['downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) return Promise.resolve();
+  checkInFlight = refreshUpdate(silent).finally(() => { checkInFlight = undefined; });
+  return checkInFlight;
+}
+
+async function refreshUpdate(silent: boolean) {
+  const previous = update;
+  if (!previous) setSnapshot({ status: 'checking' });
   try {
     // The manifest lives on github.com; the plugin uses the system proxy settings.
-    const next = await check({ timeout: 30000 });
-    if (update) await update.close();
+    const next = await check({ timeout: 30000, headers: { 'Cache-Control': 'no-cache' } });
     update = next;
     setSnapshot(next ? { status: 'available', version: next.version, currentVersion: next.currentVersion, notes: next.body } : { status: 'latest' });
+    if (previous) await previous.close().catch(() => {});
   } catch (error) {
-    setSnapshot(silent ? { status: 'idle' } : { status: 'error', error: friendlyUpdateError(error) });
+    if (previous) {
+      if (!silent) setSnapshot({ ...snapshot, error: friendlyUpdateError(error) });
+    } else {
+      setSnapshot(silent ? { status: 'idle' } : { status: 'error', error: friendlyUpdateError(error) });
+    }
   }
 }
 
 export async function downloadUpdate() {
+  if (snapshot.status !== 'available') return;
+  // A newer release may have replaced the offer while the dialog was open.
+  await checkForUpdates(true);
   if (!update || snapshot.status !== 'available') return;
   const selected = update;
   const base = { version: selected.version, currentVersion: selected.currentVersion, notes: selected.body };
