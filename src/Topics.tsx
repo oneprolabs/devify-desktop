@@ -1,8 +1,9 @@
 import { LoadingPage, LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
+import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from './pageSnapshots';
 
 type TopicEvent = { id: number; title?: string; summary?: string; content?: string; status?: string | null; occurred_at?: string | null; event_id?: number };
 type TopicRun = { id: number; status?: string; started_at?: string | null; completed_at?: string | null; created_at?: string | null; matched_count?: number; error?: string | null };
@@ -25,7 +26,7 @@ type Topic = {
   execution_records?: TopicRun[];
   matched_event_ids?: number[];
 };
-type Settings = { devify?: { active_space_id: string | null } };
+type Settings = { devify?: { base_url?: string; active_space_id: string | null } };
 
 const periods = [{ value: 'day', label: '每天' }, { value: 'week', label: '每周' }, { value: 'month', label: '每月' }];
 const periodLabel = (value: string) => periods.find(item => item.value === value)?.label ?? value;
@@ -39,7 +40,7 @@ function StateDot({ done }: { done: boolean }) {
   </svg>;
 }
 
-export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => void }) {
+export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onOpenEvent?: (eventId: number) => void }) {
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -55,22 +56,36 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
   const [detailLoading, setDetailLoading] = useState(false);
   const [topicDetail, setTopicDetail] = useState<Topic | null>(null);
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
+  const mounted = useRef(true);
+  const loadRevision = useRef(0);
 
   const load = useCallback(async () => {
     if (!isTauri()) { setLoading(false); return; }
+    const revision = ++loadRevision.current;
+    const generation = pageSnapshotGeneration();
     setLoading(true); setError('');
     try {
       const settings = await invoke<Settings>('app_settings_get');
+      if (!mounted.current || revision !== loadRevision.current) return;
       const id = settings.devify?.active_space_id ?? null;
       setSpaceId(id);
       if (!id) { setTopics([]); return; }
+      const key = userId === null ? '' : JSON.stringify([settings.devify?.base_url, userId, id, 'topics']);
+      const cached = key ? readPageSnapshot<Topic[]>(key) : undefined;
+      if (cached) {
+        setTopics(cached);
+        setSelectedId(current => current && cached.some(item => item.id === current) ? current : cached[0]?.id ?? null);
+        setLoading(false);
+      }
       const list = await invoke<Topic[]>('devify_topics', { spaceId: id });
+      if (!mounted.current || revision !== loadRevision.current) return;
+      if (key) savePageSnapshot(key, list ?? [], generation);
       setTopics(list ?? []);
       setSelectedId(current => current && list.some(item => item.id === current) ? current : list[0]?.id ?? null);
-    } catch (reason) { setError(String(reason)); }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
+    } catch (reason) { if (mounted.current && revision === loadRevision.current) setError(String(reason)); }
+    finally { if (mounted.current && revision === loadRevision.current) setLoading(false); }
+  }, [userId]);
+  useEffect(() => { mounted.current = true; void load(); return () => { mounted.current = false; }; }, [load]);
 
   const selected = useMemo(() => topics.find(item => item.id === selectedId) ?? null, [topics, selectedId]);
   useEffect(() => {
@@ -105,6 +120,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
     setSaving(true); setError('');
     try {
       const topic = await invoke<Topic>('devify_topic_create', { spaceId, title: title.trim(), instruction: instruction.trim(), period, timeLocal: time || null, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+      clearPageSnapshots();
       setTopics(current => [topic, ...current]); setTopicDetail(topic); setSelectedId(topic.id); resetForm();
     } catch (reason) { setError(String(reason)); }
     finally { setSaving(false); }
@@ -112,6 +128,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
   const toggle = async (topic: Topic) => {
     try {
       const updated = await invoke<Topic>('devify_topic_update', { topicId: topic.id, enabled: !topic.enabled });
+      clearPageSnapshots();
       setTopics(current => current.map(item => item.id === topic.id ? updated : item)); setTopicDetail(updated);
     } catch (reason) { setError(String(reason)); }
   };
@@ -119,6 +136,7 @@ export function TopicsPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) =>
     if (!window.confirm(`删除主题「${topic.title}」？`)) return;
     try {
       await invoke('devify_topic_delete', { topicId: topic.id });
+      clearPageSnapshots();
       setTopics(current => current.filter(item => item.id !== topic.id));
       setTopicDetail(null);
       setSelectedId(current => current === topic.id ? null : current);

@@ -952,6 +952,8 @@ mod tests {
                 base_url: "http://127.0.0.1:8010".into(),
                 access: "access".into(),
                 refresh: "refresh".into(),
+                device_session: None,
+                session_device_id: None,
             },
         )
         .unwrap();

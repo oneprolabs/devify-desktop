@@ -50,6 +50,12 @@ for (const createStarted of [true, null, undefined, 'false', 0]) {
   assert.equal(retryCandidate({ ...settings, upload_queue: [candidate] }, job.id, 42, 'device-a'), undefined);
 }
 assert.equal(retryCandidate(settings, job.id, 42, 'device-a')?.id, 'local');
+const timedOutCreate = { ...job, create_started: true, create_key: 'original-key', package_digest: 'digest' };
+const recoverySettings = { ...settings, upload_queue: [timedOutCreate] };
+assert.equal(retryCandidate(recoverySettings, job.id, 42, 'device-a'), timedOutCreate);
+assert.equal(retryCandidate(recoverySettings, job.id, 43, 'device-a'), undefined);
+assert.equal(sameRetryJob(timedOutCreate, { ...timedOutCreate, create_key: 'different' }), false);
+
 
 // Local retries fail closed for legacy or mismatched identities. Unknown and
 // other-owner jobs are retained in the queue but never exposed as current-user details.

@@ -48,7 +48,7 @@ fn fixture(base: &str, jobs: Vec<settings::UploadJob>) -> (tempfile::TempDir, se
     settings::save(data.path(), &value).unwrap();
     let token = token();
     desktop_credentials::save(data.path(), &desktop_credentials::Credentials {
-        base_url: base.into(), access: token.clone(), refresh: "test-refresh".into(),
+        base_url: base.into(), access: token.clone(), refresh: "test-refresh".into(), device_session: None, session_device_id: None,
     }).unwrap();
     (data, owner, token)
 }

@@ -153,6 +153,7 @@ const catalogs = { A: deferred(), B: deferred() }, whitelistSaves = [];
 invoke = (command, args) => {
   if (command === 'app_settings_get') return Promise.resolve({ ...defaultSettings(), user_settings_revision: 11, active_account_id: 'A', chat: { ...defaultSettings().chat, allowed_usernames: { A: ['a'], B: ['b'] } } });
   if (command === 'chat_accounts') return Promise.resolve([{ id: 'A', source: 'wechat' }, { id: 'B', source: 'wechat' }]);
+  if (command === 'devify_upload_identity') return Promise.resolve(null);
   if (command === 'wechat_account_profile') return Promise.resolve(null);
   if (command === 'wechat_session_catalog') return catalogs[args.accountId].promise;
   if (command === 'app_settings_save') { const d = deferred(); whitelistSaves.push({ args, ...d }); return d.promise; }

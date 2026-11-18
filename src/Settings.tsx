@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { registerDevifyDevice } from './devifyDevice';
-import { storedBaseUrl } from './serviceUrl.ts';
+import { sameServiceUrl, storedBaseUrl } from './serviceUrl.ts';
+import type { UploadOwner } from './taskCloud';
 import { AccountPicker } from './AccountPicker';
 import { ConnectorIcon } from './Connectors';
 
@@ -87,6 +88,8 @@ export type AppSettings = {
   sync: {
     enabled: boolean;
     cursors?: Record<string, Record<string, unknown>>;
+    owners?: Record<string, UploadOwner>;
+    saved_progress?: Array<{ owner?: UploadOwner | null; cursors: Record<string, unknown> }>;
     last_run_at: string | null;
     last_status: string | null;
     last_error: string | null;
@@ -256,11 +259,19 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
   const [accounts, setAccounts] = useState<Account[]>([]);
   const profiles = useWechatProfiles(accounts);
   const [accountId, setAccountId] = useState('');
+  const [syncIdentity, setSyncIdentity] = useState<{ user_id: number; device_id: string } | null>(null);
   const accountIdRef = useRef('');
   const [catalog, setCatalog] = useState<SessionItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [kind, setKind] = useState<'all' | 'group' | 'direct'>('all');
   const [search, setSearch] = useState('');
+  const matchesSyncOwner = (owner?: UploadOwner | null) => Boolean(owner && syncIdentity
+    && owner.account_id === accountId && owner.space_id === settings.devify.active_space_id
+    && owner.user_id === syncIdentity.user_id && owner.device_id === syncIdentity.device_id
+    && sameServiceUrl(owner.base_url, settings.devify.base_url));
+  const currentCursors = matchesSyncOwner(settings.sync.owners?.[accountId])
+    ? settings.sync.cursors?.[accountId]
+    : settings.sync.saved_progress?.find(item => matchesSyncOwner(item.owner))?.cursors;
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -334,10 +345,12 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
   useEffect(() => {
     void (async () => {
       try {
-        const [stored, scan] = await Promise.all([
+        const [stored, scan, identity] = await Promise.all([
           invoke<AppSettings>('app_settings_get'),
           invoke<Account[]>('chat_accounts'),
+          invoke<{ user_id: number; device_id: string }>('devify_upload_identity').catch(() => null),
         ]);
+        setSyncIdentity(identity);
         const next = mergeSettings(requireSettingsRevision(stored));
         const list = scan ?? [];
         confirmedRevision.current = next.user_settings_revision;
@@ -418,7 +431,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
     try {
       const missingRange = (settings.chat.allowed_usernames[accountId] ?? []).some(username => {
         const range = settings.chat.initial_ranges[accountId]?.[username];
-        return customRanges[`${accountId}\0${username}`] === true && range?.since == null && range?.until == null && !settings.sync.cursors?.[accountId]?.[username];
+        return customRanges[`${accountId}\0${username}`] === true && range?.since == null && range?.until == null && !currentCursors?.[username];
       });
       if (missingRange) throw new Error('请选择自定义历史范围的开始或结束日期，或勾选上传全部历史记录。');
       if (Object.values(settings.chat.initial_ranges[accountId] ?? {}).some(range => range.since != null && range.until != null && range.since >= range.until)) throw new Error('历史记录结束日期不能早于开始日期。');
@@ -451,7 +464,7 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
 
   const focused = visibleCatalog.find(session => session.username === focusedSession) ?? visibleCatalog[0];
   const focusedRange = focused ? settings.chat.initial_ranges[accountId]?.[focused.username] : undefined;
-  const alreadySynced = focused && !!settings.sync.cursors?.[accountId]?.[focused.username];
+  const alreadySynced = focused && !!currentCursors?.[focused.username];
   const customRangeKey = focused ? `${accountId}\0${focused.username}` : '';
   const isCustomRange = customRanges[customRangeKey] ?? (focusedRange?.since != null || focusedRange?.until != null);
   const setUploadAllHistory = (uploadAll: boolean) => {

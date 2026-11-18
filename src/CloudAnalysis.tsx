@@ -5,6 +5,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import { reportPresentation } from './reportPresentation';
 import { exportNotSupported } from './toast';
+import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from './pageSnapshots';
 
 type Kind = 'events' | 'reports';
 type EventItem = { id: number; title: string; content: string; status?: string | null; tags?: Array<{ label?: string }>; last_activity_at?: string | null; opened_at?: string | null; updated_at?: string | null };
@@ -22,7 +23,7 @@ type EventDetail = EventItem & {
   related_events?: EventRelation[];
 };
 type Page<T> = { list: T[]; pagination?: { total?: number; page?: number; next?: string | null } };
-type AppSettings = { devify?: { active_space_id: string | null } };
+type AppSettings = { devify?: { base_url?: string; active_space_id: string | null } };
 
 const labels: Record<Kind, { title: string; empty: string }> = {
   events: { title: '事件', empty: '当前空间还没有事件。' },
@@ -150,12 +151,13 @@ function sectionItems(report: ReportItem): string[] {
   return (report.sections ?? []).flatMap(section => (section.items ?? []).map(item => item.title));
 }
 
-export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; focusId?: number | null; onOpenEvent?: (eventId: number) => void }) {
+export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind: Kind; userId: number | null; focusId?: number | null; onOpenEvent?: (eventId: number) => void }) {
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [items, setItems] = useState<Array<EventItem | ReportItem>>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(isTauri());
   const [error, setError] = useState('');
+  const [listError, setListError] = useState('');
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
@@ -186,33 +188,46 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
 
   useEffect(() => {
     let active = true;
-    setItems([]); setSelectedId(null); setDetail(null); setError(''); setQuery(''); setFilter('all');
+    let cacheKey = '';
+    const generation = pageSnapshotGeneration();
+    setItems([]); setSelectedId(null); setDetail(null); setError(''); setListError(''); setQuery(''); setFilter('all');
     setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
     if (!isTauri()) { setLoading(false); return; }
     setLoading(true);
     void invoke<AppSettings>('app_settings_get')
-      .then(settings => {
+      .then(async settings => {
         if (!active) return;
-        const id = settings.devify?.active_space_id ?? null;
+        const id = settings.devify?.active_space_id ?? await invoke<string | null>('devify_space_ensure');
+        if (!active) return;
         setSpaceId(id);
-        if (!id) throw new Error('请先在「设置 / 账户」中登录并选择空间。');
+        if (!id) throw new Error('暂时无法读取空间，请检查账户连接后重试。');
+        cacheKey = userId === null ? '' : JSON.stringify([settings.devify?.base_url, userId, id, kind]);
+        const cached = cacheKey ? readPageSnapshot<{ list: Array<EventItem | ReportItem>; total: number }>(cacheKey) : undefined;
+        if (cached) {
+          setItems(cached.list);
+          setTotal(cached.total);
+          setSelectedId(focusId ?? cached.list[0]?.id ?? null);
+          setLoading(false);
+        }
         return invoke<Page<EventItem> | Page<ReportItem>>('devify_analysis_list', { kind, spaceId: id, page: 1 });
       })
       .then(result => {
         if (!active || !result) return;
         const list = result.list ?? [];
+        if (cacheKey) savePageSnapshot(cacheKey, { list, total: result.pagination?.total ?? list.length }, generation);
         setItems(list);
         setTotal(result.pagination?.total ?? list.length);
         const pending = pendingSelect.current;
         pendingSelect.current = null;
-        setSelectedId(pending && list.some(item => item.id === pending)
+        setSelectedId(current => pending && list.some(item => item.id === pending)
           ? pending
-          : focusId && (kind === 'events' || list.some(item => item.id === focusId)) ? focusId : list[0]?.id ?? null);
+          : focusId && (kind === 'events' || list.some(item => item.id === focusId)) ? focusId
+          : current && list.some(item => item.id === current) ? current : list[0]?.id ?? null);
       })
-      .catch(reason => { if (active) setError(String(reason)); })
+      .catch(reason => { if (active) setListError(String(reason)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [kind, focusId, reloadKey]);
+  }, [kind, userId, focusId, reloadKey]);
 
   const counts = useMemo(() => {
     const open = items.filter(item => !isDone((item as EventItem).status)).length;
@@ -320,6 +335,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
   const toggleAllRaw = () => setOpenNotes(allRawOpen ? {} : Object.fromEntries(eventNotes.map(note => [note.id, true])));
   const reportView = reportPresentation(report ?? {});
   const applyEventUpdate = (updated: EventItem) => {
+    clearPageSnapshots();
     setDetail(current => (current && 'content' in current && (current as EventItem).id === updated.id
       ? { ...(current as EventDetail), ...updated }
       : current));
@@ -369,6 +385,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     setRelations(list ?? []);
   };
   const linkEvent = async (targetId: number) => {
+    clearPageSnapshots();
     if (!event || !spaceId || actionBusy) return;
     setActionBusy('link');
     setActionError('');
@@ -442,6 +459,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     }
   };
   const unlinkEvent = async (relationId: number) => {
+    clearPageSnapshots();
     if (!spaceId || actionBusy) return;
     setActionBusy('unlink');
     setActionError('');
@@ -461,6 +479,7 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
     } else onOpenEvent?.(eventId);
   };
   const generateReport = async () => {
+    clearPageSnapshots();
     if (!spaceId || generating) return;
     setGenerating(true);
     setGenError('');
@@ -493,12 +512,13 @@ export function CloudAnalysisPage({ kind, focusId, onOpenEvent }: { kind: Kind; 
 
   if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>请在桌面应用中查看</h2><p>事件和报告在上传处理后生成，桌面端负责同步并展示。</p></div></div>;
   if (loading) return <LoadingPage title={copy.title} />;
-  if (error) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>同步失败</h2><p>{error}</p></div></div>;
+  if (error || (listError && !items.length)) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>同步失败</h2><p>{error || listError}</p></div></div>;
   if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{copy.empty}</h2><p>完成聊天采集并等待处理完成后，结果会出现在这里。</p></div></div>;
 
   return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
     <aside className="analysis-side" aria-label={`${copy.title}列表`}>
       <h1>{copy.title}</h1>
+      {listError && <p role="status">暂时无法更新，显示上次读取的内容。<button type="button" onClick={() => setReloadKey(key => key + 1)}>重试</button></p>}
       <p className="analysis-side-count">{kind === 'events' ? `${counts.open} 个未完成 · 跨全部会话` : `${items.length} 份报告`}</p>
 
       <div className="analysis-search">
