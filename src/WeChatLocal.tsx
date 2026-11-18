@@ -2510,7 +2510,7 @@ const checkMark = (value: boolean | undefined) =>
           { id: 'wx-connect-account', label: t("查找账号"), done: Boolean(account) },
           { id: 'wx-connect-key', label: t("获取密钥"), done: keyedCount > 0 },
           { id: 'wx-connect-decrypt', label: t("解密记录"), done: ready },
-        ].map((step, index) => <button key={step.id} type="button" onClick={() => document.getElementById(step.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+        ].map((step, index) => <button key={step.id} type="button" onClick={() => document.getElementById(step.id)?.scrollIntoView({ block: 'start' })}>
           <span className={step.done ? 'complete' : ''}>{step.done ? Icons.check : index + 1}</span>{t(step.label)}
         </button>)}
       </nav>
