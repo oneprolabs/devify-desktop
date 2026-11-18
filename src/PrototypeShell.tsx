@@ -101,7 +101,18 @@ export default function PrototypeShell() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [updateDialogOpen]);
-  useEffect(() => { void checkForUpdates(true); }, []);
+  useEffect(() => {
+    const refresh = () => { void checkForUpdates(true); };
+    refresh();
+    window.addEventListener('focus', refresh);
+    window.addEventListener('online', refresh);
+    const timer = window.setInterval(refresh, 5 * 60 * 1000);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refresh);
+      window.clearInterval(timer);
+    };
+  }, []);
   const [eventFocusId, setEventFocusId] = useState<number | null>(null);
   const [chatReady, setChatReady] = useState(false);
   const [chatSource, setChatSource] = useState('wechat');
@@ -300,7 +311,7 @@ export default function PrototypeShell() {
     <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
       onNavigate={next => { if (next !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(next); }} />
     <section className="prototype-content">
-      {update.status === 'available' && !(section === 'settings' && settingsPage === 'about') && <button type="button" className="update-available-notice" onClick={() => setUpdateDialogOpen(true)}>发现新版本 {update.version}，查看更新</button>}
+      {update.status === 'available' && !(section === 'settings' && settingsPage === 'about') && <button type="button" className="update-available-notice" onClick={() => { setUpdateDialogOpen(true); void checkForUpdates(true); }}>发现新版本 {update.version}，查看更新</button>}
       {updateDialogOpen && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setUpdateDialogOpen(false); }}>
         <section className="auth-modal update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
           <header className="auth-modal-head"><span id="update-dialog-title">软件更新</span><button type="button" aria-label="关闭更新" autoFocus onClick={() => setUpdateDialogOpen(false)}>×</button></header>
