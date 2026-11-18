@@ -31,7 +31,11 @@ export function useConnectorDetect(kind: string) {
     return () => window.removeEventListener('focus', onFocus);
   }, [recheck]);
   const usable = detect?.state === 'installed' || detect?.state === 'not_required';
-  return { detect, checking, usable, recheck };
+  // An untrusted WeChat bundle is still sufficient for the read-only/import flow. The
+  // signature gate remains inside the in-app capture command, which is the only path that
+  // temporarily replaces the installed bundle.
+  const canProceed = usable || (kind === 'wechat' && detect?.state === 'untrusted');
+  return { detect, checking, usable, canProceed, recheck };
 }
 
 export const detectTitle: Record<DetectState, string> = {

@@ -1,8 +1,9 @@
 //! Local install detection for connectors that read a desktop app's own data.
 //!
 //! Every connector kind must answer `detect`; the `match` in [`detect`] is exhaustive, so
-//! adding a kind without a detector does not compile. Commands that read *new* data call
-//! [`require_installed`] first; viewing data that was already imported stays available.
+//! adding a kind without a detector does not compile. The install gate is reserved for
+//! operations that execute or modify the vendor bundle; local read-only data paths can use
+//! already verified keys without requiring the installed app to pass this check.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
