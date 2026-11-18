@@ -65,7 +65,7 @@ const find = (tree, test) => {
   return node;
 };
 let invoke;
-const installed = { detect: { state: 'installed', app_path: '/Applications/WeChat.app', version: '4.1.2', message: '' }, checking: false, usable: true, recheck: async () => {} };
+const installed = { detect: { state: 'installed', app_path: '/Applications/WeChat.app', version: '4.1.2', message: '' }, checking: false, usable: true, canProceed: true, recheck: async () => {} };
 let connectorInstall = installed;
 const mockedRequire = id => {
   if (id === 'react') return react;
@@ -274,16 +274,17 @@ connectorSaves[1].reject('SETTINGS_CONFLICT: changed'); await flush();
 tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 assert.match(notify(tree)[1].props.children, /未保存/);
 assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
-// A missing WeChat blocks the wizard and offers the download; installing unblocks it.
+// A missing WeChat blocks the wizard and offers the download; an untrusted bundle remains
+// usable for read-only import and is only blocked by the invasive capture action.
 const wizardButton = tree => find(tree, node => node.type === 'button' && node.props.className === 'connector-primary');
 assert.equal(wizardButton(tree).props.disabled, false);
-connectorInstall = { detect: { state: 'not_installed', app_path: null, version: null, message: '请先安装微信。' }, checking: false, usable: false, recheck: async () => {} };
+connectorInstall = { detect: { state: 'not_installed', app_path: null, version: null, message: '请先安装微信。' }, checking: false, usable: false, canProceed: false, recheck: async () => {} };
 tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 assert.equal(wizardButton(tree).props.disabled, true);
 assert.ok(elements(tree).some(node => node.type === 'a' && node.props.href === 'https://pc.weixin.qq.com/'));
-connectorInstall = { ...connectorInstall, detect: { ...connectorInstall.detect, state: 'untrusted', app_path: '/Applications/WeChat.app' } };
+connectorInstall = { ...connectorInstall, detect: { ...connectorInstall.detect, state: 'untrusted', app_path: '/Applications/WeChat.app' }, canProceed: true };
 tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
-assert.equal(wizardButton(tree).props.disabled, true);
+assert.equal(wizardButton(tree).props.disabled, false);
 assert.ok(!elements(tree).some(node => node.type === 'a' && node.props.href === 'https://pc.weixin.qq.com/'));
 connectorInstall = installed;
 

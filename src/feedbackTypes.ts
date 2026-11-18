@@ -1,4 +1,13 @@
-export type DiagnosticSnapshot = { schema_version: number; generated_at: string; events: unknown[] };
+export type DiagnosticSnapshot = { schema_version: number; generated_at: string; lines?: string[]; events?: unknown[] };
+/** Schema version 2 is one greppable text line per record; older drafts are JSON. */
+export function diagnosticText(snapshot: DiagnosticSnapshot | null): string {
+  if (!snapshot) return '';
+  if (snapshot.lines) return snapshot.lines.join('\n');
+  return JSON.stringify(snapshot, null, 2);
+}
+export function diagnosticCount(snapshot: DiagnosticSnapshot | null): number {
+  return snapshot?.lines?.length ?? snapshot?.events?.length ?? 0;
+}
 export type FeedbackDraft = {
   client_id: string; environment: { app_version: string; platform: string; arch: string; os_version: string; wechat_version: string }; related_batch_ids: number[]; receiver: string; owner_id: number | null;
   category: string; description: string; page: string;
