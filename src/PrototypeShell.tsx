@@ -12,7 +12,8 @@ import { DevifySettings, WhitelistSettings, type AppSettings } from './Settings'
 import { BackupSchedule } from './BackupSchedule';
 import { AnalysisSettings } from './AnalysisSettings';
 import { LanguageSettings } from './LanguageSettings';
-import { Icons, RailIcons } from './icons';
+import { Icons } from './icons';
+import { NavigationRail, type Section } from './NavigationRail';
 import { detectTitle, useConnectorDetect } from './connectorDetect';
 import { Connectors } from './Connectors';
 import { CloudAnalysisPage } from './CloudAnalysis';
@@ -32,10 +33,10 @@ import { shouldApplyAuthExpired } from './authEvents';
 import './prototype-shell.css';
 import './reference-theme.css';
 import './desktop-visual-refresh.css';
-import appIcon from './assets/app-icon.png';
+import './navigation-rail.css';
+import brandMark from './assets/app-mark-transparent.png';
 import wechatLogo from './assets/connectors/wechat.svg';
 
-type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks' | 'settings';
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'feedback' | 'about';
 
 function handleWindowDrag(event: MouseEvent<HTMLElement>) {
@@ -51,13 +52,6 @@ function handleWindowDrag(event: MouseEvent<HTMLElement>) {
   }
 }
 
-const sections: { id: Section; label: string; icon: ReactNode }[] = [
-  { id: 'chat', label: '聊天', icon: RailIcons.chat },
-  { id: 'events', label: '事件', icon: RailIcons.events },
-  { id: 'topics', label: '主题', icon: RailIcons.topics },
-  { id: 'reports', label: '报告', icon: RailIcons.reports },
-  { id: 'ask', label: '问答', icon: RailIcons.ask },
-];
 const settingsPages: { id: SettingsPage; label: string; group?: 'main' | 'local' }[] = [
   // The first six follow protype.html (连接器 / 导入管理 / 备份周期 / 智能分析 / 语言 / 账户);
   // the rest are pages this build has on top of the prototype.
@@ -296,24 +290,10 @@ export default function PrototypeShell() {
   const wizardPrev = () => { const index = wizardOrder.indexOf(wizardStep); if (index > 0) setWizard(wizardOrder[index - 1]); };
   const wizardNext = () => { const index = wizardOrder.indexOf(wizardStep); if (index >= 0 && index < wizardOrder.length - 1) setWizard(wizardOrder[index + 1]); };
   const openEvent = (eventId: number) => { setEventFocusId(eventId); setSection('events'); };
-  const navButton = (item: { id: Section; label: string; icon: ReactNode }) => <button
-    key={item.id} type="button" className={section === item.id ? 'prototype-nav-item active' : 'prototype-nav-item'}
-    aria-current={section === item.id ? 'page' : undefined}
-    onClick={() => { if (item.id !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(item.id); }}
-  ><span>{item.icon}</span><small>{item.label}</small></button>;
-
-  return <main className="prototype-shell" onMouseDown={handleWindowDrag}>
+  return <main className={`prototype-shell${isTauri() && /Mac/.test(navigator.platform) ? ' prototype-shell-macos' : ''}`} onMouseDown={handleWindowDrag}>
     <div className="prototype-titlebar" aria-hidden="true" />
-    <aside className="prototype-rail" aria-label="主导航">
-      {authState === 'authed' && <div className="prototype-account-wrap"><button type="button" className="prototype-account" onClick={() => openSettings('account')} aria-label="打开账户设置"><span className="prototype-account-avatar" aria-hidden="true">{(currentUser || '账').slice(0, 1).toUpperCase()}</span><span className="prototype-account-text" title={currentUser || undefined}>{currentUser || '账号信息暂不可用'}</span></button></div>}
-      <nav className="prototype-nav">{sections.map(navButton)}</nav>
-      <div className="prototype-spacer" />
-      <nav className="prototype-nav">
-        {navButton({ id: 'tasks', label: '任务', icon: RailIcons.tasks })}
-        {navButton({ id: 'settings', label: '设置', icon: RailIcons.settings })}
-      </nav>
-      <div className="prototype-rail-brand"><img src={appIcon} alt=""/><strong>AIMyChats</strong></div>
-    </aside>
+    <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
+      onNavigate={next => { if (next !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(next); }} />
     <section className="prototype-content">
       {update.status === 'available' && <button type="button" className="update-available-notice" onClick={() => { if (authState === 'authed') { setSettingsPage('about'); setWechatGuide(false); setSection('settings'); } else setUpdateDialogOpen(true); }}>发现新版本 {update.version}，查看更新</button>}
       {updateDialogOpen && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setUpdateDialogOpen(false); }}>
@@ -325,7 +305,7 @@ export default function PrototypeShell() {
       {authState === 'checking' && <div className="auth-checking" role="status"><span className="auth-gate-pulse"/>正在检查登录状态…</div>}
       {authState === 'unavailable' && <div className="auth-gate">
         <div className="auth-gate-card">
-          <span className="auth-gate-mark"><img src={appIcon} alt=""/></span>
+          <span className="auth-gate-mark"><img src={brandMark} alt=""/></span>
           <h1>服务端暂不可用</h1>
           <p>{authError || '服务端暂不可用，请稍后重试。'}</p>
           <p className="auth-gate-hint">已保存的登录状态不会丢失，服务恢复后点「重试」即可。</p>

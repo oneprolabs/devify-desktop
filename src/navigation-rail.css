@@ -1,0 +1,115 @@
+/* Matches the updated v7 app overview. Fonts contain only the rail's glyphs. */
+@font-face { font-family: 'AIMyChats Rail'; font-style: normal; font-weight: 100 900; font-display: swap; src: url('./assets/fonts/noto-sans-sc-rail-1.woff2') format('woff2'); unicode-range: U+804A; }
+@font-face { font-family: 'AIMyChats Rail'; font-style: normal; font-weight: 100 900; font-display: swap; src: url('./assets/fonts/noto-sans-sc-rail-2.woff2') format('woff2'); unicode-range: U+7B54; }
+@font-face { font-family: 'AIMyChats Rail'; font-style: normal; font-weight: 100 900; font-display: swap; src: url('./assets/fonts/noto-sans-sc-rail-3.woff2') format('woff2'); unicode-range: U+4E8B, U+4EF6, U+4EFB, U+7F6E, U+8BBE; }
+@font-face { font-family: 'AIMyChats Rail'; font-style: normal; font-weight: 100 900; font-display: swap; src: url('./assets/fonts/noto-sans-sc-rail-4.woff2') format('woff2'); unicode-range: U+4E3B, U+52A1, U+544A, U+5929, U+62A5, U+95EE, U+9898; }
+
+.prototype-shell {
+  --rail-width: 80px;
+  --rail-background: #0e0e10;
+  --rail-foreground: #b8b8c2;
+  --rail-selected: #232326;
+  --rail-accent: #e85bc4;
+  padding-top: 0;
+}
+
+.prototype-titlebar { display: none; }
+
+.prototype-rail {
+  display: flex;
+  flex: 0 0 var(--rail-width);
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: var(--rail-width);
+  min-height: 0;
+  padding: 14px 0 12px;
+  border: 0;
+  background: var(--rail-background);
+  color: var(--rail-foreground);
+  font-family: 'AIMyChats Rail', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: normal;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.prototype-rail-mark {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  color: #fff;
+  font: 600 20px/1 var(--font);
+  cursor: pointer;
+}
+
+.prototype-rail-mark:disabled { opacity: 1; cursor: default; }
+
+.prototype-nav {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.prototype-nav-item {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 60px;
+  height: auto;
+  margin: 0;
+  padding: 9px 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--rail-foreground);
+  font: inherit;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.prototype-nav-item:hover { background: var(--rail-selected); color: #fff; }
+.prototype-nav-item.active { background: var(--rail-selected); color: var(--rail-accent); }
+.prototype-nav-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 26px; height: 26px; }
+.prototype-nav-item-tasks .prototype-nav-icon { width: 34px; height: 34px; }
+.prototype-nav-icon svg { display: block; flex: none; width: 26px; height: 26px; }
+.prototype-nav-item small { font: inherit; font-size: 12px; line-height: 1; }
+.prototype-spacer { flex: 1; min-height: 0; }
+.prototype-rail button:focus-visible { outline: 1px solid #b8b8c2; outline-offset: -3px; }
+.prototype-rail-brand { display: flex; flex: none; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 40px; padding-top: 8px; border-top: 1px solid #303034; }
+.prototype-rail-brand img { display: block; width: 32px; height: 26px; object-fit: contain; }
+.prototype-rail-version { color: #fff; font: 400 10px/1.2 var(--font); white-space: nowrap; }
+
+/* The updated prototype reserves 48px for the native macOS traffic lights. */
+.prototype-shell-macos .prototype-titlebar {
+  position: absolute;
+  inset: 0 auto auto 0;
+  z-index: 1;
+  display: block;
+  width: var(--rail-width);
+  height: 48px;
+  padding: 0;
+  border: 0;
+  background: var(--rail-background);
+}
+.prototype-shell-macos .prototype-rail { padding-top: 54px; }
+
+/* Keep the version visible at the desktop window's 640px minimum height. */
+@media (max-height: 680px) {
+  .prototype-rail { gap: 4px; }
+  .prototype-rail-mark { margin-bottom: 10px; }
+}

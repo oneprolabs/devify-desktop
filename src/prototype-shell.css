@@ -1,21 +1,5 @@
 /* Primary navigation follows the narrow, dark rail in the supplied prototype. */
-.prototype-shell { --accent-magenta: #a11d9a; --accent-magenta-deep: #83167e; --accent-magenta-tint: #f8e9f5; --accent-magenta-tint-strong: #f1d3ed; --accent-green: #16834d; --accent-green-tint: #eaf6ef; position: relative; display: flex; height: 100vh; min-height: 0; padding-top: 44px; overflow: hidden; background: #fff; color: #1a1a19; }
-/* One full-width title bar owns the window controls, so the traffic lights sit
-   on the app frame instead of floating over the page. The bar keeps the rail
-   colour and runs edge to edge: the drag target is the whole top of the window. */
-.prototype-titlebar { position: absolute; inset: 0 0 auto; height: 44px; display: flex; align-items: center; padding: 0 14px 0 92px; background: #0b0b0e; color: #dedde3; user-select: none; -webkit-user-select: none; }
-.prototype-titlebar-brand { display: flex; align-items: center; gap: 8px; min-width: 0; pointer-events: none; }
-.prototype-titlebar-brand img { display: block; width: 18px; height: 18px; flex: none; border-radius: 5px; }
-.prototype-titlebar-brand span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; letter-spacing: .01em; }
-.prototype-rail { width: 68px; flex: 0 0 68px; display: flex; flex-direction: column; align-items: center; background: #0b0b0e; color: #a7a5ad; padding: 10px 8px 10px; }
-.prototype-nav { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.prototype-nav-item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 52px; height: 52px; border: 0; border-radius: 10px; color: #a7a5ad; background: transparent; cursor: pointer; }
-.prototype-nav-item:hover { background: #1d1d22; color: #eee; }
-.prototype-nav-item.active { background: #232326; color: #e85bc4; }
-.prototype-nav-item span { width: 22px; height: 22px; }
-.prototype-nav-item svg { display: block; width: 100%; height: 100%; }
-.prototype-nav-item small { font: inherit; font-size: 10px; line-height: 1; }
-.prototype-spacer { flex: 1; }
+.prototype-shell { --accent-magenta: #a11d9a; --accent-magenta-deep: #83167e; --accent-magenta-tint: #f8e9f5; --accent-magenta-tint-strong: #f1d3ed; --accent-green: #16834d; --accent-green-tint: #eaf6ef; position: relative; display: flex; height: 100vh; min-height: 0; overflow: hidden; background: #fff; color: #1a1a19; }
 .prototype-content { flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #fff; }
 .prototype-settings { height: 100%; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
 .prototype-settings-nav { display: flex; flex-direction: column; padding: 42px 14px 16px; border-right: 1px solid #e9e9e6; background: #fafaf8; }
@@ -301,8 +285,8 @@
 /* Login gate: the app is readable only after Devify authentication. */
 .auth-gate { height: 100%; display: grid; place-items: center; padding: 32px; background: #fff; }
 .auth-gate-card { width: min(420px, 100%); display: flex; flex-direction: column; align-items: center; text-align: center; }
-.auth-gate-mark { width: 62px; height: 62px; display: grid; place-items: center; border-radius: 16px; background: linear-gradient(150deg, #e85bc4, #a3279a); box-shadow: 0 10px 26px rgba(163, 39, 154, .22); }
-.auth-gate-mark img { width: 40px; height: 40px; object-fit: contain; border-radius: 10px; }
+.auth-gate-mark { width: 62px; height: 62px; display: grid; place-items: center; }
+.auth-gate-mark img { width: 62px; height: 48px; object-fit: contain; }
 .auth-gate h1 { margin-top: 22px; font-size: 20px; font-weight: 600; }
 .auth-gate p { margin-top: 9px; color: #5f5f5a; font-size: 13px; line-height: 1.7; }
 .auth-gate-primary { margin-top: 24px; min-width: 132px; padding: 11px 30px; border: 0; border-radius: 10px; background: #a3279a; color: #fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
