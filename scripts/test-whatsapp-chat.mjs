@@ -52,7 +52,10 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/core') return { isTauri: () => true };
   if (id === './desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
   if (id === './WeChatLocal') return { default: MessagePane };
-  if (id === './entitlements') return { useInternalAccount: () => ({ internal: false }) };
+  if (id === './entitlements') return {
+    useInternalAccount: () => ({ internal: false }),
+    useCapability: () => ({ allowed: false, loading: false, view: null }),
+  };
   if (id === './connectorDetect') return { currentAccount: (items, remembered) => items.find(item => item.id === remembered) ?? items[0] };
   if (id === './syncFeedback') return { syncFeedback: () => 'completed' };
   if (id === './chatPresentation') return { eventViewState: () => 'empty', syncErrorMessage: String };
