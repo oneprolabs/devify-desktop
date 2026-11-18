@@ -1,3 +1,4 @@
+import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LoadingPage, LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,8 +31,8 @@ type Settings = { devify?: { base_url?: string; active_space_id: string | null }
 
 const periods = [{ value: 'day', label: '每天' }, { value: 'week', label: '每周' }, { value: 'month', label: '每月' }];
 const periodLabel = (value: string) => periods.find(item => item.value === value)?.label ?? value;
-const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '尚未执行';
-const statusLabel = (value?: string | null) => ({ open: '待我处理', in_progress: '推进中', done: '已完成' } as Record<string, string>)[value || ''] || '已匹配';
+const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("尚未执行");
+const statusLabel = (value?: string | null) => ({ open: t("待我处理"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("已匹配");
 
 function StateDot({ done }: { done: boolean }) {
   return <svg className="topic-dot" viewBox="0 0 16 16" aria-hidden="true">
@@ -100,7 +101,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
   }, [spaceId, selectedId]);
 
   const detail = topicDetail?.id === selectedId ? topicDetail : selected;
-  const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: `事件 #${id}` } as TopicEvent));
+  const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: tf("事件 #{0}", id) } as TopicEvent));
   const openCount = matchedEvents.filter(event => event.status !== 'done').length;
   const runs = detail?.execution_history ?? detail?.runs ?? detail?.execution_records ?? [];
 
@@ -110,8 +111,8 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
     return topics.filter(topic => `${topic.title} ${topic.instruction}`.toLowerCase().includes(keyword));
   }, [topics, query]);
   const groups = useMemo(() => [
-    { label: '运行中', items: visibleTopics.filter(topic => topic.enabled) },
-    { label: '已暂停', items: visibleTopics.filter(topic => !topic.enabled) },
+    { label: t("运行中"), items: visibleTopics.filter(topic => topic.enabled) },
+    { label: t("已暂停"), items: visibleTopics.filter(topic => !topic.enabled) },
   ].filter(group => group.items.length), [visibleTopics]);
 
   const resetForm = () => { setTitle(''); setInstruction(''); setPeriod('day'); setTime('08:30'); setCreating(false); };
@@ -133,7 +134,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
     } catch (reason) { setError(String(reason)); }
   };
   const remove = async (topic: Topic) => {
-    if (!window.confirm(`删除主题「${topic.title}」？`)) return;
+    if (!window.confirm(tf("删除主题「{0}」？", topic.title))) return;
     try {
       await invoke('devify_topic_delete', { topicId: topic.id });
       clearPageSnapshots();
@@ -143,18 +144,18 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
     } catch (reason) { setError(String(reason)); }
   };
 
-  if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>主题订阅</h1><p>主题订阅会按周期执行，请在桌面应用中使用。</p></div>;
-  if (loading) return <LoadingPage title={'主题订阅'} />;
+  if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>{t("主题订阅")}</h1><p>{t("主题订阅会按周期执行，请在桌面应用中使用。")}</p></div>;
+  if (loading) return <LoadingPage title={t("主题订阅")} />;
 
   return <div className="topic-page">
     <aside className="topic-side">
-      <h1>主题订阅</h1>
-      <p className="topic-side-count">{topics.length} 个订阅</p>
-      <input className="topic-side-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索主题" spellCheck={false}/>
-      <button type="button" className={`topic-side-new${creating ? ' on' : ''}`} onClick={() => { setCreating(true); setError(''); }}>＋ 新建主题订阅</button>
+      <h1>{t("主题订阅")}</h1>
+      <p className="topic-side-count">{topics.length} {t("个订阅")}</p>
+      <input className="topic-side-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索主题")} spellCheck={false}/>
+      <button type="button" className={`topic-side-new${creating ? ' on' : ''}`} onClick={() => { setCreating(true); setError(''); }}>{t("＋ 新建主题订阅")}</button>
       <div className="topic-side-list">
-        {groups.map(group => <section key={group.label}>
-          <h3>{group.label} · {group.items.length}</h3>
+        {groups.map(group => <section key={t(group.label)}>
+          <h3>{t(group.label)} · {group.items.length}</h3>
           {group.items.map(topic => <button
             type="button"
             key={topic.id}
@@ -164,39 +165,39 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
             <span className={`topic-side-dot${topic.enabled ? ' on' : ''}`} aria-hidden="true"/>
             <span>
               <strong>{topic.title}</strong>
-              <small>{periodLabel(topic.period)} · {topic.last_run_at ? dateLabel(topic.last_run_at) : '尚未执行'}</small>
+              <small>{periodLabel(topic.period)} · {topic.last_run_at ? dateLabel(topic.last_run_at) : t("尚未执行")}</small>
             </span>
           </button>)}
         </section>)}
-        {!groups.length && <p className="topic-side-empty">{query.trim() ? '没有匹配的主题。' : '还没有主题订阅。'}</p>}
+        {!groups.length && <p className="topic-side-empty">{query.trim() ? t("没有匹配的主题。") : t("还没有主题订阅。")}</p>}
       </div>
       <SidebarResizeHandle/>
     </aside>
 
     <main className="topic-main">
       <header className="topic-top">
-        <div className="topic-crumbs">主题订阅 <span>/</span> {creating ? '新建' : (detail?.title ?? '全部')}</div>
+        <div className="topic-crumbs">{t("主题订阅")} <span>/</span> {creating ? t("新建") : (detail?.title ?? t("全部"))}</div>
         <div className="topic-top-actions">
           {!creating && detail && <>
-            <button type="button" onClick={() => void toggle(detail)}>{detail.enabled ? '暂停' : '启用'}</button>
-            <button type="button" className="danger" onClick={() => void remove(detail)}>删除</button>
+            <button type="button" onClick={() => void toggle(detail)}>{detail.enabled ? t("暂停") : t("启用")}</button>
+            <button type="button" className="danger" onClick={() => void remove(detail)}>{t("删除")}</button>
           </>}
         </div>
       </header>
 
-      {!spaceId && <div className="topic-empty"><h2>还没有选择空间</h2><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
-      {error && <p className="topic-error" role="alert">{error}</p>}
+      {!spaceId && <div className="topic-empty"><h2>{t("还没有选择空间")}</h2><p>{t("请先在「设置 / 账户」中登录并选择空间。")}</p></div>}
+      {error && <p className="topic-error" role="alert">{t(error)}</p>}
 
       {spaceId && creating && <div className="topic-create-wrap">
         <header>
-          <h1>新建主题订阅</h1>
-          <p>用一句话描述你想持续关注的内容。保存后先回溯已有事件，之后按周期执行，每期生成一份主题报告。</p>
+          <h1>{t("新建主题订阅")}</h1>
+          <p>{t("用一句话描述你想持续关注的内容。保存后先回溯已有事件，之后按周期执行，每期生成一份主题报告。")}</p>
         </header>
         <input
           className="topic-name-input"
           value={title}
           maxLength={255}
-          placeholder="主题名称，例如：报价与合同"
+          placeholder={t("主题名称，例如：报价与合同")}
           onChange={event => setTitle(event.target.value)}
         />
         <div className="topic-def-card">
@@ -204,47 +205,47 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
             value={instruction}
             rows={4}
             maxLength={5000}
-            placeholder="例如：所有和报价、合同金额、付款有关的讨论，包含微信群和邮件"
+            placeholder={t("例如：所有和报价、合同金额、付款有关的讨论，包含微信群和邮件")}
             onChange={event => setInstruction(event.target.value)}
           />
           <div className="topic-def-actions">
-            <div className="topic-freq" role="group" aria-label="执行周期">
+            <div className="topic-freq" role="group" aria-label={t("执行周期")}>
               {periods.map(item => <button
                 key={item.value}
                 type="button"
                 aria-pressed={period === item.value}
                 className={period === item.value ? 'on' : ''}
                 onClick={() => setPeriod(item.value)}
-              >{item.label}</button>)}
+              >{t(item.label)}</button>)}
             </div>
             <label className="topic-time">
-              执行时间
+              {t("执行时间")}
               <input type="time" value={time} onChange={event => setTime(event.target.value)}/>
             </label>
-            <button type="button" className="topic-cancel" onClick={resetForm}>取消</button>
-            <button type="button" className="topic-save" disabled={saving || !title.trim() || !instruction.trim()} onClick={() => void create()}>{saving ? '保存中…' : '保存并回溯'}</button>
+            <button type="button" className="topic-cancel" onClick={resetForm}>{t("取消")}</button>
+            <button type="button" className="topic-save" disabled={saving || !title.trim() || !instruction.trim()} onClick={() => void create()}>{saving ? t("保存中…") : t("保存并回溯")}</button>
           </div>
         </div>
       </div>}
 
       {spaceId && !creating && !topics.length && <div className="topic-empty">
-        <h2>还没有主题订阅</h2>
-        <p>创建一个主题后，会按周期回溯已生成的事件。</p>
-        <button type="button" className="topic-save" onClick={() => setCreating(true)}>创建第一个主题</button>
+        <h2>{t("还没有主题订阅")}</h2>
+        <p>{t("创建一个主题后，会按周期回溯已生成的事件。")}</p>
+        <button type="button" className="topic-save" onClick={() => setCreating(true)}>{t("创建第一个主题")}</button>
       </div>}
 
-      {spaceId && !creating && detailLoading && <LoadingSkeleton label="正在加载主题详情" kind="detail" />}
+      {spaceId && !creating && detailLoading && <LoadingSkeleton label={t("正在加载主题详情")} kind="detail" />}
       {spaceId && !creating && detail && !detailLoading && <div className="topic-detail-wrap">
-        <span className={`topic-state${detail.enabled ? ' on' : ''}`}>{detail.enabled ? '运行中' : '已暂停'}</span>
+        <span className={`topic-state${detail.enabled ? ' on' : ''}`}>{detail.enabled ? t("运行中") : t("已暂停")}</span>
         <h1>{detail.title}</h1>
-        <div className="topic-meta">{periodLabel(detail.period)}{detail.time_local ? ` · ${detail.time_local.slice(0, 5)}` : ''} · 上次执行 {dateLabel(detail.last_run_at)}</div>
+        <div className="topic-meta">{periodLabel(detail.period)}{detail.time_local ? ` · ${detail.time_local.slice(0, 5)}` : ''} {t("· 上次执行")} {dateLabel(detail.last_run_at)}</div>
         <div className="topic-instruction">{detail.instruction}</div>
-        {detail.last_error && <p className="topic-error">上次执行失败：{detail.last_error}</p>}
+        {detail.last_error && <p className="topic-error">{t("上次执行失败：")}{detail.last_error}</p>}
 
         <section className="topic-block">
           <div className="topic-block-head">
-            <span>匹配的事件 · {matchedEvents.length}</span>
-            <span>未完成 {openCount}</span>
+            <span>{t("匹配的事件 ·")} {matchedEvents.length}</span>
+            <span>{t("未完成")} {openCount}</span>
           </div>
           {matchedEvents.length ? <div className="topic-event-list">
             {matchedEvents.map(event => {
@@ -252,22 +253,22 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
               const done = event.status === 'done';
               return <button type="button" className="topic-event" key={id} onClick={() => setEvidence({ kind: 'event', id, title: event.title })}>
                 <StateDot done={done}/>
-                <strong>{event.title || `事件 #${id}`}</strong>
+                <strong>{event.title || tf("事件 #{0}", id)}</strong>
                 <small>{statusLabel(event.status)}{done ? '' : ''}</small>
               </button>;
             })}
-          </div> : <p className="topic-block-empty">还没有匹配到事件。</p>}
+          </div> : <p className="topic-block-empty">{t("还没有匹配到事件。")}</p>}
         </section>
 
         <section className="topic-block">
-          <div className="topic-block-head"><span>历次执行</span><span>{runs.length} 次</span></div>
+          <div className="topic-block-head"><span>{t("历次执行")}</span><span>{runs.length} {t("次")}</span></div>
           {runs.length ? <div className="topic-run-list">
             {runs.map((run, index) => <div className="topic-run" key={run.id}>
               <span className="topic-run-mark">✓</span>
-              <span className="topic-run-label">第 {runs.length - index} 期 · {dateLabel(run.completed_at || run.started_at || run.created_at)}</span>
-              <span className="topic-run-count">{run.matched_count ?? 0} 个事件</span>
+              <span className="topic-run-label">{t("第")} {runs.length - index} {t("期 ·")} {dateLabel(run.completed_at || run.started_at || run.created_at)}</span>
+              <span className="topic-run-count">{run.matched_count ?? 0} {t("个事件")}</span>
             </div>)}
-          </div> : <p className="topic-block-empty">还没有执行记录。</p>}
+          </div> : <p className="topic-block-empty">{t("还没有执行记录。")}</p>}
         </section>
       </div>}
     </main>

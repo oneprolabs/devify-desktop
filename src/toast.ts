@@ -1,3 +1,4 @@
+import { t } from './locale';
 /**
  * One shared, self-dismissing toast for placeholder actions.
  *
@@ -26,5 +27,5 @@ export function toast(message: string): void {
 
 /** Feedback for every export button while the feature is a placeholder. */
 export function exportNotSupported(): void {
-  toast('导出功能暂不支持，后续版本开放。');
+  toast(t("导出功能暂不支持，后续版本开放。"));
 }

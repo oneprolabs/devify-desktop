@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -76,7 +77,7 @@ export function AgentAccess() {
         setSkillsDir(next.default_skills_dir);
       }
     } catch (e) {
-      setError(`读取接入状态失败：${String(e)}`);
+      setError(tf("读取接入状态失败：{0}", String(e)));
     }
   }, []);
 
@@ -124,9 +125,9 @@ export function AgentAccess() {
     setNotice('');
     try {
       await navigator.clipboard.writeText(prompt);
-      setNotice(`提示词已复制。粘贴到 ${selected?.name ?? '你的 Agent'} 后，允许它执行 shell 并写入上面两个目录。`);
+      setNotice(tf("提示词已复制。粘贴到 {0} 后，允许它执行 shell 并写入上面两个目录。", selected?.name ?? '你的 Agent'));
     } catch (e) {
-      setError(`复制失败，请手动选择提示词文本：${String(e)}`);
+      setError(tf("复制失败，请手动选择提示词文本：{0}", String(e)));
     }
   };
 
@@ -136,7 +137,7 @@ export function AgentAccess() {
     setError('');
     try {
       const path = await invoke<string>('agent_build_wxq');
-      setNotice(`已构建可下载的 wxq：${path}`);
+      setNotice(tf("已构建可下载的 wxq：{0}", path));
       await load();
     } catch (e) {
       setError(String(e));
@@ -145,7 +146,7 @@ export function AgentAccess() {
     }
   };
 
-  const stateLabel = status === null ? '正在读取状态…' : status.running ? '服务运行中' : '服务未运行';
+  const stateLabel = status === null ? t("正在读取状态…") : status.running ? t("服务运行中") : t("服务未运行");
   const installedCount = selected?.installed.length ?? 0;
   const base = status?.base_url ?? 'http://127.0.0.1:18765';
 
@@ -153,11 +154,10 @@ export function AgentAccess() {
     <section className="panel">
       <div className="mcp-head">
         <div>
-          <h2>工具接入</h2>
+          <h2>{t("工具接入")}</h2>
           <p className="help">
-            复制一条提示词，粘贴到你正在使用的 Agent。它会从本机服务下载只读 CLI <code>wxq</code> 和三个
-            <code>SKILL.md</code>，写入你指定的目录，并用 <code>wxq health</code> / <code>wxq policy</code> 验证连接。
-            服务只在本机运行，登录且当前套餐包含本机 Agent 集成时才会启动，退出登录或应用关闭后停止。
+            {t("复制一条提示词，粘贴到你正在使用的 Agent。它会从本机服务下载只读 CLI")} <code>wxq</code> {t("和三个")}
+            <code>SKILL.md</code>{t("，写入你指定的目录，并用")} <code>wxq health</code> / <code>wxq policy</code> {t("验证连接。\n            服务只在本机运行，登录且当前套餐包含本机 Agent 集成时才会启动，退出登录或应用关闭后停止。")}
           </p>
         </div>
         <span className={`mcp-state ${status?.running ? 'on' : 'off'}`}>
@@ -167,34 +167,34 @@ export function AgentAccess() {
 
       <dl className="mcp-meta">
         <div>
-          <dt>本机服务</dt>
+          <dt>{t("本机服务")}</dt>
           <dd><code>{base}</code></dd>
         </div>
         <div>
-          <dt>CLI 下载</dt>
-          <dd><code>{base}/agent/wxq</code>{status?.wxq ? ` · ${sizeLabel(status.wxq.size)}` : ' · 不可用'}</dd>
+          <dt>{t("CLI 下载")}</dt>
+          <dd><code>{base}/agent/wxq</code>{status?.wxq ? ` · ${sizeLabel(status.wxq.size)}` : t(" · 不可用")}</dd>
         </div>
         <div>
-          <dt>Skills 清单</dt>
+          <dt>{t("Skills 清单")}</dt>
           <dd><code>{base}/agent/skills</code></dd>
         </div>
         <div>
-          <dt>认证</dt>
-          <dd>{status?.token_required ? 'Bearer Token · 自动生成，wxq 自动读取' : '仅本机访问'}</dd>
+          <dt>{t("认证")}</dt>
+          <dd>{status?.token_required ? t("Bearer Token · 自动生成，wxq 自动读取") : t("仅本机访问")}</dd>
         </div>
       </dl>
 
       {status && !status.running && (
         <div className="config warn">
-          {status.reason ?? '服务没有监听，提示词里的下载会失败。请确认 AIMyChats 仍在运行；如果端口被占用，可在启动前设置 WECHAT_AGENT_BIND 换一个地址。'}
+          {status.reason ?? t("服务没有监听，提示词里的下载会失败。请确认 AIMyChats 仍在运行；如果端口被占用，可在启动前设置 WECHAT_AGENT_BIND 换一个地址。")}
         </div>
       )}
       {status && !status.wxq && (
         <div className="config warn">
-          <div>当前没有可下载的 wxq。在源码检出版本里可以点下面的按钮构建（release），构建完成后状态会自动刷新；打包版需要另行内置该二进制。</div>
+          <div>{t("当前没有可下载的 wxq。在源码检出版本里可以点下面的按钮构建（release），构建完成后状态会自动刷新；打包版需要另行内置该二进制。")}</div>
           <div className="mcp-actions">
             <button className="secondary" onClick={() => void buildWxq()} disabled={building}>
-              {building ? '正在构建 wxq…' : '构建 wxq'}
+              {building ? t("正在构建 wxq…") : t("构建 wxq")}
             </button>
           </div>
         </div>
@@ -202,16 +202,16 @@ export function AgentAccess() {
     </section>
 
     <section className="panel">
-      <h2>安装位置</h2>
+      <h2>{t("安装位置")}</h2>
       <div className="grid access-paths">
-        <label>当前工具
+        <label>{t("当前工具")}
           <select value={tool} onChange={event => pickTool(event.target.value)} disabled={!status}>
             {(status?.targets ?? []).map(item => <option key={item.id} value={item.id}>
-              {item.name}{item.available ? '' : ' · 未检测到'}
+              {item.name}{item.available ? '' : t(" · 未检测到")}
             </option>)}
           </select>
         </label>
-        <label>CLI 目录
+        <label>{t("CLI 目录")}
           <input
             value={binDir}
             onChange={event => { setBinDir(event.target.value); setNotice(''); }}
@@ -219,7 +219,7 @@ export function AgentAccess() {
             spellCheck={false}
           />
         </label>
-        <label>Skills 目录
+        <label>{t("Skills 目录")}
           <input
             value={skillsDir}
             onChange={event => { setSkillsDir(event.target.value); skillsTouched.current = true; setNotice(''); }}
@@ -229,65 +229,62 @@ export function AgentAccess() {
         </label>
       </div>
       <p className="help">
-        CLI 会写成 <code>{expanded.binDir || binDir || '—'}/wxq</code>；Skills 会写成
-        <code>{expanded.skillsDir || skillsDir || '—'}/&lt;skill&gt;/SKILL.md</code>。
-        支持 <code>~</code> 和绝对路径；选择工具只会帮你填入它的默认 Skills 目录，仍然可以手动改。
+        {t("CLI 会写成")} <code>{expanded.binDir || binDir || '—'}/wxq</code>{t("；Skills 会写成")}
+        <code>{expanded.skillsDir || skillsDir || '—'}/&lt;skill&gt;/SKILL.md</code>{t("。\n        支持")} <code>~</code> {t("和绝对路径；选择工具只会帮你填入它的默认 Skills 目录，仍然可以手动改。")}
       </p>
       {selected && (
         <div className="agent-detail">
           <span className={`agent-state ${selected.available ? 'ok' : 'warn'}`}>
-            {selected.available ? '已检测到' : '未检测到'}
+            {selected.available ? t("已检测到") : t("未检测到")}
           </span>
           <span className="agent-detail-path mono">{selected.command ?? selected.skills_dir}</span>
           <span className="agent-detail-note">
             {installedCount === 3
-              ? '三个 Skill 已安装'
+              ? t("三个 Skill 已安装")
               : installedCount > 0
-                ? `已安装 ${installedCount}/3 个 Skill`
-                : '尚未安装 Skill'}
+                ? tf("已安装 {0}/3 个 Skill", installedCount)
+                : t("尚未安装 Skill")}
           </span>
         </div>
       )}
     </section>
 
     <section className="panel">
-      <h2>接入提示词</h2>
+      <h2>{t("接入提示词")}</h2>
       <p className="help">
-        在 {selected?.name ?? '目标 Agent'} 中新建一个会话，粘贴下面全部内容并允许它执行 shell。
-        提示词只包含下载、写入和验证步骤，不包含任何聊天内容。
+        {t("在")} {selected?.name ?? t("目标 Agent")} {t("中新建一个会话，粘贴下面全部内容并允许它执行 shell。\n        提示词只包含下载、写入和验证步骤，不包含任何聊天内容。")}
       </p>
-      <pre className="mcp-code access-prompt">{loadingPrompt && !prompt ? '正在生成提示词…' : prompt || '填写上面的两个目录后会自动生成提示词。'}</pre>
+      <pre className="mcp-code access-prompt">{loadingPrompt && !prompt ? t("正在生成提示词…") : prompt || t("填写上面的两个目录后会自动生成提示词。")}</pre>
       <div className="mcp-actions">
         <button className="primary access-copy" onClick={() => void copyPrompt()} disabled={!prompt || loadingPrompt}>
-          复制提示词
+          {t("复制提示词")}
         </button>
-        <button className="secondary" onClick={() => void load(true)}>恢复默认目录</button>
+        <button className="secondary" onClick={() => void load(true)}>{t("恢复默认目录")}</button>
       </div>
       {notice && <div className="notice">{notice}</div>}
-      {error && <div className="error">{error}</div>}
+      {error && <div className="error">{t(error)}</div>}
     </section>
 
     <section className="panel">
-      <h2>可以下载什么</h2>
+      <h2>{t("可以下载什么")}</h2>
       <ul className="mcp-tools">
         <li>
           <code>wxq</code>
-          <span>只读命令行：health、policy、sessions、messages、search、digest。不读数据库、不解密、不发邮件。</span>
+          <span>{t("只读命令行：health、policy、sessions、messages、search、digest。不读数据库、不解密、不发邮件。")}</span>
         </li>
         {status?.skills.map(skill => <li key={skill.name}>
           <code>{skill.name}</code>
-          <span>{skill.description}</span>
+          <span>{t(skill.description)}</span>
         </li>)}
       </ul>
       <p className="help">
-        下载地址：CLI <code>{base}/agent/wxq</code>；清单 <code>{status?.manifest_url ?? `${base}/agent/manifest`}</code>；
-        安装脚本 <code>{status?.install_url ?? `${base}/agent/install.sh`}</code>（可加
-        <code>?bin=&lt;目录&gt;&amp;skills=&lt;目录&gt;</code>）。这些接口和聊天读取接口使用同一套白名单与 Token 规则。
+        {t("下载地址：CLI")} <code>{base}/agent/wxq</code>{t("；清单")} <code>{status?.manifest_url ?? `${base}/agent/manifest`}</code>{t("；\n        安装脚本")} <code>{status?.install_url ?? `${base}/agent/install.sh`}</code>{t("（可加")}
+        <code>{t("?bin=&lt;目录&gt;&amp;skills=&lt;目录&gt;")}</code>{t("）。这些接口和聊天读取接口使用同一套白名单与 Token 规则。")}
       </p>
       <ul className="mcp-checklist">
-        <li>安装后运行 <code>{expanded.binDir || binDir || '~/.local/bin'}/wxq health</code>，应返回 <code>ok · wechat-devify-bridge</code>。</li>
-        <li><code>wxq policy</code> 应显示当前账号和白名单会话；白名单为空时不会返回任何会话。</li>
-        <li>CLI 与 Skills 都写入你指定的目录，不影响微信原始数据库，也不会自动发送邮件。</li>
+        <li>{t("安装后运行")} <code>{expanded.binDir || binDir || '~/.local/bin'}/wxq health</code>{t("，应返回")} <code>ok · wechat-devify-bridge</code>。</li>
+        <li><code>wxq policy</code> {t("应显示当前账号和白名单会话；白名单为空时不会返回任何会话。")}</li>
+        <li>{t("CLI 与 Skills 都写入你指定的目录，不影响微信原始数据库，也不会自动发送邮件。")}</li>
       </ul>
     </section>
   </div>;

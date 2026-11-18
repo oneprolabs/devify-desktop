@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -85,15 +86,15 @@ export function HistoryPage() {
 
   return <div className="settings-page history-page">
     <header className="page-head">
-      <h2>总结记录</h2>
+      <h2>{t("总结记录")}</h2>
       <p className="help">
-        查看保存在本机的聊天总结和整理结果，最多保留最近 {HISTORY_LIMIT} 条。
+        {t("查看保存在本机的聊天总结和整理结果，最多保留最近")} {HISTORY_LIMIT} {t("条。")}
       </p>
     </header>
     <section className="panel">
       {records.length > 0 && (
         <div className="history-toolbar">
-          <div className="tabs" role="tablist" aria-label="按整理类型筛选">
+          <div className="tabs" role="tablist" aria-label={t("按整理类型筛选")}>
             {KIND_TABS.map(item => (
               <button
                 key={item.id}
@@ -103,41 +104,41 @@ export function HistoryPage() {
                 className={kind === item.id ? 'on' : ''}
                 onClick={() => setKind(item.id)}
               >
-                {item.label} {counts[item.id]}
+                {t(item.label)} {counts[item.id]}
               </button>
             ))}
           </div>
           <div className="history-tools">
-            <input type="search" className="history-search" aria-label="搜索总结记录" placeholder="搜索总结记录" value={query} onChange={event => setQuery(event.target.value)}/>
+            <input type="search" className="history-search" aria-label={t("搜索总结记录")} placeholder={t("搜索总结记录")} value={query} onChange={event => setQuery(event.target.value)}/>
             {accounts.length > 1 && (
               <label className="history-account">
-                微信账号
+                {t("微信账号")}
                 <select value={account} onChange={event => setAccount(event.target.value)}>
-                  <option value="">全部账号</option>
+                  <option value="">{t("全部账号")}</option>
                   {accounts.map(item => <option key={item} value={item}>{item}</option>)}
                 </select>
               </label>
             )}
             <button type="button" className="secondary" onClick={() => void load()} disabled={loading}>
-              {loading ? '读取中…' : '刷新'}
+              {loading ? t("读取中…") : t("刷新")}
             </button>
           </div>
         </div>
       )}
 
-      {error && <div className="error">{error}</div>}
+      {error && <div className="error">{t(error)}</div>}
 
       {loading ? (
-        <p className="settings-empty">正在读取本机总结记录…</p>
+        <p className="settings-empty">{t("正在读取本机总结记录…")}</p>
       ) : !records.length ? (
         <p className="settings-empty">
-          还没有保存过总结记录。在聊天记录里点「整理工作内容」生成后，会自动保存到本机并出现在这里。
+          {t("还没有保存过总结记录。在聊天记录里点「整理工作内容」生成后，会自动保存到本机并出现在这里。")}
         </p>
       ) : !filtered.length ? (
-        <p className="settings-empty">当前筛选下没有记录。</p>
+        <p className="settings-empty">{t("当前筛选下没有记录。")}</p>
       ) : (
         <div className="history-layout">
-          <ul className="history-list" aria-label="总结记录列表">
+          <ul className="history-list" aria-label={t("总结记录列表")}>
             {filtered.map(record => (
               <li key={record.id}>
                 <button
@@ -149,8 +150,8 @@ export function HistoryPage() {
                   <span className="history-item-meta">
                     <span className={`history-kind ${record.kind}`}>{HISTORY_KIND_LABEL[record.kind] ?? record.kind}</span>{' '}
                     {record.range_label}
-                    {record.messages ? ` · ${record.messages} 条消息` : ''}
-                    {record.sessions.length > 1 ? ` · ${record.sessions.length} 个会话` : ''}
+                    {record.messages ? tf(" · {0} 条消息", record.messages) : ''}
+                    {record.sessions.length > 1 ? tf(" · {0} 个会话", record.sessions.length) : ''}
                   </span>
                 </button>
               </li>
@@ -163,14 +164,14 @@ export function HistoryPage() {
                 {confirmDelete && (
                   <div className="history-confirm">
                     <p>
-                      确定删除「{summarySourceTitle(active)}」这条记录？本机保存的内容会一并删除，微信聊天原文不受影响。
+                      {t("确定删除「")}{summarySourceTitle(active)}{t("」这条记录？本机保存的内容会一并删除，微信聊天原文不受影响。")}
                     </p>
                     <div className="history-confirm-actions">
                       <button type="button" className="history-danger" onClick={() => void remove()} disabled={deleting}>
-                        {deleting ? '正在删除…' : '确认删除'}
+                        {deleting ? t("正在删除…") : t("确认删除")}
                       </button>
                       <button type="button" className="secondary" onClick={() => setConfirmDelete(false)} disabled={deleting}>
-                        取消
+                        {t("取消")}
                       </button>
                     </div>
                   </div>

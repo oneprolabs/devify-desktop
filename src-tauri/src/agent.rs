@@ -730,7 +730,7 @@ pub fn build_prompt(input: &SummaryInput, instructions: &str, language: &str) ->
 /// Turns the 语言 page setting into a sentence for the prompt.
 fn language_directive(language: &str) -> &'static str {
     match language {
-        "English" => "使用英文书写全部内容。",
+        "English" => "Write the entire summary in natural English. Use these headings when a section has content: ## Overview, ## Progress, ## Follow-ups, ## Decisions, ## Risks, ## Worth rereading.",
         "按原文语言" => "按聊天原文的主要语言书写；中英混排时以中文为主。",
         _ => "使用简体中文书写全部内容。",
     }

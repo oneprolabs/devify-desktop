@@ -1,3 +1,4 @@
+import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LoadingPage } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -12,16 +13,16 @@ type Settings = { devify?: { active_space_id: string | null } };
 const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
 const rangerOptions = ['全部', '近 7 天', '今天'];
 const citationKind = (citation: Citation) => citation.kind.toLowerCase();
-const dateLabel = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '刚刚';
+const dateLabel = (value?: string) => value ? new Date(value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("刚刚");
 const dayLabel = (value?: string) => {
-  if (!value) return '刚刚';
+  if (!value) return t("刚刚");
   const date = new Date(value);
   const now = new Date();
-  const day = date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
-  if (date.toDateString() === now.toDateString()) return `今天 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
-  return `${day} ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+  const day = date.toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
+  if (date.toDateString() === now.toDateString()) return tf("今天 {0}", date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
+  return `${day} ${date.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' })}`;
 };
-const kindLabel = (kind: string) => ({ message: '原文', note: '笔记', event: '事件' } as Record<string, string>)[kind] || kind;
+const kindLabel = (kind: string) => ({ message: t("原文"), note: t("笔记"), event: t("事件") } as Record<string, string>)[kind] || kind;
 
 function inRange(question: Question, range: string): boolean {
   if (range === '全部') return true;
@@ -39,7 +40,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const [pending, setPending] = useState('');
   const [loading, setLoading] = useState(isTauri());
   const [asking, setAsking] = useState(false);
-  const [range, setRange] = useState('全部');
+  const [range, setRange] = useState(t("全部"));
   const [error, setError] = useState('');
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
 
@@ -78,7 +79,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           setQuestions(current => current.map(item => item.id === answer.id ? answer : item));
           if (answer.status !== 'queued') return;
         }
-        if (!cancelled) { timedOut.current.add(questionId); setError('还没有返回回答，请稍后重试。'); }
+        if (!cancelled) { timedOut.current.add(questionId); setError(t("还没有返回回答，请稍后重试。")); }
       } catch (reason) {
         if (!cancelled) setError(questionAnswerError(reason));
       } finally {
@@ -126,13 +127,13 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           {status === 'failed'
             ? <p className="ask-answer-text ask-error">{questionAnswerError(question.error)}</p>
             : status === 'queued'
-              ? <p className="ask-pending">正在检索并生成回答…</p>
+              ? <p className="ask-pending">{t("正在检索并生成回答…")}</p>
               : paragraphs.length
                 ? paragraphs.map((text, index) => <p className="ask-answer-text" key={index}>{text}</p>)
-                : <p className="ask-answer-text">这次回答没有内容，请重新提问。</p>}
+                : <p className="ask-answer-text">{t("这次回答没有内容，请重新提问。")}</p>}
 
           {events.length > 0 && <section className="ask-block">
-            <h3>相关事件</h3>
+            <h3>{t("相关事件")}</h3>
             <div className="ask-events">
               {events.map(citation => <button
                 type="button"
@@ -151,7 +152,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           </section>}
 
           {sources.length > 0 && <section className="ask-block">
-            <h3>原文依据</h3>
+            <h3>{t("原文依据")}</h3>
             <div className="ask-quotes">
               {sources.map(citation => <button
                 type="button"
@@ -169,21 +170,21 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
             </div>
           </section>}
 
-          {created && <p className="ask-foot">基于 {events.length} 个事件、{sources.length} 条原文 · {dayLabel(created)} · 范围：{range}</p>}
+          {created && <p className="ask-foot">{t("基于")} {events.length} {t("个事件、")}{sources.length} {t("条原文 ·")} {dayLabel(created)} {t("· 范围：")}{range}</p>}
         </div>
       </div>
     </div>;
   };
 
-  if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>问答</h1><p>问答基于已上传记录生成，请在桌面应用中使用。</p></div>;
-  if (loading) return <LoadingPage title={'问答'} />;
+  if (!isTauri()) return <div className="ask-page ask-page-empty"><h1>{t("问答")}</h1><p>{t("问答基于已上传记录生成，请在桌面应用中使用。")}</p></div>;
+  if (loading) return <LoadingPage title={t("问答")} />;
 
   return <div className="ask-page">
     <aside className="ask-side">
-      <h1>问答</h1>
-      <p className="ask-side-sub">自由提问，跨会话检索</p>
-      <button type="button" className="ask-new" onClick={newThread}><span aria-hidden="true">＋</span>新对话</button>
-      <div className="ask-side-label">最近</div>
+      <h1>{t("问答")}</h1>
+      <p className="ask-side-sub">{t("自由提问，跨会话检索")}</p>
+      <button type="button" className="ask-new" onClick={newThread}><span aria-hidden="true">＋</span>{t("新对话")}</button>
+      <div className="ask-side-label">{t("最近")}</div>
       <div className="ask-threads">
         {visibleQuestions.map(item => <button
           type="button"
@@ -192,9 +193,9 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           onClick={() => { setSelectedId(item.id); setPending(''); }}
         >
           <strong>{item.question}</strong>
-          <small>{dayLabel(item.created_at)} · {item.status === 'queued' ? '生成中' : item.status === 'failed' ? '失败' : '1 轮'}</small>
+          <small>{dayLabel(item.created_at)} · {item.status === 'queued' ? t("生成中") : item.status === 'failed' ? t("失败") : t("1 轮")}</small>
         </button>)}
-        {!visibleQuestions.length && <p className="ask-threads-empty">{range === '全部' ? '还没有提问记录。' : '这个时间范围内没有提问。'}</p>}
+        {!visibleQuestions.length && <p className="ask-threads-empty">{range === '全部' ? t("还没有提问记录。") : t("这个时间范围内没有提问。")}</p>}
       </div>
       <SidebarResizeHandle/>
     </aside>
@@ -202,12 +203,12 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     <main className="ask-main">
       <header className="ask-head">
         <div className="ask-head-text">
-          <h2>{selected?.question || (pending || '新对话')}</h2>
-          <p>仅检索已上传的会话与事件 · 回答附原文依据</p>
+          <h2>{selected?.question || (pending || t("新对话"))}</h2>
+          <p>{t("仅检索已上传的会话与事件 · 回答附原文依据")}</p>
         </div>
         <div className="ask-time">
-          <span>时间</span>
-          <div className="ask-time-seg" role="group" aria-label="时间范围">
+          <span>{t("时间")}</span>
+          <div className="ask-time-seg" role="group" aria-label={t("时间范围")}>
             {rangerOptions.map(option => <button
               key={option}
               type="button"
@@ -220,13 +221,13 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       </header>
 
       <div className="ask-scroll">
-        {!spaceId && <div className="ask-welcome"><h3>还没有选择空间</h3><p>请先在「设置 / 账户」中登录并选择空间。</p></div>}
-        {error && <p className="ask-error" role="alert">{error}</p>}
+        {!spaceId && <div className="ask-welcome"><h3>{t("还没有选择空间")}</h3><p>{t("请先在「设置 / 账户」中登录并选择空间。")}</p></div>}
+        {error && <p className="ask-error" role="alert">{t(error)}</p>}
 
         {spaceId && !selected && !pending && <>
           <div className="ask-welcome">
-            <h3>问问你的聊天记录</h3>
-            <p>跨已上传的聊天、事件和笔记提问，每条结论都附原文依据。</p>
+            <h3>{t("问问你的聊天记录")}</h3>
+            <p>{t("跨已上传的聊天、事件和笔记提问，每条结论都附原文依据。")}</p>
           </div>
           <div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div>
         </>}
@@ -235,7 +236,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           <div className="ask-user"><p>{pending}</p></div>
           <div className="ask-bot">
             <span className="ask-avatar" aria-hidden="true">a</span>
-            <div className="ask-content"><p className="ask-pending">正在检索事件与原始记录…</p></div>
+            <div className="ask-content"><p className="ask-pending">{t("正在检索事件与原始记录…")}</p></div>
           </div>
         </div>}
 
@@ -247,14 +248,14 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           <textarea
             rows={2}
             value={draft}
-            placeholder="问任何关于聊天记录的问题，例如：这周客户有哪些没回复的问题？"
+            placeholder={t("问任何关于聊天记录的问题，例如：这周客户有哪些没回复的问题？")}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void ask(); } }}
           />
           <button
             type="button"
             className={`ask-send${draft.trim() && !asking && spaceId ? ' on' : ''}`}
-            aria-label="发送"
+            aria-label={t("发送")}
             onClick={() => void ask()}
             disabled={!draft.trim() || asking || !spaceId}
           >↑</button>

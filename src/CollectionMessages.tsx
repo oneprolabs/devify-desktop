@@ -1,3 +1,4 @@
+import { t, dateLocale, sortLocale } from './locale';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -40,18 +41,18 @@ export function CollectionMessages({ accountId, username, since, until, selected
   };
   return <div className="collection-message-picker">
     <div className="collection-message-head">
-      <input type="search" aria-label="搜索消息内容" placeholder="搜索消息内容" value={search} onChange={event => setSearch(event.target.value)} />
-      <label className="collection-jump">跳转到日期<input type="date" aria-label="跳转到日期" value={jumpDate} onChange={event => jump(event.target.value)} /></label>
-      <span>已选 {selected.length} 条</span>
-      <button type="button" disabled={busy || loading || !visible.length} onClick={selectVisible}>全选当前结果</button>
-      <button type="button" disabled={busy || !selected.length} onClick={() => onChange([])}>清空</button>
+      <input type="search" aria-label={t("搜索消息内容")} placeholder={t("搜索消息内容")} value={search} onChange={event => setSearch(event.target.value)} />
+      <label className="collection-jump">{t("跳转到日期")}<input type="date" aria-label={t("跳转到日期")} value={jumpDate} onChange={event => jump(event.target.value)} /></label>
+      <span>{t("已选")} {selected.length} {t("条")}</span>
+      <button type="button" disabled={busy || loading || !visible.length} onClick={selectVisible}>{t("全选当前结果")}</button>
+      <button type="button" disabled={busy || !selected.length} onClick={() => onChange([])}>{t("清空")}</button>
     </div>
-    {loading && <p>正在读取所选日期内的消息…</p>}
-    {error && <p className="collection-error" role="alert">{error}</p>}
-    {!loading && !error && !visible.length && <p>{messages.length ? '没有匹配的消息。' : '此范围内没有消息。'}</p>}
+    {loading && <p>{t("正在读取所选日期内的消息…")}</p>}
+    {error && <p className="collection-error" role="alert">{t(error)}</p>}
+    {!loading && !error && !visible.length && <p>{messages.length ? t("没有匹配的消息。") : t("此范围内没有消息。")}</p>}
     <div className="collection-message-list" ref={listRef}>{visible.map((message, index) => <label className="collection-message" key={`${message.local_id}-${message.time}-${index}`}>
       <input type="checkbox" checked={chosen(message)} disabled={busy} onChange={() => toggle(message)} />
-      <span><small>{message.is_self ? '我' : message.sender_name || message.sender || '未知'} · {new Date(message.time * 1000).toLocaleString('zh-CN')}</small><span>{message.text}</span></span>
+      <span><small>{message.is_self ? t("我") : message.sender_name || message.sender || t("未知")} · {new Date(message.time * 1000).toLocaleString(dateLocale())}</small><span>{message.text}</span></span>
     </label>)}</div>
   </div>;
 }

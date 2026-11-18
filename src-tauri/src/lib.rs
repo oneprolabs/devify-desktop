@@ -8826,7 +8826,13 @@ async fn agent_summarize(
         input.truncated,
     );
     let agent_settings = value.agent.clone();
-    let language = value.language.summary.clone();
+    let language = if value.language.summary == "跟随界面" && value.language.ui == "English" {
+        "English".to_string()
+    } else if value.language.summary == "跟随界面" {
+        "中文".to_string()
+    } else {
+        value.language.summary.clone()
+    };
     let run = tauri::async_runtime::spawn_blocking(move || {
         agent::summarize(&agent_settings, &input, &language, &data)
     })

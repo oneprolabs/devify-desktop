@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
@@ -20,12 +21,12 @@ function setSnapshot(next: Snapshot) { snapshot = next; listeners.forEach(listen
 function friendlyUpdateError(error: unknown): string {
   const text = String(error);
   if (/valid release json|404|not found/i.test(text)) {
-    return '更新服务暂不可用：发布仓库还没有可用的版本清单，请稍后重试。';
+    return t("更新服务暂不可用：发布仓库还没有可用的版本清单，请稍后重试。");
   }
   if (/timed? ?out|timeout|connect|network|dns|failed to fetch|error sending request/i.test(text)) {
-    return '无法连接更新服务器，请检查网络，或在系统设置中开启代理后重试。';
+    return t("无法连接更新服务器，请检查网络，或在系统设置中开启代理后重试。");
   }
-  return `检查更新失败：${text}`;
+  return tf("检查更新失败：{0}", text);
 }
 export function useUpdater() { return useSyncExternalStore(listener => { listeners.add(listener); return () => listeners.delete(listener); }, () => snapshot, () => snapshot); }
 
@@ -72,7 +73,7 @@ export async function downloadUpdate() {
     }, { timeout: 600000 });
     setSnapshot({ status: 'downloaded', ...base, progress: 100 });
   } catch (error) {
-    setSnapshot({ status: 'available', ...base, error: `下载失败：${String(error)}` });
+    setSnapshot({ status: 'available', ...base, error: tf("下载失败：{0}", String(error)) });
   }
 }
 
@@ -105,7 +106,7 @@ export async function installUpdate(force = false) {
     await relaunch();
   } catch (error) {
     if (locked) await invoke('update_cancel_install').catch(() => {});
-    setSnapshot({ status: installed ? 'installed' : 'downloaded', ...base, error: `${installed ? '重启失败' : '安装失败'}：${String(error)}` });
+    setSnapshot({ status: installed ? 'installed' : 'downloaded', ...base, error: tf("{0}：{1}", installed ? '重启失败' : '安装失败', String(error)) });
   }
 }
 

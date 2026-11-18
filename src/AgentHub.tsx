@@ -1,3 +1,4 @@
+import { t } from './locale';
 import { useState } from 'react';
 import { AgentSettings } from './AgentSettings';
 import { AgentAccess } from './AgentAccess';
@@ -23,14 +24,14 @@ export function AgentHub() {
 
   return <div className="settings-page agent-hub">
     <div className="hub-head">
-      <h2>Agent 集成</h2>
+      <h2>{t("Agent 集成")}</h2>
       <p className="help">
         {sections.length === 2
-          ? '配置本机总结 Agent，或向其他 Agent 安装只读工具。'
+          ? t("配置本机总结 Agent，或向其他 Agent 安装只读工具。")
           : sections[0].hint}
       </p>
     </div>
-    <div className="agent-hub-choices" role="tablist" aria-label="Agent 集成分区">
+    <div className="agent-hub-choices" role="tablist" aria-label={t("Agent 集成分区")}>
       {sections.map(item => <button
         key={item.id}
         type="button"
@@ -39,10 +40,10 @@ export function AgentHub() {
         aria-controls="agent-hub-panel"
         aria-selected={active === item.id}
         className={active === item.id ? 'on' : ''}
-        title={item.hint}
+        title={t(item.hint)}
         onClick={() => setSection(item.id)}
       >
-        <strong>{item.label}</strong><small>{item.hint}</small>
+        <strong>{t(item.label)}</strong><small>{t(item.hint)}</small>
       </button>)}
     </div>
     <div id="agent-hub-panel" role="tabpanel" aria-labelledby={`agent-hub-tab-${active}`}>
