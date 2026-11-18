@@ -3756,11 +3756,21 @@ async fn devify_upload_wechat(
         validate_live_cloud_retry(&data, auth)?;
     }
     let started = std::time::Instant::now();
+    let archive_path = format!("{upload_base_url}/api/v1/chat/uploads/{batch_id}/archive");
     let uploaded = client
-        .put(format!("{upload_base_url}/api/v1/chat/uploads/{batch_id}/archive"))
+        .put(&archive_path)
         .bearer_auth(&token)
         .multipart(form)
-        .send_traced(&data, diagnostics::Module::Upload)
+        // Multipart bodies are streamed, so the trace uses an explicit summary.
+        .send_traced_hinted(
+            &data,
+            diagnostics::Module::Upload,
+            diagnostics::request_hint(
+                "PUT",
+                &archive_path,
+                Some(format!("multipart: archive {archive_size} bytes, body not captured")),
+            ),
+        )
         .await
         .map_err(|e| {
             let reason = if e.is_timeout() {
@@ -5957,6 +5967,7 @@ async fn perform_chat_sync(app: &AppHandle, manual: bool, continuation_only: boo
         code: if result.is_err() { Some(diagnostics::Code::CommandFailed) } else { None },
         batch_id: None,
         duration_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64), request_id: None, server_request_id: None, http_status: None,
+        request: None,
     });
     result
 }
@@ -7019,8 +7030,11 @@ async fn connector_detect(app: AppHandle, kind: String) -> Result<connectors::Co
         .map_err(|error| format!("检测本机应用失败：{error}"))
 }
 
-/// The only path that reads new WeChat data, so an uninstalled or tampered WeChat stops
-/// every new read (manual, scheduled and background) while imported data stays viewable.
+/// Read the local database copy with the verified keys already available to the app.
+///
+/// The installed WeChat bundle is intentionally not a prerequisite here: this path does not
+/// execute or modify WeChat. Signature validation remains enforced by the in-app capture path,
+/// which temporarily replaces the installed bundle.
 fn read_new_wechat_data(
     data: &Path,
     env: &connectors::Environment,
@@ -7029,7 +7043,7 @@ fn read_new_wechat_data(
     apply_wal: bool,
     only_chat: bool,
 ) -> Result<Vec<DecryptOutcome>, String> {
-    connectors::require_installed(connectors::ConnectorKind::Wechat, env)?;
+    let _ = env;
     Ok(decrypt::decrypt_account(data, account, store, apply_wal, only_chat))
 }
 
@@ -7459,7 +7473,6 @@ fn import_key_text(
     text: &str,
     selected: Option<&str>,
 ) -> Result<KeyImportResult, String> {
-    require_connector_installed(app, connectors::ConnectorKind::Wechat)?;
     let candidates = keys::parse_candidates(text)?;
     let path = keys::store_path(&app_data(app));
     let mut store: KeyStore = keys::load(&path);
@@ -8841,10 +8854,10 @@ pub fn run() {
         .manage(DevifyAuthState::default())
         .setup(|app| {
             let diagnostics_root = app_data(app.handle());
-            let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Start, code: None, batch_id: None, duration_ms: None, request_id: None, server_request_id: None, http_status: None });
+            let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Start, code: None, batch_id: None, duration_ms: None, request_id: None, server_request_id: None, http_status: None, request: None });
             let previous_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Panic, code: Some(diagnostics::Code::RustPanic), batch_id: None, duration_ms: None, request_id: None, server_request_id: None, http_status: None });
+                let _ = diagnostics::record(&diagnostics_root, diagnostics::EventInput { module: diagnostics::Module::App, operation: diagnostics::Operation::Panic, code: Some(diagnostics::Code::RustPanic), batch_id: None, duration_ms: None, request_id: None, server_request_id: None, http_status: None, request: None });
                 previous_hook(info);
             }));
             #[cfg(desktop)]

@@ -1,4 +1,5 @@
-//! Source-level guard: new WeChat reads must stay behind the install gate.
+//! Source-level guards: invasive capture stays behind the install gate, while ordinary local
+//! database reads and trusted key imports remain available without a signed app bundle.
 
 const LIB: &str = include_str!("lib.rs");
 
@@ -12,21 +13,20 @@ fn body_of(name: &str) -> &'static str {
 }
 
 #[test]
-fn decrypt_account_is_only_called_through_the_gate() {
+fn decrypt_account_is_not_blocked_by_install_detection() {
     let calls: Vec<usize> = LIB.match_indices("decrypt::decrypt_account(").map(|(at, _)| at).collect();
     assert_eq!(calls.len(), 1, "decrypt_account must only be called from read_new_wechat_data");
     let gate = LIB.find("fn read_new_wechat_data(").unwrap();
     assert!(calls[0] > gate && calls[0] - gate < 800);
     let body = body_of("read_new_wechat_data");
-    let check = body.find("require_installed(connectors::ConnectorKind::Wechat").unwrap();
-    assert!(check < body.find("decrypt::decrypt_account(").unwrap());
+    assert!(!body.contains("require_installed("));
 }
 
 #[test]
-fn key_import_checks_installation_before_parsing() {
+fn key_import_does_not_require_installation_detection() {
     let body = body_of("import_key_text");
-    let check = body.find("require_connector_installed(app, connectors::ConnectorKind::Wechat)?").unwrap();
-    assert!(check < body.find("keys::parse_candidates").unwrap());
+    assert!(!body.contains("require_connector_installed("));
+    assert!(body.contains("keys::parse_candidates"));
 }
 
 #[test]

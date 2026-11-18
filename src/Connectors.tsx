@@ -165,7 +165,8 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
   };
 
   const status = !isTauri() ? '请在桌面应用中检查' : loading ? '正在检查…' : error ? '状态检查失败' : !probe?.accounts ? '未发现账号' : probe.verifiedAccounts ? `已校验 ${probe.verifiedAccounts} 个账号的密钥` : `发现 ${probe.accounts} 个账号，待校验密钥`;
-  const missing = !install.checking && !install.usable && install.detect;
+  const missing = !install.checking && !install.canProceed && install.detect;
+  const signatureWarning = !install.checking && install.detect?.state === 'untrusted';
   const whatsappMissing = !whatsappInstall.checking && !whatsappInstall.usable && whatsappInstall.detect;
   const recheckAll = () => { void install.recheck(); void refresh(); };
   const hasHistory = Boolean(probe?.verifiedAccounts);
@@ -190,23 +191,26 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
               <h3>微信</h3>
               <p className="connector-state">
                 <span className={missing ? 'bad' : enabled && probe?.verifiedAccounts ? 'good' : ''} />
-                {install.checking ? '正在检测本机微信…' : missing ? detectTitle[install.detect!.state] : enabled ? status : '已断开 · 停止读取本机消息'}
+                {install.checking ? '正在检测本机微信…' : missing ? detectTitle[install.detect!.state] : signatureWarning ? '已检测到微信 · 签名待确认' : enabled ? status : '已断开 · 停止读取本机消息'}
               </p>
             </div>
           </div>
           {missing && !(enabled && hasHistory) ? <div className="connector-install-check">
             <p>{install.detect!.message}</p>
             {install.detect!.app_path && <p className="connector-install-path">检测位置：{install.detect!.app_path}</p>}
+          </div> : signatureWarning ? <div className="connector-install-check">
+            <p>当前无法确认微信是腾讯官方签名版本。仍可导入可信密钥并读取本机数据库；应用内获取密钥需要官方签名。</p>
+            {install.detect?.app_path && <p className="connector-install-path">检测位置：{install.detect.app_path}</p>}
           </div> : <p className="connector-description">
             {enabled
               ? '读取本机数据库，只读，不改动聊天数据'
               : '本机密钥与解密快照仍然保留，重新连接不需要再次导入；云端已上传的记录保持不变。'}
           </p>}
-          {!missing && install.detect?.version && <p className="connector-install-meta">微信 {install.detect.version} · 官方签名 · {install.detect.app_path}</p>}
+          {!missing && !signatureWarning && install.detect?.version && <p className="connector-install-meta">微信 {install.detect.version} · 官方签名 · {install.detect.app_path}</p>}
           <p className="connector-capabilities">历史记录 · 群聊 · 增量同步</p>
           <div className="connector-actions">
             {enabled ? <>
-              <button type="button" className="connector-primary" onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))} disabled={!install.usable} title={missing ? '请先安装微信' : undefined}>{probe?.verifiedAccounts ? '重新配置' : '打开连接向导'}</button>
+              <button type="button" className="connector-primary" onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))} disabled={!install.canProceed} title={missing ? '请先安装微信' : undefined}>{probe?.verifiedAccounts ? '重新配置' : '打开连接向导'}</button>
               {isTauri() && <button type="button" className="connector-quiet" onClick={recheckAll} disabled={loading || install.checking}>重新检查</button>}
               {missing && install.detect!.state === 'not_installed' && <a className="connector-link" href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">前往下载微信 ↗</a>}
               {isTauri() && (!missing || hasHistory) && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving || !settingsLoaded}>断开连接</button>}

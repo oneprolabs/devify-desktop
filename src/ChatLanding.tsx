@@ -50,7 +50,8 @@ export function ChatLanding({ mode, source = '微信', sessionCount, syncInterva
           const isWechat = connector.name === '微信';
           const isWhatsApp = connector.name === 'WhatsApp';
           const detect = isWhatsApp ? whatsapp : wechat;
-          const missing = !detect.checking && !detect.usable ? detect.detect : null;
+          const canProceed = isWechat ? detect.canProceed : detect.usable;
+          const missing = !detect.checking && !canProceed ? detect.detect : null;
           return <article className={`chat-landing-connector${missing ? ' blocked' : ''}`} key={connector.name}>
             <ConnectorIcon name={connector.name} />
             <div>
@@ -64,7 +65,7 @@ export function ChatLanding({ mode, source = '微信', sessionCount, syncInterva
             </div>
             {isWhatsApp
               ? <button type="button" className="chat-landing-primary" onClick={onConnectWhatsApp} disabled={!detect.usable && isTauri()}>{detect.usable ? '打开聊天' : '查看连接器'}</button>
-              : <button type="button" className="chat-landing-primary" onClick={() => onConnect(connector.name)} disabled={isWechat && !detect.usable && isTauri()}>{isWechat ? '打开连接向导' : '查看连接器'}</button>}
+              : <button type="button" className="chat-landing-primary" onClick={() => onConnect(connector.name)} disabled={isWechat && !detect.canProceed && isTauri()}>{isWechat ? '打开连接向导' : '查看连接器'}</button>}
           </article>;
         })}
       </section> : <section className="chat-landing-first-backup">
