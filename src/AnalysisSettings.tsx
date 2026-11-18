@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { DailyTimePicker } from './DailyTimePicker';
 import { enableDailyPlan, findDailyPlan, type DailyPlan } from './dailyPlan';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
@@ -33,7 +34,7 @@ function Switch({ checked, onChange, label, disabled = false }: { checked: boole
     type="button"
     role="switch"
     aria-checked={checked}
-    aria-label={label}
+    aria-label={t(label)}
     disabled={disabled}
     className={`plan-switch${checked ? ' on' : ''}`}
     onClick={() => onChange(!checked)}
@@ -84,7 +85,7 @@ export function AnalysisSettings() {
       setError('');
       setReady(true);
     } catch (e) {
-      if (active.current && request === loadId.current) setError(`无法加载设置：${analysisSettingsError(e)}`);
+      if (active.current && request === loadId.current) setError(tf("无法加载设置：{0}", analysisSettingsError(e)));
     } finally {
       if (active.current && request === loadId.current) setLoading(false);
     }
@@ -102,12 +103,12 @@ export function AnalysisSettings() {
     const spaceId = settings.devify.active_space_id;
     setPreferences(null);
     setPreferencesNotice('');
-    if (!spaceId) { setPreferencesError('请先在账户中选择可用空间。'); return; }
+    if (!spaceId) { setPreferencesError(t("请先在账户中选择可用空间。")); return; }
     setPreferencesError('');
     void invoke<AnalysisPreferences>('devify_analysis_preferences_get', { spaceId }).then(value => {
       if (!active) return;
       if (!Array.isArray(value.conversation_types) || ![0, 30, 90].includes(value.lookback_days) || typeof value.auto_analyze !== 'boolean') {
-        setPreferencesError('当前服务端不支持完整的分析范围设置，请先更新服务端。');
+        setPreferencesError(t("当前服务端不支持完整的分析范围设置，请先更新服务端。"));
         return;
       }
       setPreferences(value);
@@ -126,9 +127,9 @@ export function AnalysisSettings() {
         const plan = findDailyPlan(value);
         setDailyPlan(plan);
         setDailyTimeDraft(plan?.time_local?.slice(0, 5) || '08:30');
-        if (Array.isArray(value)) setDailyAlternatives(value.filter(item => item?.period === 'day' && ['每日报告', '微信工作日报'].includes(item?.title) && item?.id !== plan?.id && item?.enabled).length);
+        if (Array.isArray(value)) setDailyAlternatives(value.filter(item => item?.period === 'day' && [t("每日报告"), t("微信工作日报")].includes(item?.title) && item?.id !== plan?.id && item?.enabled).length);
       }
-    }).catch(reason => { if (current) setScheduleError(`无法读取服务端日报计划：${analysisSettingsError(reason)}`); })
+    }).catch(reason => { if (current) setScheduleError(tf("无法读取服务端日报计划：{0}", analysisSettingsError(reason))); })
       .finally(() => { if (current) setDailyLoading(false); });
     return () => { current = false; };
   }, [ready, settings.devify.active_space_id, dailyRefresh]);
@@ -141,14 +142,14 @@ export function AnalysisSettings() {
       if (!dailyPlan && patch.enabled === true) {
         await enableDailyPlan({
           list: () => invoke('devify_topics', { spaceId }),
-          create: time => invoke('devify_topic_create', { spaceId, title: '微信工作日报', instruction: '根据已上传的微信聊天记录生成每日工作日报，汇总当天进展、待办和风险。', period: 'day', timeLocal: time, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }),
+          create: time => invoke('devify_topic_create', { spaceId, title: t("微信工作日报"), instruction: t("根据已上传的微信聊天记录生成每日工作日报，汇总当天进展、待办和风险。"), period: 'day', timeLocal: time, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' }),
           enable: topicId => invoke('devify_daily_plan_update', { spaceId, topicId, enabled: true, timeLocal: null }),
         }, dailyTimeDraft);
       } else if (dailyPlan) {
         await invoke('devify_daily_plan_update', { spaceId, topicId: dailyPlan.id, enabled: patch.enabled ?? null, timeLocal: patch.timeLocal ?? null });
       } else return;
       setDailyRefresh(value => value + 1);
-    } catch (reason) { setScheduleError(`日报设置保存失败：${analysisSettingsError(reason)}`); }
+    } catch (reason) { setScheduleError(tf("日报设置保存失败：{0}", analysisSettingsError(reason))); }
     finally { setDailySaving(false); }
   };
 
@@ -170,7 +171,7 @@ export function AnalysisSettings() {
     try {
       const saved = await invoke<AnalysisPreferences>('devify_analysis_preferences_save', { spaceId, preferences });
       setPreferences(saved);
-      setPreferencesNotice('已保存');
+      setPreferencesNotice(t("已保存"));
     } catch (reason) { setPreferencesError(analysisSettingsError(reason)); }
     finally { setPreferencesSaving(false); }
   };
@@ -185,144 +186,144 @@ export function AnalysisSettings() {
 
   const dailyOn = dailyPlan?.enabled ?? false;
   const agentLabel = agent.provider_id.trim()
-    ? `本地 Agent · ${agent.provider_id}${agent.model.trim() ? ` · ${agent.model}` : ''}`
-    : '本地规则整理（未配置 Agent）';
-  const lastDaily = dailyPlan?.last_run_at ? `${dailyPlan.last_run_at}${dailyPlan.last_error ? ` · ${dailyPlan.last_error}` : ''}` : '还没有运行过';
+    ? tf("本地 Agent · {0}{1}", agent.provider_id, agent.model.trim() ? ` · ${agent.model}` : '')
+    : t("本地规则整理（未配置 Agent）");
+  const lastDaily = dailyPlan?.last_run_at ? `${dailyPlan.last_run_at}${dailyPlan.last_error ? ` · ${dailyPlan.last_error}` : ''}` : t("还没有运行过");
 
   const tasks: Array<{ title: string; items: Task[] }> = [
     {
-      title: '分析',
+      title: t("分析"),
       items: [{
         id: 'events',
-        name: '事件分析',
-        desc: '整理事件、更新主题',
+        name: t("事件分析"),
+        desc: t("整理事件、更新主题"),
         summary: '服务端在备份解析完成后自动生成',
-        badge: '服务端',
+        badge: t("服务端"),
         rows: [
-          { label: '触发方式', value: '备份解析完成后由服务端自动整理' },
-          { label: '使用范围', value: '只使用已上传的记录，未上传的本机记录不参与' },
-          { label: '查看位置', value: '事件、主题页面（客户端只同步结果）' },
+          { label: t("触发方式"), value: t("备份解析完成后由服务端自动整理") },
+          { label: t("使用范围"), value: t("只使用已上传的记录，未上传的本机记录不参与") },
+          { label: t("查看位置"), value: t("事件、主题页面（客户端只同步结果）") },
         ],
       }],
     },
     {
-      title: '总结',
+      title: t("总结"),
       items: [{
         id: 'summary',
-        name: '聊天总结',
-        desc: '按会话生成摘要，单次最长一周',
-        summary: agent.provider_id.trim() ? '手动发起 · 本地 Agent 生成' : '手动发起 · 规则整理',
-        badge: '手动',
+        name: t("聊天总结"),
+        desc: t("按会话生成摘要，单次最长一周"),
+        summary: agent.provider_id.trim() ? t("手动发起 · 本地 Agent 生成") : t("手动发起 · 规则整理"),
+        badge: t("手动"),
         rows: [
-          { label: '触发方式', value: '在聊天页选择消息后点「整理这段聊天」' },
-          { label: '生成方式', value: agentLabel },
-          { label: '保存位置', value: '总结记录（只保存在本机）' },
-          { label: '定时生成', value: '尚未实现，目前只能手动发起' },
+          { label: t("触发方式"), value: t("在聊天页选择消息后点「整理这段聊天」") },
+          { label: t("生成方式"), value: agentLabel },
+          { label: t("保存位置"), value: t("总结记录（只保存在本机）") },
+          { label: t("定时生成"), value: t("尚未实现，目前只能手动发起") },
         ],
       }],
     },
     {
-      title: '报告',
+      title: t("报告"),
       items: [
         {
           id: 'daily',
-          name: '日报',
-          desc: '每天由服务端汇总已上传记录',
-          summary: dailyLoading ? '正在读取服务端设置' : scheduleError ? '无法读取或保存服务端设置' : !dailyPlan ? '开启后将自动创建日报计划' : dailyOn ? `每天 ${dailyPlan.time_local?.slice(0, 5) ?? '未设置时间'} · 服务端生成` : '已关闭',
+          name: t("日报"),
+          desc: t("每天由服务端汇总已上传记录"),
+          summary: dailyLoading ? t("正在读取服务端设置") : scheduleError ? t("无法读取或保存服务端设置") : !dailyPlan ? t("开启后将自动创建日报计划") : dailyOn ? tf("每天 {0} · 服务端生成", dailyPlan.time_local?.slice(0, 5) ?? '未设置时间') : t("已关闭"),
           control: {
-            label: '每日日报',
+            label: t("每日日报"),
             checked: dailyOn,
             disabled: !settings.devify.active_space_id || dailyLoading || dailySaving || !!scheduleError,
             onChange: next => void changeDailyPlan({ enabled: next }),
           },
           rows: [
-            { label: '触发方式', value: '每天定点（服务端任务，应用关闭也执行）' },
+            { label: t("触发方式"), value: t("每天定点（服务端任务，应用关闭也执行）") },
             {
-              label: '时间',
+              label: t("时间"),
               control: <div className="daily-time-editor">
                 <DailyTimePicker value={dailyTimeDraft} onChange={setDailyTimeDraft}
                   onConfirm={() => { if (dailyPlan && dailyTimeDraft !== dailyPlan.time_local?.slice(0, 5)) void changeDailyPlan({ timeLocal: dailyTimeDraft }); }}
                   onCancel={() => { if (dailyPlan) setDailyTimeDraft(dailyPlan.time_local?.slice(0, 5) || '08:30'); }}
                   disabled={!settings.devify.active_space_id || dailyLoading || dailySaving || !!scheduleError} />
-                {dailySaving && <small role="status">正在同步…</small>}
-                {!dailyPlan && <small>开启日报后按此时间创建计划</small>}
+                {dailySaving && <small role="status">{t("正在同步…")}</small>}
+                {!dailyPlan && <small>{t("开启日报后按此时间创建计划")}</small>}
               </div>,
             },
-            { label: '服务端计划', value: dailyPlan?.title || '未获取' },
-            { label: '时区', value: dailyPlan?.timezone || '未获取' },
-            { label: '统计范围', value: '计划时间前 24 小时内已上传并整理的事件与记录' },
-            { label: '查看位置', value: '报告页面 · 日报' },
-            { label: '最近触发', value: lastDaily },
+            { label: t("服务端计划"), value: dailyPlan?.title || t("未获取") },
+            { label: t("时区"), value: dailyPlan?.timezone || t("未获取") },
+            { label: t("统计范围"), value: t("计划时间前 24 小时内已上传并整理的事件与记录") },
+            { label: t("查看位置"), value: t("报告页面 · 日报") },
+            { label: t("最近触发"), value: lastDaily },
           ],
         },
         {
           id: 'weekly',
-          name: '周报',
-          desc: '按自然周汇总事件与进展',
+          name: t("周报"),
+          desc: t("按自然周汇总事件与进展"),
           summary: '由服务端生成',
-          badge: '服务端',
+          badge: t("服务端"),
           rows: [
-            { label: '触发方式', value: '服务端按空间设置生成' },
-            { label: '查看位置', value: '报告页面 · 周报' },
+            { label: t("触发方式"), value: t("服务端按空间设置生成") },
+            { label: t("查看位置"), value: t("报告页面 · 周报") },
           ],
         },
         {
           id: 'monthly',
-          name: '月报',
-          desc: '按自然月汇总事件与进展',
+          name: t("月报"),
+          desc: t("按自然月汇总事件与进展"),
           summary: '由服务端生成',
-          badge: '服务端',
+          badge: t("服务端"),
           rows: [
-            { label: '触发方式', value: '服务端按空间设置生成' },
-            { label: '查看位置', value: '报告页面 · 月报' },
+            { label: t("触发方式"), value: t("服务端按空间设置生成") },
+            { label: t("查看位置"), value: t("报告页面 · 月报") },
           ],
         },
       ],
     },
   ];
 
-  if (!ready) return <div className="settings-page analysis-settings"><h2>智能分析</h2><p>{loading ? '正在加载设置…' : '设置尚未加载，无法安全保存。'}</p>{error && <div className="error" role="alert">{error}</div>}{!loading && <button type="button" onClick={() => void load()}>重新加载</button>}</div>;
+  if (!ready) return <div className="settings-page analysis-settings"><h2>{t("智能分析")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{t(error)}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
 
   return <div className="settings-page analysis-settings">
     <header className="page-head">
-      <h2>智能分析</h2>
-      <p className="help">设置当前空间的服务端分析偏好，并查看聊天总结和报告的处理方式。</p>
-      <p className="help" role="status">分析范围和行为用于之后创建的任务；事件粒度和摘要要求由模型参考，结果可能有所不同。</p>
+      <h2>{t("智能分析")}</h2>
+      <p className="help">{t("设置当前空间的服务端分析偏好，并查看聊天总结和报告的处理方式。")}</p>
+      <p className="help" role="status">{t("分析范围和行为用于之后创建的任务；事件粒度和摘要要求由模型参考，结果可能有所不同。")}</p>
     </header>
 
     <fieldset disabled={blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
     <section className="analysis-service">
       <div className="analysis-service-icon" aria-hidden="true">✦</div>
-      <div><strong>服务端分析</strong><p>事件分析和云端报告由服务端处理，模型和分析配置在服务端管理。</p><small>日报开关不会影响事件分析。</small></div>
+      <div><strong>{t("服务端分析")}</strong><p>{t("事件分析和云端报告由服务端处理，模型和分析配置在服务端管理。")}</p><small>{t("日报开关不会影响事件分析。")}</small></div>
     </section>
 
     <section className="analysis-group analysis-preferences">
-      <h3>分析触发</h3>
+      <h3>{t("分析触发")}</h3>
       <div className="analysis-task">
-        <div className="analysis-row"><span>触发方式</span><div>上传后自动分析</div></div>
-        <p className="help">上传的聊天记录解析完成后，由服务端自动创建分析任务。</p>
+        <div className="analysis-row"><span>{t("触发方式")}</span><div>{t("上传后自动分析")}</div></div>
+        <p className="help">{t("上传的聊天记录解析完成后，由服务端自动创建分析任务。")}</p>
       </div>
     </section>
     <section className="analysis-group analysis-preferences">
-      <h3>分析范围</h3>
+      <h3>{t("分析范围")}</h3>
       <div className="analysis-task">
-        <div className="analysis-row"><span>聊天记录</span><div className="analysis-options" role="group" aria-label="聊天记录类型">{([{ value: 'direct', label: '个人聊天' }, { value: 'group', label: '群聊' }] as const).map(option => <label key={option.value}><input type="checkbox" checked={preferences?.conversation_types?.includes(option.value) ?? false} disabled={!preferences || preferencesSaving || (preferences.conversation_types.length === 1 && preferences.conversation_types.includes(option.value))} onChange={() => preferences && changePreferences({ ...preferences, conversation_types: preferences.conversation_types.includes(option.value) ? preferences.conversation_types.filter(value => value !== option.value) : [...preferences.conversation_types, option.value] })}/>{option.label}</label>)}</div></div>
-        <label className="analysis-row"><span>时间范围</span><select value={preferences?.lookback_days ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && changePreferences({ ...preferences, lookback_days: Number(event.target.value) as AnalysisPreferences['lookback_days'] })}><option value="" disabled>等待服务端配置</option><option value={0}>全部记录</option><option value={30}>最近 30 天</option><option value={90}>最近 90 天</option></select></label>
-        <p className="help">范围在任务创建时固定；有限时间范围不包含没有时间的消息。调整后不会自动重新分析历史记录。</p>
+        <div className="analysis-row"><span>{t("聊天记录")}</span><div className="analysis-options" role="group" aria-label={t("聊天记录类型")}>{([{ value: 'direct', label: t("个人聊天") }, { value: 'group', label: t("群聊") }] as const).map(option => <label key={option.value}><input type="checkbox" checked={preferences?.conversation_types?.includes(option.value) ?? false} disabled={!preferences || preferencesSaving || (preferences.conversation_types.length === 1 && preferences.conversation_types.includes(option.value))} onChange={() => preferences && changePreferences({ ...preferences, conversation_types: preferences.conversation_types.includes(option.value) ? preferences.conversation_types.filter(value => value !== option.value) : [...preferences.conversation_types, option.value] })}/>{t(option.label)}</label>)}</div></div>
+        <label className="analysis-row"><span>{t("时间范围")}</span><select value={preferences?.lookback_days ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && changePreferences({ ...preferences, lookback_days: Number(event.target.value) as AnalysisPreferences['lookback_days'] })}><option value="" disabled>{t("等待服务端配置")}</option><option value={0}>{t("全部记录")}</option><option value={30}>{t("最近 30 天")}</option><option value={90}>{t("最近 90 天")}</option></select></label>
+        <p className="help">{t("范围在任务创建时固定；有限时间范围不包含没有时间的消息。调整后不会自动重新分析历史记录。")}</p>
       </div>
     </section>
     <section className="analysis-group analysis-preferences">
-      <h3>分析行为</h3>
+      <h3>{t("分析行为")}</h3>
       <div className="analysis-task">
-        <div className="analysis-row"><span>事件划分粒度</span><div className="analysis-options" role="radiogroup" aria-label="事件划分粒度">{([{ value: 'fine', label: '更细（更多事件）' }, { value: 'balanced', label: '平衡' }, { value: 'coarse', label: '更粗（更少事件）' }] as const).map(option => <label key={option.value}><input type="radio" name="event-granularity" value={option.value} checked={preferences?.event_granularity === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && changePreferences({ ...preferences, event_granularity: option.value })}/>{option.label}</label>)}</div></div>
-        <label className="analysis-row"><span>摘要风格</span><select value={preferences?.summary_style ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && changePreferences({ ...preferences, summary_style: event.target.value as AnalysisPreferences['summary_style'] })}><option value="" disabled>等待服务端配置</option><option value="concise">简洁概述</option><option value="narrative">背景与经过</option><option value="actions">行动与后续</option></select></label>
-        <div className="analysis-row"><span>摘要详略</span><div className="analysis-options" role="radiogroup" aria-label="摘要详略">{([{ value: 'short', label: '简短' }, { value: 'standard', label: '标准' }, { value: 'detailed', label: '详细' }] as const).map(option => <label key={option.value}><input type="radio" name="summary-length" value={option.value} checked={preferences?.summary_length === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && changePreferences({ ...preferences, summary_length: option.value })}/>{option.label}</label>)}</div></div>
-        <p className="help">这些偏好用于当前空间之后创建的服务端分析任务；本机 Agent 总结不受影响。粒度和摘要要求由模型参考，结果可能有所不同。</p>
+        <div className="analysis-row"><span>{t("事件划分粒度")}</span><div className="analysis-options" role="radiogroup" aria-label={t("事件划分粒度")}>{([{ value: 'fine', label: t("更细（更多事件）") }, { value: 'balanced', label: t("平衡") }, { value: 'coarse', label: t("更粗（更少事件）") }] as const).map(option => <label key={option.value}><input type="radio" name="event-granularity" value={option.value} checked={preferences?.event_granularity === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && changePreferences({ ...preferences, event_granularity: option.value })}/>{t(option.label)}</label>)}</div></div>
+        <label className="analysis-row"><span>{t("摘要风格")}</span><select value={preferences?.summary_style ?? ''} disabled={!preferences || preferencesSaving} onChange={event => preferences && changePreferences({ ...preferences, summary_style: event.target.value as AnalysisPreferences['summary_style'] })}><option value="" disabled>{t("等待服务端配置")}</option><option value="concise">{t("简洁概述")}</option><option value="narrative">{t("背景与经过")}</option><option value="actions">{t("行动与后续")}</option></select></label>
+        <div className="analysis-row"><span>{t("摘要详略")}</span><div className="analysis-options" role="radiogroup" aria-label={t("摘要详略")}>{([{ value: 'short', label: t("简短") }, { value: 'standard', label: t("标准") }, { value: 'detailed', label: t("详细") }] as const).map(option => <label key={option.value}><input type="radio" name="summary-length" value={option.value} checked={preferences?.summary_length === option.value} disabled={!preferences || preferencesSaving} onChange={() => preferences && changePreferences({ ...preferences, summary_length: option.value })}/>{t(option.label)}</label>)}</div></div>
+        <p className="help">{t("这些偏好用于当前空间之后创建的服务端分析任务；本机 Agent 总结不受影响。粒度和摘要要求由模型参考，结果可能有所不同。")}</p>
         <div className="analysis-save-row">
-          <button type="button" className="primary" disabled={!preferences || preferencesSaving} onClick={() => void savePreferences()}>{preferencesSaving ? '正在保存…' : '保存分析设置'}</button>
+          <button type="button" className="primary" disabled={!preferences || preferencesSaving} onClick={() => void savePreferences()}>{preferencesSaving ? t("正在保存…") : t("保存分析设置")}</button>
           <span className="analysis-save-status" role="status" aria-live="polite">{preferencesNotice && <><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor"/><path d="m5 8 2 2 4-4" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"/></svg>{preferencesNotice}</>}</span>
         </div>
-        <p className="analysis-save-hint">设置用于之后创建的分析任务，历史记录不会自动重新分析。</p>
+        <p className="analysis-save-hint">{t("设置用于之后创建的分析任务，历史记录不会自动重新分析。")}</p>
         {preferencesError && <p className="error" role="alert">{preferencesError}</p>}
       </div>
     </section>
@@ -331,17 +332,17 @@ export function AnalysisSettings() {
       {tasks.map(group => <section className="analysis-group" key={group.title}>
         <h3>{group.title}</h3>
         {group.items.map(task => <div className="analysis-task" key={task.id}>
-          <div className="analysis-task-head"><div><strong>{task.name}</strong><small>{task.desc} · {task.summary}</small></div>{task.control ? <Switch checked={task.control.checked} onChange={task.control.onChange} label={task.control.label} disabled={task.control.disabled}/> : <span className="analysis-badge">{task.badge}</span>}</div>
-          <div className="analysis-rows">{task.rows.map(row => <div className="analysis-row" key={row.label}><div><span>{row.label}</span>{row.desc && <small>{row.desc}</small>}</div><div>{row.control ?? row.value}</div></div>)}</div>
+          <div className="analysis-task-head"><div><strong>{task.name}</strong><small>{task.desc} · {task.summary}</small></div>{task.control ? <Switch checked={task.control.checked} onChange={task.control.onChange} label={t(task.control.label)} disabled={task.control.disabled}/> : <span className="analysis-badge">{t(task.badge || '')}</span>}</div>
+          <div className="analysis-rows">{task.rows.map(row => <div className="analysis-row" key={t(row.label)}><div><span>{t(row.label)}</span>{row.desc && <small>{row.desc}</small>}</div><div>{row.control ?? row.value}</div></div>)}</div>
         </div>)}
       </section>)}
     </div>
 
     </fieldset>
-    {error && <div className="error" role="alert">{error}</div>}
-    {dailyAlternatives > 0 && <p className="analysis-save-hint">服务端还有 {dailyAlternatives} 个已开启的日报计划，可能分别生成报告；请在主题订阅中核对。</p>}
-    {scheduleError && <div className="error" role="alert">{scheduleError} <button type="button" onClick={() => setDailyRefresh(value => value + 1)}>重试</button></div>}
+    {error && <div className="error" role="alert">{t(error)}</div>}
+    {dailyAlternatives > 0 && <p className="analysis-save-hint">{t("服务端还有")} {dailyAlternatives} {t("个已开启的日报计划，可能分别生成报告；请在主题订阅中核对。")}</p>}
+    {scheduleError && <div className="error" role="alert">{scheduleError} <button type="button" onClick={() => setDailyRefresh(value => value + 1)}>{t("重试")}</button></div>}
 
-    {blocked && <div><p>当前修改未确认保存；重新加载会放弃这些修改。</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? '正在加载…' : '放弃未保存修改并重新加载'}</button></div>}
+    {blocked && <div><p>{t("当前修改未确认保存；重新加载会放弃这些修改。")}</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? t("正在加载…") : t("放弃未保存修改并重新加载")}</button></div>}
   </div>;
 }

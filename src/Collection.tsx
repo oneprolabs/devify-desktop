@@ -1,3 +1,4 @@
+import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { CollectionMessages, type MessageRef } from './CollectionMessages';
@@ -22,11 +23,11 @@ function localDate(date: Date): string {
 }
 function daysAgo(days: number): string { const date = new Date(); date.setDate(date.getDate() - days); return localDate(date); }
 function activityLabel(seconds: number | null | undefined): string {
-  if (!seconds) return '无记录';
+  if (!seconds) return t("无记录");
   const date = new Date(seconds * 1000);
   return date.toDateString() === new Date().toDateString()
-    ? `今天 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
-    : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+    ? tf("今天 {0}", date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
+    : date.toLocaleDateString(dateLocale(), { month: 'numeric', day: 'numeric' });
 }
 export function Collection({ onSettings, onComplete }: { onSettings: () => void; onComplete: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -88,7 +89,7 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   const setMode = (id: string, individual: boolean) => { setPreview(null); setMessageSelection(current => { const next = { ...current }; if (individual) next[id] = []; else delete next[id]; return next; }); };
   const changeDates = (start: string, end: string) => {
     if (start === since && end === until) return true;
-    if (Object.values(messageSelection).some(items => items.length) && !window.confirm('更改日期范围会清空已逐条选择的消息，是否继续？')) return false;
+    if (Object.values(messageSelection).some(items => items.length) && !window.confirm(t("更改日期范围会清空已逐条选择的消息，是否继续？"))) return false;
     setSince(start); setUntil(end); setPreview(null);
     setMessageSelection(current => Object.fromEntries(Object.keys(current).map(key => [key, []])));
     return true;
@@ -99,7 +100,7 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   };
   const payload = () => ({ accountId, spaceId: settings?.devify.active_space_id, usernames: selected, since: boundary(since, false), until: boundary(until, true), messageSelection });
   const buildPreview = async () => {
-    if (since && until && since > until) { setError('结束日期不能早于开始日期。'); return; }
+    if (since && until && since > until) { setError(t("结束日期不能早于开始日期。")); return; }
     setBusy(true); setError(''); setPreview(null);
     try { setPreview(await invoke<Preview>('devify_upload_preview', payload())); }
     catch (e) { setError(String(e)); }
@@ -120,7 +121,7 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
     return sessions
       .filter(session => (kind === 'all' || (kind === 'group' ? session.is_group : !session.is_group))
         && (!needle || session.display.toLowerCase().includes(needle) || session.username.toLowerCase().includes(needle)))
-      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0) || a.display.localeCompare(b.display, 'zh-Hans-CN'));
+      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0) || a.display.localeCompare(b.display, sortLocale()));
   }, [sessions, query, kind]);
   const visibleSelected = useMemo(
     () => visible.reduce((count, session) => count + (selected.includes(session.username) ? 1 : 0), 0),
@@ -151,46 +152,46 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
   const whatsappSource = accounts.find(account => account.id === accountId)?.source === 'whatsapp';
   const bulkDisabled = busy || blocked || !isTauri();
   return <section className="collection">
-    <header className="task-detail-bar">采集 <span>/</span> 新建采集</header>
+    <header className="task-detail-bar">{t("采集")} <span>/</span> {t("新建采集")}</header>
     <div className="collection-body">
-      <h1>选择要采集的聊天</h1>
-      <p className="collection-intro">从本机已读取的会话中挑选，确认范围后上传。</p>
-      {!isTauri() && <p className="collection-notice">请在桌面应用中选择本机聊天。</p>}
-      {loading && <p className="collection-notice">正在读取会话和上传空间…</p>}
-      {error && <p className="collection-error" role="alert">{error}</p>}
-      {!loading && isTauri() && (!accountId || blocked) && <div className="collection-notice">{!accountId ? '请先连接微信并选择账号。' : '请先登录并保存可用的上传目标空间。'} <button type="button" onClick={onSettings}>打开账户设置</button></div>}
-      {accounts.length > 0 && <div className="collection-account"><label>账号</label><AccountPicker accounts={accounts} value={accountId} disabled={busy} onChange={switchAccount} /><span>每次采集仅包含当前账号的白名单会话。</span></div>}
-      {whatsappSource && <p className="collection-notice">WhatsApp 先上传文字内容；图片、语音和文件暂不打包，消息里会保留「[图片]」这类标签。</p>}
-      {sessionError && <p className="collection-error" role="alert">读取该账号会话失败：{sessionError}</p>}
-      {sessionLoading && <p className="collection-notice">正在读取所选账号的会话…</p>}
-      <p className="collection-local-hint">以下为本机记录，用于选择上传范围，不代表已上传。按最近活跃排序，最新消息在前。</p>
+      <h1>{t("选择要采集的聊天")}</h1>
+      <p className="collection-intro">{t("从本机已读取的会话中挑选，确认范围后上传。")}</p>
+      {!isTauri() && <p className="collection-notice">{t("请在桌面应用中选择本机聊天。")}</p>}
+      {loading && <p className="collection-notice">{t("正在读取会话和上传空间…")}</p>}
+      {error && <p className="collection-error" role="alert">{t(error)}</p>}
+      {!loading && isTauri() && (!accountId || blocked) && <div className="collection-notice">{!accountId ? t("请先连接微信并选择账号。") : t("请先登录并保存可用的上传目标空间。")} <button type="button" onClick={onSettings}>{t("打开账户设置")}</button></div>}
+      {accounts.length > 0 && <div className="collection-account"><label>{t("账号")}</label><AccountPicker accounts={accounts} value={accountId} disabled={busy} onChange={switchAccount} /><span>{t("每次采集仅包含当前账号的白名单会话。")}</span></div>}
+      {whatsappSource && <p className="collection-notice">{t("WhatsApp 先上传文字内容；图片、语音和文件暂不打包，消息里会保留「[图片]」这类标签。")}</p>}
+      {sessionError && <p className="collection-error" role="alert">{t("读取该账号会话失败：")}{sessionError}</p>}
+      {sessionLoading && <p className="collection-notice">{t("正在读取所选账号的会话…")}</p>}
+      <p className="collection-local-hint">{t("以下为本机记录，用于选择上传范围，不代表已上传。按最近活跃排序，最新消息在前。")}</p>
       <div className="collection-filter">
-        <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话名或 wxid" aria-label="搜索会话" disabled={busy} />
-        <div className="collection-pills" role="group" aria-label="按会话类型筛选">
-          <button type="button" className={kind === 'all' ? 'active' : ''} aria-pressed={kind === 'all'} onClick={() => setKind('all')}>全部 {sessions.length}</button>
-          <button type="button" className={kind === 'group' ? 'active' : ''} aria-pressed={kind === 'group'} onClick={() => setKind('group')}>群聊 {groupCount}</button>
-          <button type="button" className={kind === 'direct' ? 'active' : ''} aria-pressed={kind === 'direct'} onClick={() => setKind('direct')}>单聊 {sessions.length - groupCount}</button>
+        <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索会话名或 wxid")} aria-label={t("搜索会话")} disabled={busy} />
+        <div className="collection-pills" role="group" aria-label={t("按会话类型筛选")}>
+          <button type="button" className={kind === 'all' ? 'active' : ''} aria-pressed={kind === 'all'} onClick={() => setKind('all')}>{t("全部")} {sessions.length}</button>
+          <button type="button" className={kind === 'group' ? 'active' : ''} aria-pressed={kind === 'group'} onClick={() => setKind('group')}>{t("群聊")} {groupCount}</button>
+          <button type="button" className={kind === 'direct' ? 'active' : ''} aria-pressed={kind === 'direct'} onClick={() => setKind('direct')}>{t("单聊")} {sessions.length - groupCount}</button>
         </div>
       </div>
       <div className="collection-list">{visible.map(session => <div key={session.username} className={selected.includes(session.username) ? 'collection-session selected' : 'collection-session'}>
-        <div className="collection-row"><label className="collection-session-label"><input type="checkbox" checked={selected.includes(session.username)} disabled={busy} onChange={() => change(session.username)} /><img className="collection-source-icon" src={whatsappSource ? whatsappIcon : wechatIcon} alt={whatsappSource ? 'WhatsApp' : '微信'} /><span className="collection-name">{session.display}</span></label><small>{session.is_group ? '群聊' : '单聊'} · {activityLabel(session.last_time)}</small></div>
+        <div className="collection-row"><label className="collection-session-label"><input type="checkbox" checked={selected.includes(session.username)} disabled={busy} onChange={() => change(session.username)} /><img className="collection-source-icon" src={whatsappSource ? whatsappIcon : wechatIcon} alt={whatsappSource ? 'WhatsApp' : t("微信")} /><span className="collection-name">{session.display}</span></label><small>{session.is_group ? t("群聊") : t("单聊")} · {activityLabel(session.last_time)}</small></div>
         {selected.includes(session.username) && <div className="collection-session-options"><div className="collection-range">
-          <button type="button" className={rangeMode === '1' ? 'active' : ''} disabled={busy} onClick={() => { if (recent(1)) setRangeMode('1'); }}>近 1 天</button>
-          <button type="button" className={rangeMode === '7' ? 'active' : ''} disabled={busy} onClick={() => { if (recent(7)) setRangeMode('7'); }}>近 7 天</button>
-          <button type="button" className={rangeMode === 'custom' ? 'active' : ''} disabled={busy} onClick={() => setRangeMode('custom')}>自定义日期</button>
-          <button type="button" className={Object.prototype.hasOwnProperty.call(messageSelection, session.username) ? 'active' : ''} disabled={busy} onClick={() => setMode(session.username, !Object.prototype.hasOwnProperty.call(messageSelection, session.username))}>逐条挑选</button>
-          <span>日期范围适用于所有已选会话</span>
-        </div>{rangeMode === 'custom' && <div className="collection-custom-dates"><label>开始日期 <input type="date" value={since} disabled={busy} onChange={e => changeDates(e.target.value, until)} /></label><label>结束日期 <input type="date" value={until} disabled={busy} onChange={e => changeDates(since, e.target.value)} /></label></div>}</div>}
+          <button type="button" className={rangeMode === '1' ? 'active' : ''} disabled={busy} onClick={() => { if (recent(1)) setRangeMode('1'); }}>{t("近 1 天")}</button>
+          <button type="button" className={rangeMode === '7' ? 'active' : ''} disabled={busy} onClick={() => { if (recent(7)) setRangeMode('7'); }}>{t("近 7 天")}</button>
+          <button type="button" className={rangeMode === 'custom' ? 'active' : ''} disabled={busy} onClick={() => setRangeMode('custom')}>{t("自定义日期")}</button>
+          <button type="button" className={Object.prototype.hasOwnProperty.call(messageSelection, session.username) ? 'active' : ''} disabled={busy} onClick={() => setMode(session.username, !Object.prototype.hasOwnProperty.call(messageSelection, session.username))}>{t("逐条挑选")}</button>
+          <span>{t("日期范围适用于所有已选会话")}</span>
+        </div>{rangeMode === 'custom' && <div className="collection-custom-dates"><label>{t("开始日期")} <input type="date" value={since} disabled={busy} onChange={e => changeDates(e.target.value, until)} /></label><label>{t("结束日期")} <input type="date" value={until} disabled={busy} onChange={e => changeDates(since, e.target.value)} /></label></div>}</div>}
         {selected.includes(session.username) && Object.prototype.hasOwnProperty.call(messageSelection, session.username) && settings && <CollectionMessages accountId={accountId} username={session.username} since={boundary(since, false)} until={boundary(until, true)} selected={messageSelection[session.username]} busy={busy} onChange={items => { setPreview(null); setMessageSelection(current => ({ ...current, [session.username]: items })); }} />}
-      </div>)}{!loading && !sessionLoading && !sessionError && sessions.length === 0 && <p className="collection-notice">暂无可采集的白名单会话。</p>}{!sessionLoading && sessions.length > 0 && visible.length === 0 && <p className="collection-notice">没有符合当前筛选条件的会话。</p>}</div>
-      <div className="collection-bulk" role="group" aria-label="批量选择当前筛选结果">
-        <span>当前 {visible.length} 个 · 已选 {visibleSelected}</span>
-        <button type="button" disabled={bulkDisabled || !visible.length} onClick={() => bulkSelect('select')}>全选</button>
-        <button type="button" disabled={bulkDisabled || !visible.length} onClick={() => bulkSelect('invert')}>反选</button>
-        <button type="button" disabled={bulkDisabled || !visibleSelected} onClick={() => bulkSelect('clear')}>取消</button>
+      </div>)}{!loading && !sessionLoading && !sessionError && sessions.length === 0 && <p className="collection-notice">{t("暂无可采集的白名单会话。")}</p>}{!sessionLoading && sessions.length > 0 && visible.length === 0 && <p className="collection-notice">{t("没有符合当前筛选条件的会话。")}</p>}</div>
+      <div className="collection-bulk" role="group" aria-label={t("批量选择当前筛选结果")}>
+        <span>{t("当前")} {visible.length} {t("个 · 已选")} {visibleSelected}</span>
+        <button type="button" disabled={bulkDisabled || !visible.length} onClick={() => bulkSelect('select')}>{t("全选")}</button>
+        <button type="button" disabled={bulkDisabled || !visible.length} onClick={() => bulkSelect('invert')}>{t("反选")}</button>
+        <button type="button" disabled={bulkDisabled || !visibleSelected} onClick={() => bulkSelect('clear')}>{t("取消")}</button>
       </div>
-      {preview && <div className="collection-review" role="region" aria-label="上传预览"><h2>确认上传范围</h2><p>{whatsappSource ? 'WhatsApp' : '微信'}账号 {accountId} · 目标空间 {space?.name}</p><p>时间：{since || '不限起始'} 至 {until || '不限结束'} · {preview.sessions.length} 个会话 · {preview.message_count} 条消息</p><ul>{preview.sessions.map(item => <li key={item.username}>{item.display} · {item.message_count} 条</li>)}</ul><p>所选内容将上传至 {settings?.devify.base_url}，该空间的有效成员可查看。</p><button type="button" onClick={() => setPreview(null)} disabled={busy}>返回修改</button> <button type="button" className="collection-primary" onClick={() => void submit()} disabled={busy}>{busy ? '上传中…' : '确认上传'}</button></div>}
+      {preview && <div className="collection-review" role="region" aria-label={t("上传预览")}><h2>{t("确认上传范围")}</h2><p>{whatsappSource ? 'WhatsApp' : t("微信")}{t("账号")} {accountId} {t("· 目标空间")} {space?.name}</p><p>{t("时间：")}{since || t("不限起始")} {t("至")} {until || t("不限结束")} · {preview.sessions.length} {t("个会话 ·")} {preview.message_count} {t("条消息")}</p><ul>{preview.sessions.map(item => <li key={item.username}>{item.display} · {item.message_count} {t("条")}</li>)}</ul><p>{t("所选内容将上传至")} {settings?.devify.base_url}{t("，该空间的有效成员可查看。")}</p><button type="button" onClick={() => setPreview(null)} disabled={busy}>{t("返回修改")}</button> <button type="button" className="collection-primary" onClick={() => void submit()} disabled={busy}>{busy ? t("上传中…") : t("确认上传")}</button></div>}
     </div>
-    <footer className="collection-footer"><span>已选择 {selected.length} 个会话{preview ? ` · ${preview.message_count} 条消息` : ''}</span><button type="button" className="collection-primary" disabled={busy || loading || sessionLoading || blocked || !accountId || !selected.length || Object.values(messageSelection).some(items => !items.length) || !isTauri()} onClick={() => void buildPreview()}>{busy && !preview ? '正在读取…' : '预览上传范围 ↑'}</button></footer>
+    <footer className="collection-footer"><span>{t("已选择")} {selected.length} {t("个会话")}{preview ? tf(" · {0} 条消息", preview.message_count) : ''}</span><button type="button" className="collection-primary" disabled={busy || loading || sessionLoading || blocked || !accountId || !selected.length || Object.values(messageSelection).some(items => !items.length) || !isTauri()} onClick={() => void buildPreview()}>{busy && !preview ? t("正在读取…") : t("预览上传范围 ↑")}</button></footer>
   </section>;
 }

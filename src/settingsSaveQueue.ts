@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 /** Sequentially save explicit user edits against the last confirmed user revision. */
 export type SettingsEdit<T> = (current: T) => T;
 
@@ -13,15 +14,15 @@ export type SettingsSaveSnapshot<T> = {
 export function settingsSaveFailure(reason: unknown): string {
   const message = reason instanceof Error ? reason.message : String(reason);
   if (message.includes('SETTINGS_CONFLICT:')) {
-    return '设置已在其他页面或账号、空间中更改；本页修改尚未保存，请核对当前账号和空间。';
+    return t("设置已在其他页面或账号、空间中更改；本页修改尚未保存，请核对当前账号和空间。");
   }
-  return `保存失败，修改尚未确认：${message}`;
+  return tf("保存失败，修改尚未确认：{0}", message);
 }
 
 export function settingsUserRevision(value: unknown): number {
   const revision = (value as { user_settings_revision?: unknown } | null)?.user_settings_revision;
   if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
-    throw new Error('设置缺少有效版本，无法安全保存；请更新应用并重新加载。');
+    throw new Error(t("设置缺少有效版本，无法安全保存；请更新应用并重新加载。"));
   }
   return revision;
 }
@@ -60,11 +61,11 @@ export function createSettingsSaveQueue<T>(options: {
         const expectedRevision = settingsUserRevision(confirmed);
         const value = edit(confirmed);
         if (settingsUserRevision(value) !== expectedRevision) {
-          throw new Error('保存操作不能修改设置版本。');
+          throw new Error(t("保存操作不能修改设置版本。"));
         }
         const saved = await options.save(value);
         if (settingsUserRevision(saved) < expectedRevision) {
-          throw new Error('保存返回了旧版本，无法确认设置；请重新加载。');
+          throw new Error(t("保存返回了旧版本，无法确认设置；请重新加载。"));
         }
         confirmed = saved;
         pending = pending.slice(1);

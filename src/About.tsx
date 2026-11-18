@@ -1,3 +1,4 @@
+import { t, tf, ctf } from './locale';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import appIcon from './assets/app-icon.png';
@@ -42,8 +43,8 @@ function updateNoteLines(notes?: string): string[] {
   const plain = notes.replace(/\s+/g, ' ').trim();
   if (/whatsapp/i.test(plain) && /whitelist/i.test(plain) && /group header|groups sessions by source/i.test(plain)) {
     return [
-      '新增 WhatsApp 只读来源，可浏览、搜索并上传本机文字会话，白名单规则与微信相同。',
-      '会话列表按来源分组；只有一个来源时不显示分组标题。',
+      t("新增 WhatsApp 只读来源，可浏览、搜索并上传本机文字会话，白名单规则与微信相同。"),
+      t("会话列表按来源分组；只有一个来源时不显示分组标题。"),
     ];
   }
   return notes.split(/\n+/).map(line => line.replace(/^[-*]\s+/, '').replace(/[`#]/g, '').trim()).filter(Boolean);
@@ -54,45 +55,45 @@ export function UpdatePanel({ onClose }: { onClose?: () => void } = {}) {
   const [error, setError] = useState('');
   const busy = ['checking', 'downloading', 'installing'].includes(update.status);
   const notes = updateNoteLines(update.notes);
-  const status = update.status === 'checking' ? '正在检查更新…'
-    : update.status === 'latest' ? '当前已是最新版本'
-    : update.status === 'available' ? `可以更新到 ${update.version}`
-    : update.status === 'downloading' ? '正在下载更新…'
-    : update.status === 'downloaded' ? `AIMyChats ${update.version} 已下载`
-    : update.status === 'installed' ? '更新已安装，请重启应用'
-    : update.status === 'installing' ? '正在安装更新…'
-    : update.status === 'error' ? '检查更新失败'
-    : '检查软件更新';
+  const status = update.status === 'checking' ? t("正在检查更新…")
+    : update.status === 'latest' ? t("当前已是最新版本")
+    : update.status === 'available' ? tf("可以更新到 {0}", update.version)
+    : update.status === 'downloading' ? t("正在下载更新…")
+    : update.status === 'downloaded' ? tf("AIMyChats {0} 已下载", update.version)
+    : update.status === 'installed' ? t("更新已安装，请重启应用")
+    : update.status === 'installing' ? t("正在安装更新…")
+    : update.status === 'error' ? t("检查更新失败")
+    : t("检查软件更新");
 
   return <div className="update-panel">
     <div className="update-panel-identity" role="status">
       <img src={appIcon} alt="" width={46} height={46} />
       <div>
         <strong>{status}</strong>
-        {update.currentVersion && <span>当前版本 {update.currentVersion}</span>}
+        {update.currentVersion && <span>{t("当前版本")} {update.currentVersion}</span>}
       </div>
       <div className="about-update-actions">
-        {update.status === 'available' && onClose && <button type="button" onClick={onClose}>稍后</button>}
-        {['idle', 'latest', 'error'].includes(update.status) && <button type="button" className="update-primary" onClick={() => void checkForUpdates()}>检查更新</button>}
-        {update.status === 'available' && <button type="button" className="update-primary" onClick={() => void downloadUpdate()}>{update.error ? '重新下载' : '下载更新'}</button>}
-        {['downloaded', 'installed'].includes(update.status) && !update.blockers?.length && <button type="button" className="update-primary" onClick={() => void installUpdate()}>{update.status === 'installed' ? '重新启动' : '安装并重启'}</button>}
+        {update.status === 'available' && onClose && <button type="button" onClick={onClose}>{t("稍后")}</button>}
+        {['idle', 'latest', 'error'].includes(update.status) && <button type="button" className="update-primary" onClick={() => void checkForUpdates()}>{t("检查更新")}</button>}
+        {update.status === 'available' && <button type="button" className="update-primary" onClick={() => void downloadUpdate()}>{update.error ? t("重新下载") : t("下载更新")}</button>}
+        {['downloaded', 'installed'].includes(update.status) && !update.blockers?.length && <button type="button" className="update-primary" onClick={() => void installUpdate()}>{update.status === 'installed' ? t("重新启动") : t("安装并重启")}</button>}
         {busy && <span className="update-spinner" aria-hidden="true"/>}
       </div>
     </div>
-    {notes.length > 0 && <section className="update-release-notes" aria-label="这次更新">
-      <h3>这次更新</h3>
+    {notes.length > 0 && <section className="update-release-notes" aria-label={t("这次更新")}>
+      <h3>{t("这次更新")}</h3>
       <ul className="update-note-list">{notes.map(line => <li key={line}>{line}</li>)}</ul>
     </section>}
-    {update.status === 'available' && <p className="update-next-step">下载完成后，会再请你确认安装并重启。</p>}
+    {update.status === 'available' && <p className="update-next-step">{t("下载完成后，会再请你确认安装并重启。")}</p>}
     {update.status === 'downloading' && <div className="update-download">
-      <progress value={update.progress} max={100} aria-label="下载进度" />
+      <progress value={update.progress} max={100} aria-label={t("下载进度")} />
       {update.progress != null && <span>{update.progress}%</span>}
     </div>}
     {(update.error || error) && <p className="about-update-sub is-error" role="alert">{update.error || error}</p>}
     {update.blockers?.length ? <div className="about-update-blocked" role="alert">
-      <span>有上传正在进行。现在安装会中断上传，重启后可在「任务」页重试。</span>
-      <button type="button" onClick={dismissInstallBlockers}>稍后</button>
-      <button type="button" className="update-primary" onClick={() => void installUpdate(true)}>仍然安装</button>
+      <span>{t("有上传正在进行。现在安装会中断上传，重启后可在「任务」页重试。")}</span>
+      <button type="button" onClick={dismissInstallBlockers}>{t("稍后")}</button>
+      <button type="button" className="update-primary" onClick={() => void installUpdate(true)}>{t("仍然安装")}</button>
     </div> : null}
     <div className="update-panel-footer">
       <button type="button" className="update-link" onClick={() => {
@@ -100,8 +101,8 @@ export function UpdatePanel({ onClose }: { onClose?: () => void } = {}) {
         const releaseUrl = update.version && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(update.version)
           ? RELEASE_URL.replace(/alpha$/, `v${update.version}`)
           : RELEASE_URL;
-        void invoke('devify_auth_open', { url: releaseUrl }).catch(value => setError(`打开下载页面失败：${String(value)}`));
-      }}>手动下载</button>
+        void invoke('devify_auth_open', { url: releaseUrl }).catch(value => setError(tf("打开下载页面失败：{0}", String(value))));
+      }}>{t("手动下载")}</button>
     </div>
   </div>;
 }
@@ -116,51 +117,51 @@ export function About() {
   useEffect(() => {
     invoke<AppInfo>('app_info')
       .then(setInfo)
-      .catch(value => setError(`读取版本信息失败：${String(value)}`));
+      .catch(value => setError(tf("读取版本信息失败：{0}", String(value))));
   }, []);
 
 
   return <div className="settings-page about-page">
-    <header className="page-head"><h2>关于</h2><p className="help">了解 AIMyChats 应用和版本信息。</p></header>
-    {error && <div className="error" role="alert">{error}</div>}
+    <header className="page-head"><h2>{t("关于")}</h2><p className="help">{t("了解 AIMyChats 应用和版本信息。")}</p></header>
+    {error && <div className="error" role="alert">{t(error)}</div>}
 
     <div className="about-details">
     {!hideOffer && <section className="panel"><UpdatePanel onClose={() => setUpdateLater(true)} /></section>}
     <section className="panel">
-      <h2>版本信息</h2>
+      <h2>{t("版本信息")}</h2>
       <dl className="about-meta">
         <div>
-          <dt>版本</dt>
+          <dt>{t("版本")}</dt>
           <dd>{info ? info.version : '—'}</dd>
         </div>
         <div>
-          <dt>运行平台</dt>
+          <dt>{t("运行平台")}</dt>
           <dd>{info ? platformLabel(info.platform, info.arch) : '—'}</dd>
         </div>
         <div>
-          <dt>应用标识</dt>
+          <dt>{t("应用标识")}</dt>
           <dd><code>local.wechat.devifybridge</code></dd>
         </div>
       </dl>
     </section>
 
     <section className="panel">
-      <h2>这一版包含什么</h2>
+      <h2>{t("这一版包含什么")}</h2>
       <ul className="about-highlights">
         {HIGHLIGHTS.map(([title, text]) => <li key={title}>
-          <strong>{title}</strong>
-          <span>{text}</span>
+          <strong>{t(title)}</strong>
+          <span>{t(text)}</span>
         </li>)}
       </ul>
     </section>
 
     <section className="panel">
-      <h2>版本说明</h2>
+      <h2>{t("版本说明")}</h2>
       <ul className="about-checklist">
-        <li>功能、配置字段和本地缓存格式仍可能调整；升级前建议保留自己的密钥与备份。</li>
-        <li>聊天记录可以按设置上传到所连接的服务，事件等结果由服务端处理。</li>
-        <li>聊天记录以只读方式访问；应用不提供发送消息或群操作能力。</li>
-        <li>可在连接器中检查微信连接状态与配置。</li>
+        <li>{t("功能、配置字段和本地缓存格式仍可能调整；升级前建议保留自己的密钥与备份。")}</li>
+        <li>{t("聊天记录可以按设置上传到所连接的服务，事件等结果由服务端处理。")}</li>
+        <li>{t("聊天记录以只读方式访问；应用不提供发送消息或群操作能力。")}</li>
+        <li>{t("可在连接器中检查微信连接状态与配置。")}</li>
       </ul>
     </section>
     </div>

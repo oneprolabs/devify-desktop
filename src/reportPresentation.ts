@@ -1,3 +1,4 @@
+import { t } from './locale';
 type ReportPresentationInput = {
   status?: string | null;
   body?: string | null;
@@ -21,24 +22,24 @@ export function reportPresentation(report: ReportPresentationInput): { notice: s
   if (waiting) {
     return {
       notice: content
-        ? '正在生成这份报告，以下展示已保存的内容。'
-        : '正在生成这份报告，稍后刷新即可看到内容。',
+        ? t("正在生成这份报告，以下展示已保存的内容。")
+        : t("正在生成这份报告，稍后刷新即可看到内容。"),
       content,
     };
   }
   if (status === 'partial') {
     return {
       notice: content
-        ? '报告未完全生成，以下展示已保存的内容。'
-        : '报告未完全生成，暂无已保存的正文。',
+        ? t("报告未完全生成，以下展示已保存的内容。")
+        : t("报告未完全生成，暂无已保存的正文。"),
       content,
     };
   }
   if (status === 'failed') {
     return {
       notice: content
-        ? '报告生成失败，以下展示已保存的内容。'
-        : '报告生成失败，暂无已保存的正文。',
+        ? t("报告生成失败，以下展示已保存的内容。")
+        : t("报告生成失败，暂无已保存的正文。"),
       content,
     };
   }
