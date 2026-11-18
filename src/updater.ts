@@ -5,7 +5,7 @@ import { useSyncExternalStore } from 'react';
 
 export const RELEASE_URL = 'https://github.com/oneprolabs/devify-desktop-releases/releases/tag/alpha';
 type Status = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'installed' | 'error';
-type Snapshot = { status: Status; version?: string; notes?: string; progress?: number; error?: string; blockers?: string[] };
+type Snapshot = { status: Status; version?: string; currentVersion?: string; notes?: string; progress?: number; error?: string; blockers?: string[] };
 let snapshot: Snapshot = { status: 'idle' };
 let update: Update | null = null;
 const listeners = new Set<() => void>();
@@ -36,7 +36,7 @@ export async function checkForUpdates(silent = false) {
     const next = await check({ timeout: 30000 });
     if (update) await update.close();
     update = next;
-    setSnapshot(next ? { status: 'available', version: next.version, notes: next.body } : { status: 'latest' });
+    setSnapshot(next ? { status: 'available', version: next.version, currentVersion: next.currentVersion, notes: next.body } : { status: 'latest' });
   } catch (error) {
     setSnapshot(silent ? { status: 'idle' } : { status: 'error', error: friendlyUpdateError(error) });
   }
@@ -45,7 +45,7 @@ export async function checkForUpdates(silent = false) {
 export async function downloadUpdate() {
   if (!update || snapshot.status !== 'available') return;
   const selected = update;
-  const base = { version: selected.version, notes: selected.body };
+  const base = { version: selected.version, currentVersion: selected.currentVersion, notes: selected.body };
   setSnapshot({ status: 'downloading', ...base, progress: 0 });
   let received = 0;
   let total: number | undefined;
@@ -70,7 +70,7 @@ export async function downloadUpdate() {
 export async function installUpdate(force = false) {
   if (!update || !['downloaded', 'installed'].includes(snapshot.status)) return;
   const selected = update;
-  const base = { version: selected.version, notes: selected.body, progress: 100 };
+  const base = { version: selected.version, currentVersion: selected.currentVersion, notes: selected.body, progress: 100 };
   const alreadyInstalled = snapshot.status === 'installed';
   if (!force) {
     try {

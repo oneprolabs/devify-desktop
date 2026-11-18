@@ -14,7 +14,7 @@ import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 import { requestFeedback } from './desktopInvoke';
-import { useInternalAccount } from './entitlements';
+import { useCapability, useInternalAccount } from './entitlements';
 import { currentAccount as pickAccount, type ChatAccount } from './connectorDetect';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null; community?: { id: string; name: string; is_parent: boolean } | null };
@@ -66,6 +66,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   // Local summaries are an internal-account feature: without the entitlement the summary tab
   // and its 整理工作内容 entry point disappear, leaving only records and cloud events.
   const { internal: internalAccount } = useInternalAccount();
+  const { allowed: workDigestGranted } = useCapability('ai.work_digest');
+  const canOrganize = internalAccount && workDigestGranted;
   useEffect(() => {
     if (!internalAccount) setView(current => (current === 'summary' ? 'raw' : current));
   }, [internalAccount]);
@@ -468,8 +470,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           </div>
           <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'} value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? '在此会话中搜索' : view === 'summary' ? '搜索聊天总结' : '搜索事件'}/>
           {chatState.active && <div className="chat-workbench-head-actions">
-            {chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>已选 {chatState.selected} 条</button>}
-            {internalAccount && chatState.agentReady && <button type="button" disabled={!chatState.messages} onClick={openWorkPanel}>整理工作内容</button>}
+            {canOrganize && chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>已选 {chatState.selected} 条</button>}
             <button type="button" onClick={exportNotSupported}>导出</button>
           </div>}</div>
         </div>
