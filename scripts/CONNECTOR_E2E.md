@@ -21,3 +21,5 @@ Covered paths:
 These are browser UI end-to-end tests with an IPC boundary, not live macOS authorization, debugger attachment, real account login or server-upload tests. Run `cargo test --manifest-path src-tauri/Cargo.toml --lib` and `npm run test:frontend` (Node 22.15+; includes the existing regression scripts) alongside them. Real permission restart, key capture and account-specific database compatibility still need a signed-client hardware acceptance run; do not report the isolated fixture as that acceptance.
 
 Post-merge checks also cover the upstream untrusted-signature import path and English navigation, backup schedule and history-range controls.
+
+`runLoginRecoveryE2E(task)` from the same module exercises a delayed auth-status response: the retry view remains mounted, duplicate online events share one in-flight check, returning to login invalidates the old response, and recovering a saved session does not cancel its credentials.

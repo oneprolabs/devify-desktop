@@ -12,6 +12,7 @@ Integrated `origin/main` at `baed81c316c08c0f8444729667e6eef68000ecd7` (#47 and 
 - A pending or failed schedule save cannot advance the wizard. The confirmed revision remains the authority; an explicit reload is required after a conflict.
 - Untrusted WeChat can reach the existing read/import route, but is not labelled as an official signature and does not bypass native capture verification.
 - Upload-held credentials are a temporary condition, not logout. A known active upload now prevents a remote token refresh that could rotate a token before local persistence is available. Login retry and credential generation protection remain intact.
+- Auth-status retries retain the current error page with a disabled loading button and one in-flight request. Returning to login invalidates delayed retry responses, preventing a later reply from changing the chosen page.
 - The backup page distinguishes WeChat scheduling from WhatsApp's currently manual-only backups and hides unsupported email. A WhatsApp account alone does not make WeChat appear connected.
 
 ## Change scope
@@ -40,3 +41,9 @@ No server API, chat database format, installer signing or release/tag workflow i
 The E2E fixture renders production UI with an isolated in-memory native IPC boundary. It does not grant live macOS permissions, attach a debugger to the user's WeChat, log in to a real account or upload personal records. A signed-client hardware acceptance run remains separate; the automated results must not be described as that run. Current user permissions and data were not reset during this validation.
 
 See [the E2E runner instructions](scripts/CONNECTOR_E2E.md) for reproduction.
+
+## Installed-client login incident
+
+The currently installed ad-hoc native executable is still 0.1.10, while Vite serves this branch's frontend. On November 18 it retained an upload identity read lease during lengthy local backup preparation (a `running` job with `create_started: false`), preventing an expired token from being persisted/refreshed or a new auth attempt from starting. The UI reported “上传期间无法更改登录状态”. Restarting the same executable restored the saved session without clearing credentials, permissions or chat data. This is runtime recovery; loading this branch's native fixes still requires an updated native executable. The installed app was not replaced or re-signed during diagnosis.
+
+The additional isolated login-recovery browser scenario and all 19 frontend regression scripts passed; production build passed. The UI fix is hot-loaded, while the native fix remains in this PR pending installation.

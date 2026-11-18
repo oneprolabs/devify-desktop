@@ -15,6 +15,8 @@ const state = {
  calls:[] as Array<{command:string;args:unknown}>, errors:[] as string[], writes:[] as unknown[],
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
+ authStatus:{authenticated:!query.has('auth-unavailable'),unavailable:query.has('auth-unavailable'),error:query.has('auth-unavailable')?'备份正在使用登录状态，请在当前上传结束后重试。':''},
+ authPaused:false, authResolvers:[] as Array<()=>void>,
 };
 Object.assign(window,{__E2E__:state,isTauri:true});
 const callbacks = new Map<number,Function>();let callbackId=0;
@@ -33,7 +35,11 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     if(args.value.user_settings_revision!==state.settings.user_settings_revision)throw 'SETTINGS_CONFLICT: stale E2E revision';
     state.settings=clone({...args.value,user_settings_revision:state.settings.user_settings_revision+1});state.writes.push(clone(state.settings));return clone(state.settings);
    }
-   case 'devify_auth_status':return {authenticated:true};
+   case 'devify_auth_status':{
+    if(state.authPaused) await new Promise<void>(resolve=>state.authResolvers.push(resolve));
+    return clone(state.authStatus);
+   }
+   case 'devify_auth_cancel':return null;
    case 'devify_current_user':return {id:1,display_name:'E2E Tester'};
    case 'devify_device_register':return {id:'e2e-device'};
    case 'devify_upload_identity':return {user_id:1,device_id:'e2e-device'};

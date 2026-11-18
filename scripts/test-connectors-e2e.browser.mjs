@@ -1,5 +1,53 @@
 import assert from 'node:assert/strict';
 
+export async function runLoginRecoveryE2E(task, base = 'http://localhost:1420', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const click = name => page.click(`loc=role:button[name="${name}"]`);
+  await page.goto(`${base}/scripts/connectors-e2e.html?auth-unavailable`);
+  await page.waitForFunction(() => document.querySelector('.auth-gate-primary')?.textContent === '重试');
+  await page.snapshot();
+  await page.evaluate(() => {
+    window.__loginGate = document.querySelector('.auth-gate');
+    window.__E2E__.authPaused = true;
+  });
+  await click('重试');
+  await page.waitForFunction(() => window.__E2E__.authResolvers.length === 1);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('online'));
+  });
+  assert.deepEqual(await page.evaluate(() => ({
+    sameGate: window.__loginGate === document.querySelector('.auth-gate'),
+    fullPageLoading: !!document.querySelector('.auth-checking'),
+    busy: document.querySelector('.auth-gate-primary')?.getAttribute('aria-busy'),
+    disabled: document.querySelector('.auth-gate-primary')?.disabled,
+    requests: window.__E2E__.calls.filter(c => c.command === 'devify_auth_status').length,
+  })), {sameGate:true,fullPageLoading:false,busy:'true',disabled:true,requests:2});
+  await page.evaluate(() => { window.__E2E__.authPaused = false; window.__E2E__.authResolvers.splice(0).forEach(resolve => resolve()); });
+  await page.waitForFunction(() => document.querySelector('.auth-gate-primary')?.textContent === '重试');
+  assert.ok(await page.evaluate(() => document.querySelector('.auth-gate')?.textContent.includes('备份正在使用登录状态')));
+
+  // Leaving the retry page must invalidate even a successful, delayed response.
+  await page.evaluate(() => { window.__E2E__.authPaused = true; });
+  await click('重试');
+  await page.waitForFunction(() => window.__E2E__.authResolvers.length === 1);
+  await click('返回登录');
+  await page.waitForFunction(() => document.querySelector('.auth-gate h1')?.textContent === '需要登录');
+  await page.evaluate(() => {
+    window.__E2E__.authStatus = {authenticated:true,unavailable:false,error:''};
+    window.__E2E__.authPaused = false;
+    window.__E2E__.authResolvers.splice(0).forEach(resolve => resolve());
+  });
+  await page.waitForFunction(() => !!document.querySelector('.auth-gate-primary:not(:disabled)'));
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-gate h1')?.textContent), '需要登录');
+  await click('重新检查已有登录');
+  await page.waitForFunction(() => !document.querySelector('.auth-gate'));
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  assert.equal(await page.evaluate(() => window.__E2E__.calls.filter(c => c.command === 'devify_auth_cancel').length), 0, 'successful recovery never cancels the recovered login');
+  console.log('PASS login recovery: stable retry view, single in-flight check, stale response ignored, saved-session recovery');
+  console.log(await page.snapshot());
+}
+
 // Run through ego-browser nodejs: import this module, then pass an owned TaskSpace.
 // The fixture exercises production components and routing with strict, isolated IPC.
 export async function runConnectorE2E(task, base = 'http://localhost:1420', pageLabel = 'p1') {

@@ -134,6 +134,8 @@ export default function PrototypeShell() {
   const [startTaskCreate, setStartTaskCreate] = useState(false);
   const [authState, setAuthState] = useState<'checking' | 'authed' | 'anonymous' | 'unavailable'>('checking');
   const authEpoch = useRef(0);
+  const authCheckPending = useRef(false);
+  const [authChecking, setAuthChecking] = useState(false);
   const [authNotice, setAuthNotice] = useState('');
   const [authError, setAuthError] = useState('');
   const [currentUser, setCurrentUser] = useState('');
@@ -158,9 +160,12 @@ export default function PrototypeShell() {
    * cannot overwrite the current session state.
    */
   const checkAuth = useCallback(() => {
+    if (authCheckPending.current) return;
+    authCheckPending.current = true;
     const requestEpoch = authEpoch.current;
-    setAuthState('checking');
-    setAuthError('');
+    // A retry keeps the current explanation visible. Replacing the whole gate
+    // with the initial loading screen made every background retry look like a redirect.
+    setAuthChecking(true);
     void invoke<{ authenticated: boolean; unavailable?: boolean; error?: string }>('devify_auth_status')
       .then(status => {
         if (!authMounted.current || authEpoch.current !== requestEpoch) return;
@@ -175,7 +180,11 @@ export default function PrototypeShell() {
           void registerDevifyDevice();
         }
       })
-      .catch(() => { if (authMounted.current && authEpoch.current === requestEpoch) { setAuthError(t("暂时无法检查服务连接，请稍后重试。")); setAuthState('unavailable'); } });
+      .catch(() => { if (authMounted.current && authEpoch.current === requestEpoch) { setAuthError(t("暂时无法检查服务连接，请稍后重试。")); setAuthState('unavailable'); } })
+      .finally(() => {
+        authCheckPending.current = false;
+        if (authMounted.current) setAuthChecking(false);
+      });
   }, []);
   useEffect(() => {
     let active = true;
@@ -329,8 +338,8 @@ export default function PrototypeShell() {
           <h1>{t("暂时无法验证登录")}</h1>
           <p>{authError || t("服务端暂不可用，请稍后重试。")}</p>
           <p className="auth-gate-hint">{t("已保存的登录状态会保留，请根据上方提示处理后重试。")}</p>
-          <button type="button" className="auth-gate-primary" onClick={checkAuth}>{t("重试")}</button>
-          <button type="button" className="auth-gate-secondary" onClick={() => { setAuthNotice(''); setAuthState('anonymous'); }}>{t("返回登录")}</button>
+          <button type="button" className="auth-gate-primary" disabled={authChecking} aria-busy={authChecking} onClick={checkAuth}>{authChecking ? t("正在检查…") : t("重试")}</button>
+          <button type="button" className="auth-gate-secondary" onClick={() => { authEpoch.current += 1; setAuthNotice(''); setAuthState('anonymous'); }}>{t("返回登录")}</button>
           <button type="button" className="auth-gate-secondary" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button>
         </div>
       </div>}
