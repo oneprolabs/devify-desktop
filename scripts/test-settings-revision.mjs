@@ -52,6 +52,13 @@ const elements = node => {
   if (!node || typeof node !== 'object') return [];
   return [node, ...elements(node.props?.children)];
 };
+function loadModule(file) {
+  const text = fs.readFileSync(new URL(file, import.meta.url), 'utf8');
+  const output = ts.transpileModule(text, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
+  const result = { exports: {} };
+  new Function('require', 'module', 'exports', output)(mockedRequire, result, result.exports);
+  return result.exports;
+}
 const find = (tree, test) => {
   const node = elements(tree).find(test);
   assert.ok(node, 'expected element missing');
@@ -69,9 +76,17 @@ const mockedRequire = id => {
   if (id === './devifyDevice') return { registerDevifyDevice: async () => {} };
   if (id === './desktopInvoke') return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
   if (id === './Settings') return module.exports;
-  if (id === './connectorDetect') return { useConnectorDetect: () => connectorInstall, detectTitle: { not_installed: '未检测到微信', untrusted: '检测到的微信不是官方版本' } };
+  if (id === './AccountPicker') return loadModule('../src/AccountPicker.tsx');
+  if (id === './Connectors') return loadModule('../src/Connectors.tsx');
+  if (id === './connectorDetect') return {
+    useConnectorDetect: () => connectorInstall,
+    detectTitle: { not_installed: '未检测到微信', untrusted: '检测到的微信不是官方版本' },
+    detectTitleFor: (label, state) => ({ not_installed: `未检测到${label}`, untrusted: `检测到的${label}不是官方版本`, installed: `已检测到${label}` })[state],
+    currentAccount: (accounts, remembered) => accounts.find(item => item.id === remembered) ?? accounts[0],
+  };
   if (id === './serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
   if (id.endsWith('.svg') || id.endsWith('.png')) return id;
+  if (id.endsWith('.css')) return {};
   throw Error(`unexpected import ${id}`);
 };
 const serviceUrlSource = fs.readFileSync(new URL('../src/serviceUrl.ts', import.meta.url), 'utf8');
@@ -137,7 +152,7 @@ assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
 const catalogs = { A: deferred(), B: deferred() }, whitelistSaves = [];
 invoke = (command, args) => {
   if (command === 'app_settings_get') return Promise.resolve({ ...defaultSettings(), user_settings_revision: 11, active_account_id: 'A', chat: { ...defaultSettings().chat, allowed_usernames: { A: ['a'], B: ['b'] } } });
-  if (command === 'wechat_scan') return Promise.resolve({ accounts: [{ id: 'A' }, { id: 'B' }] });
+  if (command === 'chat_accounts') return Promise.resolve([{ id: 'A', source: 'wechat' }, { id: 'B', source: 'wechat' }]);
   if (command === 'wechat_account_profile') return Promise.resolve(null);
   if (command === 'wechat_session_catalog') return catalogs[args.accountId].promise;
   if (command === 'app_settings_save') { const d = deferred(); whitelistSaves.push({ args, ...d }); return d.promise; }
@@ -147,7 +162,8 @@ const whitelist = { hooks: [] };
 const WhitelistSettings = module.exports.WhitelistSettings;
 render(whitelist, WhitelistSettings); await flush();
 tree = render(whitelist, WhitelistSettings); await flush();
-find(tree, node => node.type === 'select' && node.props['aria-label'] === '微信账号').props.onChange({ target: { value: 'B' } });
+// The account switcher is a nested component here, so drive its callback directly.
+find(tree, node => node.type?.name === 'AccountPicker').props.onChange('B');
 tree = render(whitelist, WhitelistSettings); await flush();
 assert.equal(find(tree, node => node.type === 'button' && node.props.children === '保存所选会话').props.disabled, true);
 const session = username => ({ username, display: username, last_time: null, is_group: false, member_count: null, preview: null, unread: null });
@@ -230,48 +246,42 @@ wxSave.resolve({ ...wxContext.sent, user_settings_revision: 5 }); await switchin
 assert.equal(wxContext.setAccountIdValue, 'new');
 assert.equal(wxContext.settingsRef.current.user_settings_revision, 5);
 // Waitlist writes are ordered and distinguish unsaved drafts after a conflict.
-const loadModule = file => {
-  const text = fs.readFileSync(new URL(file, import.meta.url), 'utf8');
-  const output = ts.transpileModule(text, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
-  const result = { exports: {} };
-  new Function('require', 'module', 'exports', output)(mockedRequire, result, result.exports);
-  return result.exports;
-};
 const { Connectors } = loadModule('../src/Connectors.tsx');
 const connectorLoad = deferred(), connectorSaves = [];
 invoke = (command, args) => {
   if (command === 'app_settings_get') return connectorLoad.promise;
   if (command === 'wechat_scan') return Promise.resolve({ accounts: [] });
+  if (command === 'whatsapp_status') return Promise.resolve({ installed: true, app_path: null, version: null, data_dir: null, account: null, name: null, sessions: 0, messages: 0, last_message_at: null, error: null });
   if (command === 'wechat_key_status') return Promise.resolve({ keys: [] });
   if (command === 'app_settings_save') { const d = deferred(); connectorSaves.push({ args, ...d }); return d.promise; }
   throw Error(command);
 };
 const connectors = { hooks: [] };
-tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
+tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 const notify = tree => elements(tree).filter(node => node.type === 'button' && node.props.className?.startsWith('connector-notify'));
 assert.ok(notify(tree).every(node => node.props.disabled));
 connectorLoad.resolve({ ...defaultSettings(), user_settings_revision: 20 }); await flush();
-tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
-notify(tree)[0].props.onClick(); tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
+tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
+notify(tree)[0].props.onClick(); tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 notify(tree)[1].props.onClick(); await flush();
 assert.equal(connectorSaves.length, 1);
 connectorSaves[0].resolve({ ...connectorSaves[0].args.value, user_settings_revision: 21 }); await flush();
 assert.equal(connectorSaves.length, 2);
 assert.equal(connectorSaves[1].args.value.user_settings_revision, 21);
-assert.deepEqual(connectorSaves[1].args.value.connectors.waitlist, ['WhatsApp', '邮件']);
+assert.deepEqual(connectorSaves[1].args.value.connectors.waitlist, ['邮件', 'Telegram']);
 connectorSaves[1].reject('SETTINGS_CONFLICT: changed'); await flush();
-tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
+tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 assert.match(notify(tree)[1].props.children, /未保存/);
 assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
 // A missing WeChat blocks the wizard and offers the download; installing unblocks it.
 const wizardButton = tree => find(tree, node => node.type === 'button' && node.props.className === 'connector-primary');
 assert.equal(wizardButton(tree).props.disabled, false);
 connectorInstall = { detect: { state: 'not_installed', app_path: null, version: null, message: '请先安装微信。' }, checking: false, usable: false, recheck: async () => {} };
-tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
+tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 assert.equal(wizardButton(tree).props.disabled, true);
 assert.ok(elements(tree).some(node => node.type === 'a' && node.props.href === 'https://pc.weixin.qq.com/'));
 connectorInstall = { ...connectorInstall, detect: { ...connectorInstall.detect, state: 'untrusted', app_path: '/Applications/WeChat.app' } };
-tree = render(connectors, () => Connectors({ onOpenWechat() {} }));
+tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 assert.equal(wizardButton(tree).props.disabled, true);
 assert.ok(!elements(tree).some(node => node.type === 'a' && node.props.href === 'https://pc.weixin.qq.com/'));
 connectorInstall = installed;

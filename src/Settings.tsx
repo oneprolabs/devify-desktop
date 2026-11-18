@@ -4,6 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { registerDevifyDevice } from './devifyDevice';
 import { storedBaseUrl } from './serviceUrl.ts';
+import { AccountPicker } from './AccountPicker';
+import { ConnectorIcon } from './Connectors';
 
 type SessionItem = {
   username: string;
@@ -15,7 +17,7 @@ type SessionItem = {
   unread: number | null;
 };
 
-type Account = { id: string; modified_at?: number | null };
+type Account = { id: string; modified_at?: number | null; source?: string; display?: string | null };
 type ScanResult = { accounts: Account[] };
 type WechatProfile = { nickname: string | null; alias: string | null; avatar: string | null };
 
@@ -35,10 +37,11 @@ function useWechatProfiles(accounts: Account[]) {
   return profiles;
 }
 
-function WechatIdentity({ account, profile }: { account: Account; profile?: WechatProfile }) {
-  return <><span className="wechat-account-avatar">{profile?.avatar ? <img src={profile.avatar} alt="" /> : '微'}</span><span className="wechat-account-details"><strong>{profile?.nickname || '微信账号'}</strong><small>{profile?.alias ? `微信号：${profile.alias}` : '微信号暂不可用'}</small><small>本机标识：{account.id}</small></span></>;
+function WechatIdentity({ account, profile, source }: { account: Account; profile?: WechatProfile; source?: string }) {
+  const whatsapp = source === 'whatsapp';
+  return <><span className={`wechat-account-avatar${whatsapp ? ' whatsapp' : ''}`}>{profile?.avatar ? <img src={profile.avatar} alt="" /> : <ConnectorIcon name={whatsapp ? 'WhatsApp' : '微信'} />}</span><span className="wechat-account-details"><strong>{profile?.nickname || (whatsapp ? 'WhatsApp' : '微信账号')}</strong><small>{whatsapp ? `WhatsApp${profile?.alias ? ` · ${profile.alias}` : ''}` : profile?.alias ? `微信号：${profile.alias}` : '微信号暂不可用'}</small><small>本机标识：{account.id}</small></span></>;
 }
-type DevifySpace = { id: string; name: string; kind: string; status: string; role?: string; is_global_admin: boolean; admin_takeover_active: boolean };
+type DevifySpace = { id: string; name: string; kind: string; status: string; role?: string };
 
 /** The scheduler stores a status code, not a sentence; the page shows the sentence. */
 const DAILY_STATUS_LABEL: Record<string, string> = {
@@ -74,7 +77,7 @@ export type AppSettings = {
     initial_ranges: Record<string, Record<string, { since: number | null; until: number | null }>>;
     sync_interval_seconds: number;
   };
-  connectors: { waitlist: string[]; wechat_enabled: boolean };
+  connectors: { waitlist: string[]; wechat_enabled: boolean; whatsapp_enabled?: boolean };
   devify: { base_url: string; device_label: string; device_id: string; platform: string; active_space_id: string | null; recipient: string; subject: string };
   upload_queue?: Array<{ id: string; space_id: string; batch_id?: number | null; status: string; message: string; updated_at: string }>;
   voice: {
@@ -132,7 +135,7 @@ export function defaultSettings(): AppSettings {
     user_settings_revision: 0,
     active_account_id: '',
     chat: { allowed_usernames: {}, initial_ranges: {}, sync_interval_seconds: 1800 },
-    connectors: { waitlist: [], wechat_enabled: true },
+    connectors: { waitlist: [], wechat_enabled: true, whatsapp_enabled: true },
     devify: { base_url: 'https://aimychats.com/', device_label: 'AIMyChats', device_id: '', platform: '', active_space_id: null, recipient: '', subject: '微信工作日报' },
     voice: { auto_transcribe: true, upload_transcripts: true },
     sync: { enabled: false, last_run_at: null, last_status: null, last_error: null, last_message_count: 0 },
@@ -273,6 +276,14 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
     if (end) date.setDate(date.getDate() - 1);
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   };
+  // Same-day activity reads better with a clock than with a repeated date.
+  const activityText = (seconds: number | null | undefined) => {
+    if (!seconds) return '无记录';
+    const date = new Date(seconds * 1000);
+    return date.toDateString() === new Date().toDateString()
+      ? `今天 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+      : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+  };
   const setDate = (username: string, key: 'since' | 'until', text: string) => {
     const date = text ? new Date(`${text}T00:00:00`) : null;
     if (date && key === 'until') date.setDate(date.getDate() + 1);
@@ -293,10 +304,12 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
     [settings.chat.allowed_usernames, accountId],
   );
 
+  // Activity order: newest message first. Sessions without a timestamp sink to the
+  // bottom instead of interleaving with real activity.
   const matchedCatalog = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return catalog.filter(session => !keyword || session.display.toLowerCase().includes(keyword) || session.username.toLowerCase().includes(keyword))
-      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0));
+      .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0) || a.display.localeCompare(b.display, 'zh-Hans-CN'));
   }, [catalog, search]);
   const groupCount = useMemo(() => matchedCatalog.filter(session => session.is_group).length, [matchedCatalog]);
   // Official accounts / service sessions are filtered out of the catalog, so a whitelist
@@ -323,10 +336,10 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
       try {
         const [stored, scan] = await Promise.all([
           invoke<AppSettings>('app_settings_get'),
-          invoke<ScanResult>('wechat_scan'),
+          invoke<Account[]>('chat_accounts'),
         ]);
         const next = mergeSettings(requireSettingsRevision(stored));
-        const list = scan.accounts ?? [];
+        const list = scan ?? [];
         confirmedRevision.current = next.user_settings_revision;
         setSettings(next);
         setLoaded(true);
@@ -358,17 +371,29 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
     return () => { active = false; };
   }, [accountId]);
 
-  const setVisibleSelection = (selected: boolean) => {
-    if (selected && new Set([...allowed, ...visibleCatalog.map(session => session.username)]).size > 1000) {
+  const visibleUsernames = useMemo(() => visibleCatalog.map(session => session.username), [visibleCatalog]);
+  const visibleSelectedCount = useMemo(
+    () => visibleUsernames.reduce((count, username) => count + (allowed.has(username) ? 1 : 0), 0),
+    [visibleUsernames, allowed],
+  );
+
+  // Bulk actions only touch what the current search/type filter shows, so "全选"
+  // after filtering never silently changes sessions the user cannot see.
+  const setVisibleSelection = (mode: 'select' | 'clear' | 'invert') => {
+    const next = new Set(settings.chat.allowed_usernames[accountId] ?? []);
+    if (mode === 'select') {
+      visibleUsernames.forEach(username => next.add(username));
+    } else if (mode === 'clear') {
+      visibleUsernames.forEach(username => next.delete(username));
+    } else {
+      visibleUsernames.forEach(username => (next.has(username) ? next.delete(username) : next.add(username)));
+    }
+    if (next.size > 1000) {
       setSaveError('选择后将超过 1000 个会话上限，请缩小筛选范围或手动选择。');
       return;
     }
     setSaveError('');
-    setSettings(current => {
-      const next = new Set(current.chat.allowed_usernames[accountId] ?? []);
-      visibleCatalog.forEach(session => selected ? next.add(session.username) : next.delete(session.username));
-      return { ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] } } };
-    });
+    setSettings(current => ({ ...current, chat: { ...current.chat, allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: [...next] } } }));
   };
 
   const toggleUsername = (username: string) => {
@@ -438,20 +463,35 @@ export function WhitelistSettings({ onSaved }: { onSaved?: (count: number) => vo
   if (!loaded) return <div className="settings-page">{error ? <div className="error">设置加载失败：{error} 请重新打开页面。</div> : <p>正在加载设置…</p>}</div>;
 
   return <div className="settings-page imports-page">
-    <header className="page-head"><h2>导入管理</h2><p className="help">选择要导入的微信会话，并为每个会话设置首次上传的历史日期范围。</p></header>
-    <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} /> : <><span className="wechat-account-avatar">微</span><span className="wechat-account-details"><strong>微信账号</strong><small>未检测到微信账号</small></span></>}{accounts.length > 1 && <select aria-label="微信账号" disabled={saving} value={accountId} onChange={event => { if (saveLock.current) return; const id = event.target.value; accountIdRef.current = id; setCatalog([]); setCatalogLoading(Boolean(id)); setAccountId(id); setFocusedSession(''); }}>{accounts.map(account => <option key={account.id} value={account.id}>{profiles[account.id]?.nickname || accountLabel(account)}</option>)}</select>}</section>
-    <p className="imports-hint">首次历史日期范围仅用于第一次上传；后续自动备份会继续同步新增消息。选择的微信账号和范围在保存成功后才生效。</p>
+    <header className="page-head"><h2>导入管理</h2><p className="help">选择要导入的会话，并为每个会话设置首次上传的历史日期范围。</p></header>
+    <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={accounts.find(account => account.id === accountId)?.source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name="微信" /></span><span className="wechat-account-details"><strong>聊天账号</strong><small>未检测到可用的聊天账号</small></span></>}{accounts.length > 1 && <AccountPicker accounts={accounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={id => {
+      if (saveLock.current) return;
+      accountIdRef.current = id;
+      setCatalog([]);
+      setCatalogLoading(Boolean(id));
+      setAccountId(id);
+      setFocusedSession('');
+      // Saved with the rest of this form; a separate write would bump the settings revision
+      // and make the save below conflict.
+      setSettings(current => ({ ...current, active_account_id: id }));
+    }} />}</section>
+    <p className="imports-hint">首次历史日期范围仅用于第一次上传；后续自动备份会继续同步新增消息。选择的账号和范围在保存成功后才生效。</p>
     <div className="imports-workspace">
       <div className="imports-choices"><input className="plan-input imports-search" type="search" value={search} placeholder="搜索会话名或 wxid" aria-label="搜索会话" onChange={event => setSearch(event.target.value)}/>
-        <div className="imports-activity">按最近活跃排序</div>
+        <div className="imports-activity">按最近活跃排序，最新消息在前</div>
         <div className="plan-pills" role="group" aria-label="按会话类型筛选">
           <button type="button" aria-pressed={kind === 'all'} className={kind === 'all' ? 'on' : ''} onClick={() => setKind('all')}>全部 {matchedCatalog.length}</button>
           <button type="button" aria-pressed={kind === 'group'} className={kind === 'group' ? 'on' : ''} onClick={() => setKind('group')}>群聊 {groupCount}</button>
           <button type="button" aria-pressed={kind === 'direct'} className={kind === 'direct' ? 'on' : ''} onClick={() => setKind('direct')}>单聊 {matchedCatalog.length - groupCount}</button>
         </div>
-        <div className="imports-bulk"><button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(true)}>全部导入</button><button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection(false)}>全部忽略</button></div>
-        <div className="imports-list">{visibleCatalog.map(session => <div key={session.username} className={`imports-choice${focused?.username === session.username ? ' selected' : ''}`}><input type="checkbox" aria-label={`导入 ${session.display}`} checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><button type="button" onClick={() => setFocusedSession(session.username)}><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></button><time className="imports-last-active">{session.last_time ? new Date(session.last_time * 1000).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) : '无记录'}</time></div>)}
-        {!accountId && <p className="plan-empty">未发现微信账号，请先完成连接。</p>}{accountId && catalogLoading && <p className="plan-empty">正在加载会话…</p>}{accountId && !catalogLoading && !visibleCatalog.length && <p className="plan-empty">没有符合条件的会话。</p>}</div>
+        <div className="imports-list">{visibleCatalog.map(session => <div key={session.username} className={`imports-choice${focused?.username === session.username ? ' selected' : ''}`}><input type="checkbox" aria-label={`导入 ${session.display}`} checked={allowed.has(session.username)} onChange={() => toggleUsername(session.username)}/><button type="button" onClick={() => setFocusedSession(session.username)}><strong>{session.display}</strong><small>{session.is_group ? '群聊' : '单聊'} · {session.username}</small></button><time className="imports-last-active">{activityText(session.last_time)}</time></div>)}
+        {!accountId && <p className="plan-empty">未发现聊天账号，请先完成连接。</p>}{accountId && catalogLoading && <p className="plan-empty">正在加载会话…</p>}{accountId && !catalogLoading && !visibleCatalog.length && <p className="plan-empty">没有符合条件的会话。</p>}</div>
+        <div className="imports-bulk" role="group" aria-label="批量选择当前筛选结果">
+          <span>当前 {visibleCatalog.length} 个 · 已选 {visibleSelectedCount}</span>
+          <button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection('select')}>全选</button>
+          <button type="button" disabled={!visibleCatalog.length} onClick={() => setVisibleSelection('invert')}>反选</button>
+          <button type="button" disabled={!visibleSelectedCount} onClick={() => setVisibleSelection('clear')}>取消</button>
+        </div>
       </div>
       <section className="imports-detail">{focused ? <><header><h3>{focused.display}</h3><p>{focused.is_group ? '群聊' : '单聊'} · {focused.username}</p></header>{!allowed.has(focused.username) ? <p className="help">勾选此会话后，可以设置首次上传的历史范围。</p> : alreadySynced ? <p className="help">此会话已有同步进度，首次历史范围不再生效。</p> : <><h3>首次上传范围</h3><label className="imports-all-history"><input type="checkbox" checked={!isCustomRange} onChange={e => setUploadAllHistory(e.target.checked)}/><span><strong>上传全部历史记录</strong><small>首次上传该会话的全部本机历史记录。</small></span></label>{isCustomRange && <><p className="help">选择首次上传的历史日期范围；可只填写开始日期或结束日期。</p><div className="imports-dates"><label>开始日期<input type="date" value={dateText(focusedRange?.since)} onChange={e => setDate(focused.username, 'since', e.target.value)}/></label><span>至</span><label>结束日期<input type="date" value={dateText(focusedRange?.until, true)} onChange={e => setDate(focused.username, 'until', e.target.value)}/></label></div><div className="imports-available"><strong>有记录的日期</strong><button type="button" className="plan-button" disabled={!!dateLoading} onClick={() => void loadDates(focused.username)}>{dateLoading === focused.username ? '正在读取…' : '查看日期'}</button>{dateDetails[focused.username] && (dateDetails[focused.username].length ? <><p className="imports-date-hint">选择日期作为开始日期，结束日期保持不变。</p><div className="imports-date-list" aria-label="选择有记录的开始日期">{dateDetails[focused.username].map(([day]) => <button type="button" key={day} className={dateText(focusedRange?.since) === day ? 'selected' : ''} aria-pressed={dateText(focusedRange?.since) === day} onClick={() => setDate(focused.username, 'since', day)}>{day}</button>)}</div></> : <p>没有可用记录</p>)}</div></>}</>}</> : <p className="help">选择一个会话，查看并设置首次上传的日期范围。</p>}</section>
     </div>
@@ -570,7 +610,6 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
   const [authStatus, setAuthStatus] = useState('');
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
   const [spaces, setSpaces] = useState<DevifySpace[]>([]);
-  const [takeoverReason, setTakeoverReason] = useState('');
   const [spacesStatus, setSpacesStatus] = useState('');
 
   useEffect(() => {
@@ -685,15 +724,6 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
   const selectedSpace = spaces.find(space => space.id === settings.devify.active_space_id);
   const activeSpace = selectedSpace;
   const platformName = ({ macos: 'macOS', windows: 'Windows', linux: 'Linux' } as Record<string, string>)[settings.devify.platform] || settings.devify.platform || '自动识别';
-  const needsTakeover = Boolean(selectedSpace?.is_global_admin && !selectedSpace.admin_takeover_active);
-  const takeoverSpace = async () => {
-    if (!selectedSpace || !takeoverReason.trim()) return;
-    try {
-      await invoke('devify_space_takeover', { spaceId: selectedSpace.id, reason: takeoverReason.trim() });
-      setTakeoverReason('');
-      await loadSpaces();
-    } catch (e) { setError(String(e)); }
-  };
 
   /** Queue blur saves against our own last confirmed revision, never a fresh external context. */
   const persist = (next: AppSettings) => {
@@ -772,15 +802,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
 
     </div></section>
 
-    <section className="account-profile-card account-wechat"><h3>微信数据来源</h3>{wechatAccounts.length ? wechatAccounts.map(account => <div key={account.id} className="wechat-source-account"><WechatIdentity account={account} profile={wechatProfiles[account.id]} /></div>) : <div><span className="wechat-account-avatar">微</span><span><strong>{wechatStatus}</strong><small>微信账号与 AIMyChats 账号相互独立，用于读取本机聊天记录。</small></span></div>}</section>
-    {needsTakeover && <section className="account-takeover">
-      <strong>当前账号是全局管理员</strong>
-      <p>访问空间业务数据前需要先接管空间并记录原因。</p>
-      <div className="account-takeover-actions">
-        <input value={takeoverReason} maxLength={500} placeholder="接管原因" onChange={event => setTakeoverReason(event.target.value)}/>
-        <button type="button" className="plan-button" disabled={!takeoverReason.trim()} onClick={() => void takeoverSpace()}>确认接管空间</button>
-      </div>
-    </section>}
+    <section className="account-profile-card account-wechat"><h3>微信数据来源</h3>{wechatAccounts.length ? wechatAccounts.map(account => <div key={account.id} className="wechat-source-account"><WechatIdentity account={account} profile={wechatProfiles[account.id]} source="wechat" /></div>) : <div><span className="wechat-account-avatar"><ConnectorIcon name="微信" /></span><span><strong>{wechatStatus}</strong><small>微信账号与 AIMyChats 账号相互独立，用于读取本机聊天记录。</small></span></div>}</section>
 
     {notice && <div className="notice">{notice}</div>}
     {error && <div className="error">{error}</div>}
