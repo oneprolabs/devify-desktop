@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { desktopInvoke as invoke } from './desktopInvoke';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
-import appIcon from './assets/app-icon.png';
+import brandMark from './assets/app-mark-transparent.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from './Settings';
 import { apiBaseUrl, storedBaseUrl } from './serviceUrl.ts';
 import { requestFeedback } from './desktopInvoke';
@@ -267,7 +267,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
 
   return <div className="auth-gate">
     <div className="auth-gate-card">
-      <span className="auth-gate-mark"><img src={appIcon} alt=""/></span>
+      <span className="auth-gate-mark"><img src={brandMark} alt=""/></span>
       <h1>需要登录</h1>
       <p>登录后才能连接聊天来源、备份和使用智能分析。</p>
       {notice && <p className="auth-gate-error" role="alert">{notice}</p>}
