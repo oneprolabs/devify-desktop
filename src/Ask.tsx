@@ -40,7 +40,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const [pending, setPending] = useState('');
   const [loading, setLoading] = useState(isTauri());
   const [asking, setAsking] = useState(false);
-  const [range, setRange] = useState(t("全部"));
+  const [range, setRange] = useState('全部');
   const [error, setError] = useState('');
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
 
@@ -215,7 +215,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
               aria-pressed={range === option}
               className={range === option ? 'on' : ''}
               onClick={() => setRange(option)}
-            >{option}</button>)}
+            >{t(option)}</button>)}
           </div>
         </div>
       </header>
