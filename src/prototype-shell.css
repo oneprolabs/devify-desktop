@@ -347,6 +347,66 @@
 .auth-waiting span:nth-child(2) { flex: 1; }
 .auth-waiting button { padding: 0; border: 0; background: transparent; color: #83167e; font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
 
+/* V7 login surface. Keep the shared update and service-recovery dialogs independent. */
+.auth-login-gate { overflow: auto; }
+.auth-login-gate .auth-gate-card { width: min(420px, 100%); padding-block: 12px; }
+.auth-login-gate .auth-gate-mark { width: 56px; height: 56px; }
+.auth-login-gate .auth-gate-mark img { width: 56px; height: 56px; }
+.auth-login-gate h1 { margin: 18px 0 0; font-size: 18px; line-height: 26px; }
+.auth-login-gate .auth-gate-card > p { margin-top: 12px; font-size: 12.5px; }
+.auth-login-gate .auth-gate-primary { min-width: 98px; min-height: 38px; margin-top: 18px; padding: 9px 24px; font-size: 13px; }
+.auth-login-gate .auth-gate-server { margin-top: 24px; }
+.auth-login-gate .auth-gate-server-toggle { color: #74746e; }
+.auth-login-gate .auth-gate-server input:focus { border-color: #a3279a; box-shadow: none; }
+.auth-login-gate button:disabled { cursor: default; opacity: .55; }
+.auth-login-gate input { caret-color: #a3279a; }
+.auth-login-gate ::selection { background: #f1d5ed; color: #41123c; }
+.auth-login-gate button:focus-visible { outline: 2px solid #a3279a; outline-offset: 3px; }
+.auth-login-backdrop { left: 0; padding: 24px; background: rgb(0 0 0 / 36%); }
+.auth-login-modal { display: flex; flex-direction: column; width: min(420px, 100%); max-height: calc(100dvh - 48px); border-radius: 12px; box-shadow: 0 20px 50px rgb(0 0 0 / 25%); }
+.auth-login-modal .auth-modal-head { position: relative; flex: none; justify-content: center; min-height: 48px; padding: 11px 46px; background: #f6f5f6; color: #3a3a37; font-size: 12.5px; }
+.auth-login-modal .auth-modal-head > span { text-align: center; }
+.auth-login-modal .auth-modal-brand { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.auth-login-modal .auth-modal-brand img { width: 24px; height: 24px; object-fit: contain; }
+.auth-login-modal .auth-modal-head button { position: absolute; right: 10px; top: 11px; display: grid; place-items: center; padding: 0; border-radius: 6px; }
+.auth-login-modal .auth-modal-head svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.auth-login-modal .auth-modal-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; gap: 18px; padding: 26px 32px 28px; scrollbar-width: thin; scrollbar-color: #c7bdc5 transparent; }
+.auth-login-modal .auth-login-fields { display: flex; flex-direction: column; gap: 18px; }
+.auth-login-modal p { margin: 0; }
+.auth-login-modal .auth-tabs { gap: 22px; }
+.auth-login-modal .auth-tabs button { padding-bottom: 7px; line-height: 25px; }
+.auth-login-modal .auth-browser-option { display: flex; flex-direction: column; gap: 7px; }
+.auth-login-modal .auth-alt { width: 100%; min-height: 44px; padding: 10px 12px; }
+.auth-login-modal .auth-alt:hover:not(:disabled) { background: #fbf7fa; }
+.auth-login-modal .auth-alt .auth-button-spinner { border-color: #e9cce5; border-top-color: #a3279a; }
+.auth-login-modal .auth-alt-mark { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.auth-login-modal .auth-alt-help { color: #74746e; font-size: 11.5px; line-height: 18px; text-align: center; }
+.auth-login-modal .auth-divider { color: #74746e; line-height: 16px; }
+.auth-login-modal .auth-field { gap: 6px; line-height: 18px; color: #3a3a37; }
+.auth-login-modal .auth-input-row { min-height: 44px; }
+.auth-login-modal .auth-input-row input { height: 42px; padding: 10px 12px; border: 0; border-radius: 0; outline: none; box-shadow: none; line-height: 22px; background: transparent; }
+.auth-login-modal .auth-input-row input:focus { border: 0; outline: none; box-shadow: none; }
+.auth-login-modal .auth-input-row input::placeholder { color: #74746e; opacity: 1; }
+.auth-login-modal .auth-input-row:focus-within { border-color: #a3279a; box-shadow: none; }
+.auth-login-modal .auth-suffix { background: #f3f3f1; }
+.auth-login-modal .auth-forgot { margin-top: -4px; min-height: 18px; }
+.auth-login-modal .auth-submit { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 12px; line-height: 24px; }
+.auth-login-modal .auth-error { padding: 10px 12px; border-radius: 8px; background: #fbeeed; color: #a12824; overflow-wrap: anywhere; }
+.auth-login-modal .auth-error button { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.auth-login-modal .auth-waiting { min-height: 42px; }
+.auth-login-modal .auth-register { gap: 14px; padding-top: 2px; }
+.auth-login-modal .auth-switch { line-height: 20px; }
+.auth-button-spinner { width: 14px; height: 14px; border: 1.5px solid rgb(255 255 255 / 40%); border-top-color: #fff; border-radius: 50%; animation: auth-button-spin .8s linear infinite; }
+@keyframes auth-button-spin { to { transform: rotate(360deg); } }
+@media (max-height: 660px) {
+  .auth-login-backdrop { padding-block: 16px; }
+  .auth-login-modal { max-height: calc(100dvh - 32px); }
+  .auth-login-modal .auth-modal-body { padding-block: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-login-modal .auth-button-spinner, .auth-login-modal .auth-gate-pulse { animation: none; }
+}
+
 /* ── 备份周期: per-platform schedule cards (prototype.html 备份周期) ───────── */
 
 .backup-page .page-head h2,
