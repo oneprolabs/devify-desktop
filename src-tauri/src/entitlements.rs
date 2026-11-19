@@ -47,6 +47,7 @@ pub struct Plan {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Snapshot {
+    pub user_id: Option<i64>,
     pub plan: Option<Plan>,
     pub features: Vec<String>,
     /// Numeric ceilings keyed by `limits.*`.
@@ -131,13 +132,18 @@ pub fn load(app_data: &Path) -> Option<Snapshot> {
 }
 
 fn save(app_data: &Path, snapshot: &Snapshot) -> Result<(), String> {
-    let path = app_data.join(FILE);
-    let body = serde_json::to_string_pretty(snapshot)
-        .map_err(|error| format!("序列化订阅权益失败：{error}"))?;
-    let temp = app_data.join(format!("{FILE}.tmp"));
-    fs::write(&temp, body).map_err(|error| format!("写入订阅权益失败：{error}"))?;
-    fs::rename(&temp, &path).map_err(|error| format!("保存订阅权益失败：{error}"))?;
-    Ok(())
+    use std::io::Write;
+    fs::create_dir_all(app_data).map_err(|e|e.to_string())?;
+    let body=serde_json::to_vec(snapshot).map_err(|e|e.to_string())?;
+    let mut file=tempfile::NamedTempFile::new_in(app_data).map_err(|e|e.to_string())?;
+    file.write_all(&body).and_then(|_|file.as_file().sync_all()).map_err(|e|e.to_string())?;
+    file.persist(app_data.join(FILE)).map_err(|e|e.to_string())?;Ok(())
+}
+fn commit_current(app_data:&Path,base:&str,token:&str,generation:u64,snapshot:&Snapshot)->Result<(),String>{
+    crate::settings::with_identity(app_data,|s|{
+        if !crate::settings::same_service_url(&s.devify.base_url,base) || crate::request_generation(app_data,base,token).ok()!=Some(generation) {return Err("登录状态已改变。".into());}
+        save(app_data,snapshot)
+    })
 }
 
 /// Test-only writer: the cache layout is private to this module, so other modules' tests
@@ -153,6 +159,8 @@ pub fn effective(app_data: &Path, base_url: &str) -> Option<Snapshot> {
     if !crate::settings::same_service_url(&snapshot.base_url, base_url) {
         return None;
     }
+    let user=crate::desktop_credentials::load(app_data,base_url).ok().and_then(|c|crate::access_token_claim(&c.access,"user_id")).and_then(|v|v.parse::<i64>().ok());
+    if !(cfg!(test) && user.is_none() && snapshot.user_id.is_none()) && (user.is_none() || snapshot.user_id!=user) {return None;}
     Some(snapshot)
 }
 
@@ -293,8 +301,13 @@ pub fn require_agent_access(app_data: &Path, base_url: &str) -> Result<(), Strin
 /// is a normal state: it is cached as `unsupported` and keeps the app wide open.
 pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<View, String> {
     use crate::devify_http::RequestTrace;
+    static SINGLE:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
+    let _single=SINGLE.lock().await;
     let base_url = crate::settings::canonical_api_base(base_url)?;
-    let response = crate::http_client::api()
+    let generation=crate::request_generation(app_data,&base_url,token)?;
+    let user_id=crate::access_token_claim(token,"user_id").and_then(|v|v.parse::<i64>().ok());
+    if effective(app_data,&base_url).is_some_and(|s|now_seconds()-s.fetched_at<30){return Ok(view(app_data,&base_url));}
+    let mut response = crate::http_client::api()
         .get(format!("{base_url}/api/v1/me/entitlements"))
         .bearer_auth(token)
         .send_traced_retrying(
@@ -308,27 +321,29 @@ pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<Vie
 
     if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::NOT_IMPLEMENTED {
         let snapshot = Snapshot {
+            user_id,
             base_url: base_url.to_string(),
             fetched_at: now_seconds(),
             source: "unsupported".into(),
             ..Snapshot::default()
         };
-        save(app_data, &snapshot)?;
+        commit_current(app_data,&base_url,token,generation,&snapshot)?;
         return Ok(view(app_data, &base_url));
     }
     if !status.is_success() {
         return Err(format!("读取订阅权益失败：服务端返回 {status}"));
     }
 
-    let payload: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|error| format!("读取订阅权益失败：{error}"))?;
+    let mut raw=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|e|e.to_string())? {
+        if raw.len().saturating_add(chunk.len())>2*1024*1024{return Err("订阅权益响应过大。".into());}raw.extend_from_slice(&chunk);
+    }
+    let payload:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|e.to_string())?;
     let payload = payload.get("data").cloned().unwrap_or(payload);
     let remote: Remote = serde_json::from_value(payload)
         .map_err(|error| format!("解析订阅权益失败：{error}"))?;
 
     let snapshot = Snapshot {
+        user_id,
         plan: remote.plan,
         features: remote.features,
         limits: remote.limits,
@@ -342,7 +357,7 @@ pub async fn refresh(app_data: &Path, base_url: &str, token: &str) -> Result<Vie
         source: "server".into(),
         expires_at: remote.expires_at,
     };
-    save(app_data, &snapshot)?;
+    commit_current(app_data,&base_url,token,generation,&snapshot)?;
     Ok(view(app_data, &base_url))
 }
 

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::crypto;
@@ -64,7 +65,7 @@ pub fn resolve_db_key(page1: &[u8], candidates: &[Candidate]) -> Option<(Vec<u8>
 }
 
 pub fn store_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("wechat-keys.json")
+    crate::local_scope::root(app_data_dir).join("wechat-keys.json")
 }
 
 pub fn load(path: &Path) -> KeyStore {
@@ -79,8 +80,12 @@ pub fn save(path: &Path, store: &KeyStore) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("无法创建密钥目录：{e}"))?;
     }
     let text = serde_json::to_string_pretty(store).map_err(|e| format!("密钥序列化失败：{e}"))?;
-    fs::write(path, text).map_err(|e| format!("无法写入密钥文件：{e}"))?;
-    restrict_permissions(path)?;
+    let parent=path.parent().ok_or("密钥目录无效。")?;
+    let mut temp=tempfile::NamedTempFile::new_in(parent).map_err(|e|format!("无法写入密钥文件：{e}"))?;
+    temp.write_all(text.as_bytes()).and_then(|_|temp.as_file().sync_all()).map_err(|e|format!("无法保存密钥：{e}"))?;
+    restrict_permissions(temp.path())?;
+    temp.persist(path).map_err(|e|format!("无法提交密钥文件：{e}"))?;
+    fs::File::open(parent).and_then(|d|d.sync_all()).map_err(|e|e.to_string())?;
     Ok(())
 }
 

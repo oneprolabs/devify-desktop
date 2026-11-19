@@ -83,6 +83,7 @@ const mockedRequire = id => {
   if (id === './WizardSessionPicker') return loadModule('../src/WizardSessionPicker.tsx');
   if (id === './WizardImportScope') return loadModule('../src/WizardImportScope.tsx');
   if (id === './ImportHistoryRange') return loadModule('../src/ImportHistoryRange.tsx');
+  if (id === './BackupSchedule') return loadModule('../src/BackupSchedule.tsx');
   if (id === './WeChatWizardComplete') return loadModule('../src/WeChatWizardComplete.tsx');
   if (id === './settingsSaveQueue') return loadModule('../src/settingsSaveQueue.ts');
   if (id === './icons') return { Icons: { check: '✓', clock: '◷' } };
@@ -336,7 +337,7 @@ invoke = (command) => {
   if (command === 'chat_accounts') { entryChecks += 1; return entryAccounts.promise; }
   if (command === 'app_settings_get') return Promise.resolve(defaultSettings());
   if (command === 'wechat_key_status') return Promise.resolve({ keys: [] });
-  if (command === 'wechat_sessions') return Promise.reject('未找到解密后的数据库');
+  if (command === 'chat_sessions') return Promise.reject('未找到解密后的数据库');
   throw Error(command);
 };
 const entry = { hooks: [] };
@@ -463,6 +464,7 @@ invoke = (command, args) => {
   if (command === 'whatsapp_status') return Promise.resolve(waStatus);
   if (command === 'app_settings_get') return Promise.resolve({ ...defaultSettings(), user_settings_revision: 20 });
   if (command === 'chat_account_activate') return activation.promise;
+  if (command === 'connector_setup_state') return Promise.resolve({});
   throw Error(`unexpected WhatsApp command ${command}`);
 };
 let chatsOpened = 0;
@@ -494,6 +496,8 @@ assert.equal(waSelection.props.wizardSource, 'whatsapp', 'the wizard must select
 waSelection.props.onSaved(0);
 assert.ok(elements(renderWa()).some(node => node.type === WhitelistSettings), 'empty selection must not mark setup complete');
 waSelection.props.onSaved(2); tree = renderWa();
+const scheduleStep = find(tree, node => node.type?.name === 'BackupSchedule');
+await scheduleStep.props.onContinue(); tree = renderWa();
 find(tree, node => node.type === 'button' && node.props.children === '进入聊天').props.onClick();
 assert.equal(chatsOpened, 1);
 assert.ok(waCalls.every(call => !call.command.startsWith('wechat_')), 'WhatsApp must not run WeChat checks or key capture');

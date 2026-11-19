@@ -113,7 +113,7 @@ export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onB
         setSource(account.source === 'whatsapp' ? 'WhatsApp' : t("微信"));
         let sessions = 0;
         let sessionsFailed = false;
-        try { sessions = (await invoke<Array<{ username: string }>>('wechat_sessions', { accountId: account.id })).length; } catch { sessionsFailed = true; }
+        try { sessions = (await invoke<Array<{ username: string }>>('chat_sessions', { accountId: account.id })).length; } catch { sessionsFailed = true; }
         if (!active) return;
         // WhatsApp needs no key: a failed read means permissions or a new schema, not a
         // missing key, so it must never fall into the WeChat unlock wizard.

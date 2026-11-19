@@ -60,7 +60,7 @@ fn cache_matches_key(db: &DbFile, entry: &SyncEntry, store: &KeyStore, account: 
 }
 
 pub fn cache_dir(app_data_dir: &Path, account: &str) -> PathBuf {
-    app_data_dir.join("wechat-cache").join(account)
+    crate::local_scope::root(app_data_dir).join("wechat-cache").join(account)
 }
 
 fn meta_path(cache: &Path) -> PathBuf {

@@ -3,6 +3,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import PrototypeShell from '../src/PrototypeShell';
+import { RemoteChatFallback } from '../src/RemoteChatFallback';
 import { defaultSettings } from '../src/Settings';
 import '../src/style.css';
 const query = new URLSearchParams(location.search);
@@ -11,6 +12,7 @@ const accounts = [{id:wx,source:'wechat',modified_at:100},{id:wa,source:'whatsap
 const catalog = (account: string) => Array.from({length:45},(_,i)=>({username:`${account}-chat-${i}`,display:`${account===wa?'WA':'微信'}测试${i%2?'私聊':'群聊'} ${i+1}`,is_group:i%2===0,last_time:1795000000-i*300,member_count:null,preview:null,unread:0}));
 const capture = {pending:false,needs_cleanup:false,stage:'idle',transaction_id:null,wechat_official:true,wechat_ad_hoc:false,platform_supported:true,lldb_available:true,user_can_write:true,sip_disabled:true,os_version:'15.7',arch:'aarch64',recovery_error_code:null,resume_available:false};
 const state = {
+ runtime:{context:'e2e',revision:1,paused:false,running:false,pending_config:0,jobs:[] as any[]},
  settings:{...defaultSettings(),user_settings_revision:1,active_account_id:wx,devify:{...defaultSettings().devify,...(query.has('anonymous')?{base_url:query.has('no-server')?'':'https://example.invalid'}:{})},language:{...defaultSettings().language,ui:query.has('english')?'English':'中文'}},
  calls:[] as Array<{command:string;args:unknown}>, errors:[] as string[], writes:[] as unknown[],
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
@@ -21,7 +23,8 @@ const state = {
  authStartError:'', authStartPaused:false, authStartResolvers:[] as Array<()=>void>,
 };
 Object.assign(window,{__E2E__:state,isTauri:true});
-const callbacks = new Map<number,Function>();let callbackId=0;
+const callbacks = new Map<number,Function>();const eventHandlers = new Map<string,number[]>();let callbackId=0;
+Object.assign(window,{__TASK_EMIT__:()=>{for(const id of eventHandlers.get('task-runtime')??[]) callbacks.get(id)?.({event:'task-runtime',id,payload:structuredClone(state.runtime)});}});
 Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},__TAURI_INTERNALS__:{
  metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},
  transformCallback(fn:Function){const id=++callbackId;callbacks.set(id,fn);return id;},
@@ -31,6 +34,10 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
   const clone=<T,>(x:T):T=>structuredClone(x);
   switch(command){
    case 'app_settings_get':return clone(state.settings);
+   case 'connector_setup_state':return clone(state.settings);
+   case 'task_runtime_status':return clone(state.runtime);
+   case 'task_runtime_pause':state.runtime.paused=args.paused;state.runtime.revision++;return null;
+   case 'task_runtime_retry':return null;
    case 'app_settings_save':{
     if(state.saveDelay) await new Promise(resolve=>setTimeout(resolve,state.saveDelay));
     if(state.failNextSave){state.failNextSave=false;throw 'SETTINGS_CONFLICT: E2E concurrent edit';}
@@ -56,11 +63,15 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     if(state.browserError) throw state.browserError;
     state.externalUrls.push(args.url);return null;
    }
+   case 'chat_remote_lookup':return {conversation:{id:10,title:'Synthetic backup'}};
+   case 'devify_conversation_messages':return {list:Array.from({length:100},(_,i)=>({id:i+1,sender_name:'Synthetic sender',sender_key:'test',preview:`Synthetic preview ${i+1}`,occurred_at:'2026-11-19T10:00:00Z'})),pagination:{page:2,total:200,page_size:100}};
+   case 'devify_message_detail':return {id:args.messageId,parts:[{id:1,kind:'text',text:'Synthetic full message'},{id:2,kind:'image',upload_item_id:50}]};
+   case 'chat_remote_image':return 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
    case 'devify_current_user':return {id:1,display_name:'E2E Tester'};
    case 'devify_device_register':return {id:'e2e-device'};
    case 'devify_upload_identity':return {user_id:1,device_id:'e2e-device'};
    case 'entitlements_get':case 'entitlements_refresh':return null;
-   case 'plugin:event|listen':return ++callbackId;
+   case 'plugin:event|listen':eventHandlers.set(args.event,[...(eventHandlers.get(args.event)??[]),args.handler]);return ++callbackId;
    case 'plugin:event|unlisten':case 'diagnostic_record':return null;
    case 'plugin:updater|check':return null;
    case 'app_info':return {platform:'macos',arch:'aarch64',os_version:'15.7',version:'0.1.10',name:'AIMyChats'};
@@ -70,7 +81,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'whatsapp_status':return {installed:true,version:'2.26',account:wa,name:'E2E WA',sessions:45,messages:90,error:state.whatsappError||null};
    case 'wechat_account_profile':return null;
    case 'wechat_session_catalog':return catalog(args.accountId);
-   case 'wechat_sessions':return state.keys||args.accountId===wa?catalog(args.accountId).filter(s=>(state.settings.chat.allowed_usernames[args.accountId]??[]).includes(s.username)):[];
+   case 'chat_sessions':return state.keys||args.accountId===wa?catalog(args.accountId).filter(s=>(state.settings.chat.allowed_usernames[args.accountId]??[]).includes(s.username)):[];
    case 'wechat_catalog_dates':return [['2026-11-18',2],['2026-11-17',1]];
    case 'wechat_scan':return {roots:['/e2e'],skipped:[],accounts:[{id:wx,dir:'/e2e',db_count:1,encrypted_count:1,total_bytes:1024,modified_at:100,dbs:[{rel:'test.db',path:'/e2e/test.db',size:1024,encrypted:true,salt:'test',has_wal:false}]}]};
    case 'wechat_key_status':return {path:'/e2e/keys',stored:state.keys,keys:state.keys?[{account:wx,rel:'test.db',salt:'test',source:'e2e',verified_at:'2026-11-18',verified_secs:1795000000}]:[]};
@@ -95,4 +106,5 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
 }});
 window.addEventListener('error',event=>state.errors.push(event.message));
 window.addEventListener('unhandledrejection',event=>state.errors.push(String(event.reason)));
-createRoot(document.getElementById('root')!).render(<PrototypeShell />);
+if(query.has('fallback')) state.settings.devify.active_space_id='e2e-space';
+createRoot(document.getElementById('root')!).render(query.has('fallback') ? <div className="wxv-messages" style={{height:500,overflow:'auto'}}><RemoteChatFallback accountId={wx} username="missing-local" /></div> : <PrototypeShell />);

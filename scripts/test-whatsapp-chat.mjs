@@ -40,7 +40,7 @@ const wechatSession = { username: 'shared', display: '微信测试会话', is_gr
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
   if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: [session.username] } } };
-  if (command === 'wechat_sessions') return args.accountId === wechat ? [wechatSession] : [session];
+  if (command === 'chat_sessions') return args.accountId === wechat ? [wechatSession] : [session];
   if (['wechat_avatars', 'summary_history_list', 'wechat_upload_state'].includes(command)) return [];
   return null;
 };
@@ -83,10 +83,15 @@ function nodes(value) {
   return [value, ...nodes(value.props?.children)];
 }
 render();
-timers.shift()();
+if (timers.length) timers.shift()();
 assert.equal(nodes(render()).filter(node => node.type === MessagePane).length, 0, 'message pane must wait until account discovery completes');
 resolveAccounts([{ id: account, source: 'whatsapp' }, { id: wechat, source: 'wechat' }]);
 for (let i = 0; i < 20; i++) await Promise.resolve();
+let initialTree = render();
+assert.equal(nodes(initialTree).filter(node => node.type === MessagePane).length, 0, 'entry must not open the first conversation automatically');
+const textOf = value => typeof value === 'string' ? value : Array.isArray(value) ? value.map(textOf).join('') : value && typeof value === 'object' ? textOf(value.props?.children) : '';
+nodes(initialTree).find(node => node.type === 'button' && textOf(node).includes('WhatsApp 测试会话')).props.onClick();
+render();
 const panes = nodes(render()).filter(node => node.type === MessagePane);
 assert.equal(panes.length, 1);
 assert.equal(panes[0].props.accountId, account);

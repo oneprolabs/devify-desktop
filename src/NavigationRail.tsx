@@ -1,4 +1,5 @@
 import { t, tf, ctf } from './locale';
+import { useTaskRuntime } from './taskRuntime';
 import { RailIcons } from './icons';
 import brandMark from './assets/app-mark-transparent.png';
 
@@ -36,9 +37,10 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
   updateVersion?: string;
   onUpdate?: () => void;
 }) {
+  const tasks = useTaskRuntime();
   const avatar = accountAvatar(accountName);
   const navButton = (item: (typeof primaryItems)[number] | (typeof utilityItems)[number]) => <button
-    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ' prototype-nav-item-tasks' : ''}${section === item.id ? ' active' : ''}`}
+    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : tasks.paused || tasks.jobs.some(job => ['queued', 'processing', 'failed'].includes(job.status)) ? ' task-waiting' : ''}` : ''}${section === item.id ? ' active' : ''}`}
     title={t(item.label)} aria-current={section === item.id ? 'page' : undefined} onClick={() => onNavigate(item.id)}
   ><span className="prototype-nav-icon">{item.icon}</span><small>{t(item.label)}</small></button>;
 

@@ -1,0 +1,493 @@
+//! First-phase runtime checks use temporary source databases and loopback identities.
+use super::*;
+fn identity(data: &Path, user: i64) -> settings::UploadOwner {
+    let owner = settings::UploadOwner {
+        base_url: "http://127.0.0.1:18999".into(),
+        space_id: "space".into(),
+        account_id: "local".into(),
+        user_id: user,
+        device_id: "device".into(),
+    };
+    let token = format!(
+        "x.{}.x",
+        URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"user_id":user,"device_id":"device","exp":4102444800_i64})
+                .to_string()
+        )
+    );
+    let mut s = settings::load(data).unwrap();
+    s.devify.base_url = owner.base_url.clone();
+    s.devify.active_space_id = Some(owner.space_id.clone());
+    s.devify.device_id = owner.device_id.clone();
+    settings::save(data, &s).unwrap();
+    desktop_credentials::save(
+        data,
+        &desktop_credentials::Credentials {
+            base_url: owner.base_url.clone(),
+            access: token,
+            refresh: "local-test".into(),
+            device_session: None,
+            session_device_id: None,
+        },
+    )
+    .unwrap();
+    owner
+}
+#[test]
+fn keys_and_plaintext_are_separate_after_account_switch_and_signout() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let first = identity(data, 1);
+    let root = local_scope::root(data);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("wechat-keys.json"), "old private key").unwrap();
+    let cache = decrypt::cache_dir(data, "same-wechat");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("private"), "old plaintext").unwrap();
+    let second = identity(data, 2);
+    assert!(!config_runtime::same_principal(&first, &second));
+    assert_ne!(local_scope::root(data), root);
+    assert!(!keys::store_path(data).exists());
+    assert!(!decrypt::cache_dir(data, "same-wechat")
+        .join("private")
+        .exists());
+    desktop_credentials::clear(data).unwrap();
+    assert!(!keys::store_path(data).exists());
+    identity(data, 1);
+    assert_eq!(local_scope::root(data), root);
+    assert!(decrypt::cache_dir(data, "same-wechat")
+        .join("private")
+        .exists());
+}
+#[test]
+fn immutable_archive_is_verified_and_configuration_pause_survives_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let raw = b"original archive";
+    let digest = hex::encode(sha2::Sha256::digest(raw));
+    upload_archive::save(temp.path(), &digest, raw).unwrap();
+    assert_eq!(upload_archive::load(temp.path(), &digest).unwrap(), raw);
+    fs::write(
+        temp.path()
+            .join("upload-archives")
+            .join(format!("{digest}.zip")),
+        "changed",
+    )
+    .unwrap();
+    assert!(upload_archive::load(temp.path(), &digest).is_err());
+    settings::update(temp.path(), |s| {
+        s.runtime.paused = true;
+        Ok(())
+    })
+    .unwrap();
+    assert!(settings::load(temp.path()).unwrap().runtime.paused);
+}
+#[test]
+fn wechat_planner_builds_one_bounded_batch_for_multiple_chats_and_continues_after_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let owner = identity(data, 1);
+    let cache = decrypt::cache_dir(data, &owner.account_id);
+    fs::create_dir_all(cache.join("session")).unwrap();
+    fs::create_dir_all(cache.join("message")).unwrap();
+    let sessions = rusqlite::Connection::open(cache.join("session/session.db")).unwrap();
+    sessions.execute_batch("CREATE TABLE Session(username TEXT,display_name TEXT,last_timestamp INTEGER);INSERT INTO Session VALUES('a','A',1000),('b','B',1000);").unwrap();
+    let messages = rusqlite::Connection::open(cache.join("message/message_0.db")).unwrap();
+    for name in ["a", "b"] {
+        let table = format!("Msg_{}", query::md5_hex(name));
+        messages.execute_batch(&format!("CREATE TABLE {table}(local_id INTEGER,server_id INTEGER,create_time INTEGER,message_content TEXT,local_type INTEGER);")).unwrap();
+        for id in 1..=250 {
+            messages
+                .execute(
+                    &format!("INSERT INTO {table} VALUES(?1,?1,?1,'text',1)"),
+                    [id],
+                )
+                .unwrap();
+        }
+    }
+    let mut value = settings::load(data).unwrap();
+    value
+        .chat
+        .allowed_usernames
+        .insert(owner.account_id.clone(), vec!["a".into(), "b".into()]);
+    value.chat.initial_ranges.insert(
+        owner.account_id.clone(),
+        ["a", "b"]
+            .into_iter()
+            .map(|n| {
+                (
+                    n.into(),
+                    settings::InitialRange {
+                        since: Some(1),
+                        until: None,
+                    },
+                )
+            })
+            .collect(),
+    );
+    value.sync.activate_owner(&owner);
+    let names = vec!["a".into(), "b".into()];
+    let mut first = plan_automatic_batch(data, &value, &owner, &names)
+        .unwrap()
+        .unwrap();
+    let scope = first.scope.as_ref().unwrap();
+    let prepared = prepare_upload(
+        &cache,
+        &owner.account_id,
+        &owner.space_id,
+        &owner.base_url,
+        &scope.usernames,
+        None,
+        None,
+        &scope.message_selection,
+    )
+    .unwrap();
+    export_archive("wechat", &owner.account_id, &prepared);
+    assert_eq!(scope.usernames.len(), 2);
+    assert!(
+        scope
+            .message_selection
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+            <= 200
+    );
+    assert!(value.sync.cursors.is_empty());
+    first.status = "completed".into();
+    value.upload_queue.push(first);
+    apply_completed_uploads(&mut value);
+    let second = plan_automatic_batch(data, &value, &owner, &names)
+        .unwrap()
+        .unwrap();
+    assert!(second.scope.unwrap().message_selection["a"][0].local_id > 1);
+    let page =
+        query::sessions_page(&cache, Some(&names.iter().cloned().collect()), Some(1), 1).unwrap();
+    assert_eq!(page.len(), 1);
+}
+#[test]
+fn logout_invalidates_old_work_without_waiting_for_the_network() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = identity(temp.path(), 1);
+    let token = desktop_credentials::load(temp.path(), &owner.base_url)
+        .unwrap()
+        .access;
+    settings::update(temp.path(), |s| {
+        s.active_account_id = owner.account_id.clone();
+        Ok(())
+    })
+    .unwrap();
+    let started = std::time::Instant::now();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            sign_out_local_session(temp.path()).await.unwrap();
+        });
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(desktop_credentials::load(temp.path(), &owner.base_url).is_err());
+    identity(temp.path(), 2);
+    let current = settings::load(temp.path()).unwrap();
+    assert!(validate_owner_state(
+        &current,
+        &owner,
+        &desktop_credentials::load(temp.path(), &owner.base_url)
+            .unwrap()
+            .access
+    )
+    .is_err());
+    assert!(request_generation(temp.path(), &owner.base_url, &token).is_err());
+}
+
+#[test]
+fn whatsapp_automatic_batches_cover_every_message_without_advancing_before_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("ChatStorage.sqlite");
+    let conn = rusqlite::Connection::open(&source).unwrap();
+    conn.execute_batch("CREATE TABLE ZWACHATSESSION(Z_PK INTEGER PRIMARY KEY,ZCONTACTJID TEXT,ZPARTNERNAME TEXT,ZLASTMESSAGEDATE REAL,ZLASTMESSAGETEXT TEXT,ZUNREADCOUNT INTEGER);CREATE TABLE ZWAMESSAGE(Z_PK INTEGER PRIMARY KEY,ZCHATSESSION INTEGER,ZISFROMME INTEGER,ZMESSAGETYPE INTEGER,ZMESSAGEDATE REAL,ZFROMJID TEXT,ZTEXT TEXT,ZMEDIAITEM INTEGER,ZSTANZAID TEXT);INSERT INTO ZWACHATSESSION VALUES(1,'chat@g.us','Group',1000,NULL,0);").unwrap();
+    for id in 1..=450 {
+        conn.execute(
+            "INSERT INTO ZWAMESSAGE VALUES(?1,1,0,0,?1,'sender','text',NULL,?2)",
+            rusqlite::params![id, format!("M{id}")],
+        )
+        .unwrap();
+    }
+    std::env::set_var("WECHATIFY_WHATSAPP_DB", &source);
+    let data = temp.path().join("app");
+    fs::create_dir_all(&data).unwrap();
+    let mut owner = identity(&data, 1);
+    owner.account_id = "10000000000@s.whatsapp.net".into();
+    let mut value = settings::load(&data).unwrap();
+    value.sync.activate_owner(&owner);
+    value
+        .chat
+        .allowed_usernames
+        .insert(owner.account_id.clone(), vec!["chat@g.us".into()]);
+    value.chat.initial_ranges.insert(
+        owner.account_id.clone(),
+        HashMap::from([(
+            "chat@g.us".into(),
+            settings::InitialRange {
+                since: Some(978307201),
+                until: None,
+            },
+        )]),
+    );
+    let mut seen = HashSet::new();
+    for round in 0..10 {
+        let Some(mut job) =
+            plan_automatic_batch(&data, &value, &owner, &["chat@g.us".into()]).unwrap()
+        else {
+            break;
+        };
+        if round == 0 {
+            let scope = job.scope.as_ref().unwrap();
+            let prepared = prepare_whatsapp_upload(
+                &data,
+                &owner.account_id,
+                &owner.space_id,
+                &owner.base_url,
+                &scope.usernames,
+                None,
+                None,
+                &scope.message_selection,
+            )
+            .unwrap();
+            export_archive("whatsapp", &owner.account_id, &prepared);
+        }
+        for message in &job.scope.as_ref().unwrap().message_selection["chat@g.us"] {
+            seen.insert(message.local_id);
+        }
+        assert!(
+            job.scope
+                .as_ref()
+                .unwrap()
+                .message_selection
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+                <= 200
+        );
+        // A restart before completion retains the old confirmed position.
+        let before = serde_json::to_value(&value.sync.cursors).unwrap();
+        value.upload_queue.push(job.clone());
+        assert_eq!(serde_json::to_value(&value.sync.cursors).unwrap(), before);
+        value.upload_queue.last_mut().unwrap().status = "completed".into();
+        apply_completed_uploads(&mut value);
+        job.status = "completed".into();
+    }
+    std::env::remove_var("WECHATIFY_WHATSAPP_DB");
+    assert_eq!(
+        seen.len(),
+        450,
+        "a full bounded page must never be mistaken for the final page"
+    );
+    assert_eq!(
+        value.sync.cursors[&owner.account_id]["chat@g.us"].local_id,
+        450
+    );
+}
+
+fn export_archive(platform: &str, account: &str, prepared: &PreparedUpload) {
+    let Some(dir) = std::env::var_os("AIMYCHATS_E2E_ARTIFACT_DIR") else {
+        return;
+    };
+    let manifest = serde_json::json!({"schema_version":format!("{platform}.v1"),"platform":platform,"source_namespace":account,"counts":{"conversations":prepared.conversations.len(),"messages":prepared.messages.len()},"scope":{"conversation_ids":prepared.preview.sessions.iter().map(|s|s.username.clone()).collect::<Vec<_>>()},"client":{"name":"AIMyChats","version":env!("CARGO_PKG_VERSION")}});
+    let raw = build_upload_archive(
+        &manifest,
+        [
+            ("conversations.jsonl", &prepared.conversations),
+            ("messages.jsonl", &prepared.messages),
+            ("message_parts.jsonl", &prepared.parts),
+            ("avatars.jsonl", &prepared.avatars),
+        ],
+        prepared
+            .avatar_files
+            .iter()
+            .chain(prepared.media_files.iter()),
+    )
+    .unwrap();
+    let dir = PathBuf::from(dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{platform}.zip")), raw).unwrap();
+}
+
+#[test]
+fn login_profiles_keep_selection_schedule_and_pause_separate() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    identity(data, 1);
+    config_runtime::activate_profile(data).unwrap();
+    settings::update(data, |s| {
+        s.chat
+            .allowed_usernames
+            .insert("local".into(), vec!["private-one".into()]);
+        s.chat.sync_interval_seconds = 300;
+        s.runtime.paused = true;
+        Ok(())
+    })
+    .unwrap();
+    identity(data, 2);
+    config_runtime::activate_profile(data).unwrap();
+    let two = settings::load(data).unwrap();
+    assert!(two.chat.allowed_usernames.is_empty());
+    assert!(!two.sync.enabled);
+    assert!(!two.runtime.paused);
+    settings::update(data, |s| {
+        s.chat
+            .allowed_usernames
+            .insert("local".into(), vec!["private-two".into()]);
+        Ok(())
+    })
+    .unwrap();
+    identity(data, 1);
+    config_runtime::activate_profile(data).unwrap();
+    let one = settings::load(data).unwrap();
+    assert_eq!(one.chat.allowed_usernames["local"], vec!["private-one"]);
+    assert_eq!(one.chat.sync_interval_seconds, 300);
+    assert!(one.runtime.paused);
+}
+
+#[test]
+fn reconfiguration_keeps_completed_browsing_scope_until_new_ack() {
+    let mut value = settings::AppSettings::default();
+    value
+        .chat
+        .allowed_usernames
+        .insert("local".into(), vec!["new".into()]);
+    value.runtime.sources.insert(
+        "local".into(),
+        config_runtime::Source {
+            draft: true,
+            active: Some(serde_json::json!({"setup_state":"completed","usernames":["old"]})),
+            ..Default::default()
+        },
+    );
+    assert_eq!(config_runtime::browse_names(&value, "local"), vec!["old"]);
+    value.runtime.sources.get_mut("local").unwrap().active = None;
+    assert!(config_runtime::browse_names(&value, "local").is_empty());
+}
+
+#[test]
+fn space_switch_archives_old_profile_before_any_new_configuration_is_enqueued() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    identity(data, 1);
+    config_runtime::activate_profile(data).unwrap();
+    settings::update(data, |s| {
+        s.chat
+            .allowed_usernames
+            .insert("local".into(), vec!["private-old-space".into()]);
+        s.devify.active_space_id = Some("new-space".into());
+        config_runtime::activate_settings_profile(data, s)?;
+        assert!(s.chat.allowed_usernames.is_empty());
+        assert!(s.runtime.sources.is_empty());
+        assert!(s.runtime.pending.is_empty());
+        Ok(())
+    })
+    .unwrap();
+    settings::update(data, |s| {
+        s.devify.active_space_id = Some("space".into());
+        config_runtime::activate_settings_profile(data, s)?;
+        assert_eq!(s.chat.allowed_usernames["local"], vec!["private-old-space"]);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn interrupted_logout_journal_is_completed_before_credentials_can_be_reused() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = identity(temp.path(), 1);
+    settings::update(temp.path(), |s| {
+        s.runtime.logout_pending = true;
+        Ok(())
+    })
+    .unwrap();
+    recover_local_logout(temp.path()).unwrap();
+    assert!(desktop_credentials::load(temp.path(), &owner.base_url).is_err());
+    assert!(!settings::load(temp.path()).unwrap().runtime.logout_pending);
+    recover_local_logout(temp.path()).unwrap();
+}
+
+#[test]
+fn a_late_source_error_does_not_poison_another_login_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let owner = identity(data, 1);
+    config_runtime::activate_profile(data).unwrap();
+    let revision = settings::load(data).unwrap().user_settings_revision;
+    let current = identity(data, 2);
+    config_runtime::activate_profile(data).unwrap();
+    settings::update(data, |s| {
+        s.runtime.sources.insert(
+            "local".into(),
+            config_runtime::Source {
+                owner: Some(current.clone()),
+                completed: true,
+                acknowledged: Some(serde_json::json!({})),
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    task_runtime::record_source_result(
+        data,
+        &owner,
+        revision,
+        &Err("old user's failed upload".into()),
+    )
+    .unwrap();
+    let s = settings::load(data).unwrap();
+    assert!(s.runtime.sources["local"].last_error.is_none());
+    assert_eq!(s.runtime.sources["local"].failures, 0);
+}
+
+#[test]
+fn an_idle_or_server_processing_source_does_not_start_local_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = identity(temp.path(), 1);
+    let mut s = settings::load(temp.path()).unwrap();
+    s.backup.mode = "interval".into();
+    s.chat.sync_interval_seconds = 1800;
+    s.runtime.sources.insert(
+        owner.account_id.clone(),
+        config_runtime::Source {
+            last_run_at: Some(Utc::now().to_rfc3339()),
+            ..Default::default()
+        },
+    );
+    assert!(!task_runtime::source_needs_execution(
+        &s,
+        &owner,
+        Local::now()
+    ));
+    s.runtime
+        .sources
+        .get_mut(&owner.account_id)
+        .unwrap()
+        .last_run_at = None;
+    assert!(task_runtime::source_needs_execution(
+        &s,
+        &owner,
+        Local::now()
+    ));
+    s.upload_queue.push(settings::UploadJob {
+        id: "server-job".into(),
+        owner: Some(owner.clone()),
+        status: "processing".into(),
+        batch_id: Some(1),
+        ..Default::default()
+    });
+    assert!(!task_runtime::source_needs_execution(
+        &s,
+        &owner,
+        Local::now()
+    ));
+    s.upload_queue[0].message = "上传中断，等待恢复".into();
+    assert!(task_runtime::source_needs_execution(
+        &s,
+        &owner,
+        Local::now()
+    ));
+}

@@ -538,7 +538,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
   const sourceAccounts = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === source);
   const editor = <>
     {(!wizardWechat || accounts.length > 1 || !accountId) && <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name={sourceName} /></span><span className="wechat-account-details"><strong>{t("聊天账号")}</strong><small>{t("未检测到可用的聊天账号")}</small></span></>}{sourceAccounts.length > 1 && <AccountPicker accounts={sourceAccounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={changeAccount} />}</section>}
-    {source === 'whatsapp' && <p className="imports-hint">{t("WhatsApp 目前支持手动备份。选择的账号和范围在保存成功后才生效。")}</p>}
+    {source === 'whatsapp' && <p className="imports-hint">{t("选择的账号和范围同步成功后，将按备份周期自动执行。")}</p>}
     <WizardImportScope catalog={catalog} selected={allowed} loading={catalogLoading} disabled={saving} accountId={accountId} onScope={setScopeSelection} selectionIssue={selectionIssue} onClearIssue={() => setSelectionIssue(null)} sourceName={sourceName}>
       <WizardSessionPicker items={visibleCatalog} total={matchedCatalog.length} groupCount={groupCount}
         selected={allowed} selectedCount={allowedCount} kind={kind} onKind={setKind} search={search} onSearch={setSearch}

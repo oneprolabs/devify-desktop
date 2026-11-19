@@ -1,4 +1,5 @@
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
+import { LocalChatAvatar } from './LocalChatAvatar';
 import { LoadingSkeleton } from './LoadingSkeleton';
 import { eventViewState, syncErrorMessage } from './chatPresentation';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
@@ -86,7 +87,6 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [settings, setSettings] = useState<Settings | null>(null);
   const accountId = selectedSession?.accountId ?? null;
   const sourceLabel = selectedSession?.source === 'whatsapp' ? 'WhatsApp' : t("微信");
-  const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState>>({});
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
@@ -108,9 +108,11 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [chatState, setChatState] = useState({ active: false, messages: 0, selected: 0, agentReady: false });
   const [workRequest, setWorkRequest] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
-  // Mount the raw pane right away (hidden) so the first tab switch does not wait for the
-  // conversation + message load; the work happens while the event feed is on screen.
-  useEffect(() => { const timer = window.setTimeout(() => setRawMounted(true), 400); return () => window.clearTimeout(timer); }, []);
+  // Mount records only after the user chooses a conversation.
+  useEffect(() => { if (selectedSession && view === 'raw') setRawMounted(true); }, [selectedSession, view]);
+  const [hasMoreSessions, setHasMoreSessions] = useState(false);
+  const sessionOffsets = useRef(new Map<string, { account: ChatAccount; offset: number }>());
+  const moreLock = useRef(false);
 
   const load = useCallback(async () => {
     if (!isTauri()) return;
@@ -122,32 +124,45 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       const accounts = (found ?? []).filter(account => account.source === 'whatsapp'
         ? connections.whatsapp_enabled !== false
         : connections.wechat_enabled !== false);
-      const account = pickAccount(accounts, stored.active_account_id);
-      const results = await Promise.allSettled(accounts.map(async item => ({ account: item, sessions: await invoke<Session[]>('wechat_sessions', { accountId: item.id }) })));
+
+      const results = await Promise.allSettled(accounts.map(async item => ({ account: item, sessions: await invoke<Session[]>('chat_sessions', { accountId: item.id, limit: 50 }) })));
       if (generation !== loadGeneration.current) return;
       const list = results.flatMap(result => result.status === 'fulfilled'
         ? (result.value.sessions ?? []).map(session => ({ ...session, accountId: result.value.account.id, source: result.value.account.source ?? 'wechat' })) : []);
       list.sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0));
       const failed = results.flatMap((result, index) => result.status === 'rejected' ? [accounts[index].source === 'whatsapp' ? 'WhatsApp' : t("微信")] : []);
       setSettings(stored);
-      setSessions(list);
+      setSessions(list.slice(0, 200));
+      sessionOffsets.current = new Map(results.flatMap(result => result.status === 'fulfilled' && result.value.sessions.length === 50 ? [[result.value.account.id, { account: result.value.account, offset: 50 }] as const] : []));
+      setHasMoreSessions(sessionOffsets.current.size > 0);
       setSelectedSession(current => list.find(item => item.accountId === current?.accountId && item.username === current?.username)
-        ?? list.find(item => item.accountId === account?.id) ?? list[0] ?? null);
+        ?? null);
       if (failed.length) setError(tf("{0}会话读取失败，请刷新重试。", [...new Set(failed)].join('、')));
-      setAvatars({});
-      for (const result of results) {
-        if (result.status !== 'fulfilled' || !result.value.sessions.length) continue;
-        const id = result.value.account.id;
-        void invoke<Avatar[]>('wechat_avatars', { accountId: id, usernames: result.value.sessions.slice(0, 200).map(session => session.username) })
-          .then(items => { if (generation === loadGeneration.current) setAvatars(current => ({ ...current, ...Object.fromEntries((items ?? []).map(item => [sessionKey(id, item.username), item.data_url])) })); })
-          .catch(() => undefined);
-      }
       setEventRefresh(value => value + 1);
-      try { setSummaries(await invoke<SummaryRecord[]>('summary_history_list')); } catch { setSummaries([]); }
+
     } catch (reason) { if (generation === loadGeneration.current) setError(String(reason)); }
     finally { if (generation === loadGeneration.current) setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (view === 'summary' && visible) void invoke<SummaryRecord[]>('summary_history_list').then(setSummaries).catch(() => setSummaries([])); }, [view, visible]);
+  const loadMoreSessions = async () => {
+    if (moreLock.current) return;
+    moreLock.current = true; setLoading(true);
+    const generation = loadGeneration.current;
+    try {
+      // At most two independent source reads in flight, bounded to 50 each.
+      const added: OwnedSession[] = [];
+      for (const [id, entry] of sessionOffsets.current) {
+        const rows = await invoke<Session[]>('chat_sessions', { accountId: id, limit: 50, offset: entry.offset });
+        if (generation !== loadGeneration.current) return;
+        added.push(...rows.map(row => ({ ...row, accountId: id, source: entry.account.source ?? 'wechat' })));
+        if (rows.length < 50) sessionOffsets.current.delete(id); else entry.offset += 50;
+      }
+      setSessions(current => [...current, ...added].slice(-200));
+      setHasMoreSessions(sessionOffsets.current.size > 0);
+    } catch (reason) { setError(String(reason)); }
+    finally { moreLock.current = false; setLoading(false); }
+  };
   const wasVisible = useRef(visible);
   useEffect(() => {
     if (visible && !wasVisible.current) void load();
@@ -160,24 +175,16 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     const username = selectedSession?.username;
     const requestScope = JSON.stringify([settings?.devify?.base_url, spaceId, accountId, username]);
     setEventsError('');
-    if (!isTauri() || !spaceId || !username || !accountId) {
+    if (!isTauri() || !visible || view !== 'events' || !spaceId || !username || !accountId) {
       setEventsLoading(false);
       return () => { cancelled = true; };
     }
     setEventsLoading(true);
     void (async () => {
       try {
-        let conversation: CloudConversation | undefined;
-        for (let page = 1; page <= 100; page += 1) {
-          const result = await invoke<Page<CloudConversation>>('devify_conversations', { spaceId, search: username, page, pageSize: 100 });
-          if (cancelled) return;
-          if (!Array.isArray(result.list) || result.pagination?.next === undefined) throw new Error(t("无法完整读取云端会话，请重试。"));
-          const matches = result.list.filter(item => item.platform === (selectedSession?.source === 'whatsapp' ? 'whatsapp' : 'wechat') && item.source_namespace === accountId && item.source_conversation_id === username);
-          if (matches.length > 1) throw new Error(t("云端存在多个相同来源的会话，无法安全筛选事件。"));
-          conversation = matches[0];
-          if (conversation || !result.pagination?.next) break;
-          if (page === 100) throw new Error(t("云端会话过多，无法完整筛选事件。"));
-        }
+        const found = await invoke<{ conversation: { id: number } | null }>('chat_remote_lookup', { accountId, username });
+        if (cancelled) return;
+        const conversation = found.conversation;
         if (!conversation) { setEventsScope(requestScope); setEvents([]); return; }
         const result = await invoke<Page<EventItem>>('devify_analysis_list', { kind: 'events', spaceId, page: 1, conversationId: conversation.id });
         if (!cancelled) { setEventsScope(requestScope); setEvents(result.list ?? []); }
@@ -188,7 +195,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       }
     })();
     return () => { cancelled = true; };
-  }, [settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username, eventRefresh]);
+  }, [settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username, eventRefresh, visible, view]);
 
   useEffect(() => {
     if (!eventsError) return;
@@ -431,10 +438,9 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
               {item.name && <div className="chat-workbench-community-label">{item.name} {t("· 社区")}</div>}
               {item.sessions.map(session => {
                 const meta = sessionMeta(session);
-                const avatar = avatars[sessionKey(session.accountId, session.username)];
                 return <button type="button" key={sessionKey(session.accountId, session.username)} className={`chat-workbench-session${selectedSession?.accountId === session.accountId && selectedSession?.username === session.username ? ' selected' : ''}`} onClick={() => { setRawFocus(null); setSelectedSession(session); }}>
                   <span className="chat-workbench-avatar">
-                    {avatar ? <img src={avatar} alt=""/> : session.display.slice(0, 1)}
+                    <LocalChatAvatar key={sessionKey(session.accountId, session.username)} accountId={session.accountId} username={session.username} label={session.display} />
                     <i className="chat-workbench-avatar-badge" aria-hidden="true"><img src={session.source === 'whatsapp' ? whatsappIcon : wechatIcon} alt="" /></i>
                   </span>
                   <span className="chat-workbench-session-body">
@@ -447,6 +453,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             </Fragment>)}
           </Fragment>;
         })}
+        {!loading && hasMoreSessions && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions()}>{t('加载更多会话')}</button>}
         {!loading && !visibleSessions.length && <p className="chat-workbench-empty">{t("没有符合条件的会话。")}</p>}
       </div>
       <SidebarResizeHandle/>
@@ -455,7 +462,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     <main className="chat-workbench-main">
       <header className="chat-workbench-head">
         <div className="chat-workbench-title">
-          {selectedSession && <span className="chat-workbench-title-avatar" aria-hidden="true">{avatars[sessionKey(selectedSession.accountId, selectedSession.username)] ? <img src={avatars[sessionKey(selectedSession.accountId, selectedSession.username)]} alt=""/> : selectedSession.display.slice(0, 1)}</span>}
+          {selectedSession && <span className="chat-workbench-title-avatar" aria-hidden="true"><LocalChatAvatar key={sessionKey(selectedSession.accountId, selectedSession.username)} accountId={selectedSession.accountId} username={selectedSession.username} label={selectedSession.display} /></span>}
           <div className="chat-workbench-title-text"><h2>{conversation}</h2>{selectedSession && <p>{sourceLabel}{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}</p>}</div>
         </div>
         <div className="chat-workbench-head-right">
@@ -487,7 +494,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           {eventViewState(eventsLoading, error || eventsError, visibleEvents.length) === 'empty' && <div className="chat-workbench-empty-panel">
             <h2>{t("当前会话暂无事件")}</h2>
             <p>{t("上传当前会话并等待服务端分析后，相关事件会出现在这里。")}</p>
-            <button type="button" onClick={onNewUpload}>{t("开始第一次上传")}</button>
+            <button type="button" onClick={onSchedule}>{t("设置备份周期")}</button>
           </div>}
           {eventGroups.map(([day, list]) => <section className="chat-event-day" key={day}>
             <div className="chat-event-divider"><span/>{dayLabel(list[0]?.last_activity_at || day)}<span/></div>
@@ -517,9 +524,9 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       {!rawMounted && view === 'raw' && <LoadingSkeleton label={t("正在加载聊天记录")} kind="messages" />}
       {rawMounted && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
         {accountId === activeAccountId && selectedPending.length > 0 && <div className="chat-workbench-banner">
-          <span><i/>{t("已选择的聊天中有")} {selectedPending.length} {t("个会话")}{selectedPendingMessages ? tf("、{0} 条", selectedPendingMessages) : ''}{t("新增记录待上传，")}{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? t("将在满足条件时自动备份。") : t("自动备份未开启，请点击立即上传。")}</span>
+          <span><i/>{t("已选择的聊天中有")} {selectedPending.length} {t("个会话")}{selectedPendingMessages ? tf("、{0} 条", selectedPendingMessages) : ''}{t("新增记录待上传，")}{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? t("将在满足条件时自动备份。") : t("自动备份未开启，可以在备份周期中设置。")}</span>
           <div>
-            <button type="button" disabled={syncing} onClick={() => void syncNow()}>{syncing ? t("正在提交…") : t("立即上传")}</button>
+            <button type="button" disabled={syncing} onClick={onOpenTasks}>{t("查看任务")}</button>
             <button type="button" className="primary" onClick={onSchedule}>{t("备份周期")}</button>
           </div>
         </div>}

@@ -28,6 +28,7 @@ import { LoginGate } from './LoginGate';
 import { Feedback, FeedbackSettings } from './Feedback';
 import { requestFeedback } from './desktopInvoke';
 import { registerDevifyDevice } from './devifyDevice';
+import { resetTaskRuntime } from './taskRuntime';
 import { clearTaskSnapshot } from './taskSnapshot';
 import { clearPageSnapshots } from './pageSnapshots';
 import { granted, refreshEntitlements, useInternalAccount } from './entitlements';
@@ -151,7 +152,8 @@ export default function PrototypeShell() {
     if (authState === 'authed') void invoke<{ id?: number; display_name?: string; username?: string }>('devify_current_user').then(user => { if (active) { setCurrentUser(user.display_name || user.username || ''); setCurrentUserId(Number.isSafeInteger(user.id) && (user.id ?? 0) > 0 ? user.id! : null); } }).catch(() => { if (active) setCurrentUser(''); });
     return () => { active = false; };
   }, [authState, authVersion]);
-  const handleAuthenticated = useCallback(() => { clearTaskSnapshot(); clearPageSnapshots(); authEpoch.current += 1; setCurrentUserId(null); setCurrentUser(''); setAuthVersion(version => version + 1); setAuthState('authed'); setConnectionState('connected'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
+  useEffect(() => { resetTaskRuntime(authState === 'authed'); }, [authState, authVersion]);
+  const handleAuthenticated = useCallback(() => { resetTaskRuntime(true); clearTaskSnapshot(); clearPageSnapshots(); authEpoch.current += 1; setCurrentUserId(null); setCurrentUser(''); setAuthVersion(version => version + 1); setAuthState('authed'); setConnectionState('connected'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
   /**
    * The backend caps every Devify request with a timeout, so this resolves even when the
    * server is unreachable. `unavailable` is a separate state from "logged out": it must not
@@ -243,11 +245,10 @@ export default function PrototypeShell() {
     try {
       const current = await invoke<Record<string, unknown>>('app_settings_get');
       const connectors = (current.connectors ?? {}) as Record<string, unknown>;
-      const sync = (current.sync ?? {}) as Record<string, unknown>;
-      await invoke('app_settings_save', { value: { ...current, connectors: { ...connectors, wechat_enabled: true }, ...(skipBackup ? { sync: { ...sync, enabled: false } } : {}) } });
-      if (skipBackup) setWechatGuide(false);
+      await invoke('app_settings_save', { value: { ...current, connectors: { ...connectors, wechat_enabled: true },  } });
+      if (skipBackup) { await invoke('connector_setup_state', { accountId: current.active_account_id, completed: true, skipBackup: true }); setWechatGuide(false); }
       if (skipBackup) { setFirstBackupStep('none'); setChatReady(true); setSection('chat'); }
-      else { setWizard('wizard-sessions'); }
+      else { await invoke('connector_setup_state', { accountId: current.active_account_id, completed: false }); setWizard('wizard-sessions'); }
     } catch (error) { setConnectionFinishError(`无法启用微信连接：${String(error)}`); }
     finally { setConnectionFinishing(false); }
   };
@@ -397,7 +398,7 @@ export default function PrototypeShell() {
               <WhitelistSettings wizard onBack={() => setWizard('wizard-connect')} onSaved={count => { if (count > 0) setWizard('wizard-backup'); }} />
               <button type="button" className="wizard-skip" disabled={connectionFinishing} onClick={() => void finishWechatGuide(true)}>{t("暂不备份，进入聊天")}</button>
             </section> : wizardStep === 'wizard-backup' ? <section className="wizard-settings-step">
-              <BackupSchedule wizard onBack={() => setWizard('wizard-sessions')} onOpenConnectors={() => setWizard('wizard-connect')} onContinue={() => setWizard('wizard-done')} />
+              <BackupSchedule wizard onBack={() => setWizard('wizard-sessions')} onOpenConnectors={() => setWizard('wizard-connect')} onContinue={async () => { const current = await invoke<AppSettings>('app_settings_get'); await invoke('connector_setup_state', { accountId: current.active_account_id, completed: true }); setWizard('wizard-done'); }} />
             </section> : wizardStep === 'wizard-done' ? <WeChatWizardComplete edit={wechatGuideEdit} onBack={() => setWizard('wizard-connect')} onFinish={() => { setWechatGuide(false); setFirstBackupStep('none'); setChatReady(true); setChatKey(value => value + 1); setSection('chat'); }} /> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} wizardManual={wizardManual} wizardFinishing={connectionFinishing}
               wizardInstall={{ ready: wechatInstall.checking ? null : wechatInstall.canProceed, message: wechatInstall.detect?.message ?? '' }} onWizardInstallRecheck={() => wechatInstall.recheck()}
               onWizardStep={step => { if (step === 'wizard-sessions') void finishWechatGuide(); else setWizard(step); }} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
