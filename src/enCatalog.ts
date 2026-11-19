@@ -106,6 +106,7 @@ export const en: Record<string, string> = {
   "总结每日工作内容!": "Summarize each day's work.",
   "总结每日工作内容！": "Summarize each day's work.",
   "{0} 包含什么": "What's in {0}",
+  "继续追问会留在当前问答会话。回答按 Markdown 显示，生成过程中显示加载动画，选中的时间范围会随问题一起提交。": "Follow-up questions stay in the same Ask thread. Answers use Markdown, a spinner shows while an answer is generating, and the selected time range is sent with the question.",
   "切回客户端时，微信连接向导会停留在当前步骤。即使无法验证微信签名，也可以导入可信密钥文件并完成解密。配置期间可随时打开「问题反馈」和「关于」。": "WeChat setup stays on the current step when you return to the app. If WeChat’s signature cannot be verified, you can still import a trusted key file and finish decrypting your chats. Feedback and About are available throughout setup.",
   "反馈在服务端收不到诊断信息时，仍会保留本机上的详情；日志没有上传时，表单会说明这一点。这一版也包含 0.1.12 的英文界面。": "Feedback reports keep the host details when a server cannot accept diagnostics, and the form now says so when the log is not uploaded. Includes the English interface from 0.1.12.",
   "继续设置时不再闪过空白页。退出登录会马上取消正在进行的备份，不再挡住退出；下次登录会接着备份。准备大量聊天记录时会并行读取已有的云端消息标识，因此更快。": "Setup steps no longer flash a blank panel when you continue. Signing out now cancels a running backup right away instead of blocking the logout, and the next sign-in resumes it. Preparing a large chat history is faster because existing cloud message keys are read in parallel.",
