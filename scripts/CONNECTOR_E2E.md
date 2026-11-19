@@ -23,3 +23,5 @@ These are browser UI end-to-end tests with an IPC boundary, not live macOS autho
 Post-merge checks also cover the upstream untrusted-signature import path and English navigation, backup schedule and history-range controls.
 
 `runLoginRecoveryE2E(task)` from the same module exercises a delayed auth-status response: the retry view remains mounted, duplicate online events share one in-flight check, returning to login invalidates the old response, and recovering a saved session does not cancel its credentials.
+
+`runLoginUiE2E(task)` checks the V7 login surface: password validation, pending and failed requests, browser wait/cancel/open errors, registration and password-recovery URLs, keyboard submission and focus, first-use server setup, English copy, and the 940×640 minimum window. Browser/password IPC is simulated; this does not validate the live authorization callback lifecycle. Preview with `/scripts/connectors-e2e.html?anonymous` without signing out the installed client; append `&no-server` or `&english` for the other states.

@@ -11,12 +11,14 @@ const accounts = [{id:wx,source:'wechat',modified_at:100},{id:wa,source:'whatsap
 const catalog = (account: string) => Array.from({length:45},(_,i)=>({username:`${account}-chat-${i}`,display:`${account===wa?'WA':'微信'}测试${i%2?'私聊':'群聊'} ${i+1}`,is_group:i%2===0,last_time:1795000000-i*300,member_count:null,preview:null,unread:0}));
 const capture = {pending:false,needs_cleanup:false,stage:'idle',transaction_id:null,wechat_official:true,wechat_ad_hoc:false,platform_supported:true,lldb_available:true,user_can_write:true,sip_disabled:true,os_version:'15.7',arch:'aarch64',recovery_error_code:null,resume_available:false};
 const state = {
- settings:{...defaultSettings(),user_settings_revision:1,active_account_id:wx,language:{...defaultSettings().language,ui:query.has('english')?'English':'中文'}},
+ settings:{...defaultSettings(),user_settings_revision:1,active_account_id:wx,devify:{...defaultSettings().devify,...(query.has('anonymous')?{base_url:query.has('no-server')?'':'https://example.invalid'}:{})},language:{...defaultSettings().language,ui:query.has('english')?'English':'中文'}},
  calls:[] as Array<{command:string;args:unknown}>, errors:[] as string[], writes:[] as unknown[],
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
- authStatus:{authenticated:!query.has('auth-unavailable'),unavailable:query.has('auth-unavailable'),error:query.has('auth-unavailable')?'备份正在使用登录状态，请在当前上传结束后重试。':''},
+ authStatus:{authenticated:!query.has('auth-unavailable')&&!query.has('anonymous'),unavailable:query.has('auth-unavailable'),error:query.has('auth-unavailable')?'备份正在使用登录状态，请在当前上传结束后重试。':''},
  authPaused:false, authResolvers:[] as Array<()=>void>,
+ loginPaused:false, loginResolvers:[] as Array<()=>void>, loginError:'', browserError:'', externalUrls:[] as string[],
+ authStartError:'', authStartPaused:false, authStartResolvers:[] as Array<()=>void>,
 };
 Object.assign(window,{__E2E__:state,isTauri:true});
 const callbacks = new Map<number,Function>();let callbackId=0;
@@ -40,6 +42,20 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     return clone(state.authStatus);
    }
    case 'devify_auth_cancel':return null;
+   case 'devify_login_password':{
+    if(state.loginPaused) await new Promise<void>(resolve=>state.loginResolvers.push(resolve));
+    if(state.loginError) throw state.loginError;
+    state.authStatus={authenticated:true,unavailable:false,error:''};return null;
+   }
+   case 'devify_auth_start':{
+    if(state.authStartPaused) await new Promise<void>(resolve=>state.authStartResolvers.push(resolve));
+    if(state.authStartError) throw state.authStartError;
+    return 'https://example.invalid/auth/desktop?state=e2e';
+   }
+   case 'devify_auth_open':{
+    if(state.browserError) throw state.browserError;
+    state.externalUrls.push(args.url);return null;
+   }
    case 'devify_current_user':return {id:1,display_name:'E2E Tester'};
    case 'devify_device_register':return {id:'e2e-device'};
    case 'devify_upload_identity':return {user_id:1,device_id:'e2e-device'};

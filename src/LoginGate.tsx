@@ -25,7 +25,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState<'' | 'password' | 'browser' | 'session'>('');
+  const [busy, setBusy] = useState<'' | 'password' | 'browser-opening' | 'browser' | 'session'>('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -35,12 +35,15 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const completed = useRef(false);
   const mounted = useRef(true);
   const sessionCheckLock = useRef(false);
+  const loginActionLock = useRef(false);
   const settingsRef = useRef<GateSettings | null>(null);
   const draftRef = useRef('');
   const saveLock = useRef(false);
   const conflict = useRef(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [serverSaving, setServerSaving] = useState(false);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const loginButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const finishBrowserLogin = useCallback(async (url: string) => {
     try {
@@ -98,11 +101,22 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   useEffect(() => {
     if (!popup) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && busy !== 'browser') { setPopup(false); setError(''); setInfo(''); }
+      if (event.key === 'Escape' && !busy) { setPopup(false); setError(''); setInfo(''); }
+      if (event.key !== 'Tab') return;
+      const controls = dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]');
+      if (!controls?.length) return;
+      const first = controls[0], last = controls[controls.length - 1];
+      if (!dialogRef.current?.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+      else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [popup, busy]);
+  useEffect(() => {
+    if (!popup) return;
+    return () => loginButtonRef.current?.focus();
+  }, [popup]);
 
   // The browser flow has no deadline of its own: when the server is unreachable the
   // callback never arrives, so stop waiting instead of leaving the modal spinning.
@@ -142,13 +156,13 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     setInfo('');
     try {
       await invoke('devify_login_password', { username, password });
-      if (completed.current) return;
+      if (!mounted.current || completed.current) return;
       completed.current = true;
       onAuthenticated();
     } catch (reason) {
-      setError(String(reason));
+      if (mounted.current) setError(String(reason));
     } finally {
-      setBusy('');
+      if (mounted.current) setBusy('');
     }
   };
 
@@ -231,10 +245,18 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   };
 
   const submitPassword = async () => {
-    if (!(await ensureServer())) return;
-    if (!idOk) { setError(t("请输入用户名（至少 3 位，可用字母、数字和 . _ -）")); return; }
-    if (!password) { setError(t("请输入密码")); return; }
-    await submitLogin();
+    if (loginActionLock.current || busy) return;
+    loginActionLock.current = true;
+    setBusy('password');
+    try {
+      if (!(await ensureServer())) return;
+      if (!idOk) { setError(t("请输入用户名（至少 3 位，可用字母、数字和 . _ -）")); return; }
+      if (!password) { setError(t("请输入密码")); return; }
+      await submitLogin();
+    } finally {
+      loginActionLock.current = false;
+      if (mounted.current) setBusy('');
+    }
   };
 
   const cancelBrowserLogin = async () => {
@@ -244,22 +266,28 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   };
 
   const startBrowserLogin = async () => {
+    if (loginActionLock.current || busy) return;
+    loginActionLock.current = true;
+    setBusy('browser-opening');
     setError('');
     setInfo('');
-    if (!(await ensureServer())) return;
-    setBusy('browser');
-    setInfo(t("已在浏览器打开登录页，完成授权后会自动返回。"));
     try {
+      if (!(await ensureServer())) { setBusy(''); return; }
       const settings = await invoke<GateSettings>('app_settings_get');
       const deviceLabel = settings.devify?.device_label?.trim() || 'AIMyChats';
       const url = await invoke<string>('devify_auth_start', { deviceLabel });
       await invoke('devify_auth_open', { url });
+      setBusy('browser');
+      setInfo(t("已在浏览器打开登录页，完成授权后会自动返回。"));
     } catch (reason) {
       await invoke('devify_auth_cancel').catch(() => {});
       setBusy('');
       setInfo('');
-      setError(String(reason));
-    }
+      const message = String(reason);
+      setError(/上传期间无法更改登录状态|备份正在使用登录状态/.test(message)
+        ? t("后台备份尚未结束，暂时无法登录。如果长时间没有进展，请退出并重新打开 AIMyChats 后重试。")
+        : message);
+    } finally { loginActionLock.current = false; }
   };
 
   const openExternal = async (path: string) => {
@@ -290,15 +318,15 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     setServerStatus(t("服务地址已保存。"));
   };
 
-  return <div className="auth-gate">
-    <div className="auth-gate-card">
+  return <div className="auth-gate auth-login-gate">
+    <div className="auth-gate-card" aria-hidden={popup || undefined} {...(popup ? { inert: '' } : {})}>
       <span className="auth-gate-mark"><img src={brandMark} alt=""/></span>
       <h1>{t("需要登录")}</h1>
       <p>{t("登录后才能连接聊天来源、备份和使用智能分析。")}</p>
       {notice && <p className="auth-gate-error" role="alert">{notice}</p>}
       {busy === 'browser'
         ? <div className="auth-gate-waiting" role="status"><span className="auth-gate-pulse"/><span>{t("正在等待浏览器完成授权…")}</span></div>
-        : <button type="button" className="auth-gate-primary" disabled={!settingsLoaded || serverSaving || busy !== ''} onClick={() => {
+        : <button ref={loginButtonRef} type="button" className="auth-gate-primary" disabled={!settingsLoaded || serverSaving || busy !== ''} onClick={() => {
             if (!settingsLoaded) return;
             if (!baseUrl.trim()) {
               setServerOpen(true);
@@ -309,7 +337,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
           }}>{t("登录…")}</button>}
       {busy === 'browser' && <button type="button" className="auth-gate-secondary" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button>}
       {busy !== 'browser' && <button type="button" className="auth-gate-secondary" disabled={!settingsLoaded || serverSaving || busy !== ''} aria-busy={busy === 'session'} onClick={() => void retrySavedSession()}>{busy === 'session' ? t("正在检查…") : t("重新检查已有登录")}</button>}
-      {error && <p className="auth-gate-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
+      {error && !popup && <p className="auth-gate-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
       <div className="auth-gate-server">
         {serverOpen || !baseUrl
           ? <>
@@ -335,47 +363,49 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
     </div>
 
-    {popup && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && busy !== 'browser') { setPopup(false); setError(''); setInfo(''); } }}>
-      <section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+    {popup && <div className="auth-backdrop auth-login-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) { setPopup(false); setError(''); setInfo(''); } }}>
+      <section ref={dialogRef} className="auth-modal auth-login-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
         <header className="auth-modal-head">
-          <span id="auth-modal-title">{t("登录 Aimychats")}</span>
-          <button type="button" aria-label={t("关闭登录")} disabled={busy === 'browser'} onClick={() => { setPopup(false); setError(''); setInfo(''); }}>×</button>
+          <span className="auth-modal-brand"><img src={brandMark} alt=""/><span id="auth-modal-title">{t("登录 Aimychats")}</span></span>
+          <button type="button" aria-label={t("关闭登录")} disabled={busy !== ''} onClick={() => { setPopup(false); setError(''); setInfo(''); }}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8"/></svg></button>
         </header>
-        <div className="auth-modal-body">
+        <form className="auth-modal-body" onSubmit={event => { event.preventDefault(); if (tab === 'login' && !busy) void submitPassword(); }}>
           <div className="auth-tabs" role="tablist" aria-label={t("登录方式")}>
             {([['login', t("登录")], ['register', t("注册")]] as Array<[Tab, string]>).map(([key, label]) => <button
-              key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? 'active' : ''}
+              key={key} id={`auth-${key}-tab`} type="button" role="tab" aria-selected={tab === key} aria-controls={`auth-${key}-panel`} disabled={busy !== ''} className={tab === key ? 'active' : ''}
               onClick={() => { setTab(key); setError(''); setInfo(''); }}
             >{t(label)}</button>)}
           </div>
 
-          {tab === 'login' && <>
-            <button type="button" className="auth-alt" disabled={busy !== ''} onClick={() => void startBrowserLogin()}>
-              <span className="auth-alt-mark">↗</span>{t("通过浏览器登录服务端")}
-            </button>
-            <p className="auth-alt-help">{t("沿用服务端授权回调：浏览器完成登录后会自动回到客户端，无需在本地输入密码。")}</p>
-            <div className="auth-divider"><span>{t("或使用 AI 邮箱账号")}</span></div>
+          {tab === 'login' && <div className="auth-login-fields" id="auth-login-panel" role="tabpanel" aria-labelledby="auth-login-tab">
+            <div className="auth-browser-option">
+              <button type="button" className="auth-alt" disabled={busy !== ''} aria-busy={busy === 'browser-opening'} onClick={() => void startBrowserLogin()}>
+                {busy === 'browser-opening' ? <span className="auth-button-spinner" aria-hidden="true"/> : <svg className="auth-alt-mark" viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-4"/></svg>}{busy === 'browser-opening' ? t("正在打开浏览器…") : t("通过浏览器登录")}
+              </button>
+              <p className="auth-alt-help">{t("在浏览器完成登录后，将自动返回客户端。")}</p>
+            </div>
+            <div className="auth-divider"><span>{t("或")}</span></div>
             <label className="auth-field">{t("AI 邮箱用户名")}
               <span className="auth-input-row">
-                <input value={username} autoFocus placeholder={t("用户名")} autoComplete="username" onChange={event => { setUsername(event.target.value.trim()); setError(''); }}/>
+                <input name="username" value={username} disabled={busy !== ''} autoFocus placeholder={t("用户名")} autoComplete="username" autoCapitalize="none" spellCheck={false} onChange={event => { setUsername(event.target.value.trim()); setError(''); }}/>
                 <span className="auth-suffix">@aimychats.com</span>
               </span>
             </label>
             <label className="auth-field">{t("密码")}
               <span className="auth-input-row">
-                <input type={showPassword ? 'text' : 'password'} value={password} placeholder={t("密码")} autoComplete="current-password" onChange={event => { setPassword(event.target.value); setError(''); }}/>
-                <button type="button" className="auth-show" onClick={() => setShowPassword(value => !value)}>{showPassword ? t("隐藏") : t("显示")}</button>
+                <input name="password" type={showPassword ? 'text' : 'password'} value={password} disabled={busy !== ''} placeholder={t("密码")} autoComplete="current-password" onChange={event => { setPassword(event.target.value); setError(''); }}/>
+                <button type="button" className="auth-show" disabled={busy !== ''} aria-pressed={showPassword} onClick={() => setShowPassword(value => !value)}>{showPassword ? t("隐藏") : t("显示")}</button>
               </span>
             </label>
-            <div className="auth-forgot"><button type="button" onClick={() => void openExternal('/login?forgot=1')}>{t("忘记密码？")}</button></div>
+            <div className="auth-forgot"><button type="button" disabled={busy !== ''} onClick={() => void openExternal('/login?forgot=1')}>{t("忘记密码？")}</button></div>
             {error && <p className="auth-error" role="alert">{t(error)} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
-            {info && <p className="auth-info" role="status">{info}</p>}
-            {busy === 'browser' && <div className="auth-waiting"><span className="auth-gate-pulse"/><span>{t("正在等待浏览器完成授权…")}</span><button type="button" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button></div>}
-            <button type="button" className="auth-submit" disabled={busy !== ''} onClick={() => void submitPassword()}>{busy === 'password' ? t("正在登录…") : t("登录")}</button>
-            <p className="auth-switch">{t("还没有账号？")}<button type="button" onClick={() => { setTab('register'); setError(''); setInfo(''); }}>{t("注册")}</button></p>
-          </>}
+            {info && busy !== 'browser' && <p className="auth-info" role="status">{info}</p>}
+            {busy === 'browser' && <div className="auth-waiting" role="status"><span className="auth-gate-pulse"/><span>{t("正在等待浏览器完成授权…")}</span><button type="button" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button></div>}
+            <button type="submit" className="auth-submit" disabled={busy !== ''} aria-busy={busy === 'password'}>{busy === 'password' && <span className="auth-button-spinner" aria-hidden="true"/>}{busy === 'password' ? t("正在登录…") : t("登录")}</button>
+            <p className="auth-switch">{t("还没有账号？")}<button type="button" disabled={busy !== ''} onClick={() => { setTab('register'); setError(''); setInfo(''); }}>{t("注册")}</button></p>
+          </div>}
 
-          {tab === 'register' && <>
+          {tab === 'register' && <div className="auth-login-fields" id="auth-register-panel" role="tabpanel" aria-labelledby="auth-register-tab">
             <div className="auth-register">
               <strong>{t("注册需要先验证邮箱")}</strong>
               <p>{t("在浏览器中创建 Aimychats 账号：填写邮箱并完成验证后，设置 AI 邮箱用户名和密码，再回到客户端登录。")}</p>
@@ -383,8 +413,8 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
             </div>
             {error && <p className="auth-error" role="alert">{t(error)}</p>}
             <p className="auth-switch">{t("已有账号？")}<button type="button" onClick={() => { setTab('login'); setError(''); setInfo(''); }}>{t("登录")}</button></p>
-          </>}
-        </div>
+          </div>}
+        </form>
       </section>
     </div>}
   </div>;

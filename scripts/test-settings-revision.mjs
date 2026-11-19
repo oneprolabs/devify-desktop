@@ -948,6 +948,31 @@ savedSessionCheck.resolve({ authenticated: true }); await flush();
 assert.equal(recoveredSessions, 1);
 for (const hook of savedSessionGate.hooks) hook?.cleanup?.();
 assert.equal(cancelledSessions, 0, 'finishing recovery cannot invalidate its credential generation');
+// Enter and a click in the same render must share one password action, including
+// the asynchronous server validation before the native login command starts.
+const passwordGate = { hooks: [] }, passwordResult = deferred();
+let passwordRequests = 0, passwordCompletions = 0;
+invoke = command => {
+  if (command === 'app_settings_get') return Promise.resolve({ ...defaultSettings(), user_settings_revision: 141, devify: { ...defaultSettings().devify, base_url: 'https://example.invalid' } });
+  if (command === 'devify_login_password') { passwordRequests++; return passwordResult.promise; }
+  if (command === 'devify_auth_cancel') return Promise.resolve();
+  throw Error(command);
+};
+const drawPassword = () => render(passwordGate, () => LoginGate({ onAuthenticated() { passwordCompletions++; } }));
+drawPassword(); await flush(); tree = drawPassword();
+find(tree, node => node.type === 'button' && node.props.children === '登录…').props.onClick();
+tree = drawPassword();
+find(tree, node => node.type === 'input' && node.props.name === 'username').props.onChange({ target: { value: 'test-user' } });
+find(tree, node => node.type === 'input' && node.props.name === 'password').props.onChange({ target: { value: 'synthetic-password' } });
+tree = drawPassword();
+const passwordSubmit = find(tree, node => node.type === 'form').props.onSubmit;
+passwordSubmit({ preventDefault() {} }); passwordSubmit({ preventDefault() {} }); await flush();
+assert.equal(passwordRequests, 1, 'rapid password submits cannot start competing login generations');
+tree = drawPassword();
+assert.equal(find(tree, node => node.type === 'button' && node.props.type === 'submit').props.disabled, true);
+passwordResult.resolve(); await flush();
+assert.equal(passwordCompletions, 1);
+for (const hook of passwordGate.hooks) hook?.cleanup?.();
 if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
 if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
 console.log('settings revision, navigation, explicit checks and WhatsApp wizard checks passed');

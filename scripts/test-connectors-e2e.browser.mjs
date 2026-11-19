@@ -1,5 +1,116 @@
 import assert from 'node:assert/strict';
 
+// Login UI checks use the production gate and isolated IPC, never personal credentials.
+export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const click = name => page.click(`loc=role:button[name="${name}"]`);
+  const start = async (query = '') => {
+    await page.goto(`${base}/scripts/connectors-e2e.html?anonymous${query}`);
+    await page.waitForSelector('.auth-login-gate .auth-gate-primary:not(:disabled)');
+    await page.snapshot();
+  };
+  const clean = async () => assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  const fits = async () => {
+    assert.ok(await page.evaluate(() => {
+      const box = document.querySelector('.auth-login-modal').getBoundingClientRect();
+      const form = document.querySelector('.auth-login-modal form');
+      return box.top >= 0 && box.bottom <= innerHeight && box.left >= 0 && box.right <= innerWidth && form.scrollWidth <= form.clientWidth;
+    }), 'login fits the viewport without horizontal overflow');
+  };
+  await page.cdp('Emulation.setDeviceMetricsOverride', {width:1100,height:690,deviceScaleFactor:1,mobile:false});
+  await start();
+  await click('登录…');
+  await fits();
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-login-modal').getBoundingClientRect().width), 420);
+  assert.ok(await page.evaluate(() => [...document.querySelectorAll('.auth-input-row input')].every(input => {
+    const style = getComputedStyle(input);
+    return style.borderTopWidth === '0px' && style.boxShadow === 'none' && input.getBoundingClientRect().height === 42;
+  })), 'global native input styling cannot add a second border or green focus ring');
+  await page.screenshot({path:'/tmp/aimychats-login-v7-desktop.png'});
+  await page.press('input[name="username"]', 'Enter');
+  await page.waitForFunction(() => document.querySelector('.auth-error')?.textContent.includes('请输入用户名'));
+  assert.equal(await page.evaluate(() => document.querySelectorAll('[role="alert"]').length), 1, 'an error appears only once');
+  await page.fill('input[name="username"]', 'tester');
+  await page.fill('input[name="password"]', 'example-password');
+  await click('显示');
+  assert.equal(await page.evaluate(() => document.querySelector('input[name="password"]').type), 'text');
+  await click('隐藏');
+  await click('忘记密码？');
+  await page.waitForFunction(() => window.__E2E__.externalUrls.some(url => url.endsWith('/login?forgot=1')));
+  await page.click('loc=role:tab[name="注册"]');
+  await click('在浏览器中注册');
+  await page.waitForFunction(() => window.__E2E__.externalUrls.some(url => url.endsWith('/register')));
+  await page.screenshot({path:'/tmp/aimychats-login-v7-register.png'});
+  await page.click('loc=role:tab[name="登录"]');
+  await page.evaluate(() => { window.__E2E__.authStartPaused = true; });
+  await click('通过浏览器登录');
+  await page.waitForFunction(() => window.__E2E__.authStartResolvers.length === 1);
+  assert.ok(await page.evaluate(() => document.querySelector('.auth-alt').disabled && document.querySelector('.auth-alt .auth-button-spinner') && document.querySelector('.auth-alt').textContent.includes('正在打开浏览器')));
+  await page.evaluate(() => { window.__E2E__.authStartPaused = false; window.__E2E__.authStartResolvers.splice(0).forEach(resolve => resolve()); });
+  await page.waitForSelector('.auth-waiting');
+  assert.ok(await page.evaluate(() => [...document.querySelectorAll('.auth-login-modal input,.auth-tabs button,.auth-submit')].every(control => control.disabled)), 'browser wait locks competing login actions');
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press('Tab');
+  assert.ok(await page.evaluate(() => document.querySelector('.auth-login-modal').contains(document.activeElement)), 'pending authorization keeps keyboard focus in the modal');
+  await click('取消');
+  await page.waitForFunction(() => !document.querySelector('.auth-waiting'));
+  await page.evaluate(() => { window.__E2E__.browserError = '浏览器暂时无法打开，请重试。'; });
+  await click('通过浏览器登录');
+  await page.waitForFunction(() => document.querySelector('.auth-error')?.textContent.includes('浏览器暂时无法打开'));
+  await page.evaluate(() => { window.__E2E__.browserError = ''; });
+  await page.evaluate(() => { window.__E2E__.authStartError = '上传期间无法更改登录状态，请稍后重试。'; });
+  const urlsBeforeBlockedLogin = await page.evaluate(() => window.__E2E__.externalUrls.length);
+  await click('通过浏览器登录');
+  await page.waitForFunction(() => document.querySelector('.auth-error')?.textContent.includes('退出并重新打开 AIMyChats'));
+  assert.equal(await page.evaluate(() => window.__E2E__.externalUrls.length), urlsBeforeBlockedLogin, 'a blocked login does not claim to have opened the browser');
+  assert.ok(await page.evaluate(() => !document.querySelector('.auth-waiting') && !document.querySelector('.auth-alt').disabled));
+  await page.evaluate(() => { window.__E2E__.authStartError = ''; });
+  await page.focus('.auth-modal-head button');
+  await page.keyboard.press('Shift+Tab');
+  assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-switch button')), 'focus wraps within the dialog');
+  await page.keyboard.press('Tab');
+  assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-modal-head button')));
+  await page.keyboard.press('Escape');
+  assert.ok(await page.evaluate(() => !document.querySelector('.auth-login-modal') && document.activeElement === document.querySelector('.auth-gate-primary')), 'closing restores focus to the login entry');
+  await click('登录…');
+  await page.evaluate(() => { window.__E2E__.loginPaused = true; window.__E2E__.loginError = '用户名或密码不正确，请重新输入。'; });
+  await page.press('input[name="password"]', 'Enter');
+  await page.waitForSelector('.auth-button-spinner');
+  await page.waitForFunction(() => window.__E2E__.loginResolvers.length === 1);
+  assert.ok(await page.evaluate(() => document.querySelector('.auth-submit').disabled && document.querySelector('.auth-submit').getAttribute('aria-busy') === 'true'));
+  await page.evaluate(() => { window.__E2E__.loginPaused = false; window.__E2E__.loginResolvers.splice(0).forEach(resolve => resolve()); });
+  await page.waitForFunction(() => document.querySelector('.auth-error')?.textContent.includes('用户名或密码不正确'));
+  await page.cdp('Emulation.setDeviceMetricsOverride', {width:940,height:640,deviceScaleFactor:1,mobile:false});
+  await fits();
+  await page.screenshot({path:'/tmp/aimychats-login-v7-small-error.png'});
+  await page.evaluate(() => { window.__E2E__.loginError = ''; });
+  await page.click('.auth-submit');
+  await page.waitForFunction(() => !document.querySelector('.auth-gate'));
+  await clean();
+
+  await start('&no-server');
+  await page.fill('.auth-gate-server input', 'not-a-url');
+  await click('保存');
+  await page.waitForFunction(() => document.querySelector('.auth-gate [role="status"]')?.textContent.includes('完整'));
+  assert.equal(await page.evaluate(() => window.__E2E__.writes.length), 0);
+  await page.fill('.auth-gate-server input', 'https://example.invalid');
+  await click('保存');
+  await page.waitForFunction(() => window.__E2E__.writes.length === 1);
+  await click('登录…');
+  await fits();
+  await clean();
+
+  await start('&english');
+  await page.click('.auth-gate-primary');
+  await fits();
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-alt-help').textContent), 'Finish signing in in your browser, then return to the app.');
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-divider').textContent), 'or');
+  await page.screenshot({path:'/tmp/aimychats-login-v7-english-small.png'});
+  await clean();
+  console.log('PASS V7 login UI: password validation/loading/retry, browser wait/cancel/error, register/recovery links, keyboard focus, server setup, English and 940×640 layout');
+  console.log(await page.snapshot());
+}
+
 export async function runLoginRecoveryE2E(task, base = 'http://localhost:1420', pageLabel = 'p1') {
   const page = task.page(pageLabel);
   const click = name => page.click(`loc=role:button[name="${name}"]`);
