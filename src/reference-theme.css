@@ -160,7 +160,7 @@
 .wechat-account-details small { color: #74746e; overflow-wrap: anywhere; }
 .account-settings .account-wechat > .wechat-source-account { display: flex; align-items: center; gap: 14px; }
 @media (max-width: 700px) { .prototype-settings-content .settings-page { padding: 24px 20px 48px; } }
-.backup-page .backup-wechat-logo { display: block; width: 62%; height: 62%; object-fit: contain; filter: brightness(0) invert(1); }
+.backup-page .backup-source-logo { display: block; width: 26px; height: 26px; object-fit: contain; }
 
 /* Shared reading surfaces across system records and analysis workspaces. */
 .task-page, .analysis-page, .topic-page, .ask-page { background:#fafafa; color:#1a1a19; }
@@ -316,19 +316,24 @@
   .task-item > .task-status { grid-column:auto; }
 }
 
-/* Event workspace: use the same compact list and overview cards as the design. */
+/* Event workspace: compact list, one overview and a scan-friendly timeline. */
 .event-workspace .analysis-side { width:300px; padding:22px 14px 12px; }
 .event-workspace .analysis-side-row { display:none; }
 .event-workspace .analysis-pills { gap:0; margin:2px 4px 12px; padding:2px; border:1px solid #e9e9e6; border-radius:8px; background:#f5f5f3; }
 .event-workspace .analysis-pills button { justify-content:center; flex:1; padding:7px 6px; }
-.event-workspace .analysis-items { gap:4px; }
-.event-workspace .analysis-items button { align-items:center; gap:10px; padding:10px; }
+.event-workspace .analysis-items { gap:0; }
+.event-list-date { margin:12px 9px 5px; color:#74746e; font-size:12px; font-weight:600; }
+.event-workspace .analysis-items button { align-items:center; gap:10px; padding:11px 9px; border-bottom:1px solid #e9e9e6; border-radius:0; }
+.event-workspace .analysis-items button.on { border-radius:9px; box-shadow:inset 3px 0 #a3279a; }
 .event-workspace .analysis-items strong { font-weight:600; }
 .event-workspace .analysis-items button > span:last-child { flex:1; gap:3px; }
 .event-list-icon, .event-heading-icon { display:grid; place-items:center; flex:none; border-radius:50%; background:#f5f5f3; color:#a3279a; }
 .event-list-icon { width:36px; height:36px; }
 .event-list-icon svg { width:21px; height:21px; }
-.event-list-preview { color:#74746e; }
+.event-list-meta { display:flex; justify-content:space-between; align-items:center; gap:6px; }
+.event-list-meta span { display:flex; gap:5px; align-items:center; min-width:0; }
+.event-list-meta time { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.event-list-meta .analysis-dot { width:11px; height:11px; flex:none; }
 .event-workspace .analysis-doc { max-width:1040px; padding:24px 28px 40px; gap:16px; }
 .event-workspace .analysis-head { gap:16px; }
 .event-heading { display:flex; align-items:center; gap:14px; min-width:0; }
@@ -339,15 +344,16 @@
 .event-heading-meta .analysis-status { margin:0; }
 .event-section-nav { display:flex; gap:18px; border-bottom:1px solid #e9e9e6; }
 .event-section-nav button { border:0; border-bottom:2px solid transparent; padding:8px 2px; background:transparent; color:#5f5f5a; font:inherit; font-size:14px; cursor:pointer; }
-.event-section-nav button:first-child { border-bottom-color:#a3279a; color:#76216f; }
+.event-section-nav button[aria-pressed="true"] { border-bottom-color:#a3279a; color:#76216f; }
 .event-workspace .analysis-current-state { margin:0; }
-.event-overview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
-.event-overview > div { display:flex; align-items:center; gap:12px; min-width:0; padding:14px 16px; border:1px solid #e9e9e6; border-radius:10px; background:#f5f5f3; }
-.event-overview span, .event-overview strong { display:block; overflow-wrap:anywhere; }
-.event-overview span { color:#74746e; font-size:13px; }
-.event-overview strong { margin-top:6px; color:#3a3a37; font-size:15px; }
-.event-overview .event-stat-icon { display:grid; place-items:center; flex:none; width:36px; height:36px; border-radius:50%; background:#f5f5f3; color:#a3279a; font-size:20px; line-height:1; }
-.event-topics { display:flex; align-items:flex-start; flex-wrap:wrap; gap:10px 14px; padding:14px 16px; border:1px solid #e9e9e6; border-radius:10px; background:#fbfafe; }
+.event-workspace .analysis-block-head h2 { margin:0; font-size:16px; color:#3a3a37; }
+.event-workspace .analysis-step, .event-workspace .analysis-removed, .event-workspace .analysis-add { grid-template-columns:minmax(110px, max-content) 18px minmax(0, 1fr); column-gap:12px; }
+.event-workspace .analysis-step time { white-space:nowrap; }
+.event-workspace .analysis-step-tags { flex-wrap:wrap; }
+.event-workspace .analysis-step + .analysis-step .analysis-step-body { border-top:1px solid #e9e9e6; padding-top:9px; }
+.event-workspace .analysis-step + .analysis-step time, .event-workspace .analysis-step + .analysis-step .analysis-step-gutter { padding-top:9px; }
+.event-source-list { margin-bottom:16px; }
+.event-topics { display:flex; align-items:flex-start; flex-wrap:wrap; gap:10px 14px; padding:0; }
 .event-topics h2 { flex:none; margin:6px 0 0; color:#3a3a37; font-size:13px; }
 .event-topic-tags { display:flex; flex:1 1 300px; flex-wrap:wrap; gap:6px; min-width:0; }
 .event-topic-tag { max-width:100%; padding:5px 10px; border:1px solid #e9e9e6; border-radius:999px; background:#f5f5f3; color:#5f5f5a; font-size:13px; line-height:1.4; overflow-wrap:anywhere; }
@@ -358,7 +364,7 @@
 .event-topic-more[open] summary::after { content:' ﹀'; }
 .event-topic-more[open] > .event-topic-tags { flex-basis:100%; }
 .event-topic-more summary:focus-visible { outline:2px solid #76216f; outline-offset:2px; }
-@media(max-width:700px) { .event-overview { grid-template-columns:1fr; } }
+@media(max-width:760px) { .event-workspace .analysis-step, .event-workspace .analysis-add, .event-workspace .analysis-removed { grid-template-columns:86px 14px minmax(0, 1fr); column-gap:6px; }.event-workspace .analysis-step time { white-space:normal; } }
 
 /* Shared feedback colours; contextual errors remain beside their controls. */
 .notice, .chat-summary-notice { border:1px solid #d8e9df; border-radius:10px; background:#f2faf5; color:#426b53; }

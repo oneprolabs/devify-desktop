@@ -1,7 +1,7 @@
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LoadingPage, LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import { reportPresentation } from './reportPresentation';
@@ -17,6 +17,7 @@ type ReportSection = { id: number; title: string; position: number; items?: Arra
 type ReportItem = { id: number; title: string; body?: string; content?: unknown; status: string; period_start?: string | null; period_end?: string | null; generated_at?: string | null; updated_at?: string | null; sections?: ReportSection[] };
 type EventNote = { id: number; title: string; content: string; start_at?: string | null; end_at?: string | null; origin?: string | null };
 type EventDetail = EventItem & {
+  evidence?: Array<{ id: number; sender_name?: string; occurred_at?: string | null; content?: string }>;
   note_ids?: number[] | string;
   relation_ids?: number[] | string;
   related_event_ids?: number[];
@@ -41,6 +42,12 @@ function shortDate(value?: string | null): string {
   if (!value) return '';
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+function eventDateGroup(value?: string | null): string {
+  const parsed = value ? new Date(value) : null;
+  return parsed && Number.isFinite(parsed.getTime())
+    ? parsed.toLocaleDateString(dateLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
+    : t("时间未知");
 }
 function clockDate(value?: string | null): string {
   if (!value) return '—';
@@ -164,7 +171,8 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
   const [listError, setListError] = useState('');
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState(kind === 'events' ? 'open' : 'all');
+  const [eventTab, setEventTab] = useState<'overview' | 'sources'>('overview');
   const [detail, setDetail] = useState<EventDetail | ReportItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [eventNotes, setEventNotes] = useState<EventNote[]>([]);
@@ -194,7 +202,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     let active = true;
     let cacheKey = '';
     const generation = pageSnapshotGeneration();
-    setItems([]); setSelectedId(null); setDetail(null); setError(''); setListError(''); setQuery(''); setFilter('all');
+    setItems([]); setSelectedId(null); setDetail(null); setError(''); setListError(''); setQuery(''); setFilter(kind === 'events' && focusId == null ? 'open' : 'all');
     setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
     if (!isTauri()) { setLoading(false); return; }
     setLoading(true);
@@ -249,7 +257,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     if (filter !== 'all') return item.title.includes(filter);
     return true;
   }), [items, kind, query, filter]);
-  useEffect(() => { if (selectedId != null && kind === 'events' && items.length && !filteredItems.some(item => item.id === selectedId) && !detail && selectedId !== focusId) setSelectedId(filteredItems[0]?.id ?? null); }, [filteredItems, selectedId, kind, items.length, detail, focusId]);
+  useEffect(() => {
+    if (kind === 'events' && items.length && selectedId !== focusId && !filteredItems.some(item => item.id === selectedId)) {
+      setSelectedId(filteredItems[0]?.id ?? null);
+    }
+  }, [filteredItems, selectedId, kind, items.length, focusId]);
   const selected = useMemo(() => items.find(item => item.id === selectedId) ?? null, [items, selectedId]);
 
   useEffect(() => {
@@ -257,6 +269,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     let active = true;
     setDetailLoading(true);
     setOpenNotes({});
+    setEventTab('overview');
     setEditing(false);
     setActionError('');
     setRemovedNotes([]);
@@ -332,7 +345,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     return people.size;
   }, [eventNotes]);
   const timelineRows = useMemo(() => [
-    ...eventNotes.map(note => ({ kind: 'note' as const, note })),
+    ...[...eventNotes].reverse().map(note => ({ kind: 'note' as const, note })),
     ...relatedEvents.map(relation => ({ kind: 'link' as const, relation })),
   ], [eventNotes, relatedEvents]);
   const allRawOpen = eventNotes.length > 0 && eventNotes.every(note => openNotes[note.id]);
@@ -508,10 +521,10 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
 
   const cycleStatus = () => setFilter(current => kind === 'reports' ? current : current === 'all' ? 'open' : current === 'open' ? 'done' : 'all');
   const filterLabel = kind === 'events'
-    ? (filter === 'open' ? t("未完成") : filter === 'done' ? t("已完成") : t("全部"))
+    ? (filter === 'open' ? t("待跟进") : filter === 'done' ? t("已完成") : t("全部"))
     : t(filter === 'all' ? "全部" : filter);
   const filterPills: Array<[string, string, number]> = kind === 'events'
-    ? [['all', t("全部"), items.length], ['open', t("未完成"), counts.open], ['done', t("已完成"), counts.done]]
+    ? [['open', t("待跟进"), counts.open], ['done', t("已完成"), counts.done], ['all', t("全部"), items.length]]
     : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportKind(item as ReportItem) === value).length]);
 
   const pageTitle = t(copy.title);
@@ -549,12 +562,16 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
       </div>
 
       <div className="analysis-items">
-        {filteredItems.map(item => {
+        {filteredItems.map((item, index) => {
           const status = kind === 'events' ? (item as EventItem).status : (item as ReportItem).status;
           const when = kind === 'events' ? (item as EventItem).last_activity_at : (item as ReportItem).generated_at;
-          return <button
+          const group = kind === 'events' ? eventDateGroup(when) : '';
+          const previousGroup = index > 0 && kind === 'events' ? eventDateGroup((filteredItems[index - 1] as EventItem).last_activity_at) : '';
+          return <Fragment key={item.id}>
+            {group && group !== previousGroup && <h2 className="event-list-date">{group}</h2>}
+            <button
             type="button"
-            key={item.id}
+            aria-current={item.id === selectedId ? 'true' : undefined}
             className={item.id === selectedId ? 'on' : ''}
             onClick={() => { setCreating(false); setSelectedId(item.id); }}
           >
@@ -563,10 +580,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
               : <span className="event-list-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span>}
             <span>
               <strong>{item.title || `${pageTitle} #${item.id}`}</strong>
-              {kind === 'events' && <small className="event-list-preview">{(item as EventItem).content || t("暂无事件概述")}</small>}
-              <small>{kind === 'reports' ? reportType(item as ReportItem) : statusLabel(status)}{when ? ` · ${shortDate(when)}` : ''}</small>
+              {kind === 'events' ? <small className="event-list-meta"><span><DoneDot done={isDone(status)}/>{status === 'open' ? t("待跟进") : statusLabel(status)}</span>{when && <time dateTime={when}>{shortDate(when)}</time>}</small>
+                : <small>{reportType(item as ReportItem)}{when ? ` · ${shortDate(when)}` : ''}</small>}
             </span>
-          </button>;
+            </button>
+          </Fragment>;
         })}
         {!filteredItems.length && <p className="analysis-list-empty">{t("没有符合筛选条件的")}{pageTitle}</p>}
       </div>
@@ -584,7 +602,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
           {kind === 'events' && event && <>
             <button type="button" disabled={!!actionBusy} onClick={startEdit}>{t("编辑")}</button>
             <button type="button" disabled={!!actionBusy} onClick={() => { setActionError(''); setPickerQuery(''); setPickerOpen(true); }}>{t("关联事件")}</button>
-            {eventNotes.length > 0 && <button type="button" onClick={toggleAllRaw}>{allRawOpen ? t("收起全部原文") : t("查看全部原文")}</button>}
+            {((event.evidence?.length ?? 0) > 0 || eventNotes.length > 0) && <button type="button" onClick={() => setEventTab('sources')}>{t("查看全部原文")}</button>}
             <button
               type="button"
               className={isDone(event.status) ? '' : 'primary'}
@@ -648,30 +666,30 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
             </div>
           </div> : <header className="analysis-head">
             <div className="event-heading"><span className="event-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><h1>{event.title}</h1>
-            <div className="event-heading-meta"><span>{t("事件")}</span><div className="analysis-status">
+            <div className="event-heading-meta"><div className="analysis-status">
               <DoneDot done={isDone(event.status)}/>
-              <span>{statusLabel(event.status)}</span>
+              <span>{event.status === 'open' ? t("待跟进") : statusLabel(event.status)}</span>
             </div><span className="analysis-meta">{[eventNotes.length ? tf("{0} 条进展", eventNotes.length) : '', eventPeople ? tf("{0} 人", eventPeople) : '', event.last_activity_at ? tf("最近活动 {0}", shortDate(event.last_activity_at)) : ''].filter(Boolean).join(' · ')}</span></div></div></div>
-            <nav className="event-section-nav" aria-label={t("事件详情")}><button type="button" onClick={() => document.getElementById('event-overview')?.scrollIntoView({ block: 'nearest' })}>{t("概览")}</button><button type="button" onClick={() => document.getElementById('event-timeline')?.scrollIntoView({ block: 'start' })}>{t("进展与原文")}</button></nav>
-            <section className="analysis-current-state" aria-labelledby="analysis-current-title">
+            <nav className="event-section-nav" aria-label={t("事件详情")}>
+              <button type="button" aria-pressed={eventTab === 'overview'} onClick={() => setEventTab('overview')}>{t("概览")}</button>
+              <button type="button" aria-pressed={eventTab === 'sources'} onClick={() => setEventTab('sources')}>{t("进展与原文")}</button>
+            </nav>
+            {eventTab === 'overview' && <section className="analysis-current-state" aria-labelledby="analysis-current-title">
               <h2 id="analysis-current-title">{t("事件概述")}</h2>
               <p className="analysis-summary">{event.content || t("尚未返回事件内容。")}</p>
-            </section>
-            <section className="event-overview" id="event-overview" aria-label={t("事件关键信息")}>
-              <div><span className="event-stat-icon" aria-hidden="true">◉</span><div><span>{t("当前状态")}</span><strong>{statusLabel(event.status)}</strong></div></div>
-              <div><span className="event-stat-icon" aria-hidden="true">≡</span><div><span>{t("事件进展")}</span><strong>{eventNotes.length} {t("条")}</strong></div></div>
-              <div><span className="event-stat-icon" aria-hidden="true">↗</span><div><span>{t("关联事件")}</span><strong>{relatedEvents.length} {t("个")}</strong></div></div>
-            </section>
-            {eventTags.length > 0 && <section className="event-topics" aria-label={t("关联主题")} key={event.id}>
-              <h2>{t("关联主题")}</h2><div className="event-topic-tags">{eventTags.slice(0, 8).map((tag, index) => <span className="event-topic-tag" key={`${index}-${tag}`}>{tag}</span>)}</div>
-              {eventTags.length > 8 && <details className="event-topic-more"><summary>{t("查看全部")} {eventTags.length} {t("个")}</summary><div className="event-topic-tags">{eventTags.slice(8).map((tag, index) => <span className="event-topic-tag" key={`${index}-${tag}`}>{tag}</span>)}</div></details>}
             </section>}
           </header>}
           {actionError && !editing && <p className="analysis-action-error" role="alert">{actionError}</p>}
 
           <section className="analysis-timeline" id="event-timeline">
-            <div className="analysis-block-head"><span>{t("时间线")}</span><span>{t("原始记录按需展开")}</span></div>
-            {timelineRows.length === 0 && <p className="analysis-list-empty">{t("还没有为这个事件记录进展。")}</p>}
+            <div className="analysis-block-head"><h2>{t("时间线")}</h2>{eventTab === 'sources' && eventNotes.length > 0 && !event.evidence?.length && <button type="button" className="analysis-raw-toggle" onClick={toggleAllRaw}>{allRawOpen ? t("收起全部原文") : t("查看全部原文")}</button>}</div>
+            {eventTab === 'sources' && !!event.evidence?.length && <div className="analysis-raw event-source-list">
+              {event.evidence.map(source => <div className="analysis-raw-item" key={source.id}>
+                <span>{[source.sender_name, shortDate(source.occurred_at)].filter(Boolean).join(' · ')}</span>
+                <p>{source.content}</p>
+              </div>)}
+            </div>}
+            {timelineRows.length === 0 && !(eventTab === 'sources' && event.evidence?.length) && <p className="analysis-list-empty">{t("还没有为这个事件记录进展。")}</p>}
             {timelineRows.map((row, index) => {
               const last = index === timelineRows.length - 1;
               if (row.kind === 'link') {
@@ -692,7 +710,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
               const note = row.note;
               const parts = noteParts(note);
               const open = !!openNotes[note.id];
-              const preview = parts.messages[parts.messages.length - 1];
+              const preview = note.origin === 'manual' ? parts.messages[parts.messages.length - 1] : null;
               return <div className={`analysis-step${note.origin === 'manual' ? ' manual' : ''}`} key={note.id}>
                 <time>{clockDate(note.start_at || note.end_at)}</time>
                 <span className={`analysis-step-gutter${last ? ' last' : ''}`} aria-hidden="true"><i/>{!last && <b/>}</span>
@@ -744,6 +762,10 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
               </div>
             </div>
           </section>
+            {eventTags.length > 0 && <section className="event-topics" aria-label={t("关联主题")} key={event.id}>
+              <h2>{t("关联主题")}</h2><div className="event-topic-tags">{eventTags.slice(0, 8).map((tag, index) => <span className="event-topic-tag" key={`${index}-${tag}`}>{tag}</span>)}</div>
+              {eventTags.length > 8 && <details className="event-topic-more"><summary>{t("查看全部")} {eventTags.length} {t("个")}</summary><div className="event-topic-tags">{eventTags.slice(8).map((tag, index) => <span className="event-topic-tag" key={`${index}-${tag}`}>{tag}</span>)}</div></details>}
+            </section>}
         </article>}
 
         {report && <article className="report-doc">

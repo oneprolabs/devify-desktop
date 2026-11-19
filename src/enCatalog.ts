@@ -1622,6 +1622,7 @@ export const en: Record<string, string> = {
   "摘要": "Summary",
   "保存后以你的版本为准，云端不会覆盖": "After you save, your version is the one that's kept. The server won't overwrite it",
   "进展与原文": "Updates and source messages",
+  "待跟进": "To follow up",
   "事件概述": "Event overview",
   "当前状态": "Current status",
   "事件进展": "Event updates",
