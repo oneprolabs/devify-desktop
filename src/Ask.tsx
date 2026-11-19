@@ -1,13 +1,15 @@
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LoadingPage } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import { questionAnswerError } from './analysisSettingsText';
+import { formatAskAnswer } from './askAnswer';
+import { renderAgentMarkdown } from './summary';
 
 type Citation = { kind: string; id: number; title: string; excerpt: string; conversation_id?: number | null; event_id?: number | null; note_id?: number | null };
-type Question = { id: number; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };
+type Question = { id: number; thread_id?: number | null; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };
 type Settings = { devify?: { active_space_id: string | null } };
 
 const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
@@ -23,6 +25,28 @@ const dayLabel = (value?: string) => {
   return `${day} ${date.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' })}`;
 };
 const kindLabel = (kind: string) => ({ message: t("原文"), note: t("笔记"), event: t("事件") } as Record<string, string>)[kind] || kind;
+
+function rangeBounds(range: string) {
+  const now = new Date();
+  if (range === '今天') {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { since: start.toISOString(), until: end.toISOString() };
+  }
+  if (range === '近 7 天') {
+    return {
+      since: new Date(now.getTime() - 7 * 86400000).toISOString(),
+      until: now.toISOString(),
+    };
+  }
+  return {};
+}
+
+function threadRootId(item: Question) {
+  return item.thread_id || item.id;
+}
 
 function inRange(question: Question, range: string): boolean {
   if (range === '全部') return true;
@@ -43,6 +67,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const [range, setRange] = useState('全部');
   const [error, setError] = useState('');
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
     if (!isTauri()) { setLoading(false); return; }
@@ -52,42 +77,69 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       const id = settings.devify?.active_space_id ?? null; setSpaceId(id);
       if (!id) { setQuestions([]); return; }
       const list = await invoke<Question[]>('devify_questions', { spaceId: id });
-      setQuestions(list ?? []); setSelectedId(list?.[0]?.id ?? null);
+      setQuestions(list ?? []); setSelectedId(list?.[0] ? threadRootId(list[0]) : null);
     } catch (reason) { setError(questionAnswerError(reason)); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  const selected = useMemo(() => questions.find(item => item.id === selectedId) ?? null, [questions, selectedId]);
-  const visibleQuestions = useMemo(() => questions.filter(question => inRange(question, range)), [questions, range]);
+  const threads = useMemo(() => {
+    const groups = new Map<number, Question[]>();
+    for (const item of questions) {
+      const rootId = threadRootId(item);
+      const turns = groups.get(rootId) ?? [];
+      turns.push(item);
+      groups.set(rootId, turns);
+    }
+    return [...groups.entries()].map(([id, turns]) => {
+      turns.sort((left, right) => new Date(left.created_at || 0).getTime() - new Date(right.created_at || 0).getTime());
+      return { id, turns, latest: turns[turns.length - 1] };
+    }).sort((left, right) => new Date(right.latest.created_at || 0).getTime() - new Date(left.latest.created_at || 0).getTime());
+  }, [questions]);
+  const threadTurns = useMemo(() => threads.find(item => item.id === selectedId)?.turns ?? [], [threads, selectedId]);
+  const visibleThreads = useMemo(() => threads.filter(item => inRange(item.latest, range)), [threads, range]);
+  const threadBusy = asking || threadTurns.some(item => item.status === 'queued');
 
   const polling = useRef(new Set<number>());
   const timedOut = useRef(new Set<number>());
+  const queuedIds = threadTurns.filter(item => item.status === 'queued').map(item => item.id).join(',');
   useEffect(() => {
-    if (!spaceId || !selected || selected.status !== 'queued') return;
-    const questionId = selected.id;
-    if (polling.current.has(questionId) || timedOut.current.has(questionId)) return;
-    polling.current.add(questionId);
+    if (!spaceId || !queuedIds) return;
+    const ids = queuedIds.split(',').map(Number);
     let cancelled = false;
-    void (async () => {
-      try {
-        for (let attempt = 0; attempt < 90; attempt += 1) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          if (cancelled) return;
-          const answer = await invoke<Question>('devify_question_detail', { spaceId, questionId });
-          if (cancelled) return;
-          setQuestions(current => current.map(item => item.id === answer.id ? answer : item));
-          if (answer.status !== 'queued') return;
+    for (const questionId of ids) {
+      if (polling.current.has(questionId) || timedOut.current.has(questionId)) continue;
+      polling.current.add(questionId);
+      void (async () => {
+        try {
+          for (let attempt = 0; attempt < 90; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            if (cancelled) return;
+            const answer = await invoke<Question>('devify_question_detail', { spaceId, questionId });
+            if (cancelled) return;
+            setQuestions(current => current.map(item => item.id === answer.id ? answer : item));
+            if (answer.status !== 'queued') return;
+          }
+          if (!cancelled) {
+            timedOut.current.add(questionId);
+            setError(t("还没有返回回答，请稍后重试。"));
+            setQuestions(current => current.map(item => item.id === questionId && item.status === 'queued'
+              ? { ...item, status: 'failed', error: t("还没有返回回答，请稍后重试。") }
+              : item));
+          }
+        } catch (reason) {
+          if (!cancelled) setError(questionAnswerError(reason));
+        } finally {
+          polling.current.delete(questionId);
         }
-        if (!cancelled) { timedOut.current.add(questionId); setError(t("还没有返回回答，请稍后重试。")); }
-      } catch (reason) {
-        if (!cancelled) setError(questionAnswerError(reason));
-      } finally {
-        polling.current.delete(questionId);
-      }
-    })();
-    return () => { cancelled = true; polling.current.delete(questionId); };
-  }, [spaceId, selected?.id, selected?.status]);
+      })();
+    }
+    return () => { cancelled = true; ids.forEach(id => polling.current.delete(id)); };
+  }, [spaceId, queuedIds]);
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [threadTurns.length, pending, queuedIds]);
 
   const openCitation = (citation: Citation) => {
     const kind = citationKind(citation);
@@ -103,11 +155,18 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
 
   const ask = async (value = draft) => {
     const question = value.trim();
-    if (!spaceId || !question || asking) return;
+    if (!spaceId || !question || threadBusy) return;
+    const continuing = selectedId;
     setAsking(true); setPending(question); setDraft(''); setError('');
     try {
-      const result = await invoke<Question>('devify_question_ask', { spaceId, question });
-      setQuestions(current => [result, ...current]); setSelectedId(result.id);
+      const result = await invoke<Question>('devify_question_ask', {
+        spaceId,
+        question,
+        ...rangeBounds(range),
+        ...(continuing ? { threadId: continuing } : {}),
+      });
+      setQuestions(current => [result, ...current.filter(item => item.id !== result.id)]);
+      setSelectedId(result.thread_id || continuing || result.id);
     } catch (reason) { setError(questionAnswerError(reason)); }
     finally { setPending(''); setAsking(false); }
   };
@@ -118,7 +177,6 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const renderTurn = (question: Question, answer: string, citations: Citation[], status: string, created?: string) => {
     const events = citations.filter(citation => citationKind(citation) === 'event' || citation.event_id);
     const sources = citations.filter(citation => !(citationKind(citation) === 'event' || citation.event_id));
-    const paragraphs = answer.split(/\n{2,}/).map(text => text.trim()).filter(Boolean);
     return <div className="ask-turn">
       <div className="ask-user"><p>{question.question}</p></div>
       <div className="ask-bot">
@@ -127,9 +185,9 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           {status === 'failed'
             ? <p className="ask-answer-text ask-error">{questionAnswerError(question.error)}</p>
             : status === 'queued'
-              ? <p className="ask-pending">{t("正在检索并生成回答…")}</p>
-              : paragraphs.length
-                ? paragraphs.map((text, index) => <p className="ask-answer-text" key={index}>{text}</p>)
+              ? <p className="ask-pending" role="status"><span className="ask-spinner" aria-hidden="true" />{t("正在检索并生成回答…")}</p>
+              : answer.trim()
+                ? <div className="ask-answer-text">{renderAgentMarkdown(formatAskAnswer(answer))}</div>
                 : <p className="ask-answer-text">{t("这次回答没有内容，请重新提问。")}</p>}
 
           {events.length > 0 && <section className="ask-block">
@@ -170,7 +228,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
             </div>
           </section>}
 
-          {created && <p className="ask-foot">{t("基于")} {events.length} {t("个事件、")}{sources.length} {t("条原文 ·")} {dayLabel(created)} {t("· 范围：")}{range}</p>}
+          {created && status !== 'queued' && status !== 'failed' && <p className="ask-foot">{t("基于")} {events.length} {t("个事件、")}{sources.length} {t("条原文 ·")} {dayLabel(created)} {t("· 范围：")}{range}</p>}
         </div>
       </div>
     </div>;
@@ -186,16 +244,16 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       <button type="button" className="ask-new" onClick={newThread}><span aria-hidden="true">＋</span>{t("新对话")}</button>
       <div className="ask-side-label">{t("最近")}</div>
       <div className="ask-threads">
-        {visibleQuestions.map(item => <button
+        {visibleThreads.map(item => <button
           type="button"
           key={item.id}
           className={item.id === selectedId ? 'on' : ''}
           onClick={() => { setSelectedId(item.id); setPending(''); }}
         >
-          <strong>{item.question}</strong>
-          <small>{dayLabel(item.created_at)} · {item.status === 'queued' ? t("生成中") : item.status === 'failed' ? t("失败") : t("1 轮")}</small>
+          <strong>{item.turns[0].question}</strong>
+          <small>{dayLabel(item.latest.created_at)} · {item.latest.status === 'queued' ? t("生成中") : item.latest.status === 'failed' ? t("失败") : tf("{0} 轮", item.turns.length)}</small>
         </button>)}
-        {!visibleQuestions.length && <p className="ask-threads-empty">{range === '全部' ? t("还没有提问记录。") : t("这个时间范围内没有提问。")}</p>}
+        {!visibleThreads.length && <p className="ask-threads-empty">{range === '全部' ? t("还没有提问记录。") : t("这个时间范围内没有提问。")}</p>}
       </div>
       <SidebarResizeHandle/>
     </aside>
@@ -203,7 +261,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
     <main className="ask-main">
       <header className="ask-head">
         <div className="ask-head-text">
-          <h2>{selected?.question || (pending || t("新对话"))}</h2>
+          <h2>{threadTurns[0]?.question || pending || t("新对话")}</h2>
           <p>{t("仅检索已上传的会话与事件 · 回答附原文依据")}</p>
         </div>
         <div className="ask-time">
@@ -220,11 +278,11 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
         </div>
       </header>
 
-      <div className="ask-scroll">
+      <div className="ask-scroll" ref={scrollRef}>
         {!spaceId && <div className="ask-welcome"><h3>{t("还没有选择空间")}</h3><p>{t("请先在「设置 / 账户」中登录并选择空间。")}</p></div>}
         {error && <p className="ask-error" role="alert">{t(error)}</p>}
 
-        {spaceId && !selected && !pending && <>
+        {spaceId && !threadTurns.length && !pending && <>
           <div className="ask-welcome">
             <h3>{t("问问你的聊天记录")}</h3>
             <p>{t("跨已上传的聊天、事件和笔记提问，每条结论都附原文依据。")}</p>
@@ -232,15 +290,15 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           <div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div>
         </>}
 
+        {threadTurns.map(turn => <Fragment key={turn.id}>{renderTurn(turn, turn.answer || '', turn.citations ?? [], turn.status, turn.created_at)}</Fragment>)}
+
         {pending && <div className="ask-turn">
           <div className="ask-user"><p>{pending}</p></div>
           <div className="ask-bot">
             <span className="ask-avatar" aria-hidden="true">a</span>
-            <div className="ask-content"><p className="ask-pending">{t("正在检索事件与原始记录…")}</p></div>
+            <div className="ask-content"><p className="ask-pending" role="status"><span className="ask-spinner" aria-hidden="true" />{t("正在检索事件与原始记录…")}</p></div>
           </div>
         </div>}
-
-        {selected && renderTurn(selected, selected.answer || '', selected.citations ?? [], selected.status, selected.created_at)}
       </div>
 
       <footer className="ask-composer">
@@ -254,10 +312,10 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           />
           <button
             type="button"
-            className={`ask-send${draft.trim() && !asking && spaceId ? ' on' : ''}`}
+            className={`ask-send${draft.trim() && !threadBusy && spaceId ? ' on' : ''}`}
             aria-label={t("发送")}
             onClick={() => void ask()}
-            disabled={!draft.trim() || asking || !spaceId}
+            disabled={!draft.trim() || threadBusy || !spaceId}
           >↑</button>
         </div>
       </footer>
