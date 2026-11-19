@@ -25,18 +25,10 @@ export function ConnectorIcon({ name }: { name: string }) {
     : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></svg>}</span>;
 }
 
-const connectorTiles: Record<string, [string, string, string]> = {
-  微信: ['微', '#47c86e', '#008b4e'], WhatsApp: ['W', '#00c0a0', '#007570'],
-  Telegram: ['T', '#51bfee', '#0089ca'],
-  Slack: ['S', '#b865cb', '#693996'], 飞书: ['飞', '#26b7d3', '#2971c6'],
-  钉钉: ['钉', '#ed9d44', '#d55c13'], 企业微信: ['企', '#00b4bc', '#007994'],
-  Discord: ['D', '#7180ec', '#5349b9'], LINE: ['L', '#86cf57', '#229944'],
-};
-
-/** The V7 catalogue uses letter tiles; shared brand icons elsewhere stay unchanged. */
 function ConnectorTile({ name }: { name: string }) {
-  const [letter, from, to] = connectorTiles[name];
-  return <span className="connector-tile" style={{ backgroundImage: `linear-gradient(135deg, ${from}, ${to})` }} aria-hidden="true">{letter}</span>;
+  return <span className="connector-tile connector-tile-brand" aria-hidden="true">
+    <img src={connectorIcons[name]} alt="" />
+  </span>;
 }
 
 type Scan = { accounts: Array<{ id: string }> };

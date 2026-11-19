@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
-import { ConnectorIcon } from './Connectors';
+import whatsappIcon from './assets/connectors/whatsapp.svg';
 import { createSettingsSaveQueue, settingsUserRevision, type SettingsSaveQueue } from './settingsSaveQueue';
 import { WizardActionButton } from './WizardActionButton';
 import './backup-schedule.css';
@@ -257,7 +257,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
     <div className="backup-list">
       {connected && <section className={`plan-plat${open ? ' open' : ''}`}>
         {wizard ? <Row label={t("自动备份")} desc={t("关闭后，只在手动备份时上传")}><Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label={t("微信自动备份")} /></Row> : <div className="plan-plat-head">
-          <span className="plan-mark"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
+          <span className="plan-mark"><img className="backup-source-logo" src={wechatIcon} alt="" /></span>
           <button type="button" className="plan-plat-title" aria-expanded={open} onClick={() => setOpen(!open)}>
             <strong>{t("微信")}</strong>
             <small><span>{summary}</span><i>{open ? t("收起") : t("编辑")}</i></small>
@@ -354,18 +354,18 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
 
       {!wizard && <>
       {whatsappConnected && <section className="plan-plat backup-manual-platform"><div className="plan-plat-head">
-        <span className="plan-mark alt"><ConnectorIcon name="WhatsApp" /></span>
+        <span className="plan-mark"><img className="backup-source-logo" src={whatsappIcon} alt="" /></span>
         <div className="plan-plat-title"><strong>WhatsApp</strong><small>{t("仅手动备份")}</small></div>
         <span className="plan-kv">{t("已连接")}</span>
       </div><p>{t("在聊天页面选择已导入的会话后，手动上传新增消息。")}</p></section>}
       {(!connected || !whatsappConnected) && <div className="plan-off-head">{t("未连接")}</div>}
       {!connected && <div className="plan-off">
-        <span className="plan-mark dim"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
+        <span className="plan-mark dim"><img className="backup-source-logo" src={wechatIcon} alt="" /></span>
         <div><strong>{t("微信")}</strong><small>{t("连接后可单独设置备份周期")}</small></div>
         <button type="button" onClick={onOpenConnectors}>{t("打开连接向导")}</button>
       </div>}
       {!whatsappConnected && <div className="plan-off">
-        <span className="plan-mark alt dim"><ConnectorIcon name="WhatsApp" /></span>
+        <span className="plan-mark dim"><img className="backup-source-logo" src={whatsappIcon} alt="" /></span>
         <div><strong>WhatsApp</strong><small>{t("连接后可手动备份聊天记录")}</small></div>
         <button type="button" onClick={onOpenConnectors}>{t("打开连接向导")}</button>
       </div>}

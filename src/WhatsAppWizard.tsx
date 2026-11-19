@@ -5,6 +5,7 @@ import { detectTitleFor, useConnectorDetect } from './connectorDetect';
 import { WhitelistSettings, type AppSettings, requireSettingsRevision } from './Settings';
 import { Icons } from './icons';
 import { WizardActionButton } from './WizardActionButton';
+import whatsappIcon from './assets/connectors/whatsapp.svg';
 
 type WhatsAppStatus = {
   installed: boolean;
@@ -80,7 +81,7 @@ export function WhatsAppWizard({ onBack, onOpenChat }: { onBack: () => void; onO
   ];
   return <div className="wechat-wizard whatsapp-wizard">
     <button type="button" className="connector-back" disabled={busy} onClick={onBack}>{t("← 返回连接器")}</button>
-    <header className="wizard-connector-head"><span className="wizard-connector-mark" aria-hidden="true">W</span><div><strong>{t("连接向导")}</strong><h2>WhatsApp</h2><p>{t("读取桌面版本地数据，只读")}</p></div></header>
+    <header className="wizard-connector-head"><span className="wizard-connector-mark" aria-hidden="true"><img src={whatsappIcon} alt="" /></span><div><strong>{t("连接向导")}</strong><h2>WhatsApp</h2><p>{t("读取桌面版本地数据，只读")}</p></div></header>
     <nav className="wizard-stepper" aria-label={t("WhatsApp 连接向导")}>{steps.map((label, index) => <button key={label} type="button" className={`${step === index ? 'active' : ''}${index < step ? ' complete' : ''}`} aria-current={step === index ? 'step' : undefined} disabled={busy || index > step || step === 3} onClick={() => { setError(''); setStep(index); }}><span>{index < step ? Icons.check : index + 1}</span>{t(label)}</button>)}</nav>
     {step === 0 && <section className="wizard-method"><div><h2>{t("开始前，请先确认")}</h2><p>{t("打开 WhatsApp 桌面版并完成登录，接下来检查本机读取情况。")}</p></div><ul className="whatsapp-intro"><li>{t("只读取本机聊天记录，不发送消息。")}</li><li>{t("选择要备份的会话后，再由你手动上传。")}</li></ul><div className="wizard-method-footer"><button type="button" className="wizard-next" onClick={() => setStep(1)}>{t("下一步：系统检查")}</button></div></section>}
     {step === 1 && <section className="wx-setup" aria-label={t("WhatsApp 系统检查")}><header><h2>{t("系统检查")}</h2><p>{t("检查通过后，选择要备份的会话。")}</p></header><ol className="wx-setup-list">{rows.map(row => <li key={t(row.title)} className={`wx-setup-item ${row.waiting ? 'waiting' : row.passed && !checking ? 'done' : 'current'}`}><div className="wx-setup-row"><span className="wx-setup-indicator" aria-hidden="true">{row.passed && !checking ? Icons.check : Icons.clock}</span><span className="wx-setup-row-copy"><strong>{t(row.title)}</strong>{row.detail && <small>{t(row.detail)}</small>}</span><span className="wx-setup-status">{checking || install.checking ? t("检查中") : row.waiting ? t("等待读取权限") : row.passed ? t("已通过") : t("待处理")}</span></div>{!checking && !install.checking && !row.passed && !row.waiting && <div className="wx-setup-body"><p>{t(row.problem)}</p>{row.title === "WhatsApp 安装" && install.detect?.state === 'not_installed' && <a href="https://www.whatsapp.com/download" target="_blank" rel="noreferrer">{t("下载 WhatsApp ↗")}</a>}{row.title === "本地记录读取" && needsPermission && <button type="button" className="wxv-btn" onClick={() => void invoke('perm_open_settings').catch(reason => setError(String(reason)))}>{t("打开系统设置")}</button>}</div>}</li>)}</ol>

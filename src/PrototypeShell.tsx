@@ -18,6 +18,7 @@ import { Icons } from './icons';
 import { NavigationRail, type Section } from './NavigationRail';
 import { detectTitle, useConnectorDetect } from './connectorDetect';
 import { Connectors } from './Connectors';
+import wechatIcon from './assets/connectors/wechat.svg';
 import { CloudAnalysisPage } from './CloudAnalysis';
 import { TopicsPage } from './Topics';
 import { AskPage } from './Ask';
@@ -385,7 +386,7 @@ export default function PrototypeShell() {
         <div className="prototype-settings-content" ref={settingsContentRef}>
           {settingsPage === 'connectors' && (whatsappGuide ? <WhatsAppWizard onBack={() => setWhatsappGuide(false)} onOpenChat={finishWhatsApp} /> : wechatGuide ? <div className="wechat-wizard">
             <button type="button" className="connector-back" onClick={() => setWechatGuide(false)}>{t("← 返回连接器")}</button>
-            <header className="wizard-connector-head"><span className="wizard-connector-mark" aria-hidden="true">{t("微")}</span><div><strong>{wechatGuideEdit ? t("重新配置") : t("连接向导")}</strong><h2>{t("微信")}</h2><p>{t("读取本机数据库，只读，不改动微信")}</p></div></header>
+            <header className="wizard-connector-head"><span className="wizard-connector-mark" aria-hidden="true"><img src={wechatIcon} alt="" /></span><div><strong>{wechatGuideEdit ? t("重新配置") : t("连接向导")}</strong><h2>{t("微信")}</h2><p>{t("读取本机数据库，只读，不改动微信")}</p></div></header>
             <nav className="wizard-stepper" aria-label={t("微信连接向导")}>{[
               ['wizard-method',t("接入方式")], ['wizard-permission',t("系统检查")], ['wizard-connect',t("连接微信")], ['wizard-sessions',t("选择会话")], ['wizard-backup',t("备份周期")], ['wizard-done',t("完成")],
             ].map(([id,label], index) => { const current = wizardOrder.indexOf(wizardStep); const complete = index < current; return <button key={id} type="button" className={`${wizardStep === id ? 'active ' : ''}${complete ? 'complete' : ''}`} aria-current={wizardStep === id ? 'step' : undefined} onClick={() => setWizard(id)} disabled={index > current || wizardBlocked}><span>{complete ? Icons.check : index + 1}</span>{t(label)}</button>; })}</nav>
