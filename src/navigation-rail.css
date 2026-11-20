@@ -114,12 +114,11 @@
   .prototype-rail { gap: 4px; }
   .prototype-rail-mark { margin-bottom: 10px; }
 }
-.prototype-nav-item-tasks { position: relative; }
-.prototype-nav-item-tasks.task-running::after,
-.prototype-nav-item-tasks.task-waiting::after { content: ''; position: absolute; inset: 3px; border: 1.5px solid rgb(220 89 201 / 35%); border-radius: 14px; pointer-events: none; }
-.prototype-nav-item-tasks.task-running::after { border-top-color: #ee72dc; animation: task-runtime-ring 1.8s linear infinite; }
+.prototype-nav-item-tasks .prototype-nav-icon { position: relative; }
+.prototype-nav-icon svg.task-runtime-ring { position: absolute; top: -1px; left: -1px; width: 36px; height: 36px; color: #e85bc4; pointer-events: none; }
+.task-runtime-ring-arc { transform-origin: 18px 18px; animation: task-runtime-ring 1s linear infinite; }
 @keyframes task-runtime-ring { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .prototype-nav-item-tasks.task-running::after { animation: none; border-color: #ee72dc; } }
+@media (prefers-reduced-motion: reduce) { .task-runtime-ring-arc { animation: none; } }
 .task-runtime-header, .task-runtime-job { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 .task-runtime-header { margin-bottom: 24px; }
 .task-runtime-header h2 { margin: 0; }

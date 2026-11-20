@@ -39,10 +39,14 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
 }) {
   const tasks = useTaskRuntime();
   const avatar = accountAvatar(accountName);
+  const taskWaiting = tasks.paused || tasks.jobs.some(job => ['queued', 'processing', 'failed'].includes(job.status));
   const navButton = (item: (typeof primaryItems)[number] | (typeof utilityItems)[number]) => <button
-    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : tasks.paused || tasks.jobs.some(job => ['queued', 'processing', 'failed'].includes(job.status)) ? ' task-waiting' : ''}` : ''}${section === item.id ? ' active' : ''}`}
+    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : taskWaiting ? ' task-waiting' : ''}` : ''}${section === item.id ? ' active' : ''}`}
     title={t(item.label)} aria-current={section === item.id ? 'page' : undefined} onClick={() => onNavigate(item.id)}
-  ><span className="prototype-nav-icon">{item.icon}</span><small>{t(item.label)}</small></button>;
+  ><span className="prototype-nav-icon">{item.icon}{item.id === 'tasks' && (tasks.running || taskWaiting) && <svg className="task-runtime-ring" width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true" focusable="false">
+    <circle cx="18" cy="18" r="16" stroke="currentColor" strokeOpacity=".22" strokeWidth="2" />
+    {tasks.running && <path className="task-runtime-ring-arc" d="M18 2a16 16 0 0 1 16 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />}
+  </svg>}</span><small>{t(item.label)}</small></button>;
 
   return <aside className="prototype-rail" aria-label={t("主导航")}>
     <button type="button" className="prototype-rail-mark" style={{ backgroundColor: avatar.color }} onClick={onAccount} disabled={!authenticated} aria-label={t("打开账户设置")} title={accountName ? tf("{0} · 账户设置", accountName) : t("账户设置")}>
