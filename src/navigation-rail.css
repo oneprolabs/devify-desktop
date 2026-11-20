@@ -125,7 +125,7 @@
 .task-runtime-header p, .task-runtime-job p { color: #686865; font-size: 14px; }
 .task-runtime-job { padding: 20px 0; border-bottom: 1px solid #ececea; }
 .task-runtime-job small { color: #93938f; }
-.task-runtime-page { width: min(100%, 1120px); box-sizing: border-box; margin: 0 auto; padding: 44px 48px; }
+.task-runtime-page { width: min(100%, 1120px); height: 100%; min-height: 0; overflow: auto; box-sizing: border-box; margin: 0 auto; padding: 44px 48px; }
 .task-runtime-header h2 { font-size: 26px; line-height: 1.4; font-weight: 600; }
 .task-runtime-header p { margin: 8px 0 0; line-height: 1.7; }
 .task-runtime-page button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 8px 18px; border: 1px solid #dededb; border-radius: 20px; background: #fff; color: #444440; font: inherit; font-size: 14px; cursor: pointer; }
