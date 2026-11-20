@@ -300,6 +300,19 @@ pub(super) fn record_source_result(
     Ok(())
 }
 
+/// Finish the first selected-account pass before prioritising its partial
+/// chunks. Once every selected chat has had a turn, do not keep scanning the
+/// already-complete chats between each bounded continuation page.
+pub(super) fn unfinished_scan_names(value: &settings::AppSettings, owner: &settings::UploadOwner, names: &[String]) -> Vec<String> {
+    if value.runtime.sources.get(&owner.account_id).is_none_or(|s| s.scan_remaining != 0) {
+        return Vec::new();
+    }
+    let Some(progress) = value.sync.initial_progress.get(&owner.account_id) else { return Vec::new(); };
+    names.iter().filter(|name| progress.get(*name).is_some_and(|chunk| {
+        chunk.space_id == owner.space_id && settings::same_service_url(&chunk.base_url, &owner.base_url)
+    })).cloned().collect()
+}
+
 async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> Result<(), String> {
     let data = app_data(app);
     let account = &expected.account_id;
@@ -443,10 +456,13 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
     {
         return Ok(());
     }
+    let unfinished = unfinished_scan_names(&value, &owner, &names);
+    let finishing = !unfinished.is_empty();
+    let scan_names = if finishing { &unfinished } else { &names };
     let epoch = upload_epoch();
     // Refresh only for a due scan, never on page navigation. Existing read transaction
     // checks permission and only decrypts files which changed.
-    if !whatsapp::is_account(account) && source.scan_remaining == 0 {
+    if !whatsapp::is_account(account) && source.scan_remaining == 0 && !finishing {
         let scan = discover::scan();
         let local = scan
             .accounts
@@ -471,15 +487,15 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
                 .unwrap_or_else(|| "本机记录读取失败，请检查微信连接。".into()));
         }
     }
-    let start = source.scan_index % names.len();
+    let start = source.scan_index % scan_names.len();
     let remaining = if source.scan_remaining == 0 {
-        names.len()
+        scan_names.len()
     } else {
-        source.scan_remaining.min(names.len())
+        source.scan_remaining.min(scan_names.len())
     };
     let scan_count = remaining.min(8);
     let selected: Vec<_> = (0..scan_count)
-        .map(|i| names[(start + i) % names.len()].clone())
+        .map(|i| scan_names[(start + i) % scan_names.len()].clone())
         .collect();
     let snapshot = value.clone();
     let owner_copy = owner.clone();
@@ -514,9 +530,9 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
             return Err("备份范围或进度已改变，稍后重新读取。".into());
         }
         let source = s.runtime.sources.get_mut(account).ok_or("来源已移除。")?;
-        source.scan_index = (start + scan_count) % names.len();
-        source.scan_remaining = remaining - scan_count;
-        if source.scan_remaining == 0 {
+        source.scan_index = (start + scan_count) % scan_names.len();
+        source.scan_remaining = if finishing { 0 } else { remaining - scan_count };
+        if !finishing && source.scan_remaining == 0 {
             source.last_run_at = Some(Utc::now().to_rfc3339());
         }
         source.retry_after = None;
@@ -580,13 +596,20 @@ pub(super) fn plan_automatic_batch(
         let Some((latest_time, latest_id)) = latest else {
             continue;
         };
-        let baseline = progress
+        let mut baseline = progress
             .map(|p| p.baseline)
             .unwrap_or(settings::SyncCursor {
                 time: latest_time,
                 local_id: latest_id,
                 boundary_count: None,
             });
+        if cursor.is_none() && baseline.boundary_count.is_none() {
+            baseline.boundary_count = Some(if wa {
+                whatsapp::count_at_time(data, name, baseline.time)?
+            } else {
+                query::count_at_time(&cache, name, baseline.time)?
+            });
+        }
         let until = if cursor.is_none() {
             Some(
                 progress

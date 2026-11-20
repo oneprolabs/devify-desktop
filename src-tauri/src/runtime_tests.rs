@@ -52,6 +52,27 @@ fn retry_follows_remote_phase_instead_of_restarting_a_completed_batch() {
     assert!(retry_remote_action("cancelled").is_err());
     assert!(retry_remote_action("").is_err());
 }
+
+#[test]
+fn continuation_visits_unread_chats_first_then_only_same_scope_partial_chats() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = identity(temp.path(), 1);
+    let mut value = settings::load(temp.path()).unwrap();
+    value.runtime.sources.insert(owner.account_id.clone(), config_runtime::Source { scan_remaining: 8, ..Default::default() });
+    let chunk = settings::InitialChunk { since: Some(1), until: Some(100),
+        baseline: settings::SyncCursor { time: 99, local_id: 300, boundary_count: None },
+        position: settings::SyncCursor { time: 20, local_id: 20, boundary_count: Some(1) },
+        final_chunk: false, space_id: owner.space_id.clone(), base_url: owner.base_url.clone() };
+    let mut other = chunk.clone(); other.space_id = "other-space".into();
+    value.sync.initial_progress.insert(owner.account_id.clone(), [("partial".into(),chunk), ("other".into(),other)].into_iter().collect());
+    let names = vec!["complete".into(),"partial".into(),"other".into()];
+    assert!(task_runtime::unfinished_scan_names(&value,&owner,&names).is_empty());
+    value.runtime.sources.get_mut(&owner.account_id).unwrap().scan_remaining = 0;
+    assert_eq!(task_runtime::unfinished_scan_names(&value,&owner,&names),vec!["partial"]);
+    assert!(task_runtime::unfinished_scan_names(&value,&owner,&["complete".into()]).is_empty());
+    value.sync.initial_progress.clear();
+    assert!(task_runtime::unfinished_scan_names(&value,&owner,&names).is_empty());
+}
 fn identity(data: &Path, user: i64) -> settings::UploadOwner {
     let owner = settings::UploadOwner {
         base_url: "http://127.0.0.1:18999".into(),
@@ -307,7 +328,7 @@ fn whatsapp_automatic_batches_cover_every_message_without_advancing_before_compl
             export_archive("whatsapp", &owner.account_id, &prepared);
         }
         for message in &job.scope.as_ref().unwrap().message_selection["chat@g.us"] {
-            seen.insert(message.local_id);
+            assert!(seen.insert(message.local_id), "an unchanged boundary must not be uploaded again");
         }
         assert!(
             job.scope
@@ -327,7 +348,6 @@ fn whatsapp_automatic_batches_cover_every_message_without_advancing_before_compl
         apply_completed_uploads(&mut value);
         job.status = "completed".into();
     }
-    std::env::remove_var("WECHATIFY_WHATSAPP_DB");
     assert_eq!(
         seen.len(),
         450,
@@ -337,6 +357,17 @@ fn whatsapp_automatic_batches_cover_every_message_without_advancing_before_compl
         value.sync.cursors[&owner.account_id]["chat@g.us"].local_id,
         450
     );
+    assert!(plan_automatic_batch(&data,&value,&owner,&["chat@g.us".into()]).unwrap().is_none());
+    // Old installed clients saved no exact boundary count. One confirmed replay
+    // repairs that checkpoint; later idle scans must stop producing new jobs.
+    value.sync.cursors.get_mut(&owner.account_id).unwrap().get_mut("chat@g.us").unwrap().boundary_count = None;
+    let mut repair = plan_automatic_batch(&data,&value,&owner,&["chat@g.us".into()]).unwrap().unwrap();
+    assert_eq!(repair.scope.as_ref().unwrap().message_selection["chat@g.us"].len(),1);
+    repair.status = "completed".into(); value.upload_queue.push(repair);
+    apply_completed_uploads(&mut value);
+    assert_eq!(value.sync.cursors[&owner.account_id]["chat@g.us"].boundary_count,Some(1));
+    assert!(plan_automatic_batch(&data,&value,&owner,&["chat@g.us".into()]).unwrap().is_none());
+    std::env::remove_var("WECHATIFY_WHATSAPP_DB");
 }
 
 fn export_archive(platform: &str, account: &str, prepared: &PreparedUpload) {

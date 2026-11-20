@@ -5644,7 +5644,8 @@ fn apply_completed_uploads(value: &mut settings::AppSettings) {
         for (username, chunk) in std::mem::take(&mut job.initial_chunks) {
             if chunk.final_chunk {
                 let cursors = value.sync.cursors.entry(job.account_id.clone()).or_default();
-                let replace = cursors.get(&username).map_or(true, |old| (chunk.baseline.time, chunk.baseline.local_id) > (old.time, old.local_id));
+                let replace = cursors.get(&username).map_or(true, |old| (chunk.baseline.time, chunk.baseline.local_id) > (old.time, old.local_id)
+                    || ((chunk.baseline.time, chunk.baseline.local_id) == (old.time, old.local_id) && chunk.baseline.boundary_count > old.boundary_count));
                 if replace { cursors.insert(username.clone(), chunk.baseline); }
                 if let Some(progress) = value.sync.initial_progress.get_mut(&job.account_id) {
                     progress.remove(&username);
