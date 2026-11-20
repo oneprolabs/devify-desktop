@@ -1,6 +1,6 @@
 # 原生客户端与开发服务 E2E
 
-状态：所列范围的真实原生联调已通过（2026-11-20）。已合并最新 main、解决两处冲突，并安装签名整合版分别复测微信与 WhatsApp。测试备份已暂停；44px 任务圆环和默认聊天行为均经最后签名构建原生确认。后端新增 retry pytest 与完整发布门禁仍待通过，不将本记录视为发布批准。尚未合并到 main 或打 tag。
+状态：所列范围的真实原生联调已通过（2026-11-20）。已合并最新 main、解决两处冲突，并安装签名整合版分别复测微信与 WhatsApp。测试备份已暂停；44px 任务圆环和默认聊天行为均经最后签名构建原生确认。后端 CI 全量测试与发布门禁已通过；用户检查与合并、发布尚未执行。尚未合并到 main 或打 tag。
 
 目标链路：macOS 客户端 → 192.168.8.182:7000 开发 API → Celery 上传 worker → 服务端消息入库 → 客户端确认检查点。不以模拟 IPC、Django APIClient 或同步解析代替端到端结果。登录机制不在本次测试范围，使用独立开发测试账号；原始微信／WhatsApp 数据库只读，官网凭据与旧安装包另存私有备份。
 
@@ -31,7 +31,7 @@
 
 1. **缺失微信消息表阻断整批**：规划时严格检查本地是否有会话消息表。缺失者略过且不推进检查点；无法读取／数据库损坏仍报错。修复版批次 4 完成 139 条，后续多批继续完成。
 2. **WhatsApp 重复会话行**：相同 JID 选择最近代表行后再过滤／分页。原生列表、保存配置均为 123 项；没有宣称合并重复源行下全部历史消息。
-3. **失败重试状态错误**：服务端原来 failed → uploading 后派发 worker，worker 要求 processing 而直接返回。改为检查原归档、进入 processing 再派发；缺失归档保持数据库 failed。修复后的原生批次 18 已完成全链路。新增服务端回归覆盖派发、task.run 和缺失归档；语法／diff 检查通过。环境目前没有现成测试数据库，按服务端 AGENTS.md 未另建，新增 pytest 尚未执行。
+3. **失败重试状态错误**：服务端原来 failed → uploading 后派发 worker，worker 要求 processing 而直接返回。改为检查原归档、进入 processing 再派发；缺失归档保持数据库 failed。修复后的原生批次 18 已完成全链路。新增服务端回归覆盖派发、task.run 和缺失归档；语法／diff 检查通过。开发机没有现成标准测试库，未另建或占用他人的测试库；随后由仓库既有 CI 在 MariaDB 上跑过新增重试回归及全量测试。
 4. **重试阶段分流**：created／uploading 恢复原包；failed 请求 retry；processing／completed 只核对。固定原服务与凭据。已有响应丢失、归档恢复及失败重试证据；最新所有阶段组合没有逐项再次故障注入。
 5. **慢准备阻塞管理动作**：配置 outbox 与远端状态核对改为独立 30 秒轻量循环；准备和上传仍只有一个执行循环。原生慢准备期间，其他已提交批次仍确认完成。
 6. **后台状态扫描重叠**：隐藏聊天页停轮询，单页面一次只读一轮，旧页面结果丢弃；Rust 共用本地读取预算，超额直接拒绝，单次最多 200 会话。一次微信状态刷新复用请求内的只读分片连接，避免每会话重新解析全部 schema。整合版已读取徽标，活动与无前台操作窗口负载见下；没有宣称所有机器的性能上限或长时稳定性。
@@ -44,7 +44,7 @@
 
 ## 测试与代码复核
 
-最新 Rust 核心：`cargo test --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1`，**372 passed、3 ignored**。较早全套还执行了 5 项集成用例（4 项既有忽略），最后修改后没有重跑该全套。合并 main 后前端 **21 组脚本通过**，TypeScript／Vite 与整合版原生 bundle 构建通过，签名验证及 `git diff --check` 通过。上述分层结果不替代剩余原生验收。
+最新 Rust 核心：`cargo test --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1`，**372 passed、3 ignored**。较早全套还执行了 5 项集成用例（4 项既有忽略），最后修改后没有重跑该全套。合并 main 后前端 **21 组脚本通过**，TypeScript／Vite 与整合版原生 bundle 构建通过，签名验证及 `git diff --check` 通过。上述分层结果与本文所列真实原生场景分别记录，不把模拟测试冒充原生操作。
 
 main 整合：合并 `origin/main` 的 `b347b41`，实际解决 `BackupSchedule.tsx` 与 `WhatsAppWizard.tsx` 两处冲突；保留两平台自动备份、五步 WhatsApp 向导及统一状态，同时整合同事的连接器图标和样式。整合提交为 `a373987`，后续收敛修复为 `6a48410`。合并后的原生 E2E 已走通两平台向导及配置保存、增量执行与云端缺失回退；最后界面修正涉及导航组件、CSS 和聊天默认选择；自动备份运行时代码未再改动。
 
@@ -73,8 +73,10 @@ main 整合：合并 `origin/main` 的 `b347b41`，实际解决 `BackupSchedule.
 - [x] 云端回退零条提示修复经整合版原生重查；测试缓存恢复且通过完整性检查。
 - [x] 44px 圆环原生确认：执行时显示，暂停时隐藏；任务图标和文字静止。
 - [x] 原生启动默认打开最近活动的第一条微信聊天并显示最近 100 条；手动切至 WhatsApp 后刷新或离开再返回保留当前聊天。回归还覆盖当前聊天不在刷新第一页时的保留行为。
-- [ ] 后端新增重试回归及完整发布门禁。当前标准测试库不存在，未创建新库，也未占用他人的 test_devify_prodcopy。真实原生 retry 已走通，不替代发布门禁。
+- [x] [后端完整发布门禁](https://github.com/oneprolabs/devify/actions/runs/44671280690)：MariaDB 全量 1850 passed、7 skipped（包含新增 retry 回归），前端 31 文件／153 测试通过，生产构建、系统检查、无迁移漂移和空库迁移均通过；独立 lint 通过。未在开发机新建测试库或占用他人的 test_devify_prodcopy。
 
 11:35 独立开发测试账号的备份 paused=true，本地 177 个 completed／2 个 cancelled，无 processing 或 failed；服务端 180 个测试批次全部 completed。不同计数包含前期故障测试中未纳入当前本地队列的批次。SQLite quick_check=ok，两端配置一致。三个 worker 均未暂停，故障代理未运行。原始微信／WhatsApp 数据库未修改。
 
 详细资源采样、HTTP 日志、故障前后任务标识及截图在本机 `/tmp/aimychats-native-e2e`；含凭据的准备文件仅在私有缓存，不进入仓库。
+
+PR：[客户端 #58](https://github.com/oneprolabs/devify-desktop/pull/58)、[服务端 #159](https://github.com/oneprolabs/devify/pull/159)。两分支均已整合对应当前 main 且可合并；待用户检查，尚未合并或打 tag。
