@@ -1710,9 +1710,17 @@ struct ExistingUploadKeys {
 type LegacyUploadKeys = HashMap<String, ExistingUploadKeys>;
 
 async fn fixed_identity_get(data: &Path, base: &str, token: &str, path: &str) -> Result<serde_json::Value, String> {
+    fixed_identity_json(data, base, token, reqwest::Method::GET, path, None).await
+}
+
+async fn fixed_identity_json(data: &Path, base: &str, token: &str, method: reqwest::Method, path: &str,
+    body: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
     let client = http_client::strict();
-    let mut response = client.get(format!("{base}{path}")).bearer_auth(token)
-        .send_traced_retrying(data, diagnostics::Module::Upload, RetryPolicy::READ).await.map_err(|_| "无法读取云端数据，请检查网络连接。")?;
+    let policy = RetryPolicy::for_method(&method);
+    let mut request = client.request(method, format!("{base}{path}")).bearer_auth(token);
+    if let Some(body) = body { request = request.json(body); }
+    let mut response = request.send_traced_retrying(data, diagnostics::Module::Upload, policy)
+        .await.map_err(|_| "无法访问云端，请检查网络连接。")?;
     if !response.status().is_success() { return Err(format!("无法读取云端数据：HTTP {}。", response.status().as_u16())); }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| "无法读取云端响应。")? {
@@ -3803,7 +3811,12 @@ async fn devify_upload_wechat(
     // create anything. Otherwise a changed archive would silently create a new batch.
     // The schema version is part of the key: an archive whose envelope was corrected must
     // create a fresh batch instead of replaying the rejected one under the same key.
-    let key = if whatsapp_source {
+    let key = if matches!(trigger, UploadTrigger::Scheduled) {
+        // A new durable job may contain the same messages with a different
+        // whitelist/version. Give it its own identity; retries keep the stored
+        // key and exact ZIP, while message-level dedup handles overlapping jobs.
+        job_snapshot.create_key.clone().unwrap_or_else(|| format!("desktop-{source_platform}-{}", job_snapshot.id))
+    } else if whatsapp_source {
         format!("whatsapp.v1-{}-{}", account_id, &package_key[..32])
     } else {
         format!("wechat-{}-{}", account_id, &package_key[..32])
@@ -5702,8 +5715,14 @@ fn is_unlinked_create_failure(job: &settings::UploadJob, owner: &settings::Uploa
 #[derive(Debug, PartialEq)]
 enum CreateRecovery {
     ContinueSync,
+    ReplanLegacyCollision,
     Link(i64),
     Submit(i64),
+}
+
+fn legacy_create_key_collision(job: &settings::UploadJob) -> bool {
+    job.id.starts_with("sync-") && job.batch_id.is_none() && job.status == "failed" && job.message.contains("409")
+        && job.create_key.as_deref().is_some_and(|key| key.starts_with("whatsapp.v1-") || key.starts_with("wechat-"))
 }
 
 fn legacy_recovery_matches(owner: &settings::UploadOwner, job: &settings::UploadJob, batch: &serde_json::Value) -> Result<bool, String> {
@@ -5773,6 +5792,13 @@ fn resolve_unlinked_create(owner: &settings::UploadOwner, job: &settings::Upload
     let status = batch.get("status").and_then(serde_json::Value::as_str).unwrap_or("");
     if job.create_key.is_none() || received || matches!(status, "processing" | "completed") {
         if remote_digest.is_none() || remote_digest != job.package_digest.as_deref() {
+            if status == "completed" && remote_digest.is_some() && job.package_digest.is_some()
+                && legacy_create_key_collision(job) {
+                // This old content-derived key belongs to another completed
+                // archive. Preserve the failed intent and re-read current scope;
+                // never adopt its batch or advance this job's checkpoints.
+                return Ok(CreateRecovery::ReplanLegacyCollision);
+            }
             return Err("云端归档与旧任务的摘要不一致。".into());
         }
     }
@@ -5838,6 +5864,10 @@ async fn reconcile_unlinked_creates(data: &Path, owner: &settings::UploadOwner, 
                     return Err("旧任务状态已改变。".into());
                 }
                 match result {
+                    CreateRecovery::ReplanLegacyCollision => {
+                        live.status = "cancelled".into();
+                        live.message = "已核对旧批次标识冲突，将按当前范围重新安排备份。".into();
+                    }
                     CreateRecovery::ContinueSync => {
                         live.status = "failed".into();
                         live.legacy_failure_confirmed = true;
@@ -8121,10 +8151,19 @@ async fn wechat_upload_state(
     if requested.is_empty() {
         return Ok(Vec::new());
     }
+    if requested.len() > 200 {
+        return Err("请分页读取会话状态。".into());
+    }
+    // A hidden/slow WebView must not accumulate unconstrained shard scans.
+    // Reject excess reads rather than queueing work which is already stale.
+    let budget = LOCAL_READ_BUDGET.try_acquire()
+        .map_err(|_| "本地记录正在读取，请稍后重试。".to_string())?;
     // The remaining work only reads the local database, so the sign-out lease is released
     // before a long list scan can hold it.
     let cache = decrypt::cache_dir(&data, &account_id);
     tauri::async_runtime::spawn_blocking(move || {
+        let _budget = budget;
+        let reader = (!whatsapp_source).then(|| query::UploadStateReader::new(&cache));
         let mut states = Vec::new();
         for username in requested {
             // A conversation without a local readable message cannot say anything about new
@@ -8132,7 +8171,7 @@ async fn wechat_upload_state(
             let position = if whatsapp_source {
                 whatsapp::latest_position(&data, &username)
             } else {
-                query::latest_position(&cache, &username)
+                reader.as_ref().unwrap().latest_position(&username)
             };
             let Ok(Some((time, local_id))) = position else {
                 continue;
@@ -8140,12 +8179,12 @@ async fn wechat_upload_state(
             let count_at = |time: i64| if whatsapp_source {
                 whatsapp::count_at_time(&data, &username, time)
             } else {
-                query::count_at_time(&cache, &username, time)
+                reader.as_ref().unwrap().count_at_time(&username, time)
             };
             let count_after = |time: i64, id: i64| if whatsapp_source {
                 whatsapp::count_after(&data, &username, time, id)
             } else {
-                query::count_after(&cache, &username, time, id)
+                reader.as_ref().unwrap().count_after(&username, time, id)
             };
             let (state, new_messages) = match coverage.get(&username).copied() {
                 Some(position) if count_at(time).ok().is_some_and(|count| position.covers_boundary((time, local_id), count)) => ("synced", 0),
@@ -8599,11 +8638,21 @@ pub fn run() {
             });
             let _=recover_local_logout(&app_data(app.handle()));
             let _=local_scope::root(&app_data(app.handle()));
+            // Configuration acknowledgements and read-only remote reconciliation must
+            // keep progressing while the sole upload executor prepares a slow local
+            // database/voice batch. This monitor never plans or sends an archive.
+            let status_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let _=flush_config_outbox(&status_handle).await;
+                    task_runtime::reconcile_current_jobs(&status_handle).await;
+                    emit_task_runtime(&status_handle);
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+            });
             let sync_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    let _=flush_config_outbox(&sync_handle).await;
-                    emit_task_runtime(&sync_handle);
                     task_runtime::backup_tick(&sync_handle).await;
                     emit_task_runtime(&sync_handle);
                     let idle=sync_handle.state::<UploadState>().syncing.uploading_accounts().is_ok_and(|v|v.is_empty());
@@ -10295,6 +10344,32 @@ mod upload_coverage_tests {
         assert_eq!(super::resolve_unlinked_create(&owner, &job, &lookup), Ok(CreateRecovery::Submit(80)));
         lookup["batch"]["device_id"] = serde_json::json!("different");
         assert!(super::resolve_unlinked_create(&owner, &job, &lookup).is_err());
+    }
+
+    #[test]
+    fn legacy_auto_key_collision_replans_without_adopting_another_archive() {
+        let owner = owner();
+        let job = UploadJob {
+            id: "sync-old".into(), status: "failed".into(), message: "创建上传批次失败：409 Conflict".into(),
+            account_id: owner.account_id.clone(), space_id: owner.space_id.clone(), owner: Some(owner.clone()),
+            create_started: Some(true), create_key: Some("wechat-old-content-key".into()), package_digest: Some("original".into()),
+            scope: Some(UploadScope { usernames: vec!["one".into()], base_url: owner.base_url.clone(), since: None, until: None, message_selection: BTreeMap::new() }),
+            ..Default::default()
+        };
+        let mut lookup = serde_json::json!({"archive_received":true,"batch":{
+            "id":80,"space_id":owner.space_id,"uploaded_by_id":owner.user_id,"source_type":"wechat",
+            "source_account_id":owner.account_id,"device_id":owner.device_id,"idempotency_key":"wechat-old-content-key",
+            "status":"completed","archive_sha256":"different"}});
+        assert_eq!(super::resolve_unlinked_create(&owner,&job,&lookup),Ok(super::CreateRecovery::ReplanLegacyCollision));
+        lookup["batch"]["status"] = serde_json::json!("processing");
+        assert!(super::resolve_unlinked_create(&owner,&job,&lookup).is_err());
+        lookup["batch"]["status"] = serde_json::json!("completed");
+        lookup["batch"]["device_id"] = serde_json::json!("other-device");
+        assert!(super::resolve_unlinked_create(&owner,&job,&lookup).is_err());
+        let mut current = with_jobs(vec![job]);
+        current.upload_queue[0].status = "cancelled".into();
+        super::apply_completed_uploads(&mut current);
+        assert!(current.sync.cursors.is_empty());
     }
 
     #[test]

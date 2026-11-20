@@ -107,7 +107,7 @@ export function DiskAccessCard({ onRescan, compact = false, checkOnEntry = true,
             {t("微信的数据库在它自己的沙盒容器里，macOS 只允许拿到这项授权的程序读取。\n            这项权限没有申请接口，也不会弹窗，只能手动打开一次。")}
           </p>
         </div>
-        <div className="perm-badge">{access?.state === 'denied' ? t("未授权") : t("待确认")}</div>
+        <div className="perm-badge">{t("未完成")}</div>
       </div>
 
       {fromImage && (

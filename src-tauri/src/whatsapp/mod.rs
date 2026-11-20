@@ -345,9 +345,16 @@ fn sessions_page_from(conn:&Connection,allowed:Option<&HashSet<String>>,limit:Op
     } else {
         ""
     };
+    let representative_order = if cols.iter().any(|column| column == "ZLASTMESSAGEDATE") {
+        "duplicate.ZLASTMESSAGEDATE DESC, duplicate.Z_PK DESC"
+    } else {
+        "duplicate.Z_PK DESC"
+    };
+    let allowed_clause = allowed.map(|allowed| format!(" AND s.\"{jid}\" IN ({})", allowed.iter().map(|value| format!("'{}'", value.replace("'", "''"))).collect::<Vec<_>>().join(","))).unwrap_or_default();
     let sql = format!(
         "SELECT s.\"{jid}\", {}, {}, {}, {}, {group_members}, {message_fields} FROM ZWACHATSESSION s {message_join} \
-         WHERE s.\"{jid}\" IS NOT NULL AND s.\"{jid}\" != '' \
+         WHERE s.\"{jid}\" IS NOT NULL AND s.\"{jid}\" != '' {allowed_clause} \
+         AND s.Z_PK = (SELECT duplicate.Z_PK FROM ZWACHATSESSION duplicate WHERE duplicate.\"{jid}\" = s.\"{jid}\" ORDER BY {representative_order} LIMIT 1) \
          ORDER BY {} DESC",
         expr(name),
         expr(last.clone()),
@@ -355,7 +362,6 @@ fn sessions_page_from(conn:&Connection,allowed:Option<&HashSet<String>>,limit:Op
         expr(unread),
         last.map(|value| format!("s.\"{value}\"")).unwrap_or_else(|| "0".into()),
     );
-    let sql=if let Some(allowed)=allowed {sql.replace(" ORDER BY",&format!(" AND s.\"{jid}\" IN ({}) ORDER BY",allowed.iter().map(|v|format!("'{}'",v.replace("'","''"))).collect::<Vec<_>>().join(",")))} else {sql};
     let sql=if let Some(limit)=limit {format!("{sql}, s.Z_PK DESC LIMIT {} OFFSET {offset}",limit.clamp(1,100))} else {sql};
     let mut statement = conn.prepare(&sql).map_err(|error| format!("读取 WhatsApp 会话失败：{error}"))?;
     let rows = statement
@@ -1124,6 +1130,23 @@ mod tests {
         assert_eq!(group.display, "项目群");
         assert_eq!(group.member_count, Some(1));
         assert_eq!(group.preview.as_deref(), Some("[群事件]「项目群」"));
+    }
+
+    #[test]
+    fn duplicate_session_rows_do_not_duplicate_conversations_or_pages() {
+        let (_root, conn) = fixture();
+        conn.execute_batch("INSERT INTO ZWACHATSESSION (Z_PK,ZCONTACTJID,ZPARTNERNAME) VALUES (4,'8613800000000@s.whatsapp.net','empty duplicate');").unwrap();
+        let list = sessions_from(&conn).unwrap();
+        assert_eq!(list.len(), 2);
+        let direct = list.iter().find(|item| !item.is_group).unwrap();
+        assert_eq!(direct.display, "张杭");
+        let allowed = list.iter().map(|item| item.username.clone()).collect();
+        let first = sessions_page_from(&conn, Some(&allowed), Some(1), 0).unwrap();
+        let second = sessions_page_from(&conn, Some(&allowed), Some(1), 1).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(first[0].username, second[0].username);
+        assert!(sessions_page_from(&conn, Some(&allowed), Some(1), 2).unwrap().is_empty());
     }
 
     #[test]

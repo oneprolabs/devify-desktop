@@ -229,22 +229,33 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const selectedPendingMessages = selectedPending.reduce((sum, item) => sum + item.new_messages, 0);
   const activeUploads = useMemo(() => (settings?.upload_queue ?? []).filter(job => job.status != null && ['queued', 'running', 'processing', 'uploading'].includes(job.status)), [settings]);
 
-  // Ask Rust again on a timer: new WeChat records land locally while the app is open, and a
-  // finished batch only clears the badge once the server reports it is done.
+  useEffect(() => { setUploadStates({}); }, [settings?.devify?.base_url, settings?.devify?.active_space_id, activeAccountId]);
+
+  // A local badge scan can outlast its refresh interval on a large history. Keep
+  // one in flight and stop scheduling while this retained pane is hidden.
+  const uploadStateReading = useRef(false);
+  const uploadStateScope = JSON.stringify([visible, settings?.devify?.base_url, settings?.devify?.active_space_id, activeAccountId, sessions.map(item => sessionKey(item.accountId, item.username))]);
+  const currentUploadStateScope = useRef(uploadStateScope);
+  currentUploadStateScope.current = uploadStateScope;
   const refreshUploadState = useCallback(async () => {
-    if (!isTauri() || !activeAccountId || !sessions.length) { setUploadStates({}); return; }
+    if (!visible || !isTauri() || !activeAccountId || !sessions.length) return;
+    if (uploadStateReading.current) return;
+    uploadStateReading.current = true;
+    const scope = uploadStateScope;
     try {
       const items = await invoke<UploadState[]>('wechat_upload_state', { accountId: activeAccountId, usernames: sessions.filter(session => session.accountId === activeAccountId).map(session => session.username) });
-      setUploadStates(Object.fromEntries(items.map(item => [sessionKey(activeAccountId, item.username), item])));
+      if (currentUploadStateScope.current === scope) setUploadStates(Object.fromEntries(items.map(item => [sessionKey(activeAccountId, item.username), item])));
     } catch { /* keep the last known badges rather than claiming everything is synced */ }
-  }, [activeAccountId, sessions]);
+    finally { uploadStateReading.current = false; }
+  }, [visible, activeAccountId, sessions, uploadStateScope]);
   useEffect(() => {
+    if (!visible) return;
     void refreshUploadState();
     // Upload badges are rebuilt from the local database, so refresh them on a fixed short
     // cadence: tying this to the (now 30-minute) backup interval would leave status stale.
     const timer = window.setInterval(() => void refreshUploadState(), activeUploads.length || syncNoticePending ? 5000 : 60000);
     return () => window.clearInterval(timer);
-  }, [refreshUploadState, activeUploads.length, syncNoticePending]);
+  }, [visible, refreshUploadState, activeUploads.length, syncNoticePending]);
 
   const syncNow = async (scopeConfirmation?: string) => {
     if (syncing) return;

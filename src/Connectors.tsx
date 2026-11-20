@@ -284,7 +284,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
           </p>}
           {!whatsappMissing && whatsappInstall.detect?.version && <details className="connector-install-details"><summary>WhatsApp {whatsappInstall.detect.version} {t("· 官方签名")}</summary><p className="connector-install-meta">{whatsappInstall.detect.app_path}</p><button type="button" className="connector-quiet" onClick={() => { void whatsappInstall.recheck(); void refreshWhatsapp(); }} disabled={whatsappBusy || whatsappInstall.checking}>{t("重新检查")}</button></details>}
           {whatsapp?.error && <p className="connector-error" role="alert">{whatsapp.error}</p>}
-          <p className="connector-capabilities">{t("历史记录 · 群聊 · 手动备份")}</p>
+          <p className="connector-capabilities">{t("历史记录 · 群聊 · 增量同步")}</p>
           <div className="connector-actions">
             {whatsappEnabled ? <>
               <button type="button" className={`connector-primary${whatsapp?.account && !whatsapp.error ? ' connector-configured' : ''}`} onClick={onOpenWhatsApp}>{whatsapp?.account && !whatsapp.error ? t("重新配置") : t("打开连接向导")}</button>

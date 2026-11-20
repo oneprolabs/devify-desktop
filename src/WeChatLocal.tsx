@@ -3525,7 +3525,7 @@ const checkMark = (value: boolean | undefined) =>
           </div>
         );
       })}
-      {!messages.length && busy !== 'messages' && <p className="wxv-empty-line">{t("这个会话没有可读取的文字消息。")}</p>}
+      {!localMissing && !messages.length && busy !== 'messages' && <p className="wxv-empty-line">{t("这个会话没有可读取的文字消息。")}</p>}
       </div>
     </div>
   );
@@ -3597,7 +3597,7 @@ const checkMark = (value: boolean | undefined) =>
 
         {renderMessages()}
 
-        <footer className="wxv-chat-foot">
+        {!localMissing && <footer className="wxv-chat-foot">
           <span>
             {t("已加载最近")} {messages.length} {t("条")}
             {hasMore ? t("，可继续向前加载") : t("，已到本地记录起点")}
@@ -3609,7 +3609,7 @@ const checkMark = (value: boolean | undefined) =>
             <button type="button" className="wxv-link" onClick={clearSelectedMessages}>{t("清空选中")}</button>
           )}
           <span className="mono">{messages.length ? listTime(messages[0].time) : ''}</span>
-        </footer>
+        </footer>}
       </>
     );
   };

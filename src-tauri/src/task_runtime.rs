@@ -2,7 +2,24 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-async fn reconcile_current_jobs(app: &AppHandle) {
+#[derive(Debug, PartialEq)]
+pub(super) enum RetryRemoteAction {
+    ResumeArchive,
+    RetryParsing,
+    Reconcile,
+}
+
+pub(super) fn retry_remote_action(status: &str) -> Result<RetryRemoteAction, String> {
+    match status {
+        "created" | "uploading" => Ok(RetryRemoteAction::ResumeArchive),
+        "failed" => Ok(RetryRemoteAction::RetryParsing),
+        "processing" | "completed" => Ok(RetryRemoteAction::Reconcile),
+        "cancelled" => Err("服务端已取消该批次，请重新配置备份。".into()),
+        _ => Err("无法确认服务端批次状态，请稍后重试。".into()),
+    }
+}
+
+pub(super) async fn reconcile_current_jobs(app: &AppHandle) {
     let data = app_data(app);
     let Ok(s) = settings::load(&data) else {
         return;
@@ -71,6 +88,7 @@ pub(super) async fn task_runtime_retry(app: AppHandle, job_id: String) -> Result
         return Err("任务属于其他登录账号。".into());
     }
     let token = devify_access_token_async(&data, &owner.base_url).await?;
+    let mut next_status = "queued";
     if let Some(id) = job.batch_id {
         let remote = fixed_identity_get(
             &data,
@@ -80,15 +98,36 @@ pub(super) async fn task_runtime_retry(app: AppHandle, job_id: String) -> Result
         )
         .await?;
         validate_remote_owner(&owner, id, &remote, job.create_key.as_deref())?;
-        devify_json_request(
-            &app,
-            reqwest::Method::POST,
-            format!("/api/v1/chat/uploads/{id}/retry"),
-            None,
-        )
-        .await?;
+        match retry_remote_action(remote["status"].as_str().unwrap_or_default())? {
+            RetryRemoteAction::Reconcile => next_status = "processing",
+            action => {
+                let current = settings::load(&data)?;
+                let scope = job.scope.as_ref().ok_or("任务缺少原始范围。")?;
+                validate_live_owned_job(&data, &job_id, &owner, &token, scope)?;
+                if !current.sync.enabled || !config_runtime::ready(&current, &owner) {
+                    return Err("请先开启自动备份并完成设置同步。".into());
+                }
+                if action == RetryRemoteAction::ResumeArchive {
+                    if !upload_archive::exists(&data, job.package_digest.as_deref()) {
+                        return Err("找不到原始上传包，请保留任务并重新检查备份。".into());
+                    }
+                } else {
+                    // Freeze the service and credentials checked above. A login/service
+                    // switch must never redirect this old batch's retry to a new account.
+                    let response = http_client::strict()
+                        .post(format!("{}/api/v1/chat/uploads/{id}/retry", owner.base_url))
+                        .bearer_auth(&token)
+                        .send().await.map_err(|e| devify_network_message("重试失败", &e))?;
+                    if !response.status().is_success() {
+                        return Err(format!("重试失败：HTTP {}", response.status()));
+                    }
+                    next_status = "processing";
+                }
+            }
+        }
     }
     settings::update(&data, |s| {
+        validate_owner_state(s, &owner, &token)?;
         if desktop_credentials::load(&data, &owner.base_url)?.access != token {
             return Err("登录状态已改变。".into());
         }
@@ -100,15 +139,14 @@ pub(super) async fn task_runtime_retry(app: AppHandle, job_id: String) -> Result
         if live.owner.as_ref() != Some(&owner) || live.status != "failed" {
             return Err("任务状态已变化。".into());
         }
-        live.status = if live.batch_id.is_some() {
-            "processing"
-        } else if live.create_started == Some(true) {
+        let collision = legacy_create_key_collision(live);
+        live.status = if live.batch_id.is_none() && live.create_started == Some(true) {
             "failed"
         } else {
-            "queued"
+            next_status
         }
         .into();
-        live.message = "已安排重试，等待后台继续。".into();
+        live.message = if collision { "正在核对旧备份标识冲突（409），请稍候。" } else { "已安排重试，等待后台继续。" }.into();
         live.legacy_failure_confirmed = false;
         if let Some(source) = s.runtime.sources.get_mut(&owner.account_id) {
             source.retry_after = None;
@@ -125,7 +163,6 @@ pub(super) async fn task_runtime_retry(app: AppHandle, job_id: String) -> Result
 /// One coordinator, one preparation/upload at a time. Sources and chats rotate;
 /// each batch contains at most 200 messages from eight conversations.
 pub(super) async fn backup_tick(app: &AppHandle) {
-    reconcile_current_jobs(app).await;
     let data = app_data(app);
     let Ok(value) = settings::load(&data) else {
         return;
@@ -322,7 +359,8 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
     if value.upload_queue.iter().any(|j| {
         j.owner.as_ref() == Some(&owner)
             && j.can_recover_create()
-            && !upload_archive::exists(&data, j.package_digest.as_deref())
+            && (!upload_archive::exists(&data, j.package_digest.as_deref())
+                || legacy_create_key_collision(j))
     }) {
         reconcile_unlinked_creates(&data, &owner, &token, &names).await;
     }
@@ -507,6 +545,12 @@ pub(super) fn plan_automatic_batch(
     let mut chunks = BTreeMap::new();
     let per_chat = 200 / names.len().max(1);
     for name in names {
+        // Session lists may outlive a deleted local transcript. It has nothing
+        // to upload, but must not prevent the other selected chats from backing up.
+        // The presence probe still propagates unreadable/corrupt database errors.
+        if !wa && !query::chat_present(&cache, name)? {
+            continue;
+        }
         let cursor = value
             .sync
             .cursors

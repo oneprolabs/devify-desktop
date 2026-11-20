@@ -42,13 +42,15 @@ pub(super) async fn flush_config_outbox(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         };
         let owner = &mutation.owner;
-        let result = devify_json_request(
-            app,
-            reqwest::Method::PUT,
-            format!("/api/v1/spaces/{}/desktop/sync-config", owner.space_id),
-            Some(mutation.body.clone()),
-        )
-        .await;
+        // The outbox belongs to its original login, including while another
+        // login or service replaces the current settings during an await.
+        let result = async {
+            let token = devify_access_token_async(&data, &owner.base_url).await?;
+            validate_owner_state(&settings::load(&data)?, owner, &token)?;
+            fixed_identity_json(&data, &owner.base_url, &token, reqwest::Method::PUT,
+                &format!("/api/v1/spaces/{}/desktop/sync-config", owner.space_id),
+                Some(&mutation.body)).await
+        }.await;
         let response = match result {
             Ok(v) => v,
             Err(error) => {
@@ -60,6 +62,7 @@ pub(super) async fn flush_config_outbox(app: &AppHandle) -> Result<(), String> {
                     }
                     Ok(())
                 });
+                emit_task_runtime(app);
                 return Err(error);
             }
         };

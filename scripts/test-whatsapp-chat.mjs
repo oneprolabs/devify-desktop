@@ -30,7 +30,11 @@ const react = {
 };
 const jsx = { jsx: (type, props, key) => ({ type, props, key }), jsxs: (type, props, key) => ({ type, props, key }), Fragment: Symbol('Fragment') };
 const timers = [];
-globalThis.window = { setTimeout: fn => (timers.push(fn), timers.length), clearTimeout() {}, setInterval() { return 1; }, clearInterval() {}, addEventListener() {}, removeEventListener() {} };
+const intervals = new Map();
+let intervalId = 0;
+let uploadStateCalls = 0;
+let resolveUploadState;
+globalThis.window = { setTimeout: fn => (timers.push(fn), timers.length), clearTimeout() {}, setInterval(fn) { intervals.set(++intervalId, fn); return intervalId; }, clearInterval(id) { intervals.delete(id); }, addEventListener() {}, removeEventListener() {} };
 let resolveAccounts;
 const accounts = new Promise(resolve => { resolveAccounts = resolve; });
 const account = '123456789@s.whatsapp.net';
@@ -41,7 +45,8 @@ const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
   if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: [session.username] } } };
   if (command === 'chat_sessions') return args.accountId === wechat ? [wechatSession] : [session];
-  if (['wechat_avatars', 'summary_history_list', 'wechat_upload_state'].includes(command)) return [];
+  if (command === 'wechat_upload_state') { uploadStateCalls++; return new Promise(resolve => { resolveUploadState = resolve; }); }
+  if (['wechat_avatars', 'summary_history_list'].includes(command)) return [];
   return null;
 };
 const MessagePane = () => null;
@@ -127,4 +132,19 @@ buttons().find(node => label(node).includes('微信测试会话')).props.onClick
 tree = render();
 const selectedPane = nodes(tree).find(node => node.type === MessagePane);
 assert.equal(selectedPane.props.accountId, wechat, 'identical conversation IDs must keep their owning account');
-console.log('Chat account initialization, source grouping, and collapse checks passed');
+assert.equal(uploadStateCalls, 1);
+for (const tick of intervals.values()) { tick(); tick(); }
+assert.equal(uploadStateCalls, 1, 'a slow local badge read must not overlap refresh ticks');
+props.visible = false;
+render();
+assert.equal(intervals.size, 0, 'a hidden retained workbench must stop polling');
+resolveUploadState([{ username: session.username, state: 'pending', new_messages: 99 }]);
+for (let i = 0; i < 10; i++) await Promise.resolve();
+render();
+assert.equal(uploadStateCalls, 1, 'hiding the pane must not issue a new read');
+props.visible = true;
+render();
+assert.equal(uploadStateCalls, 2, 'returning to the pane resumes a bounded refresh');
+resolveUploadState([]);
+for (let i = 0; i < 10; i++) await Promise.resolve();
+console.log('Chat account initialization, source grouping, collapse, hidden polling and overlapping read checks passed');

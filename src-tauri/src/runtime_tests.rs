@@ -1,5 +1,57 @@
 //! First-phase runtime checks use temporary source databases and loopback identities.
 use super::*;
+
+#[test]
+fn frozen_config_request_keeps_original_service_token_and_payload() {
+    use std::io::{Read, Write};
+    let temp = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut raw = Vec::new();
+        loop {
+            let mut buf = [0; 2048];
+            let n = socket.read(&mut buf).unwrap();
+            assert!(n > 0);
+            raw.extend_from_slice(&buf[..n]);
+            if let Some(end) = raw.windows(4).position(|v| v == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&raw[..end]).to_lowercase();
+                let length: usize = headers.lines().find_map(|line| line.strip_prefix("content-length:").map(|s| s.trim().parse().unwrap())).unwrap();
+                if raw.len() >= end + 4 + length { break; }
+            }
+        }
+        let body = r#"{"saved":true,"mutation_id":"original"}"#;
+        write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        String::from_utf8(raw).unwrap()
+    });
+    settings::update(temp.path(), |s| { s.devify.base_url = "http://127.0.0.1:1".into(); Ok(()) }).unwrap();
+    let body = serde_json::json!({"mutation_id":"original","payload":{"usernames":["private-chat"]}});
+    let result = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(
+        fixed_identity_json(temp.path(), &base, "original-token", reqwest::Method::PUT, "/api/v1/spaces/original/desktop/sync-config", Some(&body))
+    ).unwrap();
+    assert_eq!(result["saved"],true);
+    let raw = server.join().unwrap();
+    assert!(raw.starts_with("PUT /api/v1/spaces/original/desktop/sync-config HTTP/1.1"));
+    assert!(raw.to_lowercase().contains("authorization: bearer original-token"));
+    let sent: serde_json::Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(sent,body);
+}
+
+#[test]
+fn retry_follows_remote_phase_instead_of_restarting_a_completed_batch() {
+    use task_runtime::{retry_remote_action, RetryRemoteAction::*};
+    for phase in ["created", "uploading"] {
+        assert_eq!(retry_remote_action(phase).unwrap(), ResumeArchive);
+    }
+    assert_eq!(retry_remote_action("failed").unwrap(), RetryParsing);
+    for phase in ["processing", "completed"] {
+        assert_eq!(retry_remote_action(phase).unwrap(), Reconcile);
+    }
+    assert!(retry_remote_action("cancelled").is_err());
+    assert!(retry_remote_action("").is_err());
+}
 fn identity(data: &Path, user: i64) -> settings::UploadOwner {
     let owner = settings::UploadOwner {
         base_url: "http://127.0.0.1:18999".into(),
@@ -490,4 +542,26 @@ fn an_idle_or_server_processing_source_does_not_start_local_execution() {
         &owner,
         Local::now()
     ));
+}
+
+#[test]
+fn missing_wechat_transcript_does_not_block_other_selected_chats_or_advance_its_cursor() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let owner = identity(data, 1);
+    let cache = decrypt::cache_dir(data, &owner.account_id);
+    fs::create_dir_all(cache.join("message")).unwrap();
+    let db = cache.join("message/message_0.db");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let table = format!("Msg_{}", query::md5_hex("present"));
+    conn.execute_batch(&format!("CREATE TABLE {table}(local_id INTEGER,server_id INTEGER,create_time INTEGER,message_content TEXT,local_type INTEGER);INSERT INTO {table} VALUES(1,1,100,'text',1);")).unwrap();
+    let mut value = settings::load(data).unwrap();
+    value.chat.initial_ranges.insert(owner.account_id.clone(), [("present".into(), settings::InitialRange { since: Some(1), until: None })].into_iter().collect());
+    let job = plan_automatic_batch(data, &value, &owner, &["missing".into(), "present".into()]).unwrap().unwrap();
+    assert_eq!(job.scope.as_ref().unwrap().usernames, vec!["present"]);
+    assert!(!job.initial_chunks.contains_key("missing"));
+    assert!(value.sync.cursors.is_empty());
+    drop(conn);
+    fs::write(&db, b"not a sqlite database").unwrap();
+    assert!(plan_automatic_batch(data, &value, &owner, &["missing".into(), "present".into()]).is_err());
 }

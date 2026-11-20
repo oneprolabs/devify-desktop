@@ -645,10 +645,11 @@ const stepsWithSavedKeys = find(tree, node => node.type === 'ol' && node.props['
 for (const title of ['准备微信', '登录微信', '授权连接', '退出微信账号', '重新登录微信', '校验连接', '读取聊天记录']) {
   assert.ok(elements(stepsWithSavedKeys).some(node => node.type === 'strong' && node.props.children === title), `saved results must preserve the ${title} step`);
 }
-assert.equal(elements(stepsWithSavedKeys).filter(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '无需重复').length, 5, 'reused capture steps are explained instead of removed or marked as executed');
+assert.equal(elements(stepsWithSavedKeys).filter(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '已完成').length, 7, 'validated saved results use the same completed status as a new connection');
 tree = render(reusedView, () => WeChatSetupChecklist({ ...reusedProps, keyedCount: 0, freshKey: true, savedKey: { exists: true, secure: true, modified_at: 1 }, error: '等待文件校验' }));
 assert.ok(elements(tree).some(node => node.props?.role === 'status' && node.props.children === '检测到已保存的连接文件，将先校验是否适用于当前账号。'));
-assert.ok(!elements(tree).some(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '无需重复'), 'a file alone cannot claim that the capture result is validated');
+const unverifiedSteps = find(tree, node => node.type === 'ol' && node.props['aria-label'] === '微信操作步骤');
+assert.equal(elements(unverifiedSteps).filter(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '未完成').length, 7, 'a saved file alone leaves the connection steps unfinished until validation');
 for (const hook of reusedView.hooks) hook?.cleanup?.();
 // Completion only opens a verified restored official app, and retries do not
 // bypass a pending recovery or launch failure.

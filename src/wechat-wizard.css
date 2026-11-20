@@ -142,6 +142,10 @@
 .wechat-wizard .wx-setup-indicator svg { width: 14px; height: 14px; }
 .wechat-wizard .wx-setup-item.done .wx-setup-indicator { border-color: #e2eee6; background: #edf6ef; color: #36754d; }
 .wechat-wizard .wx-setup-item.current .wx-setup-indicator { border-color: #a3279a; background: #a3279a; color: #fff; }
+.wizard-status-check { display: inline-flex; flex: 0 0 14px; color: #36754d; }
+.wizard-status-check svg { width: 14px; height: 14px; }
+.wizard-read-status { display: inline-flex; align-items: center; gap: 6px; }
+.wizard-read-status[data-completed="true"] { color: #36754d; }
 .wechat-wizard .wx-setup-status { display: inline-flex; align-items: center; gap: 6px; color: #74746e; font-size: 12px; }
 .wechat-wizard .wx-setup-item.done .wx-setup-status { color: #36754d; }
 .wechat-wizard .wx-setup-item.current .wx-setup-status { color: #a3279a; }

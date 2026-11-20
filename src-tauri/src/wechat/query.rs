@@ -53,6 +53,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn badge_reader_preserves_cross_shard_boundaries_and_missing_chats() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("message")).unwrap();
+        for shard in 0..2 {
+            let conn = Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            let table = format!("Msg_{}", md5_hex("person"));
+            conn.execute_batch(&format!("CREATE TABLE {table}(create_time INTEGER, local_id INTEGER); INSERT INTO {table} VALUES(10,1),(20,2),(20,{});", 3 + shard)).unwrap();
+            let other = format!("Msg_{}", md5_hex("other"));
+            conn.execute_batch(&format!("CREATE TABLE {other}(timestamp INTEGER, id INTEGER); INSERT INTO {other} VALUES(30,8);")).unwrap();
+        }
+        let reader = UploadStateReader::new(dir.path());
+        assert_eq!(reader.latest_position("person").unwrap(), Some((20,4)));
+        assert_eq!(reader.count_at_time("person",20).unwrap(),4);
+        assert_eq!(reader.count_after("person",20,2).unwrap(),2);
+        assert_eq!(reader.latest_position("other").unwrap(),Some((30,8)));
+        assert_eq!(reader.count_after("other",30,8).unwrap(),0);
+        assert!(reader.latest_position("missing").is_err());
+        for name in ["person", "other"] {
+            assert_eq!(reader.latest_position(name).unwrap(), latest_position(dir.path(),name).unwrap());
+            assert_eq!(reader.count_at_time(name,20).unwrap(),count_at_time(dir.path(),name,20).unwrap());
+            assert_eq!(reader.count_after(name,20,2).unwrap(),count_after(dir.path(),name,20,2).unwrap());
+        }
+    }
+
+    #[test]
     fn account_profile_matches_exact_and_suffixed_names() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("contact")).unwrap();
@@ -1253,6 +1278,70 @@ pub fn latest_position(cache: &Path, username: &str) -> Result<Option<(i64, i64)
         ));
     }
     Ok(newest)
+}
+
+/// One bounded badge refresh shares read-only shard connections. Reopening a
+/// WeChat shard for every badge reparses its thousands of table definitions.
+/// Keep these connections only for this request, never across account changes
+/// or replacement of a decrypted database.
+pub struct UploadStateReader {
+    shards: Vec<(Connection, HashSet<String>)>,
+    unreadable_shard: bool,
+}
+
+impl UploadStateReader {
+    pub fn new(cache: &Path) -> Self {
+        let mut unreadable_shard = false;
+        let shards = message_shards(cache).into_iter().filter_map(|path| {
+            let conn = match open_readonly(&path) {
+                Ok(conn) => conn,
+                Err(_) => { unreadable_shard = true; return None; }
+            };
+            let names = tables(&conn).into_iter().collect();
+            Some((conn, names))
+        }).collect();
+        Self { shards, unreadable_shard }
+    }
+
+    fn rows<T>(&self, username: &str, strict: bool, read: impl Fn(&Connection, &str, &str, &str) -> Option<T>) -> Result<Vec<T>, String> {
+        if strict && self.unreadable_shard { return Err("无法读取消息分片。".into()); }
+        let table = format!("Msg_{}", md5_hex(username));
+        let mut found = false;
+        let mut rows = Vec::new();
+        for (conn, names) in &self.shards {
+            if !names.contains(&table) { continue; }
+            found = true;
+            let cols = columns(conn, &table);
+            let Some(time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else {
+                if strict { return Err("消息库缺少时间字段。".into()); }
+                continue;
+            };
+            let local = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
+            if let Some(row) = read(conn, &quote(&table), &quote(time), &quote(local)) { rows.push(row); }
+            else if strict { return Err("无法核对消息数量。".into()); }
+        }
+        if !found { return Err("没有找到会话消息库。".into()); }
+        Ok(rows)
+    }
+
+    pub fn latest_position(&self, username: &str) -> Result<Option<(i64, i64)>, String> {
+        Ok(self.rows(username, false, |conn, table, time, local| {
+            conn.query_row(&format!("SELECT {time}, {local} FROM {table} WHERE {time} IS NOT NULL ORDER BY {time} DESC, {local} DESC LIMIT 1"), [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).ok()
+        })?.into_iter().max())
+    }
+
+    pub fn count_at_time(&self, username: &str, timestamp: i64) -> Result<usize, String> {
+        Ok(self.rows(username, true, |conn, table, time, _| {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {time} = ?1"), [timestamp], |row| row.get::<_, usize>(0)).ok()
+        })?.into_iter().fold(0usize, usize::saturating_add))
+    }
+
+    pub fn count_after(&self, username: &str, timestamp: i64, id: i64) -> Result<usize, String> {
+        Ok(self.rows(username, false, |conn, table, time, local| {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {time} IS NOT NULL AND ({time} > ?1 OR ({time} = ?1 AND {local} > ?2))"), params![timestamp, id], |row| row.get::<_, usize>(0)).ok()
+        })?.into_iter().fold(0usize, usize::saturating_add))
+    }
 }
 
 /// Number of messages strictly newer than an upload position.
