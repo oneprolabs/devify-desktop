@@ -39,13 +39,12 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
 }) {
   const tasks = useTaskRuntime();
   const avatar = accountAvatar(accountName);
-  const taskWaiting = tasks.paused || tasks.jobs.some(job => ['queued', 'processing', 'failed'].includes(job.status));
   const navButton = (item: (typeof primaryItems)[number] | (typeof utilityItems)[number]) => <button
-    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : taskWaiting ? ' task-waiting' : ''}` : ''}${section === item.id ? ' active' : ''}`}
+    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : ''}` : ''}${section === item.id ? ' active' : ''}`}
     title={t(item.label)} aria-current={section === item.id ? 'page' : undefined} onClick={() => onNavigate(item.id)}
-  ><span className="prototype-nav-icon">{item.icon}{item.id === 'tasks' && (tasks.running || taskWaiting) && <svg className="task-runtime-ring" width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true" focusable="false">
-    <circle cx="18" cy="18" r="16" stroke="currentColor" strokeOpacity=".22" strokeWidth="2" />
-    {tasks.running && <path className="task-runtime-ring-arc" d="M18 2a16 16 0 0 1 16 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />}
+  ><span className="prototype-nav-icon">{item.icon}{item.id === 'tasks' && tasks.running && <svg className="task-runtime-ring" width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true" focusable="false">
+    <circle cx="22" cy="22" r="20" stroke="currentColor" strokeOpacity=".22" strokeWidth="2" />
+    <path className="task-runtime-ring-arc" d="M22 2a20 20 0 0 1 20 20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
   </svg>}</span><small>{t(item.label)}</small></button>;
 
   return <aside className="prototype-rail" aria-label={t("主导航")}>

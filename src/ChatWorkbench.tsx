@@ -108,7 +108,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [chatState, setChatState] = useState({ active: false, messages: 0, selected: 0, agentReady: false });
   const [workRequest, setWorkRequest] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
-  // Mount records only after the user chooses a conversation.
+  // Read messages only for the selected conversation, including the initial first chat.
   useEffect(() => { if (selectedSession && view === 'raw') setRawMounted(true); }, [selectedSession, view]);
   const [hasMoreSessions, setHasMoreSessions] = useState(false);
   const sessionOffsets = useRef(new Map<string, { account: ChatAccount; offset: number }>());
@@ -136,7 +136,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       sessionOffsets.current = new Map(results.flatMap(result => result.status === 'fulfilled' && result.value.sessions.length === 50 ? [[result.value.account.id, { account: result.value.account, offset: 50 }] as const] : []));
       setHasMoreSessions(sessionOffsets.current.size > 0);
       setSelectedSession(current => list.find(item => item.accountId === current?.accountId && item.username === current?.username)
-        ?? null);
+        // A refreshed first page does not prove a previously selected chat was deleted.
+        ?? (current && accounts.some(account => account.id === current.accountId) ? current : list[0] ?? null));
       if (failed.length) setError(tf("{0}会话读取失败，请刷新重试。", [...new Set(failed)].join('、')));
       setEventRefresh(value => value + 1);
 
@@ -532,7 +533,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         </div>
       </div>
 
-      {!rawMounted && view === 'raw' && <LoadingSkeleton label={t("正在加载聊天记录")} kind="messages" />}
+      {!rawMounted && view === 'raw' && <div className="chat-workbench-empty" role="status">{t("选择一个会话开始查看")}</div>}
       {rawMounted && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
         {accountId === activeAccountId && selectedPending.length > 0 && <div className="chat-workbench-banner">
           <span><i/>{t("已选择的聊天中有")} {selectedPending.length} {t("个会话")}{selectedPendingMessages ? tf("、{0} 条", selectedPendingMessages) : ''}{t("新增记录待上传，")}{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? t("将在满足条件时自动备份。") : t("自动备份未开启，可以在备份周期中设置。")}</span>

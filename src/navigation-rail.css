@@ -85,7 +85,7 @@
 .prototype-nav-item:hover { background: var(--rail-selected); color: #fff; }
 .prototype-nav-item.active { background: var(--rail-selected); color: var(--rail-accent); }
 .prototype-nav-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 26px; height: 26px; }
-.prototype-nav-item-tasks .prototype-nav-icon { width: 34px; height: 34px; }
+.prototype-nav-item-tasks .prototype-nav-icon { width: 44px; height: 44px; }
 .prototype-nav-icon svg { display: block; flex: none; width: 26px; height: 26px; }
 .prototype-nav-item small { font: inherit; font-size: 12px; line-height: 1; }
 .prototype-spacer { flex: 1; min-height: 0; }
@@ -115,8 +115,8 @@
   .prototype-rail-mark { margin-bottom: 10px; }
 }
 .prototype-nav-item-tasks .prototype-nav-icon { position: relative; }
-.prototype-nav-icon svg.task-runtime-ring { position: absolute; top: -1px; left: -1px; width: 36px; height: 36px; color: #e85bc4; pointer-events: none; }
-.task-runtime-ring-arc { transform-origin: 18px 18px; animation: task-runtime-ring 1s linear infinite; }
+.prototype-nav-icon svg.task-runtime-ring { position: absolute; top: 0; left: 0; width: 44px; height: 44px; color: #e85bc4; pointer-events: none; }
+.task-runtime-ring-arc { transform-origin: 22px 22px; animation: task-runtime-ring 1s linear infinite; }
 @keyframes task-runtime-ring { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .task-runtime-ring-arc { animation: none; } }
 .task-runtime-header, .task-runtime-job { display: flex; align-items: center; justify-content: space-between; gap: 24px; }

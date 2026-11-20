@@ -41,10 +41,11 @@ const account = '123456789@s.whatsapp.net';
 const wechat = 'wx_test';
 const session = { username: 'shared', display: 'WhatsApp 测试会话', is_group: false, last_time: 1 };
 const wechatSession = { username: 'shared', display: '微信测试会话', is_group: false, last_time: 2 };
+let hideWhatsAppFromFirstPage = false;
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
   if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: [session.username] } } };
-  if (command === 'chat_sessions') return args.accountId === wechat ? [wechatSession] : [session];
+  if (command === 'chat_sessions') return args.accountId === wechat ? [wechatSession] : hideWhatsAppFromFirstPage ? [] : [session];
   if (command === 'wechat_upload_state') { uploadStateCalls++; return new Promise(resolve => { resolveUploadState = resolve; }); }
   if (['wechat_avatars', 'summary_history_list'].includes(command)) return [];
   return null;
@@ -93,7 +94,10 @@ assert.equal(nodes(render()).filter(node => node.type === MessagePane).length, 0
 resolveAccounts([{ id: account, source: 'whatsapp' }, { id: wechat, source: 'wechat' }]);
 for (let i = 0; i < 20; i++) await Promise.resolve();
 let initialTree = render();
-assert.equal(nodes(initialTree).filter(node => node.type === MessagePane).length, 0, 'entry must not open the first conversation automatically');
+initialTree = render();
+const firstPane = nodes(initialTree).find(node => node.type === MessagePane);
+assert.equal(firstPane?.props.accountId, wechat, 'initial entry opens the most recent chat across sources');
+assert.equal(firstPane.props.focusConversation, wechatSession.username);
 const textOf = value => typeof value === 'string' ? value : Array.isArray(value) ? value.map(textOf).join('') : value && typeof value === 'object' ? textOf(value.props?.children) : '';
 nodes(initialTree).find(node => node.type === 'button' && textOf(node).includes('WhatsApp 测试会话')).props.onClick();
 render();
@@ -102,6 +106,20 @@ assert.equal(panes.length, 1);
 assert.equal(panes[0].props.accountId, account);
 assert.equal(panes[0].key, account, 'changing accounts must replace the previous pane');
 assert.equal(panes[0].props.focusConversation, session.username);
+// A first-page refresh may omit the selected chat; it must not switch the reader.
+hideWhatsAppFromFirstPage = true;
+props.visible = false;
+render();
+props.visible = true;
+render();
+for (let i = 0; i < 20; i++) await Promise.resolve();
+assert.equal(nodes(render()).find(node => node.type === MessagePane).props.accountId, account, 'returning preserves the chosen chat even outside the refreshed first page');
+hideWhatsAppFromFirstPage = false;
+props.visible = false;
+render();
+props.visible = true;
+render();
+for (let i = 0; i < 20; i++) await Promise.resolve();
 let tree = render();
 let buttons = () => nodes(tree).filter(node => node.type === 'button');
 const label = node => nodes(node.props.children).map(child => typeof child.props?.children === 'string' ? child.props.children : '').join(' ');
