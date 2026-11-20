@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
-import { ConnectorIcon } from './Connectors';
+import whatsappIcon from './assets/connectors/whatsapp.svg';
 import { createSettingsSaveQueue, settingsUserRevision, type SettingsSaveQueue } from './settingsSaveQueue';
 import { WizardActionButton } from './WizardActionButton';
 import './backup-schedule.css';
@@ -259,7 +259,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
     <div className="backup-list">
       {connected && <section className={`plan-plat${open ? ' open' : ''}`}>
         {wizard ? <Row label={t("自动备份")} desc={t("关闭后，暂停自动生成备份任务")}><Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label={t(wizard && settings.active_account_id.endsWith('@s.whatsapp.net') ? "WhatsApp 自动备份" : "微信自动备份")} /></Row> : <div className="plan-plat-head">
-          <span className="plan-mark"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
+          <span className="plan-mark"><img className="backup-source-logo" src={whatsappConnected && !wechatConnected ? whatsappIcon : wechatIcon} alt="" /></span>
           <button type="button" className="plan-plat-title" aria-expanded={open} onClick={() => setOpen(!open)}>
             <strong>{wechatConnected && whatsappConnected ? t("微信 · WhatsApp") : whatsappConnected ? "WhatsApp" : t("微信")}</strong>
             <small><span>{summary}</span><i>{open ? t("收起") : t("编辑")}</i></small>
@@ -357,12 +357,12 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
       {!wizard && <>
       {(!wechatConnected || !whatsappConnected) && <div className="plan-off-head">{t("未连接")}</div>}
       {!wechatConnected && <div className="plan-off">
-        <span className="plan-mark dim"><img className="backup-wechat-logo" src={wechatIcon} alt="" /></span>
+        <span className="plan-mark dim"><img className="backup-source-logo" src={wechatIcon} alt="" /></span>
         <div><strong>{t("微信")}</strong><small>{t("连接后按统一周期自动备份")}</small></div>
         <button type="button" onClick={onOpenConnectors}>{t("打开连接向导")}</button>
       </div>}
       {!whatsappConnected && <div className="plan-off">
-        <span className="plan-mark alt dim"><ConnectorIcon name="WhatsApp" /></span>
+        <span className="plan-mark dim"><img className="backup-source-logo" src={whatsappIcon} alt="" /></span>
         <div><strong>WhatsApp</strong><small>{t("连接后按统一周期自动备份")}</small></div>
         <button type="button" onClick={onOpenConnectors}>{t("打开连接向导")}</button>
       </div>}

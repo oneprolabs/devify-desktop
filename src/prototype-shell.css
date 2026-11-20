@@ -418,9 +418,8 @@
 
 .plan-plat { border-radius: 14px; overflow: hidden; background: #fff; box-shadow: inset 0 0 0 1px #e6e6e3; }
 .plan-plat-head { display: flex; align-items: center; gap: 14px; padding: 16px 18px; }
-.plan-mark { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 11px; background: linear-gradient(140deg, #41d97f, #07a252); color: #fff; font-size: 17px; font-weight: 600; }
-.plan-mark.dim { width: 40px; height: 40px; border-radius: 11px; font-size: 15px; opacity: .6; background: linear-gradient(140deg, #41d97f, #07a252); }
-.plan-mark.alt { background: linear-gradient(135deg, #46b98a, #1a8f6a); }
+.plan-mark { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border: 1px solid #e9e9e6; border-radius: 11px; background: #fff; }
+.plan-mark.dim { opacity: .6; }
 .plan-plat-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 0; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .plan-plat-title strong { font-size: 15px; font-weight: 600; color: #1a1a19; }
 .plan-plat-title small { display: flex; align-items: baseline; gap: 10px; color: #4f4f4a; font-size: 14px; }

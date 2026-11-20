@@ -12,9 +12,9 @@
 }
 .wechat-wizard .connector-back { display: block; margin: 0 0 26px; padding: 0; color: #5f5f5a; font-size: 13px; line-height: 19px; }
 .wechat-wizard .wizard-connector-head { display: flex; align-items: center; gap: 16px; margin: 0 0 26px; }
-.wechat-wizard .wizard-connector-mark { display: flex; flex: 0 0 56px; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 15px; background: linear-gradient(135deg, #47c86e, #008b4e); color: #fff; font-size: 24px; font-weight: 600; }
+.wechat-wizard .wizard-connector-mark { display: flex; flex: 0 0 56px; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 15px; border: 1px solid #e9e9e6; background: #fff; }
 .wechat-wizard .wizard-connector-head > div { min-width: 0; }
-.whatsapp-wizard .wizard-connector-mark { background: linear-gradient(135deg, #00c0a0, #007570); }
+.wechat-wizard .wizard-connector-mark img { display: block; width: 32px; height: 32px; object-fit: contain; }
 .whatsapp-wizard .whatsapp-intro { margin: 20px 0 0; padding-left: 20px; color: #5f5f5a; font-size: 13px; line-height: 1.9; }
 .wechat-wizard .wizard-connector-head strong { color: #a3279a; font-size: 12px; font-weight: 400; line-height: 17px; letter-spacing: .08em; }
 .wechat-wizard .wizard-connector-head h2 { margin: 2px 0 0; color: #1a1a19; font-size: 24px; font-weight: 600; line-height: 1.4; }
@@ -248,7 +248,7 @@
 .wizard-session-name { min-width: 0; }
 .wizard-session-name button { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; margin: 0; padding: 0; border: 0; background: transparent; color: #1a1a19; text-align: left; font: inherit; cursor: pointer; }
 .wizard-session-name strong { overflow: hidden; font-size: 14px; font-weight: 400; line-height: 21px; white-space: nowrap; text-overflow: ellipsis; }
-.wizard-session-badge { flex-shrink: 0; padding: 0 5px; border-radius: 4px; background: #f0f0ee; color: #46463f; font-size: 11px; line-height: 17px; }
+.wizard-session-badge { display: block; flex: none; width: 16px; height: 16px; object-fit: contain; }
 .wizard-session-name small { display: block; margin-top: 2px; color: #6c6c67; font-size: 12px; line-height: 18px; }
 .wizard-session-row time { color: #5f5f5a; font-size: 12.5px; }
 .wizard-session-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 12px; color: #5f5f5a; font-size: 12.5px; }
@@ -302,8 +302,8 @@
 .imports-platform-head > svg.open { transform: rotate(90deg); }
 .imports-platform-head:hover:not(:disabled) { background: #fbfbfa; }
 .imports-platform-head:disabled { cursor: default; }
-.imports-platform-icon { display: flex; flex: 0 0 40px; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 11px; background: linear-gradient(135deg, #47c86e, #008b4e); color: #fff; font-size: 17px; font-weight: 600; }
-.imports-platform-icon[data-source="whatsapp"] { background: linear-gradient(135deg, #00c0a0, #007570); }
+.imports-platform-head > .connector-brand { width: 40px; height: 40px; border-radius: 11px; border: 1px solid #e9e9e6; background: #fff; }
+.imports-platform-head > .connector-brand img { display: block; width: 26px; height: 26px; object-fit: contain; }
 .imports-platform-content { padding: 18px; border-top: 1px solid #f0f0ee; background: #fff; }
 .imports-v7 .imports-account-card { flex-wrap: wrap; }
 .imports-v7 .page-actions > .imports-save-status { display: inline-flex; align-items: flex-start; gap: 6px; flex: 1 1 260px; margin: 0 auto 0 0; color: #36754d; font-size: 12.5px; line-height: 1.6; }

@@ -560,7 +560,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
         <button type="button" className="imports-platform-head" aria-expanded={open} disabled={saving} onClick={() => {
           if (source === platform) setImportsExpanded(!importsExpanded);
           else { changeAccount(currentAccount(list, settings.active_account_id)!.id); setImportsExpanded(true); }
-        }}><span className="imports-platform-icon" data-source={platform} aria-hidden="true">{platform === 'whatsapp' ? 'W' : t("微")}</span><span><strong>{name}</strong><small>{t("已选")}{count} {t("个会话 ·")}{list.length} {t("个账号")}</small></span><svg className={open ? 'open' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
+        }}><ConnectorIcon name={platform === 'whatsapp' ? 'WhatsApp' : '微信'} /><span><strong>{name}</strong><small>{t("已选")}{count} {t("个会话 ·")}{list.length} {t("个账号")}</small></span><svg className={open ? 'open' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
         {open && <div className="imports-platform-content">{editor}</div>}
       </section>;
     })}</div>}

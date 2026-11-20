@@ -1,5 +1,7 @@
 import { t, tf } from './locale';
 import { useEffect, useState } from 'react';
+import wechatIcon from './assets/connectors/wechat.svg';
+import whatsappIcon from './assets/connectors/whatsapp.svg';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null };
 type Props = {
@@ -42,7 +44,7 @@ export function WizardSessionPicker(p: Props) {
       </div>
       {rows.map(item => <div className="wizard-session-row" role="row" key={item.username}>
         <span role="cell"><input type="checkbox" aria-label={`导入 ${item.display}`} checked={p.selected.has(item.username)} onChange={() => p.onToggle(item.username)} /></span>
-        <div role="cell" className="wizard-session-name"><button type="button" title={t("设置此会话的首次备份时间范围")} onClick={() => { p.onFocus(item.username); }}><span className="wizard-session-badge">{p.sourceName === 'WhatsApp' ? 'WA' : t("微")}</span><strong>{item.display}</strong></button><small>{item.is_group ? t("群聊") : t("私聊")}{p.selected.has(item.username) ? t(" · 已选择") : ''}</small></div>
+        <div role="cell" className="wizard-session-name"><button type="button" title={t("设置此会话的首次备份时间范围")} onClick={() => { p.onFocus(item.username); }}><img className="wizard-session-badge" src={p.sourceName === 'WhatsApp' ? whatsappIcon : wechatIcon} alt="" /><strong>{item.display}</strong></button><small>{item.is_group ? t("群聊") : t("私聊")}{p.selected.has(item.username) ? t(" · 已选择") : ''}</small></div>
         <time role="cell">{p.activity(item.last_time)}</time>
       </div>)}
       {!p.accountId ? <p className="plan-empty">{t("未发现")}{p.sourceName ?? "微信"}{t("账号，请返回连接器完成连接。")}</p> : p.loading ? <p className="plan-empty" role="status">{t("正在读取会话列表…")}</p> : !rows.length && <p className="plan-empty">{t("没有符合条件的会话。")}</p>}
