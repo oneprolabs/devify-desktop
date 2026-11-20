@@ -138,7 +138,7 @@
 .task-runtime-job > div { min-width: 0; }
 .task-runtime-job p { line-height: 1.7; overflow-wrap: anywhere; }
 .task-runtime-job:last-child { border-bottom: 0; }
-.task-runtime-job strong { font-size: 15px; font-weight: 600; }
+.task-runtime-job strong { display: block; overflow-wrap: anywhere; font-size: 15px; font-weight: 600; }
 .task-runtime-job small { display: block; margin: 6px 0; font-size: 12px; }
 .task-runtime-page .page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 24px; }
 @media (max-width: 700px) { .task-runtime-page { padding: 28px 24px; } .task-runtime-header { align-items: flex-start; } }

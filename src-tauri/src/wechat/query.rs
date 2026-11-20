@@ -53,6 +53,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn business_groups_use_their_own_names_and_bounded_message_shard() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path();
+        for name in ["session", "message", "bizchat"] { std::fs::create_dir(cache.join(name)).unwrap(); }
+        let username = "ww123_456@qy_g";
+        let session = Connection::open(cache.join("session/session.db")).unwrap();
+        session.execute_batch("CREATE TABLE SessionTable(username TEXT,last_timestamp INTEGER,summary TEXT);").unwrap();
+        session.execute("INSERT INTO SessionTable VALUES(?1,1000,'latest')", [username]).unwrap();
+        let names = Connection::open(cache.join("bizchat/bizchat.db")).unwrap();
+        names.execute_batch("CREATE TABLE name2id(username TEXT);CREATE TABLE chat_group(id INTEGER,chat_name TEXT);").unwrap();
+        names.execute("INSERT INTO name2id(rowid,username) VALUES(3,?1)", [username]).unwrap();
+        names.execute("INSERT INTO chat_group VALUES(3,'企业项目群')", []).unwrap();
+        let messages = Connection::open(cache.join("message/biz_message_0.db")).unwrap();
+        let table = format!("Msg_{}", md5_hex(username));
+        messages.execute_batch(&format!("CREATE TABLE {table}(local_id INTEGER,server_id INTEGER,create_time INTEGER,message_content TEXT,local_type INTEGER);")).unwrap();
+        for id in 1..=145 { messages.execute(&format!("INSERT INTO {table} VALUES(?1,?1,?1,'hello',1)"), [id]).unwrap(); }
+        let allowed = [username.to_string()].into_iter().collect();
+        let rows = sessions_page(cache, Some(&allowed), Some(50), 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].display, "企业项目群");
+        assert!(rows[0].is_group);
+        assert!(chat_present(cache, username).unwrap());
+        let page = super::messages(cache, username, 100, None).unwrap();
+        assert_eq!(page.len(), 100);
+        assert_eq!(page[0].local_id, 145);
+        assert!(page.iter().all(|row| row.source_shard.ends_with("biz_message_0.db")));
+        assert!(!is_group_username("ww123@qy_u"));
+    }
+
+    #[test]
     fn badge_reader_preserves_cross_shard_boundaries_and_missing_chats() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("message")).unwrap();
@@ -418,7 +448,7 @@ fn value_to_bytes(value: rusqlite::types::ValueRef<'_>) -> Option<Vec<u8>> {
 }
 
 pub fn is_group_username(username: &str) -> bool {
-    username.ends_with("@chatroom")
+    username.ends_with("@chatroom") || username.ends_with("@qy_g")
 }
 
 #[derive(Serialize)]
@@ -452,9 +482,21 @@ pub fn account_profile(cache: &Path, account: &str) -> Option<AccountProfile> {
 /// Load `username -> display name` from contact.db when it is available.
 fn string_list(values: impl Iterator<Item=String>) -> String {values.map(|v|format!("'{}'",v.replace("'","''"))).collect::<Vec<_>>().join(",")}
 fn contacts(cache: &Path) -> HashMap<String, String> { contacts_for(cache,None) }
+fn business_contacts_for(cache: &Path, wanted: Option<&HashSet<String>>) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    let Ok(conn) = open_readonly(&cache.join("bizchat/bizchat.db")) else { return names; };
+    for (table, field) in [("chat_group", "chat_name"), ("user_info", "user_name")] {
+        let mut sql = format!("SELECT n.username, t.{field} FROM {table} t JOIN name2id n ON n.rowid=t.id");
+        if let Some(wanted) = wanted { sql.push_str(&format!(" WHERE n.username IN ({})", string_list(wanted.iter().cloned()))); }
+        let Ok(mut statement) = conn.prepare(&sql) else { continue; };
+        let Ok(rows) = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) else { continue; };
+        for (username, display) in rows.flatten() { if !display.trim().is_empty() { names.insert(username, display.trim().to_string()); } }
+    }
+    names
+}
 fn contacts_for(cache: &Path, wanted: Option<&HashSet<String>>) -> HashMap<String,String> {
     let path = cache.join("contact").join("contact.db");
-    let mut map = HashMap::new();
+    let mut map = business_contacts_for(cache, wanted);
     let Ok(conn) = open_readonly(&path) else {
         return map;
     };
@@ -793,7 +835,7 @@ fn message_shards(cache: &Path) -> Vec<PathBuf> {
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    name.starts_with("message") && name.ends_with(".db")
+                    (name.starts_with("message") || name.starts_with("biz_message_")) && name.ends_with(".db")
                 })
                 .collect()
         })
@@ -2474,7 +2516,7 @@ pub fn chat_present(cache:&Path,username:&str)->Result<bool,String>{
     let table=format!("Msg_{}",md5_hex(username));let mut count=0;
     for entry in entries {
         let entry=entry.map_err(|e|e.to_string())?;let name=entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("message_") || !name.ends_with(".db") {continue;}
+        if !(name.starts_with("message_") || name.starts_with("biz_message_")) || !name.ends_with(".db") {continue;}
         count+=1;if count>64{return Err("本地消息分片过多，请缩小读取范围。".into());}
         let c=open_readonly(&entry.path())?;
         let present:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",[&table],|r|r.get(0)).map_err(|e|format!("本地消息库无法读取：{e}"))?;

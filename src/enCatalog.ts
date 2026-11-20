@@ -1,4 +1,13 @@
 export const en: Record<string, string> = {
+  "正在查找云端备份": "Looking for a cloud backup",
+  "本地暂时无法读取这段记录，正在检查已备份的内容。": "These records are unavailable locally. Checking for a backup.",
+  "读取备份失败": "Unable to read the backup",
+  "暂时没有可查看的记录": "No records available yet",
+  "本地暂时无法读取这段记录，当前空间也未找到云端备份。": "These records are unavailable locally, and no cloud backup was found in this space.",
+  "重新检查备份": "Check for a backup again",
+  "正在显示云端备份，本地记录未能读取。": "Showing the cloud backup. The local records could not be read.",
+  "备份{0} · {1}": "Back up {0} · {1}",
+  "{0}等 {1} 个会话": "{0} and more · {1} chats",
   "微信 · WhatsApp": "WeChat · WhatsApp",
   "WhatsApp 自动备份": "WhatsApp automatic backup",
   "设置备份时间与上传内容，之后可以在「备份周期」里修改。": "Choose when and what to back up. You can change this later in Backup.",

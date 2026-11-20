@@ -7780,7 +7780,7 @@ async fn chat_remote_image(app:AppHandle,space_id:String,item_id:Option<i64>,sha
 }
 
 #[tauri::command]
-async fn chat_sessions(app: AppHandle, account_id: String, limit: Option<usize>, offset: Option<usize>, focus_username: Option<String>) -> Result<Vec<SessionItem>, String> {
+async fn chat_sessions(app: AppHandle, account_id: String, limit: Option<usize>, offset: Option<usize>, focus_username: Option<String>, focus_usernames: Option<Vec<String>>) -> Result<Vec<SessionItem>, String> {
     let _read_budget=LOCAL_READ_BUDGET.acquire().await.map_err(|e|e.to_string())?;
     validate_account_id(&account_id)?;
     let data=app_data(&app);let value=settings::load(&data)?;
@@ -7788,10 +7788,16 @@ async fn chat_sessions(app: AppHandle, account_id: String, limit: Option<usize>,
     let principal=config_runtime::local_owner(&data,&value,&account_id)?;
     if value.runtime.sources.get(&account_id).and_then(|s|s.owner.as_ref()).or_else(||value.sync.owners.get(&account_id)).is_some_and(|old|!config_runtime::same_principal(old,&principal)) {return Ok(Vec::new());}
     if let Some(name)=focus_username {allowed.retain(|v|v==&name);}
+    if let Some(names)=focus_usernames {
+        if names.len()>40 {return Err("一次最多读取 40 个会话名称。".into());}
+        let names:HashSet<_>=names.into_iter().collect();
+        allowed.retain(|v|names.contains(v));
+    }
     let wa=whatsapp::is_account(&account_id);let cache=decrypt::cache_dir(&data,&account_id);
     let cache_key=hex::encode(sha2::Sha256::digest(serde_json::to_vec(&("sessions-v1",&principal,limit.unwrap_or(50),offset.unwrap_or(0),&{let mut v:Vec<_>=allowed.iter().cloned().collect();v.sort();v})).map_err(|e|e.to_string())?));
     let read_data=data.clone();let read_key=cache_key.clone();
     tauri::async_runtime::spawn_blocking(move||{
+        if !wa && allowed.iter().any(|name|name.ends_with("@qy_g") || name.ends_with("@qy_u")) {let _=decrypt::prepare_business_cache(&data,&account_id,false);}
         let result=if wa {whatsapp::sessions_page(&data,&allowed,limit.unwrap_or(50).clamp(1,100),offset.unwrap_or(0).min(1000))}
         else {query::sessions_page(&cache,Some(&allowed),Some(limit.unwrap_or(50).clamp(1,100)),offset.unwrap_or(0).min(1000))};
         match result {
@@ -8317,6 +8323,7 @@ async fn wechat_messages(
     });
     if !query::is_visible_chat_username(&username) {return Err("该会话不在查看范围内。".into());}
     tauri::async_runtime::spawn_blocking(move||{
+        if username.ends_with("@qy_g") || username.ends_with("@qy_u") {decrypt::prepare_business_cache(&app_data(&app),&account_id,true)?;}
         if !query::chat_present(&cache,&username)? {return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());}
         let rows=query::messages(&cache,&username,limit.unwrap_or(100).clamp(1,100),cursor)?;
         if rows.is_empty() && before.is_none() {return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());}

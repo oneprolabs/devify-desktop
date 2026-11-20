@@ -851,14 +851,14 @@ export default function WeChatLocal({
         setWhitelistConfigured(allowed.length > 0);
         const list = await invoke<SessionItem[]>('chat_sessions', { accountId: id, focusUsername: focusConversationRef.current || undefined });
         const focus = focusConversationRef.current;
-        const shown = !list.length && focus ? [{ username: focus, display: focus, is_group: focus.endsWith('@chatroom'), last_time: null, member_count: null, preview: null, unread: null }] : list;
+        const shown = !list.length && focus ? [{ username: focus, display: focus, is_group: focus.endsWith('@chatroom') || focus.endsWith('@qy_g'), last_time: null, member_count: null, preview: null, unread: null }] : list;
         setSessions(shown);
         setSessionsLoaded(true);
         return shown;
       } catch (e) {
         const message = String(e);
         const focus = focusConversationRef.current;
-        setSessions(focus ? [{ username: focus, display: focus, is_group: focus.endsWith('@chatroom'), last_time: null, member_count: null, preview: null, unread: null }] : []);
+        setSessions(focus ? [{ username: focus, display: focus, is_group: focus.endsWith('@chatroom') || focus.endsWith('@qy_g'), last_time: null, member_count: null, preview: null, unread: null }] : []);
         setSessionsLoaded(true);
         setWhitelistConfigured(null);
         // Before the first decrypt there is simply no session.db; that is the

@@ -62,10 +62,15 @@ export function RemoteChatFallback({ accountId, username }: { accountId: string;
     const found = await invoke<Message>('devify_message_detail', { spaceId: space, conversationId: conversation, messageId: message.id });
     if (id === request.current) setMessages(current => current.map(row => row.id === message.id ? { ...row, parts: found.parts ?? [] } : row));
   };
-  return <section className="remote-chat-fallback"><p className="imports-hint">{t('本地没有这段记录，正在查看云端备份。')}</p>
-    {busy && <p role="status">{t('正在读取云端备份…')}</p>}
-    {error && <div role="alert"><p>{error}</p><WizardActionButton onAction={() => load()}>{t('重试')}</WizardActionButton></div>}
-    {!busy && !error && !messages.length && <p>{t('未找到可访问的云端备份。可以检查当前空间与访问权限。')}</p>}
+  return <section className="remote-chat-fallback">
+    {busy && <div className="remote-chat-state" role="status"><span className="wizard-action-spinner" aria-hidden="true"/><h3>{t('正在查找云端备份')}</h3><p>{t('本地暂时无法读取这段记录，正在检查已备份的内容。')}</p></div>}
+    {!busy && error && <div className="remote-chat-state" role="alert"><h3>{t('读取备份失败')}</h3><p>{error}</p><WizardActionButton className="connector-quiet" onAction={() => load()}>{t('重试')}</WizardActionButton></div>}
+    {!busy && !error && !messages.length && <div className="remote-chat-state" role="status">
+      <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M6 5.5h20a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H13l-7 5v-5a2 2 0 0 1-2-2v-14a2 2 0 0 1 2-2Z"/><path d="M10 12h12M10 17h8"/></svg>
+      <h3>{t('暂时没有可查看的记录')}</h3><p>{t('本地暂时无法读取这段记录，当前空间也未找到云端备份。')}</p>
+      <WizardActionButton className="connector-quiet" onAction={() => load()}>{t('重新检查备份')}</WizardActionButton>
+    </div>}
+    {!busy && messages.length > 0 && <p className="remote-chat-notice">{t('正在显示云端备份，本地记录未能读取。')}</p>}
     {!busy && messages.map(message => <article className="remote-chat-message" key={message.id}><small>{message.sender_name || message.sender_key} · {new Date(message.occurred_at).toLocaleString()}</small>
       {message.parts ? message.parts.map(part => <div key={part.id}>{part.text && <p>{part.text}</p>}{part.kind === 'image' && (part.upload_item_id || part.media_url) && <LazyImage spaceId={space} item={part.upload_item_id} mediaUrl={part.media_url} />}</div>) : <><p>{message.preview}</p><WizardActionButton className="connector-quiet" onAction={() => detail(message)}>{t('查看完整消息')}</WizardActionButton></>}
     </article>)}

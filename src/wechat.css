@@ -1667,6 +1667,12 @@
   margin: 4px 0 12px;
 }
 .remote-chat-fallback { height: 100%; min-height: 240px; overflow: auto; padding: 24px; box-sizing: border-box; }
+.remote-chat-state { max-width: 440px; margin: 56px auto; padding: 24px; text-align: center; color: #686865; }
+.remote-chat-state > svg { display: block; width: 36px; height: 36px; margin: 0 auto 18px; color: #898985; }
+.remote-chat-state > .wizard-action-spinner { display: inline-block; color: #a3279a; }
+.remote-chat-state h3 { margin: 12px 0 8px; color: #262624; font-size: 17px; font-weight: 600; }
+.remote-chat-state p { margin: 0 0 20px; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.remote-chat-notice { margin: 0 0 16px; color: #686865; font-size: 13px; line-height: 1.7; }
 .remote-chat-message { padding: 16px 0; border-bottom: 1px solid #ececea; }
 .remote-chat-message p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .remote-chat-message small { color: #858580; }

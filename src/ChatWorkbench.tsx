@@ -111,13 +111,15 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   // Read messages only for the selected conversation, including the initial first chat.
   useEffect(() => { if (selectedSession && view === 'raw') setRawMounted(true); }, [selectedSession, view]);
   const [hasMoreSessions, setHasMoreSessions] = useState(false);
+  const [moreSessionsError, setMoreSessionsError] = useState<{ source: string; message: string } | null>(null);
+  const [loadingSource, setLoadingSource] = useState<string | null>(null);
   const sessionOffsets = useRef(new Map<string, { account: ChatAccount; offset: number }>());
   const moreLock = useRef(false);
 
   const load = useCallback(async () => {
     if (!isTauri()) return;
     const generation = ++loadGeneration.current;
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setMoreSessionsError(null); setLoadingSource(null);
     try {
       const [stored, found] = await Promise.all([invoke<Settings>('app_settings_get'), invoke<ChatAccount[]>('chat_accounts')]);
       const connections = stored.connectors ?? {};
@@ -146,23 +148,35 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   }, []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (view === 'summary' && visible) void invoke<SummaryRecord[]>('summary_history_list').then(setSummaries).catch(() => setSummaries([])); }, [view, visible]);
-  const loadMoreSessions = async () => {
+  const loadMoreSessions = async (source: string) => {
     if (moreLock.current) return;
-    moreLock.current = true; setLoading(true);
+    moreLock.current = true; setLoading(true); setMoreSessionsError(null); setLoadingSource(source);
     const generation = loadGeneration.current;
     try {
       // At most two independent source reads in flight, bounded to 50 each.
       const added: OwnedSession[] = [];
+      const pages: Array<{ id: string; entry: { account: ChatAccount; offset: number }; count: number }> = [];
       for (const [id, entry] of sessionOffsets.current) {
+        if ((entry.account.source ?? 'wechat') !== source) continue;
         const rows = await invoke<Session[]>('chat_sessions', { accountId: id, limit: 50, offset: entry.offset });
         if (generation !== loadGeneration.current) return;
         added.push(...rows.map(row => ({ ...row, accountId: id, source: entry.account.source ?? 'wechat' })));
-        if (rows.length < 50) sessionOffsets.current.delete(id); else entry.offset += 50;
+        pages.push({ id, entry, count: rows.length });
       }
-      setSessions(current => [...current, ...added].slice(-200));
+      // Commit offsets only after the whole page succeeds, so a retry cannot skip rows.
+      for (const { id, entry, count } of pages) {
+        if (count < 50) sessionOffsets.current.delete(id); else entry.offset += 50;
+      }
+      setSessions(current => {
+        const merged = [...new Map([...current, ...added].map(row => [sessionKey(row.accountId, row.username), row])).values()];
+        const other = merged.filter(row => row.source !== source).slice(-150);
+        const own = merged.filter(row => row.source === source).slice(-(200 - other.length));
+        const keep = new Set([...other, ...own].map(row => sessionKey(row.accountId, row.username)));
+        return merged.filter(row => keep.has(sessionKey(row.accountId, row.username)));
+      });
       setHasMoreSessions(sessionOffsets.current.size > 0);
-    } catch (reason) { setError(String(reason)); }
-    finally { moreLock.current = false; setLoading(false); }
+    } catch (reason) { if (generation === loadGeneration.current) setMoreSessionsError({ source, message: String(reason) }); }
+    finally { moreLock.current = false; if (generation === loadGeneration.current) { setLoading(false); setLoadingSource(null); } }
   };
   const wasVisible = useRef(visible);
   useEffect(() => {
@@ -361,13 +375,17 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const sourceGroups = useMemo(() => {
     const order: string[] = [];
     const bySource = new Map<string, OwnedSession[]>();
+    for (const session of sessions) {
+      const source = session.source || 'wechat';
+      if (!bySource.has(source)) { bySource.set(source, []); order.push(source); }
+    }
     for (const session of visibleSessions) {
       const source = session.source || 'wechat';
       if (!bySource.has(source)) { bySource.set(source, []); order.push(source); }
       bySource.get(source)!.push(session);
     }
     return order.map(source => ({ source, sessions: bySource.get(source)! }));
-  }, [visibleSessions]);
+  }, [sessions, visibleSessions]);
   const multiSource = sourceGroups.length > 1;
   const scopedEvents = eventsScope === JSON.stringify([settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username]) ? events : [];
   const visibleEvents = useMemo(() => {
@@ -433,13 +451,24 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         <button type="button" className={filter === 'local' ? 'active' : ''} onClick={() => setFilter('local')}>{t("只在本机")} <small>{localCount}</small></button>
       </div>
       <div className="chat-workbench-session-label"><span>{t("会话 ·")} {visibleSessions.length}</span><span className="chat-workbench-list-tools">{t("按最后更新")} <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label={t("刷新会话")} title={t("刷新会话")}>↻</button></span></div>
-      <div className="chat-workbench-sessions">
+      <div className="chat-workbench-sessions" aria-busy={loading} onScroll={event => {
+        const list = event.currentTarget;
+        if (!visible || !hasMoreSessions || loading) return;
+        const viewport = list.getBoundingClientRect();
+        for (const marker of list.querySelectorAll<HTMLElement>('[data-more-source]')) {
+          const source = marker.dataset.moreSource!;
+          const bounds = marker.getBoundingClientRect();
+          if (moreSessionsError?.source !== source && bounds.top <= viewport.bottom + 160 && bounds.bottom >= viewport.top) { void loadMoreSessions(source); break; }
+        }
+      }}>
         {loading && !sessions.length && <LoadingSkeleton label={t("正在加载会话")} />}
         {error && <p className="chat-workbench-load-error" role="alert">{t(error)} <button type="button" onClick={() => void load()}>{t("重试")}</button></p>}
         {sourceGroups.map(group => {
           const collapsed = multiSource && Boolean(collapsedSources[group.source]);
           const label = group.source === 'whatsapp' ? 'WhatsApp' : t("微信");
-          return <Fragment key={group.source}>
+          const hasMore = [...sessionOffsets.current.values()].some(entry => (entry.account.source ?? 'wechat') === group.source);
+          const readError = moreSessionsError?.source === group.source ? moreSessionsError.message : '';
+          return <div className="chat-workbench-source-section" key={group.source}>
             {multiSource && <button type="button" className="chat-workbench-source-group" aria-expanded={!collapsed} onClick={() => setCollapsedSources(current => ({ ...current, [group.source]: !current[group.source] }))}>
               <img src={group.source === 'whatsapp' ? whatsappIcon : wechatIcon} alt=""/>
               <span>{t(label)}</span>
@@ -463,9 +492,13 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                 </button>;
               })}
             </Fragment>)}
-          </Fragment>;
+            {!collapsed && hasMore && <div className="chat-workbench-source-more" data-more-source={group.source}>
+              {loadingSource === group.source && <p className="chat-workbench-empty" role="status">{t('正在读取会话…')}</p>}
+              {readError && <p className="chat-workbench-load-error" role="alert">{t(readError)} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(group.source)}>{t('重试')}</button></p>}
+              {!loading && !readError && (query.trim() || filter !== 'all') && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions(group.source)}>{t('加载更多会话')}</button>}
+            </div>}
+          </div>;
         })}
-        {!loading && hasMoreSessions && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions()}>{t('加载更多会话')}</button>}
         {!loading && !visibleSessions.length && <p className="chat-workbench-empty">{t("没有符合条件的会话。")}</p>}
       </div>
       <SidebarResizeHandle/>

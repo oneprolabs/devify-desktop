@@ -42,10 +42,20 @@ const wechat = 'wx_test';
 const session = { username: 'shared', display: 'WhatsApp 测试会话', is_group: false, last_time: 1 };
 const wechatSession = { username: 'shared', display: '微信测试会话', is_group: false, last_time: 2 };
 let hideWhatsAppFromFirstPage = false;
+let pagedSessions = false, failNextWeChatPage = false;
+const pageReads = [];
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
   if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: [session.username] } } };
-  if (command === 'chat_sessions') return args.accountId === wechat ? [wechatSession] : hideWhatsAppFromFirstPage ? [] : [session];
+  if (command === 'chat_sessions') {
+    if (pagedSessions) {
+      const offset=args.offset??0;
+      if(offset)pageReads.push([args.accountId,offset]);
+      if(offset&&args.accountId===wechat&&failNextWeChatPage){failNextWeChatPage=false;throw Error('temporary local read failure');}
+      return Array.from({length:offset?2:50},(_,i)=>({username:`${args.accountId}-${offset+i}`,display:`${args.accountId} chat ${offset+i}`,last_time:1000-offset-i,is_group:false}));
+    }
+    return args.accountId === wechat ? [wechatSession] : hideWhatsAppFromFirstPage ? [] : [session];
+  }
   if (command === 'wechat_upload_state') { uploadStateCalls++; return new Promise(resolve => { resolveUploadState = resolve; }); }
   if (['wechat_avatars', 'summary_history_list'].includes(command)) return [];
   return null;
@@ -165,4 +175,31 @@ render();
 assert.equal(uploadStateCalls, 2, 'returning to the pane resumes a bounded refresh');
 resolveUploadState([]);
 for (let i = 0; i < 10; i++) await Promise.resolve();
-console.log('Chat account initialization, source grouping, collapse, hidden polling and overlapping read checks passed');
+pagedSessions=true;
+tree=render();nodes(tree).find(node=>node.props?.['aria-label']==='刷新会话').props.onClick();
+for(let i=0;i<20;i++)await Promise.resolve();
+tree=render();
+const scrollList=()=>nodes(tree).find(node=>node.props?.className==='chat-workbench-sessions');
+const scrollAt=(source,near=true)=>({currentTarget:{getBoundingClientRect:()=>({top:0,bottom:500}),querySelectorAll:()=>nodes(tree).filter(node=>node.props?.['data-more-source']).map(node=>({dataset:{moreSource:node.props['data-more-source']},getBoundingClientRect:()=>({top:near&&node.props['data-more-source']===source?450:2000,bottom:near&&node.props['data-more-source']===source?460:2010})}))}});
+scrollList().props.onScroll(scrollAt('wechat',false));
+assert.equal(pageReads.length,0,'scrolling far from the bottom does not prefetch pages');
+groupHeaders().find(node=>deepText(node).includes('微信')).props.onClick();tree=render();
+scrollList().props.onScroll(scrollAt('wechat'));
+assert.equal(pageReads.length,0,'collapsed sources cannot auto-load');
+groupHeaders().find(node=>deepText(node).includes('微信')).props.onClick();tree=render();
+failNextWeChatPage=true;
+const bottom=scrollAt('wechat');
+scrollList().props.onScroll(bottom);scrollList().props.onScroll(bottom);
+for(let i=0;i<20;i++)await Promise.resolve();tree=render();
+assert.deepEqual(pageReads,[[wechat,50]],'only the visible platform loads, with no overlapping page reads');
+scrollList().props.onScroll(scrollAt('wechat'));assert.equal(pageReads.length,1,'a failed page waits for explicit retry');
+nodes(tree).find(node=>node.type==='button'&&node.props.children==='重试').props.onClick();
+for(let i=0;i<20;i++)await Promise.resolve();tree=render();
+assert.deepEqual(pageReads,[[wechat,50],[wechat,50]],'retry keeps the failed platform offset');
+scrollList().props.onScroll(scrollAt('whatsapp'));
+for(let i=0;i<20;i++)await Promise.resolve();tree=render();
+assert.deepEqual(pageReads,[[wechat,50],[wechat,50],[account,50]],'WhatsApp keeps its independent offset');
+assert.ok(textOf(tree).includes(`${account} chat 51`));
+assert.ok(textOf(tree).includes(`${wechat} chat 51`));
+scrollList().props.onScroll(scrollAt('whatsapp'));assert.equal(pageReads.length,3,'end of list does not issue more reads');
+console.log('Chat selection, grouping, hidden polling and bounded scroll pagination/retry checks passed');

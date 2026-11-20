@@ -721,7 +721,8 @@
 
 .chat-workbench-sessions { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 12px; }
 .chat-workbench-community-label { padding: 12px 10px 4px; color: #74746e; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-workbench-source-group { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px 6px; border: 0; border-radius: 8px; background: transparent; color: #5f5f5a; font: inherit; font-size: 12.5px; font-weight: 600; text-align: left; cursor: pointer; }
+.chat-workbench-source-group { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px 6px; border: 0; border-radius: 8px; background: #fafafa; color: #5f5f5a; font: inherit; font-size: 12.5px; font-weight: 600; text-align: left; cursor: pointer; }
+.chat-workbench-source-more { min-height: 1px; }
 .chat-workbench-source-group:hover { background: #f0f0ed; }
 .chat-workbench-source-group img { width: 16px; height: 16px; display: block; border-radius: 4px; }
 .chat-workbench-source-group span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
