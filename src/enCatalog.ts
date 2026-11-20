@@ -1,4 +1,6 @@
 export const en: Record<string, string> = {
+  "后台备份": "Background backup",
+  "微信与 WhatsApp 按统一周期自动备份。": "WeChat and WhatsApp share one automatic backup schedule.",
   "正在查找云端备份": "Looking for a cloud backup",
   "本地暂时无法读取这段记录，正在检查已备份的内容。": "These records are unavailable locally. Checking for a backup.",
   "读取备份失败": "Unable to read the backup",
