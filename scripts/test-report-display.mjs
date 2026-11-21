@@ -305,7 +305,10 @@ assert.match(text(eventTree),/当前筛选下没有记录/);
 detailResolvers[0](completedEvent);await flush();eventTree=renderEvents();
 assert.equal(hasDetailLoading(eventTree),false,'Late detail completion must not restore the cancelled view');
 assert.ok(!elements(eventTree).some(node=>node.props?.className==='analysis-doc'));
+find(eventTree,node=>node.type==='input'&&node.props['aria-label']==='搜索事件').props.onChange({target:{value:'no matches'}});
+eventTree=renderEvents();
 find(eventTree,node=>node.type==='button'&&text(node)==='查看全部事件').props.onClick();
+assert.equal(find(renderEvents(),node=>node.type==='input'&&node.props['aria-label']==='搜索事件').props.value,'');
 for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
 assert.equal(detailResolvers.length,2,'View all selects the visible event even when focusId is null');
 detailResolvers[1](completedEvent);await flush();eventTree=renderEvents();

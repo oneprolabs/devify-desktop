@@ -59,3 +59,4 @@
   .backup-page.backup-v7 .plan-row-label { flex-basis: 100%; }
   .backup-page.backup-v7 .plan-row-control, .backup-page.backup-v7 .plan-pills { justify-content: flex-start; max-width: 100%; }
 }
+.wechat-wizard .wizard-settings-step .page-actions > .backup-next-saving:disabled { background: #a3279a; border-color: #a3279a; color: #fff; cursor: progress; }

@@ -9,7 +9,7 @@ import { formatAskAnswer } from './askAnswer';
 import { renderAgentMarkdown } from '../../shared/content/summary';
 
 type Citation = { kind: string; id: number; title: string; excerpt: string; conversation_id?: number | null; event_id?: number | null; note_id?: number | null };
-type Question = { id: number; thread_id?: number | null; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };
+type Question = { id: number; thread_id?: number | null; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string; scope?: { since?: string | null; until?: string | null } };
 type Settings = { devify?: { active_space_id: string | null } };
 
 const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
@@ -177,6 +177,9 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const startNew = () => { setSelectedId(null); setPending(''); setError(''); };
 
   const renderTurn = (question: Question, answer: string, citations: Citation[], status: string, created?: string) => {
+    const start = question.scope?.since;
+    const end = question.scope?.until;
+    const answerRange = start && end ? `${dateLabel(start)} – ${dateLabel(end)}` : start ? tf("从 {0} 起", dateLabel(start)) : end ? tf("截至 {0}", dateLabel(end)) : question.scope ? t("全部") : '';
     const events = citations.filter(citation => citationKind(citation) === 'event' || citation.event_id);
     const sources = citations.filter(citation => !(citationKind(citation) === 'event' || citation.event_id));
     return <div className="ask-turn">
@@ -230,7 +233,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
             </div>
           </section>}
 
-          {created && status !== 'queued' && status !== 'failed' && <p className="ask-foot">{t("基于")} {events.length} {t("个事件、")}{sources.length} {t("条原文 ·")} {dayLabel(created)} {t("· 范围：")}{range}</p>}
+          {created && status !== 'queued' && status !== 'failed' && <p className="ask-foot">{t("基于")} {events.length} {t("个事件、")}{sources.length} {t("条原文 ·")} {dayLabel(created)}{answerRange && <> {t("· 范围：")}{answerRange}</>}</p>}
         </div>
       </div>
     </div>;

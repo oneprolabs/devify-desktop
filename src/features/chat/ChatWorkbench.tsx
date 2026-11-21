@@ -62,8 +62,11 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const pageAnchor = useRef<{ source: string; key: string; top: number } | null>(null);
   const [seenActivity, setSeenActivity] = useState<Record<string, number>>({});
   const [query, setQuery] = useState('');
+  const [detailQueries, setDetailQueries] = useState<Partial<Record<View, string>>>({});
+  const detailQuery = detailQueries[view] ?? '';
   const [sessions, setSessions] = useState<OwnedSession[]>([]);
   const [selectedSession, setSelectedSession] = useState<OwnedSession | null>(null);
+  useEffect(() => { setDetailQueries({}); }, [selectedSession?.accountId, selectedSession?.username]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [eventsScope, setEventsScope] = useState('');
   const [summaryStatus, setSummaryStatus] = useState({count:0,busy:false});
@@ -385,11 +388,9 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   }, [syncing, syncNoticePending, syncNoticeError, syncNotice]);
 
   const visibleSessions = useMemo(() => {
-    // In the raw tab the header search targets message content, so the conversation list
-    // must not collapse to sessions whose names happen to contain the keyword.
-    const keyword = view === 'raw' ? '' : query.trim().toLowerCase();
+    const keyword = query.trim().toLowerCase();
     return platformSessions.filter(session => (!keyword || `${session.display} ${session.username}`.toLowerCase().includes(keyword)) && (filter === 'all' || pendingSessions.has(sessionKey(session.accountId, session.username))));
-  }, [platformSessions, query, filter, pendingSessions, view]);
+  }, [platformSessions, query, filter, pendingSessions]);
   /** Community grouping inside one source; the newest-activity order is preserved. */
   const groupSessions = (list: OwnedSession[]) => {
     const groups: Array<{ key: string; name?: string; sessions: OwnedSession[] }> = [];
@@ -447,7 +448,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         <p>{loading && !sessions.length ? t("正在读取会话…") : tf("{0} 个会话 · {1} 个待传", platformSessions.length, pendingCount)}</p>
       </header>
       <ChatPlatformBar platforms={platforms} selected={activeSource} onSelect={selectPlatform} onAddPlatform={onAddPlatform} visible={visible}/>
-      <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索会话与聊天记录")}/>
+      <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索会话")}/>
       <div className="chat-workbench-filters">
         <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>{t("全部")} <small>{platformSessions.length}</small></button>
         <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>{t("待传")} <small>{pendingCount}</small></button>
@@ -511,7 +512,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                 : summaryStatus.count > 0 && <small>{summaryStatus.count}</small>}
             </button>
           </div>
-          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")} value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")}/>
+          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")} value={detailQuery} onChange={event => { const value = event.target.value; setDetailQueries(current => ({ ...current, [view]: value })); }} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")}/>
           {view === 'raw' && chatState.active && summarySelection.length > 0 && <div className="chat-workbench-head-actions">
             <button type="button" className="selected" onClick={()=>{setSummaryPickRequest(value=>value+1);setView('summary');}}>{tf('总结所选 {0} 条',summarySelection.length)}</button>
           </div>}</div>
@@ -525,7 +526,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         error={error || eventsError}
         events={scopedEvents}
         sessionCount={sessions.length}
-        query={query}
+        query={detailQueries.events ?? ''}
         filter={filter}
         onRetry={() => { if (error) void load(); else setEventRefresh(value => value + 1); }}
         onSchedule={onSchedule}
@@ -552,7 +553,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           sessionRevision={sessionRevision}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
           focusMessageId={rawFocus?.messageId}
-          searchKeyword={view === 'raw' ? query : ''}
+          searchKeyword={view === 'raw' ? detailQuery : ''}
           onClearSearch={() => setQuery('')}
           onChatState={setChatState}
           onSummarySelection={setSummarySelection}
@@ -573,7 +574,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           session={selectedSession}
           selection={summarySelection}
           pickRequest={summaryPickRequest}
-          query={query}
+          query={detailQuery}
           onPick={()=>setView('raw')}
           onOpenTasks={onOpenTasks}
           onStatus={setSummaryStatus}
