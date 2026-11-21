@@ -1,0 +1,10 @@
+.backup-runtime-control { display: flex; flex-shrink: 0; align-items: center; gap: 12px; color: #444440; font-size: 14px; }
+.backup-runtime-control .backup-runtime-switch { position: relative; display: inline-block; flex-shrink: 0; box-sizing: border-box; width: 34px; height: 20px; min-height: 0; padding: 0; border: 0; border-radius: 999px; background: #cfcfca; box-shadow: none; cursor: pointer; }
+.backup-runtime-control .backup-runtime-switch.on { background: #1a1a19; }
+.backup-runtime-control .backup-runtime-switch:hover:not(:disabled) { background: #cfcfca; }
+.backup-runtime-control .backup-runtime-switch.on:hover:not(:disabled) { background: #1a1a19; }
+.backup-runtime-control .backup-runtime-switch:disabled { opacity: 1; cursor: progress; }
+.backup-runtime-control .backup-runtime-switch > span { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transform: translateX(0); transition: transform .15s ease; }
+.backup-runtime-control .backup-runtime-switch.on > span { transform: translateX(14px); }
+.backup-runtime-control .backup-runtime-switch:focus-visible { outline: 2px solid #a3279a; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .backup-runtime-control .backup-runtime-switch > span { transition: none; } }

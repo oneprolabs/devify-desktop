@@ -538,7 +538,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
   const sourceAccounts = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === source);
   const editor = <>
     {(!wizardWechat || accounts.length > 1 || !accountId) && <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name={sourceName} /></span><span className="wechat-account-details"><strong>{t("聊天账号")}</strong><small>{t("未检测到可用的聊天账号")}</small></span></>}{sourceAccounts.length > 1 && <AccountPicker accounts={sourceAccounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={changeAccount} />}</section>}
-    {source === 'whatsapp' && <p className="imports-hint">{t("WhatsApp 目前支持手动备份。选择的账号和范围在保存成功后才生效。")}</p>}
+    {source === 'whatsapp' && <p className="imports-hint">{t("选择的账号和范围同步成功后，将按备份周期自动执行。")}</p>}
     <WizardImportScope catalog={catalog} selected={allowed} loading={catalogLoading} disabled={saving} accountId={accountId} onScope={setScopeSelection} selectionIssue={selectionIssue} onClearIssue={() => setSelectionIssue(null)} sourceName={sourceName}>
       <WizardSessionPicker items={visibleCatalog} total={matchedCatalog.length} groupCount={groupCount}
         selected={allowed} selectedCount={allowedCount} kind={kind} onKind={setKind} search={search} onSearch={setSearch}
@@ -667,9 +667,6 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     setLoaded(true);
   };
   const [profile, setProfile] = useState<{ display_name?: string; username?: string } | null>(initialUser ? { display_name: initialUser } : null);
-  const [wechatStatus, setWechatStatus] = useState(t("正在检查…"));
-  const [wechatAccounts, setWechatAccounts] = useState<Account[]>([]);
-  const wechatProfiles = useWechatProfiles(wechatAccounts);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -678,14 +675,6 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
   const [spaces, setSpaces] = useState<DevifySpace[]>([]);
   const [spacesStatus, setSpacesStatus] = useState('');
-
-  useEffect(() => {
-    let active = true;
-    void invoke<ScanResult>('wechat_scan').then(scan => {
-      if (active) { setWechatAccounts(scan.accounts); setWechatStatus(scan.accounts.length ? tf("本机发现 {0} 个微信账号", scan.accounts.length) : t("未发现微信账号")); }
-    }).catch(() => { if (active) setWechatStatus(t("无法检查微信账号")); });
-    return () => { active = false; };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -814,12 +803,12 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     }).finally(() => { pendingSaves.current -= 1; });
   };
 
-  if (!loaded) return <div className="settings-page">{error ? <div className="error">{t("设置加载失败：")}{t(error)} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
+  if (!loaded) return <div className="settings-page settings-refreshed account-settings">{error ? <div className="error">{t("设置加载失败：")}{t(error)} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
 
-  return <div className="settings-page account-settings">
+  return <div className="settings-page settings-refreshed account-settings">
     <header className="page-head">
       <h2>{t("账户")}</h2>
-      <p className="help">{t("管理 AIMyChats 账号、服务连接和微信数据来源。")}</p>
+      <p className="help">{t("管理 AIMyChats 账号、服务连接和空间。")}</p>
     </header>
 
     <section className="account-profile-card account-identity"><h3>{t("AIMyChats 账户")}</h3><div className="account-profile-content">
@@ -869,10 +858,8 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
 
     </div></section>
 
-    <section className="account-profile-card account-wechat"><h3>{t("微信数据来源")}</h3>{wechatAccounts.length ? wechatAccounts.map(account => <div key={account.id} className="wechat-source-account"><WechatIdentity account={account} profile={wechatProfiles[account.id]} source="wechat" /></div>) : <div><span className="wechat-account-avatar"><ConnectorIcon name="微信" /></span><span><strong>{wechatStatus}</strong><small>{t("微信账号与 AIMyChats 账号相互独立，用于读取本机聊天记录。")}</small></span></div>}</section>
-
     {notice && <div className="notice">{notice}</div>}
-    {error && <div className="error">{t(error)}</div>}
+    {error && <div className="error" role="alert">{t(error)}</div>}
     {saveError && <div className="error" role="alert">{saveError}</div>}
   </div>;
 }

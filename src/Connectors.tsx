@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from './Settings';
 import { detectTitle, detectTitleFor, useConnectorDetect } from './connectorDetect';
+import { useTaskRuntime } from './taskRuntime';
 import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import telegramIcon from './assets/connectors/telegram.svg';
@@ -57,10 +58,14 @@ const futureConnectors: Connector[] = [
   { name: 'LINE', description: '导入聊天文本', capabilities: '' },
 ];
 
-export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (configured: boolean) => void; onOpenWhatsApp: () => void }) {
+export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (configured: boolean, resumeAccountId?: string) => void; onOpenWhatsApp: (resumeAccountId?: string) => void }) {
+  const runtime = useTaskRuntime();
+  const wechatIncompleteSource = (runtime.sources ?? []).find(source => source.platform === 'wechat' && !source.setup_complete);
+  const wechatIncomplete = Boolean(wechatIncompleteSource);
   const install = useConnectorDetect('wechat');
   const whatsappInstall = useConnectorDetect('whatsapp');
   const [whatsapp, setWhatsapp] = useState<WhatsAppStatus | null>(null);
+  const whatsappIncomplete = (runtime.sources ?? []).some(source => source.account_id === whatsapp?.account && !source.setup_complete);
   const [whatsappEnabled, setWhatsappEnabled] = useState(true);
   const [whatsappBusy, setWhatsappBusy] = useState(false);
   const [probe, setProbe] = useState<Probe | null>(null);
@@ -212,7 +217,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
             <div>
               <h3>{t("微信")}</h3>
               <p className="connector-state">
-                <span className={missing ? 'bad' : enabled && probe?.verifiedAccounts ? 'good' : ''} />
+                <span className={missing ? 'bad' : enabled && probe?.verifiedAccounts && !wechatIncomplete ? 'good' : ''} />
                 {install.checking ? t("正在检测本机微信…") : missing ? detectTitle[install.detect!.state] : signatureWarning ? t("已检测到微信 · 签名待确认") : enabled ? status : t("已断开 · 停止读取本机消息")}
               </p>
             </div>
@@ -228,9 +233,10 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
           </p>}
           {!missing && !signatureWarning && install.detect?.version && <details className="connector-install-details"><summary>{t("微信")}{install.detect.version} {t("· 官方签名")}</summary><p className="connector-install-meta">{install.detect.app_path}</p><button type="button" className="connector-quiet" onClick={recheckAll} disabled={loading || install.checking}>{t("重新检查")}</button></details>}
           <p className="connector-capabilities">{t("历史记录 · 群聊 · 增量同步")}</p>
+          {enabled && wechatIncomplete && <p className="connector-setup-state" role="status">{t("配置未完成，备份已暂停。")}</p>}
           <div className="connector-actions">
             {enabled ? <>
-              <button type="button" className={`connector-primary${probe?.verifiedAccounts ? ' connector-configured' : ''}`} onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts))} disabled={!install.canProceed} title={missing ? t("请先安装微信") : undefined}>{probe?.verifiedAccounts ? t("重新配置") : t("打开连接向导")}</button>
+              <button type="button" className={`connector-primary${probe?.verifiedAccounts && !wechatIncomplete ? ' connector-configured' : ''}`} onClick={() => onOpenWechat(Boolean(probe?.verifiedAccounts), wechatIncompleteSource?.account_id)} disabled={!install.canProceed} title={missing ? t("请先安装微信") : undefined}>{wechatIncomplete ? t("继续配置") : probe?.verifiedAccounts ? t("重新配置") : t("打开连接向导")}</button>
               {missing && install.detect!.state === 'not_installed' && <a className="connector-link" href="https://pc.weixin.qq.com/" target="_blank" rel="noreferrer">{t("前往下载微信 ↗")}</a>}
               {isTauri() && (!missing || hasHistory) && <button type="button" className="connector-quiet danger" onClick={() => setConfirming(true)} disabled={saving || !settingsLoaded}>{t("断开")}</button>}
             </> : <>
@@ -256,7 +262,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
             <div>
               <h3>WhatsApp</h3>
               <p className="connector-state">
-                <span className={whatsappMissing ? 'bad' : whatsappEnabled && whatsapp?.sessions ? 'good' : ''} />
+                <span className={whatsappMissing ? 'bad' : whatsappEnabled && whatsapp?.sessions && !whatsappIncomplete ? 'good' : ''} />
                 {whatsappInstall.checking || whatsappBusy ? t("正在检测本机 WhatsApp…")
                   : whatsappMissing ? detectTitleFor('WhatsApp', whatsappInstall.detect!.state)
                     : !whatsappEnabled ? t("已断开 · 停止读取本机消息")
@@ -276,14 +282,15 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
           </p>}
           {!whatsappMissing && whatsappInstall.detect?.version && <details className="connector-install-details"><summary>WhatsApp {whatsappInstall.detect.version} {t("· 官方签名")}</summary><p className="connector-install-meta">{whatsappInstall.detect.app_path}</p><button type="button" className="connector-quiet" onClick={() => { void whatsappInstall.recheck(); void refreshWhatsapp(); }} disabled={whatsappBusy || whatsappInstall.checking}>{t("重新检查")}</button></details>}
           {whatsapp?.error && <p className="connector-error" role="alert">{whatsapp.error}</p>}
-          <p className="connector-capabilities">{t("历史记录 · 群聊 · 手动备份")}</p>
+          <p className="connector-capabilities">{t("历史记录 · 群聊 · 增量同步")}</p>
+          {whatsappEnabled && whatsappIncomplete && <p className="connector-setup-state" role="status">{t("配置未完成，备份已暂停。")}</p>}
           <div className="connector-actions">
             {whatsappEnabled ? <>
-              <button type="button" className={`connector-primary${whatsapp?.account && !whatsapp.error ? ' connector-configured' : ''}`} onClick={onOpenWhatsApp}>{whatsapp?.account && !whatsapp.error ? t("重新配置") : t("打开连接向导")}</button>
+              <button type="button" className={`connector-primary${whatsapp?.account && !whatsapp.error && !whatsappIncomplete ? ' connector-configured' : ''}`} onClick={() => onOpenWhatsApp(whatsappIncomplete ? whatsapp?.account ?? undefined : undefined)}>{whatsappIncomplete ? t("继续配置") : whatsapp?.account && !whatsapp.error ? t("重新配置") : t("打开连接向导")}</button>
               {whatsappMissing && whatsappInstall.detect!.state === 'not_installed' && <a className="connector-link" href="https://www.whatsapp.com/download" target="_blank" rel="noreferrer">{t("前往下载 WhatsApp ↗")}</a>}
               {isTauri() && !whatsappMissing && <button type="button" className="connector-quiet danger" onClick={() => setWhatsappConnected(false)} disabled={saving || !settingsLoaded}>{t("断开")}</button>}
             </> : <>
-              <button type="button" className="connector-primary" onClick={onOpenWhatsApp}>{t("打开连接向导")}</button>
+              <button type="button" className="connector-primary" onClick={() => onOpenWhatsApp()}>{t("打开连接向导")}</button>
             </>}
           </div>
         </article>

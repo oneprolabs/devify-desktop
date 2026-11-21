@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { ConnectorIcon } from './Connectors';
 import { currentAccount, detectTitleFor, useConnectorDetect, type ChatAccount } from './connectorDetect';
+import { useTaskRuntime } from './taskRuntime';
 
 type HomeMode = 'new' | 'connected';
 type KeyStatus = { keys?: Array<{ account: string }> };
@@ -22,7 +23,7 @@ function steps(mode: HomeMode, source: string, sessions = 0, syncIntervalSeconds
   return [
     { number: '1', title: t("连接来源"), description: mode === 'new' ? t("选一个聊天来源，打开连接向导，按提示授权。会逐步检查权限。") : tf("已连接：{0}", source), state: step(0) },
     { number: '2', title: t("选择要备份的会话"), description: mode === 'new' ? t("在导入管理里勾选要备份的私聊和群聊，未勾选的不会导入。") : sessions ? tf("已选 {0} 个会话", sessions.toLocaleString()) : t("还没有选择会话，先去勾选要备份的聊天。"), state: step(1) },
-    { number: '3', title: t("设置备份周期"), description: mode === 'new' ? t("每个平台单独设置，默认每 30 分钟。") : tf("{0}：每 {1} 分钟 · 仅 Wi-Fi", source, minutes), state: step(2) },
+    { number: '3', title: t("设置备份周期"), description: mode === 'new' ? t("所有平台共用一套备份设置，默认沿用当前设置。") : tf("每 {0} 分钟", minutes), state: step(2) },
     { number: '4', title: t("第一次备份"), description: mode === 'new' ? t("把已选会话的记录加密上传，完成后就能看到事件、总结和报告。") : t("完成后就能看到事件、总结和报告"), state: step(3) },
   ];
 }
@@ -85,6 +86,8 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
 }
 
 export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule, onReady, onUnlock }: { visible: boolean; onConnect: (connector?: string) => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void; onReady: (source: string) => void; onUnlock: () => void }) {
+  const runtime = useTaskRuntime();
+  const configuredKey = JSON.stringify(runtime.sources?.filter(source => source.setup_complete).map(source => source.account_id).sort() ?? null);
   const [mode, setMode] = useState<HomeMode | null>(isTauri() ? null : 'new');
   const [source, setSource] = useState(t("微信"));
   const [syncIntervalSeconds, setSyncIntervalSeconds] = useState(1800);
@@ -94,6 +97,8 @@ export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onB
     // The shell caches the chat entry while Settings is open. A hidden entry must not
     // redirect back to the first wizard step when its unfinished account still looks locked.
     if (!visible || !isTauri()) return;
+    const configured: string[] | null = JSON.parse(configuredKey);
+    if (!configured) return;
     let active = true;
     void (async () => {
       try {
@@ -104,7 +109,7 @@ export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onB
         ]);
         if (!active) return;
         const connections = settings.connectors ?? {};
-        const accounts = (found ?? []).filter(account => account.source === 'whatsapp'
+        const accounts = (found ?? []).filter(account => configured.includes(account.id)).filter(account => account.source === 'whatsapp'
           ? connections.whatsapp_enabled !== false
           : connections.wechat_enabled !== false);
         const account = currentAccount(accounts, settings.active_account_id);
@@ -113,7 +118,7 @@ export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onB
         setSource(account.source === 'whatsapp' ? 'WhatsApp' : t("微信"));
         let sessions = 0;
         let sessionsFailed = false;
-        try { sessions = (await invoke<Array<{ username: string }>>('wechat_sessions', { accountId: account.id })).length; } catch { sessionsFailed = true; }
+        try { sessions = (await invoke<Array<{ username: string }>>('chat_sessions', { accountId: account.id, limit: 1 })).length; } catch { sessionsFailed = true; }
         if (!active) return;
         // WhatsApp needs no key: a failed read means permissions or a new schema, not a
         // missing key, so it must never fall into the WeChat unlock wizard.
@@ -129,7 +134,7 @@ export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onB
       }
     })();
     return () => { active = false; };
-  }, [visible, onReady, onUnlock]);
+  }, [visible, onReady, onUnlock, configuredKey]);
 
   if (!mode) return <div className="chat-landing chat-landing-checking"><div className="chat-landing-checking-card"><span className="chat-landing-checking-dot" /><p>{t("正在检查本地聊天数据…")}</p></div></div>;
   return <ChatLanding mode={mode} source={source} sessionCount={sessionCount} syncIntervalSeconds={syncIntervalSeconds} onConnect={onConnect} onConnectWhatsApp={onConnectWhatsApp} onImport={onImport} onBackup={onBackup} onSchedule={onSchedule} />;

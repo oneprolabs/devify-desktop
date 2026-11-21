@@ -1,4 +1,6 @@
+import { isSummaryText } from './summaryInput';
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
+import { RemoteChatFallback } from './RemoteChatFallback';
 import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -20,7 +22,6 @@ import {
   type SummaryRecord,
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
-import { exportNotSupported } from './toast';
 import { useCapability, useInternalAccount } from './entitlements';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
 
@@ -362,13 +363,26 @@ function enqueuePreview(task: () => Promise<void>) {
 }
 
 function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: MediaItem; onOpen: () => void }) {
-  const [src, setSrc] = useState<string | null>(item.preview ? convertFileSrc(item.preview) : null);
+  const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const holder = useRef<HTMLElement | null>(null);
+  const [near, setNear] = useState(false);
   useEffect(() => {
-    if (src || failed) return;
+    const node = holder.current;
+    if (!node) return;
+    const root = node.closest('.wxv-messages');
+    const margin = Math.max(0, (root as HTMLElement | null)?.clientHeight ?? 0);
+    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) { setNear(true); observer.disconnect(); } }, { root, rootMargin: `${margin}px 0px` });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [accountId, item.local_id]);
+  useEffect(() => {
+    if (!near || src || failed) return;
+    if (item.preview) { setSrc(convertFileSrc(item.preview)); return; }
     let cancelled = false;
     enqueuePreview(async () => {
+      if (cancelled) return;
       try {
         const path = await invoke<string | null>('wechat_media_preview', {
           accountId,
@@ -386,11 +400,11 @@ function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: Medi
     return () => {
       cancelled = true;
     };
-  }, [accountId, item.local_id, src, failed]);
+  }, [accountId, item.local_id, src, failed, near, item.preview]);
 
   if (!src) {
     return (
-      <span className="wxv-image-placeholder" role="status">
+      <span ref={node => { holder.current = node; }} className="wxv-image-placeholder" role="status">
         {!failed && <i className="wxv-image-spinner" aria-hidden="true"/>}{failed ? t("图片加载失败") : t("正在加载图片…")}
       </span>
     );
@@ -400,6 +414,7 @@ function MediaThumb({ accountId, item, onOpen }: { accountId: string; item: Medi
     <button
       type="button"
       className="wxv-attach-thumb"
+      ref={node => { holder.current = node; }}
       onClick={onOpen}
       title={onlyThumb ? t("本机只有缩略图（微信未下载原图）") : t("查看原图")}
       data-open-image={item.local_id}
@@ -591,6 +606,7 @@ export default function WeChatLocal({
   sessionRevision = 0,
   accountId: pinnedAccountId,
   onChatState,
+  onSummarySelection,
 }: {
   mode?: 'chat' | 'settings';
   onOpenChat?: () => void;
@@ -617,8 +633,9 @@ export default function WeChatLocal({
   sessionRevision?: number;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
-  /** Reports whether the page-level 整理/导出 actions may be shown at all. */
+  /** Reports loaded and selected messages to the page-level actions. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
+  onSummarySelection?: (messages: import('./summaryInput').SummaryMessage[]) => void;
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
   const { internal: internalAccount } = useInternalAccount();
@@ -649,6 +666,7 @@ export default function WeChatLocal({
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [active, setActive] = useState<SessionItem | null>(null);
   const [messages, setMessages] = useState<MessageItem[]>([]);
+  const [localMissing, setLocalMissing] = useState<string | null>(null);
   /** Keyword from the embedding page's header, used for in-conversation search. */
   const [inlineKeyword, setInlineKeyword] = useState('');
   const messagesRef = useRef<MessageItem[]>([]);
@@ -682,7 +700,7 @@ export default function WeChatLocal({
   const [aiConfirm, setAiConfirm] = useState(false);
   /** The single footer entry splits into two paths; this reveals the two choices. */
   const [actionPicker, setActionPicker] = useState(false);
-  const [liveSync, setLiveSync] = useState(true);
+  const [liveSync, setLiveSync] = useState(false);
   const [wechatEnabled, setWechatEnabled] = useState(true);
   const [syncIntervalSeconds, setSyncIntervalSeconds] = useState(30);
   const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'ready' | 'error'>('idle');
@@ -820,6 +838,9 @@ export default function WeChatLocal({
     }
   }, []);
 
+  const focusLookup = useRef('');
+  const focusConversationRef = useRef(focusConversation);
+  focusConversationRef.current = focusConversation;
   const loadSessions = useCallback(
     async (id: string) => {
       if (!id) {
@@ -830,13 +851,16 @@ export default function WeChatLocal({
         const stored = await invoke<{ chat?: { allowed_usernames?: Record<string, string[]> } }>('app_settings_get');
         const allowed = stored.chat?.allowed_usernames?.[id] ?? [];
         setWhitelistConfigured(allowed.length > 0);
-        const list = await invoke<SessionItem[]>('wechat_sessions', { accountId: id });
-        setSessions(list);
+        const list = await invoke<SessionItem[]>('chat_sessions', { accountId: id, focusUsername: focusConversationRef.current || undefined });
+        const focus = focusConversationRef.current;
+        const shown = !list.length && focus ? [{ username: focus, display: focus, is_group: focus.endsWith('@chatroom') || focus.endsWith('@qy_g'), last_time: null, member_count: null, preview: null, unread: null }] : list;
+        setSessions(shown);
         setSessionsLoaded(true);
-        return list;
+        return shown;
       } catch (e) {
         const message = String(e);
-        setSessions([]);
+        const focus = focusConversationRef.current;
+        setSessions(focus ? [{ username: focus, display: focus, is_group: focus.endsWith('@chatroom') || focus.endsWith('@qy_g'), last_time: null, member_count: null, preview: null, unread: null }] : []);
         setSessionsLoaded(true);
         setWhitelistConfigured(null);
         // Before the first decrypt there is simply no session.db; that is the
@@ -867,7 +891,7 @@ export default function WeChatLocal({
           return;
         }
       }
-      const list = await invoke<SessionItem[]>('wechat_sessions', { accountId: account.id });
+      const list = await invoke<SessionItem[]>('chat_sessions', { accountId: account.id, focusUsername: focusConversationRef.current || undefined });
       setSessions(list);
       setSessionsLoaded(true);
       if (active) {
@@ -886,7 +910,7 @@ export default function WeChatLocal({
           if (root) scrollSnapshot.current = { top: root.scrollTop, height: root.scrollHeight };
           setMessages(current => {
             const keys = new Set(latest.map(message => `${message.source_shard}:${message.local_id}:${message.time}`));
-            return [...latest, ...current.filter(message => !keys.has(`${message.source_shard}:${message.local_id}:${message.time}`))];
+            return [...latest, ...current.filter(message => !keys.has(`${message.source_shard}:${message.local_id}:${message.time}`))].slice(0, 200);
           });
           setHasMore(current => current || latest.length >= PAGE);
         }
@@ -1497,6 +1521,7 @@ export default function WeChatLocal({
       setMediaScanComplete(false);
       setMediaByMessage({});
       setActive(session);
+      setLocalMissing(null);
       setMessages(cached?.messages ?? []);
       setHasMore(cached?.hasMore ?? false);
       setError('');
@@ -1540,12 +1565,12 @@ export default function WeChatLocal({
         const merged = cached && !keyword && focusMessageId == null && (list.length < PAGE || overlaps)
           ? [...list, ...cached.messages.filter(message => !keys.has(`${message.source_shard}:${message.local_id}:${message.time}`))]
           : list;
-        setMessages(merged);
+        setMessages(keyword ? merged.slice(-200) : merged.slice(0, 200));
         setHasMore(Boolean(cached?.hasMore) || list.length >= PAGE);
         pendingHighlight.current = keyword;
       pendingFocusMessage.current = focusMessageId == null ? '' : String(focusMessageId);
       } catch (e) {
-        if (request === sessionRequest.current && activeRef.current === session.username) setError(String(e));
+        if (request === sessionRequest.current && activeRef.current === session.username) { if (String(e).startsWith('LOCAL_CHAT_MISSING:')) setLocalMissing(session.username); else setError(String(e)); }
       } finally {
         if (request === sessionRequest.current && activeRef.current === session.username) setBusy(null);
       }
@@ -1557,8 +1582,8 @@ export default function WeChatLocal({
     if (!accountId || !active || !messages.length || activeRef.current !== active.username) return;
     const key = `${accountId}\u0000${active.username}`;
     recentMessages.current.delete(key);
-    recentMessages.current.set(key, { messages: messages.slice(0, 500), hasMore: hasMore || messages.length > 500 });
-    while (recentMessages.current.size > 10) {
+    recentMessages.current.set(key, { messages: messages.slice(0, 200), hasMore: hasMore || messages.length > 200 });
+    while (recentMessages.current.size > 3) {
       const oldest = recentMessages.current.keys().next().value;
       if (oldest === undefined) break;
       recentMessages.current.delete(oldest);
@@ -1712,7 +1737,7 @@ export default function WeChatLocal({
       const root = messageRef.current;
       scrollIntent.current = 'preserve';
       if (root) scrollSnapshot.current = { top: root.scrollTop, height: root.scrollHeight };
-      setMessages(current => [...current, ...older]);
+      setMessages(current => [...current, ...older].slice(-200));
       setHasMore(older.length >= PAGE);
     } catch (e) {
       setError(String(e));
@@ -1854,7 +1879,8 @@ export default function WeChatLocal({
   }, [openSummary, ready]);
 
   useEffect(() => {
-    if (!focusConversation || !ready || !account || !sessions.length) return;
+    if (!focusConversation || !ready || !account) return;
+    if (!sessions.some(item => item.username === focusConversation)) { const key = `${account.id}:${focusConversation}`; if (focusLookup.current !== key) { focusLookup.current = key; void loadSessions(account.id); } return; }
     const session = sessions.find(item => item.username === focusConversation);
     if (!session) return;
     // The session list is refreshed by the live-sync tick; reopening the conversation we are
@@ -2356,6 +2382,10 @@ export default function WeChatLocal({
       agentReady: Boolean(agentCurrent?.configured && agentCurrent.available),
     });
   }, [active?.username, messages.length, selectedMessages.length, agentCurrent?.configured, agentCurrent?.available, onChatState]);
+
+  useEffect(()=>{
+    onSummarySelection?.(selectedMessages.filter(item=>isSummaryText(item.message)).map(({session,message})=>({username:session.username,display:session.display,is_group:session.is_group,sender:message.sender_name||message.sender||'',time:message.time,text:message.text,local_id:message.local_id,source_shard:message.source_shard})));
+  },[selectedMessages,onSummarySelection]);
 
   const groups = sessions.filter(session => session.is_group);
   const needle = query.trim().toLowerCase();
@@ -3298,7 +3328,7 @@ const checkMark = (value: boolean | undefined) =>
       accountExists: async () => { const result = await invoke<ScanResult>('wechat_scan'); setScan(result); return result.accounts.some(item => item.id === accountId); },
       keys: async () => { const result = await invoke<KeyStatus>('wechat_key_status'); setKeyStatus(result); return result.keys.filter(key => key.account === accountId).length; },
       source: async () => { const result = await refreshSavedKeySource(); if (!result) throw new Error('连接文件检查未完成'); return result; },
-      chats: async () => { await invoke<SessionItem[]>('wechat_sessions', { accountId }); },
+      chats: async () => { await invoke<SessionItem[]>('chat_sessions', { accountId }); },
     })}
     onRestartConnection={async () => { setError(''); setLaunchDiagnosis(null); await refreshCaptureStatus(); }}
     onCheckConnectionResult={async () => { await Promise.all([refreshCaptureStatus(), refreshKeys(), refreshSavedKeySource()]); }}
@@ -3317,7 +3347,8 @@ const checkMark = (value: boolean | undefined) =>
     }}>
       <div ref={messageContentRef}>
       {busy === 'messages' && !messages.length && <LoadingSkeleton label={t("正在加载聊天记录")} kind="messages" />}
-      {hasMore && (
+      {localMissing && account && <RemoteChatFallback key={`${account.id}:${localMissing}`} accountId={account.id} username={localMissing} />}
+      {!localMissing && hasMore && (
         <button type="button" className="wxv-more" onClick={() => void loadOlder()} disabled={busy === 'messages'}>
           {busy === 'messages' ? t("加载中…") : t("加载更早的消息")}
         </button>
@@ -3418,7 +3449,7 @@ const checkMark = (value: boolean | undefined) =>
               )}
               <div className="wxv-msg-body">
                 {(onChatState || (active?.is_group && !message.is_self)) && (
-                  <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || message.sender || t("未知成员"))}</span>
+                  <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || message.sender || t("未知成员"))}{onChatState && <time className="wxv-message-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}</span>
                 )}
                 <div className={`wxv-bubble ${imageMessage || videoMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
                   {imageMessage || voiceMessage || videoMessage ? null : placeholder ? (
@@ -3500,7 +3531,7 @@ const checkMark = (value: boolean | undefined) =>
           </div>
         );
       })}
-      {!messages.length && busy !== 'messages' && <p className="wxv-empty-line">{t("这个会话没有可读取的文字消息。")}</p>}
+      {!localMissing && !messages.length && busy !== 'messages' && <p className="wxv-empty-line">{t("这个会话没有可读取的文字消息。")}</p>}
       </div>
     </div>
   );
@@ -3545,9 +3576,6 @@ const checkMark = (value: boolean | undefined) =>
                 {t("整理工作内容")}
               </button>
             )}
-            <button type="button" className="wxv-btn" onClick={exportNotSupported}>
-              {t("导出")}
-            </button>
           </div>
         </header>
 
@@ -3572,7 +3600,7 @@ const checkMark = (value: boolean | undefined) =>
 
         {renderMessages()}
 
-        <footer className="wxv-chat-foot">
+        {!localMissing && <footer className={`wxv-chat-foot${selectedMessages.length ? ' has-selection' : ''}`}>
           <span>
             {t("已加载最近")} {messages.length} {t("条")}
             {hasMore ? t("，可继续向前加载") : t("，已到本地记录起点")}
@@ -3584,7 +3612,7 @@ const checkMark = (value: boolean | undefined) =>
             <button type="button" className="wxv-link" onClick={clearSelectedMessages}>{t("清空选中")}</button>
           )}
           <span className="mono">{messages.length ? listTime(messages[0].time) : ''}</span>
-        </footer>
+        </footer>}
       </>
     );
   };

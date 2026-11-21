@@ -87,43 +87,32 @@ export function LanguageSettings() {
     return { ...current, language };
   });
 
-  if (!ready) return <div className="settings-page language-settings"><h2>{t("语言")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{t(error)}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
+  if (!ready) return <div className="settings-page settings-refreshed language-settings"><h2>{t("语言")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{t(error)}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
 
-  return <div className="settings-page language-settings">
+  return <div className="settings-page settings-refreshed language-settings">
     <header className="page-head">
       <h2>{t("语言")}</h2>
-      <p className="help">{t("界面语言和 AI 输出语言分开设置。聊天原文不会被翻译或改动。")}</p>
+      <p className="help">{t("设置界面和本机总结的语言。聊天原文保持不变。")}</p>
     </header>
 
-    <fieldset disabled={blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
-    <p className="language-explanation">{t("设置应用菜单、按钮和提示的显示语言。聊天原文不会被翻译。")}</p>
-    <h3 className="language-heading">{t("界面语言")}</h3>
-    <div className="language-cards" role="group" aria-label={t("界面语言")}>{UI_OPTIONS.map(option => <button type="button" key={t(option.label)} className={settings.language.ui === option.label ? 'selected' : ''} aria-pressed={settings.language.ui === option.label} disabled={option.disabled} onClick={() => setLanguage({ ui: option.label })}><span className="language-mark">{option.label === '中文' ? '简' : 'EN'}</span><span><strong>{option.label === '中文' ? t("简体中文") : option.label}</strong><small>{t(option.hint || "界面以简体中文显示")}</small></span><span className="language-check">{settings.language.ui === option.label ? '✓' : '○'}</span></button>)}</div>
-    <h3 className="language-heading">{t("内容语言")}</h3>
-    <div className="plan-items">
-
-      <div className="plan-row">
-        <div className="plan-row-label">
-          <span>{t("总结与报告语言")}</span>
-          <small>{t("事件、聊天总结、报告的输出语言。「按原文语言」会让中文聊天出中文、英文聊天出英文")}</small>
-        </div>
-        <div className="plan-row-control">
-          <Pills label={t("总结与报告语言")} options={SUMMARY_OPTIONS} value={settings.language.summary} onChange={summary => setLanguage({ summary })}/>
-        </div>
+    <fieldset disabled={blocked} className="settings-fields">
+    <section className="settings-group" aria-label={t('界面语言')}>
+      <div className="settings-row">
+        <div className="settings-row-label"><span>{t('界面语言')}</span><small>{t('菜单、按钮和提示的显示语言。')}</small></div>
+        <Pills label="界面语言" options={UI_OPTIONS} value={settings.language.ui} onChange={ui => setLanguage({ ui })}/>
       </div>
-
-      <div className="plan-row">
-        <div className="plan-row-label">
-          <span>{t("问答回答语言")}</span>
-          <small>{t("问答的回复语言")}</small>
-        </div>
-        <div className="plan-row-control">
-          <span className="plan-kv">{t("由服务端生成，桌面端不单独设置")}</span>
-        </div>
+    </section>
+    <section className="settings-group" aria-label={t('内容语言')}>
+      <div className="settings-row">
+        <div className="settings-row-label"><span>{t('本机总结语言')}</span><small>{t('用于本机生成的聊天总结，可跟随界面或原文语言。')}</small></div>
+        <Pills label="本机总结语言" options={SUMMARY_OPTIONS} value={settings.language.summary} onChange={summary => setLanguage({ summary })}/>
       </div>
-    </div>
-
-    <p className="language-note">{t("本机生成的总结与日报会按「总结与报告语言」书写。聊天原文保持原样，不会翻译。")}</p>
+      <div className="settings-row">
+        <div className="settings-row-label"><span>{t('服务端内容语言')}</span><small>{t('事件、报告与问答由服务端生成，使用服务端的语言设置。')}</small></div>
+        <span className="settings-value">{t('由服务端管理')}</span>
+      </div>
+    </section>
+    <p className="settings-footnote">{t('更改后自动保存。')}</p>
     </fieldset>
     {error && <div className="error" role="alert">{t(error)}</div>}
     {blocked && <div><p>{t("当前修改未确认保存；重新加载会放弃这些修改。")}</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? t("正在加载…") : t("放弃未保存修改并重新加载")}</button></div>}

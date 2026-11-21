@@ -14,6 +14,7 @@ import { DevifySettings, WhitelistSettings, type AppSettings } from './Settings'
 import { BackupSchedule } from './BackupSchedule';
 import { AnalysisSettings } from './AnalysisSettings';
 import { LanguageSettings } from './LanguageSettings';
+import './settings-pages.css';
 import { Icons } from './icons';
 import { NavigationRail, type Section } from './NavigationRail';
 import { detectTitle, useConnectorDetect } from './connectorDetect';
@@ -29,6 +30,7 @@ import { LoginGate } from './LoginGate';
 import { Feedback, FeedbackSettings } from './Feedback';
 import { requestFeedback } from './desktopInvoke';
 import { registerDevifyDevice } from './devifyDevice';
+import { resetTaskRuntime, useTaskRuntime } from './taskRuntime';
 import { clearTaskSnapshot } from './taskSnapshot';
 import { clearPageSnapshots } from './pageSnapshots';
 import { granted, refreshEntitlements, useInternalAccount } from './entitlements';
@@ -37,6 +39,8 @@ import { shouldApplyAuthExpired } from './authEvents';
 import './prototype-shell.css';
 import './reference-theme.css';
 import './desktop-visual-refresh.css';
+import './chat-conversation.css';
+import './analysis-workspace.css';
 import './navigation-rail.css';
 import './connectors.css';
 import './wechat-wizard.css';
@@ -152,7 +156,8 @@ export default function PrototypeShell() {
     if (authState === 'authed') void invoke<{ id?: number; display_name?: string; username?: string }>('devify_current_user').then(user => { if (active) { setCurrentUser(user.display_name || user.username || ''); setCurrentUserId(Number.isSafeInteger(user.id) && (user.id ?? 0) > 0 ? user.id! : null); } }).catch(() => { if (active) setCurrentUser(''); });
     return () => { active = false; };
   }, [authState, authVersion]);
-  const handleAuthenticated = useCallback(() => { clearTaskSnapshot(); clearPageSnapshots(); authEpoch.current += 1; setCurrentUserId(null); setCurrentUser(''); setAuthVersion(version => version + 1); setAuthState('authed'); setConnectionState('connected'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
+  useEffect(() => { resetTaskRuntime(authState === 'authed'); }, [authState, authVersion]);
+  const handleAuthenticated = useCallback(() => { resetTaskRuntime(true); clearTaskSnapshot(); clearPageSnapshots(); authEpoch.current += 1; setCurrentUserId(null); setCurrentUser(''); setAuthVersion(version => version + 1); setAuthState('authed'); setConnectionState('connected'); setAuthNotice(''); setAuthError(''); setChatReady(false); setSection('chat'); setEventFocusId(null); setStartTaskCreate(false); void registerDevifyDevice(); }, []);
   /**
    * The backend caps every Devify request with a timeout, so this resolves even when the
    * server is unreachable. `unavailable` is a separate state from "logged out": it must not
@@ -244,11 +249,10 @@ export default function PrototypeShell() {
     try {
       const current = await invoke<Record<string, unknown>>('app_settings_get');
       const connectors = (current.connectors ?? {}) as Record<string, unknown>;
-      const sync = (current.sync ?? {}) as Record<string, unknown>;
-      await invoke('app_settings_save', { value: { ...current, connectors: { ...connectors, wechat_enabled: true }, ...(skipBackup ? { sync: { ...sync, enabled: false } } : {}) } });
-      if (skipBackup) setWechatGuide(false);
+      await invoke('app_settings_save', { value: { ...current, connectors: { ...connectors, wechat_enabled: true },  } });
+      if (skipBackup) { await invoke('connector_setup_state', { accountId: current.active_account_id, completed: true, skipBackup: true }); setWechatGuide(false); }
       if (skipBackup) { setFirstBackupStep('none'); setChatReady(true); setSection('chat'); }
-      else { setWizard('wizard-sessions'); }
+      else { await invoke('connector_setup_state', { accountId: current.active_account_id, completed: false }); setWizard('wizard-sessions'); }
     } catch (error) { setConnectionFinishError(`无法启用微信连接：${String(error)}`); }
     finally { setConnectionFinishing(false); }
   };
@@ -291,6 +295,10 @@ export default function PrototypeShell() {
   }, [settingsPage, showAgentHub, internalAccount]);
   const [wechatGuide, setWechatGuide] = useState(false);
   const [whatsappGuide, setWhatsappGuide] = useState(false);
+  const runtime = useTaskRuntime();
+  const [whatsappResume, setWhatsappResume] = useState<{ accountId: string; step: 'sessions' | 'backup' }>();
+  const [wizardResuming, setWizardResuming] = useState(false);
+  const wizardResumeEpoch = useRef(0);
   const [wechatGuideEdit, setWechatGuideEdit] = useState(false);
   const [wizardStep, setWizardStep] = useState('wizard-method');
   const [wizardManual, setWizardManual] = useState(false);
@@ -306,9 +314,45 @@ export default function PrototypeShell() {
   const settingsNav = settingsPages
     .filter(item => !(wechatGuide || whatsappGuide) || item.group === 'main' || item.id === 'feedback' || item.id === 'about')
     .filter(item => item.id === 'agent' ? showAgentHub : item.id !== 'history' || internalAccount);
-  const openSettings = useCallback((page: SettingsPage, guide = false, edit = guide) => { setSettingsPage(page); setWhatsappGuide(false); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
+  const openSettings = useCallback((page: SettingsPage, guide = false, edit = guide) => { wizardResumeEpoch.current += 1; setWizardResuming(false); setSettingsPage(page); setWhatsappGuide(false); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
   const handleChatUnlock = useCallback(() => { setSettingsPage('connectors'); setWhatsappGuide(false); setWechatGuide(true); setWechatGuideEdit(true); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
-  const openWhatsApp = () => { setSettingsPage('connectors'); setWechatGuide(false); setWhatsappGuide(true); setSection('settings'); };
+  const openWhatsApp = (resumeAccountId?: string) => {
+    wizardResumeEpoch.current += 1; setWizardResuming(false);
+    const source = runtime.sources?.find(source => source.account_id === resumeAccountId && !source.setup_complete);
+    setWhatsappResume(source ? { accountId: source.account_id, step: source.wizard_step ?? 'sessions' } : undefined);
+    setSettingsPage('connectors'); setWechatGuide(false); setWhatsappGuide(true); setSection('settings');
+  };
+  const resumeWechat = async (accountId: string) => {
+    const epoch = authEpoch.current;
+    const source = runtime.sources?.find(source => source.account_id === accountId && !source.setup_complete);
+    if (!source) { openSettings('connectors', true); return; }
+    openSettings('connectors', true); setWizardResuming(true); setConnectionFinishError('');
+    const request = ++wizardResumeEpoch.current;
+    const current = () => authEpoch.current === epoch && wizardResumeEpoch.current === request;
+    try {
+      const [settings, keys, capture] = await Promise.all([
+        invoke<AppSettings>('app_settings_get'),
+        invoke<{ keys: Array<{ account: string }> }>('wechat_key_status'),
+        invoke<{ pending: boolean; needs_cleanup: boolean }>('wechat_capture_status'),
+      ]);
+      if (!current()) return;
+      if (capture.pending || capture.needs_cleanup || !keys.keys.some(key => key.account === accountId)) {
+        setWizardStep('wizard-connect'); setConnectionFinishError(t('连接微信的前置结果需要重新确认，请按提示处理后继续。')); return;
+      }
+      await invoke('chat_sessions', { accountId, limit: 1 });
+      if (!current()) return;
+      await invoke('chat_account_activate', { accountId });
+      if (!current()) return;
+      const selected = settings.chat.allowed_usernames[accountId]?.length ?? 0;
+      setWizardStep(source.wizard_step === 'backup' && selected > 0 ? 'wizard-backup' : 'wizard-sessions');
+    } catch (reason) {
+      if (current()) { setWizardStep(/permission|operation not permitted|权限|拒绝/i.test(String(reason)) ? 'wizard-permission' : 'wizard-connect'); setConnectionFinishError(tf('未能恢复配置：{0}，请重新检查后继续。', String(reason))); }
+    } finally { if (current()) setWizardResuming(false); }
+  };
+  const continueSetup = (platform: string) => {
+    const source = runtime.sources?.find(source => source.platform === platform && !source.setup_complete);
+    if (platform === 'whatsapp') openWhatsApp(source?.account_id); else if (source) void resumeWechat(source.account_id); else openSettings('connectors', true);
+  };
   const finishWhatsApp = () => { setWhatsappGuide(false); setChatReady(false); setChatSource('whatsapp'); setChatKey(value => value + 1); setSection('chat'); };
   const settingsContentRef = useRef<HTMLDivElement | null>(null);
   const setWizard = (step: string) => setWizardStep(step);
@@ -322,7 +366,7 @@ export default function PrototypeShell() {
   return <main className={`prototype-shell${isTauri() && /Mac/.test(navigator.platform) ? ' prototype-shell-macos' : ''}`} onMouseDown={handleWindowDrag}>
     <div className="prototype-titlebar" aria-hidden="true" />
     <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
-      updateVersion={update.status === 'available' && !(section === 'settings' && settingsPage === 'about') ? update.version : undefined}
+      updateVersion={update.status === 'available' ? update.version : undefined}
       onUpdate={() => { setUpdateDialogOpen(true); void checkForUpdates(true); }}
       onNavigate={next => { if (next !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(next); }} />
     <section className="prototype-content">
@@ -367,9 +411,9 @@ export default function PrototypeShell() {
             <div className="first-backup-actions"><button className="chat-landing-primary" onClick={() => { setStartFirstBackup(true); setFirstBackupStep('none'); setChatReady(true); }}>{t("立即开始首次备份")} <span aria-hidden="true">→</span></button><button className="first-backup-later" onClick={() => { setFirstBackupStep('none'); setChatReady(true); }}>{t("稍后自动备份")}</button></div>
           </section><p className="first-backup-note">{t("备份进度可以在「任务」中查看，首次备份时间取决于记录数量和网络情况。")}</p>
         </div></div>}
-        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench key={`workbench-${chatKey}`} visible={section === 'chat'} startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} />}
+        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench key={`workbench-${chatKey}`} visible={section === 'chat'} startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} onAddPlatform={() => openSettings('connectors')} />}
       </div>
-      {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} />}
+      {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} onContinueSetup={continueSetup} />}
       {section === 'settings' && <div className="prototype-settings-layout">
         <header className="prototype-settings-breadcrumb">{t("设置")} <span>/</span> {t(settingsNav.find(item => item.id === settingsPage)?.label ?? '')}</header>
         <div className="prototype-settings">
@@ -379,12 +423,12 @@ export default function PrototypeShell() {
             const divider = item.group === 'local' && list[index - 1]?.group === 'main';
             return <Fragment key={item.id}>
               {divider && <div className="prototype-settings-divider" aria-hidden="true"/>}
-              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { setSettingsPage(item.id); setWechatGuide(false); setWhatsappGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}><span className="settings-nav-icon">{settingsIcons[item.id]}</span>{t(item.label)}</button>
+              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { wizardResumeEpoch.current += 1; setWizardResuming(false); setSettingsPage(item.id); setWechatGuide(false); setWhatsappGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}><span className="settings-nav-icon">{settingsIcons[item.id]}</span>{t(item.label)}</button>
             </Fragment>;
           })}
         </aside>
         <div className="prototype-settings-content" ref={settingsContentRef}>
-          {settingsPage === 'connectors' && (whatsappGuide ? <WhatsAppWizard onBack={() => setWhatsappGuide(false)} onOpenChat={finishWhatsApp} /> : wechatGuide ? <div className="wechat-wizard">
+          {settingsPage === 'connectors' && (whatsappGuide ? <WhatsAppWizard resume={whatsappResume} onBack={() => setWhatsappGuide(false)} onOpenChat={finishWhatsApp} /> : wechatGuide && wizardResuming ? <p role="status">{t('正在恢复上次的配置…')}</p> : wechatGuide ? <div className="wechat-wizard">
             <button type="button" className="connector-back" onClick={() => setWechatGuide(false)}>{t("← 返回连接器")}</button>
             <header className="wizard-connector-head"><span className="wizard-connector-mark" aria-hidden="true"><img src={wechatIcon} alt="" /></span><div><strong>{wechatGuideEdit ? t("重新配置") : t("连接向导")}</strong><h2>{t("微信")}</h2><p>{t("读取本机数据库，只读，不改动微信")}</p></div></header>
             <nav className="wizard-stepper" aria-label={t("微信连接向导")}>{[
@@ -395,18 +439,18 @@ export default function PrototypeShell() {
             )}
             <div id="wizard-permission" className="wizard-anchor" /><div id="wizard-account" className="wizard-anchor" /><div id="wizard-key" className="wizard-anchor" /><div id="wizard-import" className="wizard-anchor" /><div id="wizard-done" className="wizard-anchor" />
             {wizardStep === 'wizard-sessions' ? <section className="wizard-settings-step">
-              <WhitelistSettings wizard onBack={() => setWizard('wizard-connect')} onSaved={count => { if (count > 0) setWizard('wizard-backup'); }} />
+              <WhitelistSettings wizard onBack={() => setWizard('wizard-connect')} onSaved={async count => { if (count > 0) { try { const current = await invoke<AppSettings>('app_settings_get'); await invoke('connector_setup_state', { accountId: current.active_account_id, completed: false, wizardStep: 'backup' }); setWizard('wizard-backup'); } catch (reason) { setConnectionFinishError(tf('保存向导进度失败：{0}，请重试。', String(reason))); } } }} />
               <button type="button" className="wizard-skip" disabled={connectionFinishing} onClick={() => void finishWechatGuide(true)}>{t("暂不备份，进入聊天")}</button>
             </section> : wizardStep === 'wizard-backup' ? <section className="wizard-settings-step">
-              <BackupSchedule wizard onBack={() => setWizard('wizard-sessions')} onOpenConnectors={() => setWizard('wizard-connect')} onContinue={() => setWizard('wizard-done')} />
+              <BackupSchedule wizard onBack={() => setWizard('wizard-sessions')} onOpenConnectors={() => setWizard('wizard-connect')} onContinue={async () => { const current = await invoke<AppSettings>('app_settings_get'); await invoke('connector_setup_state', { accountId: current.active_account_id, completed: true }); setWizard('wizard-done'); }} />
             </section> : wizardStep === 'wizard-done' ? <WeChatWizardComplete edit={wechatGuideEdit} onBack={() => setWizard('wizard-connect')} onFinish={() => { setWechatGuide(false); setFirstBackupStep('none'); setChatReady(true); setChatKey(value => value + 1); setSection('chat'); }} /> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} wizardManual={wizardManual} wizardFinishing={connectionFinishing}
               wizardInstall={{ ready: wechatInstall.checking ? null : wechatInstall.canProceed, message: wechatInstall.detect?.message ?? '' }} onWizardInstallRecheck={() => wechatInstall.recheck()}
               onWizardStep={step => { if (step === 'wizard-sessions') void finishWechatGuide(); else setWizard(step); }} onWizardBack={wizardPrev} onWizardNext={wizardNext} onOpenChat={() => setSection('chat')} />}
             {connectionFinishError && <p className="wizard-save-error" role="alert">{connectionFinishError}</p>}
-          </div> : <Connectors onOpenWechat={(configured) => { setWechatGuide(true); setWechatGuideEdit(configured); setWizardManual(false); setWizardStep('wizard-method'); }} onOpenWhatsApp={() => void openWhatsApp()} />)}
+          </div> : <Connectors onOpenWechat={(configured, resumeAccountId) => { if (resumeAccountId) { void resumeWechat(resumeAccountId); return; } setWechatGuide(true); setWechatGuideEdit(configured); setWizardManual(false); setWizardStep('wizard-method'); }} onOpenWhatsApp={openWhatsApp} />)}
           {settingsPage === 'imports' && <WhitelistSettings onSaved={count => { if (firstBackupStep === 'select' && count > 0) { setFirstBackupStep('schedule'); setSettingsPage('backup'); } }} />}
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
-          {settingsPage === 'analysis' && <AnalysisSettings />}
+          {settingsPage === 'analysis' && <AnalysisSettings onOpenReports={() => setSection('reports')} onOpenTopics={() => setSection('topics')} onOpenChats={() => setSection('chat')} canUseLocalSummary={showAgentHub && granted(entitlements, 'ai.local_agent') && granted(entitlements, 'ai.agent_summary')} />}
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && internalAccount && <HistoryPage />}

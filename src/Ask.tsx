@@ -68,6 +68,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
   const [error, setError] = useState('');
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const askLock=useRef(false);
 
   const load = useCallback(async () => {
     if (!isTauri()) { setLoading(false); return; }
@@ -155,7 +156,8 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
 
   const ask = async (value = draft) => {
     const question = value.trim();
-    if (!spaceId || !question || threadBusy) return;
+    if (!spaceId || !question || threadBusy || askLock.current) return;
+    askLock.current=true;
     const continuing = selectedId;
     setAsking(true); setPending(question); setDraft(''); setError('');
     try {
@@ -168,7 +170,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       setQuestions(current => [result, ...current.filter(item => item.id !== result.id)]);
       setSelectedId(result.thread_id || continuing || result.id);
     } catch (reason) { setError(questionAnswerError(reason)); }
-    finally { setPending(''); setAsking(false); }
+    finally { askLock.current=false;setPending(''); setAsking(false); }
   };
 
   const newThread = () => { setSelectedId(null); setDraft(''); setPending(''); setError(''); };

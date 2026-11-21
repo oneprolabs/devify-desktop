@@ -53,6 +53,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn business_groups_use_their_own_names_and_bounded_message_shard() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path();
+        for name in ["session", "message", "bizchat"] { std::fs::create_dir(cache.join(name)).unwrap(); }
+        let username = "ww123_456@qy_g";
+        let session = Connection::open(cache.join("session/session.db")).unwrap();
+        session.execute_batch("CREATE TABLE SessionTable(username TEXT,last_timestamp INTEGER,summary TEXT);").unwrap();
+        session.execute("INSERT INTO SessionTable VALUES(?1,1000,'latest')", [username]).unwrap();
+        let names = Connection::open(cache.join("bizchat/bizchat.db")).unwrap();
+        names.execute_batch("CREATE TABLE name2id(username TEXT);CREATE TABLE chat_group(id INTEGER,chat_name TEXT);").unwrap();
+        names.execute("INSERT INTO name2id(rowid,username) VALUES(3,?1)", [username]).unwrap();
+        names.execute("INSERT INTO chat_group VALUES(3,'企业项目群')", []).unwrap();
+        let messages = Connection::open(cache.join("message/biz_message_0.db")).unwrap();
+        let table = format!("Msg_{}", md5_hex(username));
+        messages.execute_batch(&format!("CREATE TABLE {table}(local_id INTEGER,server_id INTEGER,create_time INTEGER,message_content TEXT,local_type INTEGER);")).unwrap();
+        for id in 1..=145 { messages.execute(&format!("INSERT INTO {table} VALUES(?1,?1,?1,'hello',1)"), [id]).unwrap(); }
+        let allowed = [username.to_string()].into_iter().collect();
+        let rows = sessions_page(cache, Some(&allowed), Some(50), 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].display, "企业项目群");
+        assert!(rows[0].is_group);
+        assert!(chat_present(cache, username).unwrap());
+        let page = super::messages(cache, username, 100, None).unwrap();
+        assert_eq!(page.len(), 100);
+        assert_eq!(page[0].local_id, 145);
+        assert!(page.iter().all(|row| row.source_shard.ends_with("biz_message_0.db")));
+        assert!(!is_group_username("ww123@qy_u"));
+    }
+
+    #[test]
+    fn badge_reader_preserves_cross_shard_boundaries_and_missing_chats() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("message")).unwrap();
+        for shard in 0..2 {
+            let conn = Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            let table = format!("Msg_{}", md5_hex("person"));
+            conn.execute_batch(&format!("CREATE TABLE {table}(create_time INTEGER, local_id INTEGER); INSERT INTO {table} VALUES(10,1),(20,2),(20,{});", 3 + shard)).unwrap();
+            let other = format!("Msg_{}", md5_hex("other"));
+            conn.execute_batch(&format!("CREATE TABLE {other}(timestamp INTEGER, id INTEGER); INSERT INTO {other} VALUES(30,8);")).unwrap();
+        }
+        let reader = UploadStateReader::new(dir.path());
+        assert_eq!(reader.latest_position("person").unwrap(), Some((20,4)));
+        assert_eq!(reader.count_at_time("person",20).unwrap(),4);
+        assert_eq!(reader.count_after("person",20,2).unwrap(),2);
+        assert_eq!(reader.latest_position("other").unwrap(),Some((30,8)));
+        assert_eq!(reader.count_after("other",30,8).unwrap(),0);
+        assert!(reader.latest_position("missing").is_err());
+        for name in ["person", "other"] {
+            assert_eq!(reader.latest_position(name).unwrap(), latest_position(dir.path(),name).unwrap());
+            assert_eq!(reader.count_at_time(name,20).unwrap(),count_at_time(dir.path(),name,20).unwrap());
+            assert_eq!(reader.count_after(name,20,2).unwrap(),count_after(dir.path(),name,20,2).unwrap());
+        }
+    }
+
+    #[test]
     fn account_profile_matches_exact_and_suffixed_names() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("contact")).unwrap();
@@ -393,7 +448,7 @@ fn value_to_bytes(value: rusqlite::types::ValueRef<'_>) -> Option<Vec<u8>> {
 }
 
 pub fn is_group_username(username: &str) -> bool {
-    username.ends_with("@chatroom")
+    username.ends_with("@chatroom") || username.ends_with("@qy_g")
 }
 
 #[derive(Serialize)]
@@ -425,9 +480,23 @@ pub fn account_profile(cache: &Path, account: &str) -> Option<AccountProfile> {
 }
 
 /// Load `username -> display name` from contact.db when it is available.
-fn contacts(cache: &Path) -> HashMap<String, String> {
+fn string_list(values: impl Iterator<Item=String>) -> String {values.map(|v|format!("'{}'",v.replace("'","''"))).collect::<Vec<_>>().join(",")}
+fn contacts(cache: &Path) -> HashMap<String, String> { contacts_for(cache,None) }
+fn business_contacts_for(cache: &Path, wanted: Option<&HashSet<String>>) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    let Ok(conn) = open_readonly(&cache.join("bizchat/bizchat.db")) else { return names; };
+    for (table, field) in [("chat_group", "chat_name"), ("user_info", "user_name")] {
+        let mut sql = format!("SELECT n.username, t.{field} FROM {table} t JOIN name2id n ON n.rowid=t.id");
+        if let Some(wanted) = wanted { sql.push_str(&format!(" WHERE n.username IN ({})", string_list(wanted.iter().cloned()))); }
+        let Ok(mut statement) = conn.prepare(&sql) else { continue; };
+        let Ok(rows) = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) else { continue; };
+        for (username, display) in rows.flatten() { if !display.trim().is_empty() { names.insert(username, display.trim().to_string()); } }
+    }
+    names
+}
+fn contacts_for(cache: &Path, wanted: Option<&HashSet<String>>) -> HashMap<String,String> {
     let path = cache.join("contact").join("contact.db");
-    let mut map = HashMap::new();
+    let mut map = business_contacts_for(cache, wanted);
     let Ok(conn) = open_readonly(&path) else {
         return map;
     };
@@ -453,6 +522,7 @@ fn contacts(cache: &Path) -> HashMap<String, String> {
             .join(", "),
         quote(&table)
     );
+    let sql=if let Some(wanted)=wanted {format!("{sql} WHERE {} IN ({})",quote(username),string_list(wanted.iter().cloned()))} else {sql};
     if name_cols.is_empty() {
         return map;
     }
@@ -522,7 +592,7 @@ fn official_accounts(cache: &Path) -> HashSet<String> {
 ///
 /// The join is schema-dependent, so it is best-effort: any missing table or column
 /// returns an empty map and the UI simply shows no member count.
-fn group_member_counts(cache: &Path) -> HashMap<String, i64> {
+fn group_member_counts_for(cache:&Path,wanted:Option<&HashSet<String>>)->HashMap<String,i64>{
     let path = cache.join("contact").join("contact.db");
     let mut map = HashMap::new();
     let Ok(conn) = open_readonly(&path) else {
@@ -557,6 +627,7 @@ fn group_member_counts(cache: &Path) -> HashMap<String, i64> {
         quote(room_id),
         quote(username)
     );
+    let sql=if let Some(wanted)=wanted {sql.replace(" GROUP BY",&format!(" WHERE r.{} IN ({}) GROUP BY",quote(username),string_list(wanted.iter().cloned())))} else {sql};
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return map;
     };
@@ -601,6 +672,10 @@ pub fn sessions_filtered(
     cache: &Path,
     allowed_usernames: Option<&HashSet<String>>,
 ) -> Result<Vec<SessionItem>, String> {
+    sessions_page(cache,allowed_usernames,None,0)
+}
+
+pub fn sessions_page(cache:&Path,allowed_usernames:Option<&HashSet<String>>,limit:Option<usize>,offset:usize)->Result<Vec<SessionItem>,String>{
     let path = cache.join("session").join("session.db");
     if !path.exists() {
         return Err("未找到解密后的 session.db，请先完成解密。".into());
@@ -631,6 +706,13 @@ pub fn sessions_filtered(
         quote(&table)
     );
 
+    let officials=official_accounts(cache);
+    let select=if let Some(allowed)=allowed_usernames {
+        let names=allowed.iter().filter(|n|is_visible_chat_username(n) && !officials.contains(*n)).cloned();
+        format!("{select} WHERE {} IN ({})",quote(username),string_list(names))
+    } else {select};
+    let select=format!("{select} ORDER BY {} DESC, {} ASC",expr(time_col),quote(username));
+    let select=if let Some(limit)=limit {format!("{select} LIMIT {} OFFSET {}",limit.clamp(1,100),offset)} else {select};
     let mut stmt = conn
         .prepare(&select)
         .map_err(|e| format!("查询会话失败：{e}"))?;
@@ -645,11 +727,12 @@ pub fn sessions_filtered(
         })
         .map_err(|e| format!("查询会话失败：{e}"))?;
 
-    let names = contacts(cache);
-    let member_counts = group_member_counts(cache);
-    let officials = official_accounts(cache);
+    let rows=rows.collect::<Result<Vec<_>,_>>().map_err(|e|format!("读取会话失败：{e}"))?;
+    let wanted:HashSet<_>=rows.iter().map(|r|r.0.clone()).collect();
+    let names = contacts_for(cache,Some(&wanted));
+    let member_counts = group_member_counts_for(cache,Some(&wanted));
     let mut items: Vec<SessionItem> = rows
-        .flatten()
+        .into_iter()
         .filter(|(username, ..)| {
             is_visible_chat_username(username)
                 && !officials.contains(username)
@@ -752,7 +835,7 @@ fn message_shards(cache: &Path) -> Vec<PathBuf> {
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    name.starts_with("message") && name.ends_with(".db")
+                    (name.starts_with("message") || name.starts_with("biz_message_")) && name.ends_with(".db")
                 })
                 .collect()
         })
@@ -1085,6 +1168,9 @@ pub fn messages(
 
 /// IDs are only unique inside a message shard, not across a conversation.
 pub fn local_id_inventory(cache: &Path, username: &str) -> Result<HashMap<i64, HashMap<i64, usize>>, String> {
+    local_id_inventory_for(cache,username,None)
+}
+pub fn local_id_inventory_for(cache: &Path,username: &str, ids: Option<&[i64]>) -> Result<HashMap<i64,HashMap<i64,usize>>,String> {
     let table = format!("Msg_{}", md5_hex(username));
     let mut inventory: HashMap<i64, HashMap<i64, usize>> = HashMap::new();
     let mut found = false;
@@ -1096,6 +1182,7 @@ pub fn local_id_inventory(cache: &Path, username: &str) -> Result<HashMap<i64, H
         let Some(time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else { continue };
         let local = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
         let sql = format!("SELECT {}, {} FROM {} WHERE {} IS NOT NULL", quote(local), quote(time), quote(&table), quote(time));
+        let sql=if let Some(ids)=ids {format!("{sql} AND {} IN ({})",quote(local),ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","))} else {sql};
         let mut stmt = conn.prepare(&sql).map_err(|error| format!("无法检查消息编号：{error}"))?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).map_err(|error| format!("无法检查消息编号：{error}"))?;
         for row in rows {
@@ -1108,6 +1195,9 @@ pub fn local_id_inventory(cache: &Path, username: &str) -> Result<HashMap<i64, H
 }
 
 pub fn server_id_counts(cache: &Path, username: &str) -> Result<HashMap<i64, usize>, String> {
+    server_id_counts_for(cache,username,None)
+}
+pub fn server_id_counts_for(cache: &Path,username: &str,ids: Option<&[i64]>) -> Result<HashMap<i64,usize>,String> {
     let table = format!("Msg_{}", md5_hex(username));
     let mut counts = HashMap::new();
     for shard in message_shards(cache) {
@@ -1117,6 +1207,7 @@ pub fn server_id_counts(cache: &Path, username: &str) -> Result<HashMap<i64, usi
         let Some(server) = pick(&cols, &["server_id", "serverId"]) else { continue };
         let Some(time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else { continue };
         let sql = format!("SELECT {}, COUNT(*) FROM {} WHERE {} IS NOT NULL AND {} IS NOT NULL AND {} != 0 GROUP BY {}", quote(server), quote(&table), quote(time), quote(server), quote(server), quote(server));
+        let sql=if let Some(ids)=ids {sql.replace(" GROUP BY",&format!(" AND {} IN ({}) GROUP BY",quote(server),ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")))} else {sql};
         let mut stmt = conn.prepare(&sql).map_err(|e| format!("无法核对服务端消息编号：{e}"))?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?))).map_err(|e| format!("无法核对服务端消息编号：{e}"))?;
         for row in rows {
@@ -1231,6 +1322,70 @@ pub fn latest_position(cache: &Path, username: &str) -> Result<Option<(i64, i64)
     Ok(newest)
 }
 
+/// One bounded badge refresh shares read-only shard connections. Reopening a
+/// WeChat shard for every badge reparses its thousands of table definitions.
+/// Keep these connections only for this request, never across account changes
+/// or replacement of a decrypted database.
+pub struct UploadStateReader {
+    shards: Vec<(Connection, HashSet<String>)>,
+    unreadable_shard: bool,
+}
+
+impl UploadStateReader {
+    pub fn new(cache: &Path) -> Self {
+        let mut unreadable_shard = false;
+        let shards = message_shards(cache).into_iter().filter_map(|path| {
+            let conn = match open_readonly(&path) {
+                Ok(conn) => conn,
+                Err(_) => { unreadable_shard = true; return None; }
+            };
+            let names = tables(&conn).into_iter().collect();
+            Some((conn, names))
+        }).collect();
+        Self { shards, unreadable_shard }
+    }
+
+    fn rows<T>(&self, username: &str, strict: bool, read: impl Fn(&Connection, &str, &str, &str) -> Option<T>) -> Result<Vec<T>, String> {
+        if strict && self.unreadable_shard { return Err("无法读取消息分片。".into()); }
+        let table = format!("Msg_{}", md5_hex(username));
+        let mut found = false;
+        let mut rows = Vec::new();
+        for (conn, names) in &self.shards {
+            if !names.contains(&table) { continue; }
+            found = true;
+            let cols = columns(conn, &table);
+            let Some(time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else {
+                if strict { return Err("消息库缺少时间字段。".into()); }
+                continue;
+            };
+            let local = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
+            if let Some(row) = read(conn, &quote(&table), &quote(time), &quote(local)) { rows.push(row); }
+            else if strict { return Err("无法核对消息数量。".into()); }
+        }
+        if !found { return Err("没有找到会话消息库。".into()); }
+        Ok(rows)
+    }
+
+    pub fn latest_position(&self, username: &str) -> Result<Option<(i64, i64)>, String> {
+        Ok(self.rows(username, false, |conn, table, time, local| {
+            conn.query_row(&format!("SELECT {time}, {local} FROM {table} WHERE {time} IS NOT NULL ORDER BY {time} DESC, {local} DESC LIMIT 1"), [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).ok()
+        })?.into_iter().max())
+    }
+
+    pub fn count_at_time(&self, username: &str, timestamp: i64) -> Result<usize, String> {
+        Ok(self.rows(username, true, |conn, table, time, _| {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {time} = ?1"), [timestamp], |row| row.get::<_, usize>(0)).ok()
+        })?.into_iter().fold(0usize, usize::saturating_add))
+    }
+
+    pub fn count_after(&self, username: &str, timestamp: i64, id: i64) -> Result<usize, String> {
+        Ok(self.rows(username, false, |conn, table, time, local| {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {time} IS NOT NULL AND ({time} > ?1 OR ({time} = ?1 AND {local} > ?2))"), params![timestamp, id], |row| row.get::<_, usize>(0)).ok()
+        })?.into_iter().fold(0usize, usize::saturating_add))
+    }
+}
+
 /// Number of messages strictly newer than an upload position.
 ///
 /// Mirrors [`messages`]' shard and column discovery without materialising the rows, so the
@@ -1292,6 +1447,23 @@ fn messages_inner(
     until: Option<i64>,
     me: Option<&str>,
 ) -> Result<Vec<MessageItem>, String> {
+    messages_ordered(cache,username,limit,before,since,until,me,false,None)
+}
+
+pub fn upload_page(cache: &Path, username: &str, since: i64, until: Option<i64>, after: Option<MessageCursor>, limit: usize) -> Result<Vec<MessageItem>,String> {
+    messages_ordered(cache,username,limit,after,Some(since),until.map(|v|v.saturating_sub(1)),None,true,None)
+}
+
+pub fn messages_selected(cache: &Path, username: &str, selected: &[crate::settings::MessageRef]) -> Result<Vec<MessageItem>,String> {
+    if selected.is_empty() {return Ok(Vec::new());}
+    if selected.len()>1000 {return Err("单批消息超过读取上限。".into());}
+    let me=self_username(cache);
+    let rows=messages_ordered(cache,username,selected.len(),None,None,None,me.as_deref(),false,Some(selected))?;
+    if rows.len()!=selected.len() {return Err("部分待上传消息已变化，请重新读取。".into());}
+    Ok(rows)
+}
+
+fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<MessageCursor>,since: Option<i64>,until: Option<i64>,me: Option<&str>,ascending: bool,selected: Option<&[crate::settings::MessageRef]>) -> Result<Vec<MessageItem>,String> {
     let table = format!("Msg_{}", md5_hex(username));
     let limit = limit.clamp(1, 5000);
     let mut collected: Vec<MessageItem> = Vec::new();
@@ -1340,6 +1512,11 @@ fn messages_inner(
         ];
         let mut sql = format!("SELECT {} FROM {}", projection.join(", "), quote(&table));
         sql.push_str(&format!(" WHERE {} IS NOT NULL", quote(create_time)));
+        if let Some(selected)=selected {
+            let conditions:Vec<_>=selected.iter().filter(|m|m.source_shard.is_empty() || m.source_shard==source_shard).map(|m|format!("({}={} AND {}={})",quote(local_id),m.local_id,quote(create_time),m.time)).collect();
+            if conditions.is_empty() {continue;}
+            sql.push_str(&format!(" AND ({})",conditions.join(" OR ")));
+        }
         if let Some(ref before) = before {
             // Keyset pagination on (time, local id): a second shared by more messages than
             // one page holds still resumes exactly after the last row handed out.
@@ -1352,12 +1529,13 @@ fn messages_inner(
                 quote(local_id),
                 before.local_id
             ));
-            if !before.source_shard.is_empty() && source_shard < before.source_shard {
+            if !before.source_shard.is_empty() && (if ascending {source_shard > before.source_shard} else {source_shard < before.source_shard}) {
                 let suffix = format!(" OR ({} = {} AND {} = {})", quote(create_time), before.time, quote(local_id), before.local_id);
                 let end = sql.len() - 1;
                 sql.insert_str(end, &suffix);
             }
         }
+        if ascending {sql=sql.replace(" < "," > ");}
         if let Some(since) = since {
             sql.push_str(&format!(" AND {} >= {}", quote(create_time), since));
         }
@@ -1365,10 +1543,10 @@ fn messages_inner(
             sql.push_str(&format!(" AND {} <= {}", quote(create_time), until));
         }
         sql.push_str(&format!(
-            " ORDER BY {} DESC, {} DESC LIMIT {}",
+            " ORDER BY {} {order}, {} {order} LIMIT {}",
             quote(create_time),
             quote(local_id),
-            limit
+            limit, order=if ascending {"ASC"} else {"DESC"}
         ));
 
         let Ok(mut stmt) = conn.prepare(&sql) else {
@@ -1416,6 +1594,7 @@ fn messages_inner(
     }
 
     collected.sort_by(|a, b| b.time.cmp(&a.time).then(b.local_id.cmp(&a.local_id)).then(b.source_shard.cmp(&a.source_shard)));
+    if ascending {collected.reverse();}
     collected.truncate(limit);
     Ok(collected)
 }
@@ -2327,4 +2506,21 @@ pub fn summary_input(
         return Err("所选范围内没有可总结的文字消息。".into());
     }
     Ok(input)
+}
+
+/// Absence is separate from unreadable/corrupt data, which must never trigger a cloud read.
+pub fn chat_present(cache:&Path,username:&str)->Result<bool,String>{
+    let entries=match std::fs::read_dir(cache.join("message")) {
+        Ok(v)=>v,Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(false),Err(e)=>return Err(format!("本地消息目录无法读取：{e}")),
+    };
+    let table=format!("Msg_{}",md5_hex(username));let mut count=0;
+    for entry in entries {
+        let entry=entry.map_err(|e|e.to_string())?;let name=entry.file_name().to_string_lossy().to_string();
+        if !(name.starts_with("message_") || name.starts_with("biz_message_")) || !name.ends_with(".db") {continue;}
+        count+=1;if count>64{return Err("本地消息分片过多，请缩小读取范围。".into());}
+        let c=open_readonly(&entry.path())?;
+        let present:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",[&table],|r|r.get(0)).map_err(|e|format!("本地消息库无法读取：{e}"))?;
+        if present {return Ok(true);}
+    }
+    Ok(false)
 }

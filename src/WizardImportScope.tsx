@@ -1,4 +1,5 @@
 import { t, tf } from './locale';
+import { Icons } from './icons';
 import { useEffect, useState, type ReactNode } from 'react';
 
 type Session = { username: string; is_group: boolean };
@@ -44,7 +45,7 @@ export function WizardImportScope(p: Props) {
       </div>
       <div className="wizard-scope-row">
         <div className="wizard-scope-label"><span>{t("会话读取状态")}</span><small>{p.loading ? `正在读取当前${p.sourceName ?? "微信"}账号的会话。` : p.catalog.length ? `已读取 ${p.catalog.length} 个会话；保存后按所选范围导入。` : `未读取到会话，请返回连接${p.sourceName ?? "微信"}。`}</small></div>
-        <span className="wizard-scope-value">{p.loading ? t("检查中") : p.catalog.length ? t("已读取") : t("暂无会话")}</span>
+        <span className="wizard-scope-value wizard-read-status" data-completed={!p.loading && p.catalog.length > 0}>{!p.loading && p.catalog.length > 0 && <span className="wizard-status-check" aria-hidden="true">{Icons.check}</span>}{!p.loading && p.catalog.length > 0 ? t("已完成") : t("未完成")}</span>
       </div>
     {custom && <div className="wizard-scope-custom">{p.children}</div>}
   </div>;

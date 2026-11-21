@@ -60,6 +60,7 @@ pub struct AppSettings {
     pub backup: BackupSettings,
     pub language: LanguageSettings,
     pub upload_queue: Vec<UploadJob>,
+    pub runtime: crate::config_runtime::Runtime,
 }
 
 /// When the automatic backup runs, and when it is allowed to run.
@@ -99,6 +100,16 @@ pub struct LanguageSettings {
     pub ui: String,
     pub summary: String,
     pub ask: String,
+}
+
+impl LanguageSettings {
+    pub fn summary_language(&self) -> &str {
+        if self.summary == "跟随界面" {
+            &self.ui
+        } else {
+            &self.summary
+        }
+    }
 }
 
 impl Default for LanguageSettings {
@@ -627,6 +638,7 @@ impl Default for AppSettings {
             backup: BackupSettings::default(),
             language: LanguageSettings::default(),
             upload_queue: Vec::new(),
+            runtime: Default::default(),
         }
     }
 }
@@ -737,6 +749,7 @@ pub fn path(app_data: &Path) -> std::path::PathBuf {
 }
 
 pub fn load(app_data: &Path) -> Result<AppSettings, String> {
+    if let Some(state) = crate::task_store::load(app_data)? { return Ok(state); }
     let file = path(app_data);
     if !file.exists() {
         return Ok(AppSettings::default());
@@ -850,9 +863,9 @@ fn identity_write_guard<'a>(current: &AppSettings, next: &AppSettings) -> Result
 fn user_settings_view(settings: &AppSettings) -> Result<serde_json::Value, String> {
     let mut value = serde_json::to_value(settings).map_err(|e| format!("序列化应用策略失败：{e}"))?;
     if let Some(root) = value.as_object_mut() {
-        root.remove("settings_revision"); root.remove("user_settings_revision"); root.remove("upload_queue");
+        root.remove("settings_revision"); root.remove("user_settings_revision"); root.remove("upload_queue"); root.remove("runtime");
         if let Some(sync) = root.get_mut("sync").and_then(serde_json::Value::as_object_mut) {
-            for name in ["owners", "cursors", "initial_progress", "continuation", "pending_voice", "last_run_at", "last_status", "last_error", "last_message_count"] { sync.remove(name); }
+            for name in ["saved_progress", "owners", "cursors", "initial_progress", "continuation", "pending_voice", "last_run_at", "last_status", "last_error", "last_message_count"] { sync.remove(name); }
         }
         if let Some(automation) = root.get_mut("automation").and_then(serde_json::Value::as_object_mut) {
             for name in ["last_daily_run", "last_daily_status", "last_daily_error", "daily_topic_id", "daily_topic_space_id", "last_schedule_sync_at", "last_schedule_signature", "last_schedule_error"] { automation.remove(name); }
@@ -874,8 +887,20 @@ fn store_base_url(settings: &mut AppSettings) {
 }
 
 fn save_unlocked(app_data: &Path, updated: &AppSettings) -> Result<(), String> {
+    crate::task_store::save(app_data, updated)?;
+    // The SQLite transaction above is authoritative. The JSON copy is only a
+    // compatibility mirror; failure to refresh it must not replay committed tasks.
+    if let Err(error) = save_json_mirror(app_data, updated) { eprintln!("无法更新配置镜像：{error}"); }
+    Ok(())
+}
+
+fn save_json_mirror(app_data: &Path, updated: &AppSettings) -> Result<(), String> {
     fs::create_dir_all(app_data).map_err(|e| format!("创建应用数据目录失败：{e}"))?;
-    let content = serde_json::to_vec_pretty(&updated).map_err(|e| format!("序列化应用策略失败：{e}"))?;
+    let mut mirror = updated.clone();
+    mirror.upload_queue.clear();
+    mirror.runtime=Default::default();
+    mirror.sync = SyncSettings { enabled: updated.sync.enabled, ..SyncSettings::default() };
+    let content = serde_json::to_vec_pretty(&mirror).map_err(|e| format!("序列化应用策略失败：{e}"))?;
     let mut temp = tempfile::NamedTempFile::new_in(app_data).map_err(|e| format!("创建临时策略失败：{e}"))?;
     temp.write_all(&content).and_then(|_| temp.as_file().sync_all()).map_err(|e| format!("写入应用策略失败：{e}"))?;
     temp.persist(path(app_data)).map_err(|e| format!("保存应用策略失败：{e}"))?;
@@ -1429,5 +1454,19 @@ mod tests {
         settings.agent.instructions = "重点看交付风险".to_string();
         settings.agent.provider_id = "codex".to_string();
         assert!(validate(&settings).is_ok());
+    }
+
+    #[test]
+    fn local_summary_language_respects_explicit_and_follow_interface_choices() {
+        let mut language = LanguageSettings::default();
+        assert_eq!(language.summary_language(), "中文");
+        language.ui = "English".into();
+        assert_eq!(language.summary_language(), "English");
+        for choice in ["中文", "English", "按原文语言"] {
+            language.summary = choice.into();
+            assert_eq!(language.summary_language(), choice);
+            language.ui = "中文".into();
+            assert_eq!(language.summary_language(), choice);
+        }
     }
 }

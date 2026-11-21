@@ -60,7 +60,7 @@ fn cache_matches_key(db: &DbFile, entry: &SyncEntry, store: &KeyStore, account: 
 }
 
 pub fn cache_dir(app_data_dir: &Path, account: &str) -> PathBuf {
-    app_data_dir.join("wechat-cache").join(account)
+    crate::local_scope::root(app_data_dir).join("wechat-cache").join(account)
 }
 
 fn meta_path(cache: &Path) -> PathBuf {
@@ -299,16 +299,41 @@ fn salt_bytes(salt_hex: Option<&str>) -> Option<Vec<u8>> {
 fn is_chat_db(rel: &str) -> bool {
     rel == "session/session.db"
         || rel == "contact/contact.db"
+        || rel == "bizchat/bizchat.db"
         // WeChat 4.x also keeps `message/message_0.kvdb` LevelDB sidecars next to the shards.
         // They are not SQLCipher databases, have no derived key, and are not needed to read
         // messages, so the suffix matters here.
         || (rel.starts_with("message/message_") && rel.ends_with(".db"))
+        || (rel.starts_with("message/biz_message_") && rel.ends_with(".db"))
         // Voice payloads live in `message/media_0.db` (`VoiceInfo.voice_data`), so the media
         // shard has to be decrypted for transcription and attachment metadata.
         || (rel.starts_with("message/media_") && rel.ends_with(".db"))
+        || (rel.starts_with("message/biz_media_") && rel.ends_with(".db"))
         // Avatars live beside the chat databases and are keyed by username, so they are part
         // of rendering a conversation rather than a separate feature.
         || rel.starts_with("head_image/")
+}
+
+/// Upgrade an older cache lazily when a business conversation is first opened.
+/// Only the previously omitted databases are prepared, never the whole chat history.
+pub fn prepare_business_cache(data: &Path, account_id: &str, include_messages: bool) -> Result<(), String> {
+    let cache = cache_dir(data, account_id);
+    if cache.join("bizchat/bizchat.db").is_file() && (!include_messages || cache.join("message/biz_message_0.db").is_file()) { return Ok(()); }
+    let account = super::discover::scan().accounts.into_iter().find(|account| account.id == account_id)
+        .ok_or("未找到本机微信账号，请检查微信连接。")?;
+    prepare_business_account(data, account, include_messages)
+}
+
+fn prepare_business_account(data: &Path, mut account: Account, include_messages: bool) -> Result<(), String> {
+    let cache = cache_dir(data, &account.id);
+    account.dbs.retain(|db| (db.rel == "bizchat/bizchat.db" || (include_messages && (db.rel.starts_with("message/biz_message_") || db.rel.starts_with("message/biz_media_")))) && db.rel.ends_with(".db") && !cache.join(&db.rel).is_file());
+    if account.dbs.is_empty() { return Ok(()); }
+    let store = keys::load(&keys::store_path(data));
+    let outcomes = decrypt_account(data, &account, &store, true, true);
+    if outcomes.iter().any(|outcome| !matches!(outcome.status.as_str(), "ok" | "cached")) {
+        return Err("这段微信记录尚未准备好，请在连接器中重新检查微信连接。".into());
+    }
+    Ok(())
 }
 
 pub fn decrypt_account(
@@ -318,6 +343,9 @@ pub fn decrypt_account(
     apply_wal: bool,
     only_chat: bool,
 ) -> Vec<DecryptOutcome> {
+    // Explicit refreshes and the automatic coordinator share the same atomic outputs.
+    static DECRYPT_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _serial = DECRYPT_SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     let cache = cache_dir(app_data_dir, &account.id);
     let _ = fs::create_dir_all(&cache);
     let mut meta = load_meta(&cache);
@@ -497,6 +525,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn business_metadata_upgrade_defers_messages_and_preserves_existing_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let data = temp.path().join("data");
+        let mut dbs = Vec::new();
+        for rel in ["bizchat/bizchat.db", "message/biz_message_0.db", "message/message_0.db"] {
+            let path = source.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE fixture (value TEXT); INSERT INTO fixture VALUES ('source');").unwrap();
+            drop(conn);
+            dbs.push(DbFile { rel: rel.into(), path: path.to_string_lossy().into(), size: fs::metadata(&path).unwrap().len(), encrypted: false, salt: None, has_wal: false });
+        }
+        let account = Account { id: "business-test".into(), dir: source.to_string_lossy().into(), db_count: dbs.len(), encrypted_count: 0, total_bytes: 0, modified_at: None, dbs };
+        let cache = cache_dir(&data, &account.id);
+        fs::create_dir_all(cache.join("message")).unwrap();
+        let ordinary = cache.join("message/message_0.db");
+        fs::write(&ordinary, b"existing ordinary cache").unwrap();
+
+        prepare_business_account(&data, account.clone(), false).unwrap();
+        assert!(cache.join("bizchat/bizchat.db").is_file());
+        assert!(!cache.join("message/biz_message_0.db").exists());
+        prepare_business_account(&data, account, true).unwrap();
+        assert!(cache.join("message/biz_message_0.db").is_file());
+        assert_eq!(fs::read(&ordinary).unwrap(), b"existing ordinary cache");
+        let conn = rusqlite::Connection::open(cache.join("message/biz_message_0.db")).unwrap();
+        assert_eq!(conn.query_row("SELECT value FROM fixture", [], |row| row.get::<_, String>(0)).unwrap(), "source");
+    }
+
+    #[test]
     fn chat_dbs_exclude_kvdb_sidecars() {
         assert!(is_chat_db("message/message_0.db"));
         assert!(is_chat_db("message/message_fts.db"));
@@ -508,7 +566,9 @@ mod tests {
         assert!(!is_chat_db("message/message_0.kvdb"));
         assert!(!is_chat_db("message/biz_message_0.kvdb"));
         assert!(!is_chat_db("message/media_0.kvdb"));
-        assert!(!is_chat_db("message/biz_message_0.db"));
+        assert!(is_chat_db("message/biz_message_0.db"));
+        assert!(is_chat_db("message/biz_media_0.db"));
+        assert!(is_chat_db("bizchat/bizchat.db"));
         assert!(!is_chat_db("contact/contact_fts.db"));
     }
 

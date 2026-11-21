@@ -294,8 +294,10 @@ export function WeChatSetupChecklist(p: Props) {
     {p.recoveryNotice && <p className="wx-setup-passed" role="status">{p.recoveryNotice}</p>}
     {p.permissionPhase && stepProblem}
     <ol className="wx-setup-list" hidden={!p.permissionPhase}>
-      {systemRows.map(row => <li key={row.id} className={`wx-setup-item ${row.skipped || row.information ? 'info' : row.passed ? 'done' : 'current'}`}>
-        <div className="wx-setup-row"><span className="wx-setup-indicator" aria-hidden="true">{row.skipped || row.information ? Icons.info : row.passed ? Icons.check : Icons.clock}</span><span className="wx-setup-row-copy"><strong>{t(row.title)}</strong>{row.detail && <small>{t(row.detail)}</small>}</span><span className="wx-setup-status">{row.skipped ? t("无需检查") : row.status || (row.information ? t("已识别") : row.passed ? t("已通过") : row.checking ? t("检查中") : t("待处理"))}</span></div>
+      {systemRows.map(row => {
+        const completed = row.skipped || ((row.information || row.passed) && !row.checking);
+        return <li key={row.id} className={`wx-setup-item ${completed ? 'done' : 'current'}`}>
+        <div className="wx-setup-row"><span className="wx-setup-indicator" aria-hidden="true">{completed ? Icons.check : Icons.clock}</span><span className="wx-setup-row-copy"><strong>{t(row.title)}</strong>{row.detail && <small>{t(row.detail)}</small>}{row.status && <small>{t(row.status)}</small>}</span><span className="wx-setup-status">{row.checking && !completed && <svg className="wizard-button-spinner" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>}{completed && <span className="wizard-status-check" aria-hidden="true">{Icons.check}</span>}{completed ? t("已完成") : t("未完成")}</span></div>
         <div className="wx-setup-body" hidden={row.passed || row.skipped || row.information}>
           {row.id === 'os' && systemInfoError && <><p role="alert">{systemInfoError}</p><button className="wxv-btn" disabled={systemInfoChecking} onClick={() => void refreshSystemInfo()}>{t("重新读取系统版本")}</button></>}
           {row.id === 'arch' && !row.checking && <><p>{t("当前架构暂不支持自动取钥。请使用 Apple Silicon 版本的应用，或返回接入方式选择导入文件。")}</p><button className="wxv-btn" onClick={p.onBack}>{t("返回接入方式")}</button></>}
@@ -304,7 +306,7 @@ export function WeChatSetupChecklist(p: Props) {
           {row.id === 'data' && done[0] && !row.checking && <><p>{t("未找到可读取的微信数据目录。请先打开微信并登录一次，再重新检查。")}</p><WizardActionButton className="wxv-btn" busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在查找数据目录…")} disabled={working} onAction={p.onScan}>{t("重新查找数据目录")}</WizardActionButton></>}
           {(row.id === 'tools' || row.id === 'write') && <>{!row.checking && <p role="alert">{p.captureError ? t("检查未完成，请重试。") : row.id === 'tools' ? t("请安装或修复 Xcode Command Line Tools 后，重新检查系统工具。") : t("请确认当前用户对微信及其安装目录有读写权限，再重新检查。")}</p>}<WizardActionButton className="wxv-btn" loading={p.captureChecking} busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查…")} onAction={p.onCaptureRefresh}>{t("重新检查")}{row.id === 'tools' ? t("系统工具") : t("目录权限")}</WizardActionButton></>}
         </div>
-      </li>)}
+      </li>; })}
     </ol>
     {p.permissionPhase && current === 'recover' && <div className="wx-setup-problem"><p>{t("请先点「下一步：处理微信恢复」，处理上次连接留下的记录。这项操作不读取聊天记录；完成后再回来检查读取权限。")}</p></div>}
     {!p.permissionPhase && <>
@@ -316,9 +318,10 @@ export function WeChatSetupChecklist(p: Props) {
           const missingIndex = stepIssue?.check.kind === 'missing' ? connectionRows.findIndex(([row]) => row === stepIssue.check.target) : -1;
           const reused = reuse && ['prepare', 'login', 'authorize', 'logout', 'relogin'].includes(id);
           const passed = (current === 'recover' ? id === 'account' && done[1] : current === 'complete' || index < currentIndex) && (missingIndex < 0 || index < missingIndex);
+          const completed = reused ? done[3] && passed : passed;
           const expanded = id === current;
-          return <li key={id} className={`wx-setup-item ${reused ? 'info' : passed ? 'done' : expanded ? 'current' : 'waiting'}`}>
-            <div className="wx-setup-row" aria-current={expanded ? 'step' : undefined}><span className="wx-setup-indicator" aria-hidden="true">{reused ? Icons.info : passed ? Icons.check : index + 1}</span><strong>{t(title)}</strong><span className="wx-setup-status">{expanded && working && <svg className="wizard-button-spinner" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>}{reused ? done[3] ? t("无需重复") : t("待校验") : passed ? t("已完成") : expanded ? working ? t("进行中") : t("待操作") : t("待进行")}</span></div>
+          return <li key={id} className={`wx-setup-item ${completed ? 'done' : expanded ? 'current' : 'waiting'}`}>
+            <div className="wx-setup-row" aria-current={expanded ? 'step' : undefined}><span className="wx-setup-indicator" aria-hidden="true">{completed ? Icons.check : index + 1}</span><strong>{t(title)}</strong><span className="wx-setup-status">{expanded && working && <svg className="wizard-button-spinner" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>}{completed && <span className="wizard-status-check" aria-hidden="true">{Icons.check}</span>}{completed ? t("已完成") : t("未完成")}</span></div>
             {expanded && <div className="wx-setup-body">{stepIssue && current !== 'recover' ? stepProblem : connectionBody(id)}{!stepIssue && errorDetails}
               {p.capture?.pending && id !== 'recover' && <button className="wx-setup-cancel" disabled={Boolean(p.captureBusy)} onClick={() => { void recover(p.onRestore); }}>{t("取消连接并恢复微信")}</button>}
             </div>}

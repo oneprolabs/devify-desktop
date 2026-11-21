@@ -73,7 +73,7 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
     if (!accountId || !isTauri()) { setSessions([]); return; }
     let active = true;
     setSessionLoading(true); setSessionError(''); setSessions([]);
-    void invoke<Session[]>('wechat_sessions', { accountId })
+    void invoke<Session[]>('chat_sessions', { accountId })
       .then(list => { if (active) setSessions(list); })
       .catch(e => { if (active) setSessionError(String(e)); })
       .finally(() => { if (active) setSessionLoading(false); });

@@ -68,6 +68,7 @@ let invoke;
 let wizardActionModule;
 const installed = { detect: { state: 'installed', app_path: '/Applications/WeChat.app', version: '4.1.2', message: '' }, checking: false, usable: true, canProceed: true, recheck: async () => {} };
 let connectorInstall = installed;
+let backupRuntime = { paused: false };
 const mockedRequire = id => {
   if (id === 'react') return react;
   if (id === 'react/jsx-runtime') return jsx;
@@ -83,8 +84,11 @@ const mockedRequire = id => {
   if (id === './WizardSessionPicker') return loadModule('../src/WizardSessionPicker.tsx');
   if (id === './WizardImportScope') return loadModule('../src/WizardImportScope.tsx');
   if (id === './ImportHistoryRange') return loadModule('../src/ImportHistoryRange.tsx');
+  if (id === './BackupSchedule') return loadModule('../src/BackupSchedule.tsx');
   if (id === './WeChatWizardComplete') return loadModule('../src/WeChatWizardComplete.tsx');
   if (id === './settingsSaveQueue') return loadModule('../src/settingsSaveQueue.ts');
+  if (id === './taskRuntime') return { useTaskRuntime: () => backupRuntime, refreshTaskRuntime: async () => {} };
+  if (id === './BackupRuntimeSwitch') return loadModule('../src/BackupRuntimeSwitch.tsx');
   if (id === './icons') return { Icons: { check: '✓', clock: '◷' } };
   if (id === './AccountPicker') return loadModule('../src/AccountPicker.tsx');
   if (id === './Connectors') return loadModule('../src/Connectors.tsx');
@@ -281,6 +285,13 @@ const notify = tree => elements(tree).filter(node => node.type === 'button' && n
 assert.ok(notify(tree).every(node => node.props.disabled));
 connectorLoad.resolve({ ...defaultSettings(), user_settings_revision: 20 }); await flush();
 tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
+backupRuntime = { ...backupRuntime, sources: [{ account_id: 'A', platform: 'wechat', setup_complete: false, backup_enabled: true }] };
+tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
+assert.ok(elements(tree).some(node => node.props?.role === 'status' && node.props.children === '配置未完成，备份已暂停。'));
+assert.ok(elements(tree).some(node => node.type === 'button' && node.props.children === '继续配置'));
+backupRuntime = { ...backupRuntime, sources: [{ account_id: 'A', platform: 'wechat', setup_complete: true, backup_enabled: true }] };
+tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
+assert.ok(!elements(tree).some(node => node.props?.children === '配置未完成，备份已暂停。'), 'live completion clears the connector notice');
 notify(tree)[0].props.onClick(); tree = render(connectors, () => Connectors({ onOpenWechat() {}, onOpenWhatsApp() {} }));
 notify(tree)[1].props.onClick(); await flush();
 assert.equal(connectorSaves.length, 1);
@@ -330,13 +341,14 @@ tree = render(gate, () => LoginGate({ onAuthenticated() {} }));
 assert.equal(gateInput(tree).props.value, 'https://later.example');
 assert.ok(elements(tree).some(node => node.props?.role === 'status' && String(node.props.children).includes('尚未保存')));
 const { ChatEntry } = loadModule('../src/ChatLanding.tsx');
+backupRuntime = { paused: false, sources: [{ account_id: 'locked-account', platform: 'wechat', setup_complete: true }] };
 let entryChecks = 0, unlocks = 0;
 let entryAccounts = deferred();
 invoke = (command) => {
   if (command === 'chat_accounts') { entryChecks += 1; return entryAccounts.promise; }
   if (command === 'app_settings_get') return Promise.resolve(defaultSettings());
   if (command === 'wechat_key_status') return Promise.resolve({ keys: [] });
-  if (command === 'wechat_sessions') return Promise.reject('未找到解密后的数据库');
+  if (command === 'chat_sessions') return Promise.reject('未找到解密后的数据库');
   throw Error(command);
 };
 const entry = { hooks: [] };
@@ -355,6 +367,23 @@ assert.equal(unlocks, 1, 'returning to chat still opens setup when the account i
 render(entry, () => ChatEntry({ ...entryProps, visible: true })); await flush();
 assert.equal(entryChecks, 2, 'stable callbacks must not restart a completed probe');
 assert.equal(unlocks, 1);
+const unfinishedEntry = { hooks: [] };
+let unfinishedReads = 0, unfinishedReady = 0;
+backupRuntime = { paused: false, sources: [{ account_id: 'draft@s.whatsapp.net', platform: 'whatsapp', setup_complete: false }] };
+invoke = (command) => {
+  if (command === 'chat_accounts') return Promise.resolve([{ id: 'draft@s.whatsapp.net', source: 'whatsapp' }]);
+  if (command === 'app_settings_get') return Promise.resolve(defaultSettings());
+  if (command === 'wechat_key_status') return Promise.resolve({ keys: [] });
+  if (command === 'chat_sessions') { unfinishedReads += 1; return Promise.resolve([{ username: 'chat' }]); }
+  throw Error(command);
+};
+const unfinishedProps = { ...entryProps, visible: true, onReady() { unfinishedReady += 1; } };
+render(unfinishedEntry, () => ChatEntry(unfinishedProps)); await flush();
+assert.equal(unfinishedReads, 0, 'a draft account is not probed for chat records');
+assert.equal(unfinishedReady, 0, 'local readability must not skip unfinished setup');
+backupRuntime = { ...backupRuntime, sources: [{ account_id: 'draft@s.whatsapp.net', platform: 'whatsapp', setup_complete: true }] };
+render(unfinishedEntry, () => ChatEntry(unfinishedProps)); await flush();
+assert.equal(unfinishedReady, 1, 'completed setup can enter chat');
 const { DiskAccessCard } = loadModule('../src/Permission.tsx');
 const { WizardActionButton } = mockedRequire('./WizardActionButton');
 const previousWindow = globalThis.window, previousDocument = globalThis.document;
@@ -463,6 +492,7 @@ invoke = (command, args) => {
   if (command === 'whatsapp_status') return Promise.resolve(waStatus);
   if (command === 'app_settings_get') return Promise.resolve({ ...defaultSettings(), user_settings_revision: 20 });
   if (command === 'chat_account_activate') return activation.promise;
+  if (command === 'connector_setup_state') return Promise.resolve({});
   throw Error(`unexpected WhatsApp command ${command}`);
 };
 let chatsOpened = 0;
@@ -493,11 +523,47 @@ const waSelection = find(tree, node => node.type === WhitelistSettings);
 assert.equal(waSelection.props.wizardSource, 'whatsapp', 'the wizard must select only WhatsApp accounts');
 waSelection.props.onSaved(0);
 assert.ok(elements(renderWa()).some(node => node.type === WhitelistSettings), 'empty selection must not mark setup complete');
-waSelection.props.onSaved(2); tree = renderWa();
+await waSelection.props.onSaved(2); tree = renderWa();
+const scheduleStep = find(tree, node => node.type?.name === 'BackupSchedule');
+await scheduleStep.props.onContinue(); tree = renderWa();
 find(tree, node => node.type === 'button' && node.props.children === '进入聊天').props.onClick();
 assert.equal(chatsOpened, 1);
 assert.ok(waCalls.every(call => !call.command.startsWith('wechat_')), 'WhatsApp must not run WeChat checks or key capture');
 for (const hook of wa.hooks) hook?.cleanup?.();
+
+// Resume validates the same local account once, then returns to the saved stage.
+const resumeCalls = [];
+let resumeStatus = { ...waStatus };
+let resumeSettings = { ...defaultSettings(), chat: { ...defaultSettings().chat, allowed_usernames: { [waStatus.account]: ['chat'] } }, user_settings_revision: 30 };
+invoke = async (command, args) => {
+  resumeCalls.push({ command, args });
+  if (command === 'whatsapp_status') return resumeStatus;
+  if (command === 'app_settings_get') return resumeSettings;
+  if (command === 'chat_account_activate') return null;
+  throw Error(command);
+};
+const resumed = { hooks: [] }, resumeProps = { resume: { accountId: waStatus.account, step: 'backup' }, onBack() {}, onOpenChat() {} };
+render(resumed, () => WhatsAppWizard(resumeProps)); await flush();
+tree = render(resumed, () => WhatsAppWizard(resumeProps));
+assert.ok(elements(tree).some(node => node.type?.name === 'BackupSchedule'), 'continue returns to the saved schedule step');
+assert.ok(!elements(tree).some(node => node.props?.children === '开始前，请先确认'));
+assert.equal(resumeCalls.filter(call => call.command === 'whatsapp_status').length, 1);
+assert.ok(!resumeCalls.some(call => call.command === 'app_settings_save' || call.command === 'connector_setup_state'), 'resuming does not rewrite configuration');
+for (const hook of resumed.hooks) hook?.cleanup?.();
+resumeSettings = { ...resumeSettings, chat: { ...resumeSettings.chat, allowed_usernames: {} } };
+const missingSelection = { hooks: [] };
+render(missingSelection, () => WhatsAppWizard(resumeProps)); await flush();
+tree = render(missingSelection, () => WhatsAppWizard(resumeProps));
+assert.ok(elements(tree).some(node => node.type === WhitelistSettings), 'missing saved selections return to selection instead of skipping it');
+for (const hook of missingSelection.hooks) hook?.cleanup?.();
+resumeStatus = { ...waStatus, account: 'other@s.whatsapp.net' };
+resumeCalls.length = 0;
+const changedAccount = { hooks: [] };
+render(changedAccount, () => WhatsAppWizard(resumeProps)); await flush();
+tree = render(changedAccount, () => WhatsAppWizard(resumeProps)); await flush();
+assert.ok(!resumeCalls.some(call => call.command === 'chat_account_activate'), 'resume never activates a different WhatsApp account');
+assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
+for (const hook of changedAccount.hooks) hook?.cleanup?.();
 
 // Mixed-source account lists must never save a WeChat whitelist from the WA wizard.
 const waWhitelist = { hooks: [] }, waCatalogAccounts = [];
@@ -641,10 +707,11 @@ const stepsWithSavedKeys = find(tree, node => node.type === 'ol' && node.props['
 for (const title of ['准备微信', '登录微信', '授权连接', '退出微信账号', '重新登录微信', '校验连接', '读取聊天记录']) {
   assert.ok(elements(stepsWithSavedKeys).some(node => node.type === 'strong' && node.props.children === title), `saved results must preserve the ${title} step`);
 }
-assert.equal(elements(stepsWithSavedKeys).filter(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '无需重复').length, 5, 'reused capture steps are explained instead of removed or marked as executed');
+assert.equal(elements(stepsWithSavedKeys).filter(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '已完成').length, 7, 'validated saved results use the same completed status as a new connection');
 tree = render(reusedView, () => WeChatSetupChecklist({ ...reusedProps, keyedCount: 0, freshKey: true, savedKey: { exists: true, secure: true, modified_at: 1 }, error: '等待文件校验' }));
 assert.ok(elements(tree).some(node => node.props?.role === 'status' && node.props.children === '检测到已保存的连接文件，将先校验是否适用于当前账号。'));
-assert.ok(!elements(tree).some(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '无需重复'), 'a file alone cannot claim that the capture result is validated');
+const unverifiedSteps = find(tree, node => node.type === 'ol' && node.props['aria-label'] === '微信操作步骤');
+assert.equal(elements(unverifiedSteps).filter(node => node.props?.className === 'wx-setup-status' && node.props.children.at(-1) === '未完成').length, 7, 'a saved file alone leaves the connection steps unfinished until validation');
 for (const hook of reusedView.hooks) hook?.cleanup?.();
 // Completion only opens a verified restored official app, and retries do not
 // bypass a pending recovery or launch failure.
@@ -692,8 +759,28 @@ invoke = (command, args) => {
 const backupProps = { wizard: true, onContinue() { backupNext += 1; }, onBack() {} };
 render(backupView, () => BackupSchedule(backupProps)); await flush();
 tree = render(backupView, () => BackupSchedule(backupProps));
+assert.ok(!elements(tree).some(node => node.type?.name === 'Pills'), 'wizard reuses the shared plan until editing is explicitly requested');
+assert.equal(backupWrites.length, 0, 'viewing the shared plan must not write defaults');
+await find(tree, node => node.type === WizardActionButton && node.props.children === '沿用当前设置并继续').props.onAction();
+assert.equal(backupNext, 1);
+assert.equal(backupWrites.length, 0, 'continuing with the existing plan must not rewrite shared settings');
+backupNext = 0;
+find(tree, node => node.type === 'button' && node.props.children === '修改统一设置').props.onClick();
+tree = render(backupView, () => BackupSchedule(backupProps));
+assert.equal(backupWrites.length, 0, 'opening the shared editor must not save');
+assert.ok(elements(tree).some(node => node.props.children === '以下修改会立即保存，并应用于所有已连接的平台。'));
+let intervals = find(tree, node => node.type?.name === 'Pills' && node.props.label === '常用间隔');
+assert.equal(intervals.props.options[0].id, 300);
+assert.equal(intervals.props.options.at(-1).id, 'custom');
+assert.ok(!elements(tree).some(node => node.type?.name === 'Row' && node.props.label === '自定义间隔'));
+const writesBeforeCustom = backupWrites.length;
+intervals.props.onChange('custom');
+tree = render(backupView, () => BackupSchedule(backupProps));
+assert.ok(elements(tree).some(node => node.type?.name === 'Row' && node.props.label === '自定义间隔'));
+assert.equal(backupWrites.length, writesBeforeCustom, 'opening the custom editor must not save a changed interval');
 find(tree, node => node.type?.name === 'Pills' && node.props.label === '常用间隔').props.onChange(3600); await flush();
 tree = render(backupView, () => BackupSchedule(backupProps));
+assert.ok(!elements(tree).some(node => node.type?.name === 'Row' && node.props.label === '自定义间隔'));
 let continueBackup = find(tree, node => node.type === WizardActionButton && node.props.children === '下一步');
 assert.equal(continueBackup.props.disabled, true);
 assert.equal(continueBackup.props.loading, true, 'next remains busy until the save is acknowledged');
@@ -709,6 +796,50 @@ assert.equal(find(tree, node => node.type === WizardActionButton && node.props.c
 assert.equal(backupNext, 0);
 assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
 for (const hook of backupView.hooks) hook?.cleanup?.();
+const scheduleView = { hooks: [] }, scheduleCalls = [];
+let finishPause, failPause = false;
+invoke = (command, args) => {
+  scheduleCalls.push({ command, args });
+  if (command === 'app_settings_get') return Promise.resolve({ ...backupInitial, chat: { ...backupInitial.chat, sync_interval_seconds: 60 } });
+  if (command === 'chat_accounts') return Promise.resolve([{ id: 'A', source: 'wechat' }]);
+  if (command === 'task_runtime_pause') return new Promise((resolve, reject) => { finishPause = () => { if (failPause) reject('pause failed'); else { backupRuntime = { ...backupRuntime, paused: args.paused }; resolve(); } }; });
+  throw Error(command);
+};
+render(scheduleView, () => BackupSchedule({})); await flush();
+tree = render(scheduleView, () => BackupSchedule({}));
+assert.ok(!elements(tree).some(node => node.props?.['aria-expanded'] !== undefined), 'the schedule has no collapse action');
+assert.ok(!elements(tree).some(node => node.type?.name === 'Row' && node.props.label === '下次备份'));
+assert.ok(elements(tree).some(node => node.type?.name === 'Row' && node.props.label === '自定义间隔'), 'existing non-preset intervals remain visible and unchanged');
+const backupControl = find(tree, node => node.type?.name === 'BackupRuntimeSwitch');
+const controlView = { hooks: [] };
+const renderControl = () => render(controlView, () => backupControl.type(backupControl.props));
+let controlTree = renderControl();
+let backupSwitch = find(controlTree, node => node.props?.role === 'switch');
+assert.equal(backupSwitch.props['aria-checked'], true);
+backupSwitch.props.onClick(); backupSwitch.props.onClick(); await flush();
+assert.deepEqual(scheduleCalls.filter(call => call.command === 'task_runtime_pause'), [{ command: 'task_runtime_pause', args: { paused: true } }]);
+controlTree = renderControl();
+assert.equal(find(controlTree, node => node.props?.role === 'switch').props['aria-busy'], true);
+assert.equal(find(controlTree, node => node.props?.role === 'switch').props.disabled, true);
+assert.ok(!elements(controlTree).some(node => node.props?.children === '正在保存…'), 'a fast toggle does not flash loading copy');
+finishPause(); await flush();
+controlTree = renderControl();
+assert.equal(find(controlTree, node => node.props?.role === 'switch').props['aria-checked'], false);
+tree = render(scheduleView, () => BackupSchedule({}));
+assert.ok(!elements(tree).some(node => node.type === 'fieldset' && node.props.disabled), 'pausing must leave schedule settings editable');
+backupRuntime = { paused: false };
+controlTree = renderControl();
+assert.equal(find(controlTree, node => node.props?.role === 'switch').props['aria-checked'], true, 'the task page runtime state is reflected without a separate settings toggle');
+failPause = true;
+find(controlTree, node => node.props?.role === 'switch').props.onClick(); finishPause(); await flush();
+controlTree = renderControl();
+assert.equal(find(controlTree, node => node.props?.role === 'switch').props['aria-checked'], true, 'failure must retain the confirmed state');
+assert.equal(find(controlTree, node => node.props?.role === 'switch').props.disabled, false);
+tree = render(scheduleView, () => BackupSchedule({}));
+assert.ok(elements(tree).some(node => String(node.props?.children).includes('pause failed')));
+assert.ok(!scheduleCalls.some(call => call.command === 'app_settings_save'), 'pause uses the task action without rewriting backup configuration');
+for (const hook of controlView.hooks) hook?.cleanup?.();
+for (const hook of scheduleView.hooks) hook?.cleanup?.();
 const { WizardSessionPicker } = loadModule('../src/WizardSessionPicker.tsx');
 const picker = { hooks: [] }, bulkSelections = [];
 const pickerProps = { items: Array.from({ length: 63 }, (_, i) => ({ username: `s${i}`, display: `会话 ${i}`, is_group: false, last_time: null })), total: 63, groupCount: 0, selected: new Set(), selectedCount: 0, kind: 'all', onKind() {}, search: '', onSearch() {}, loading: false, disabled: false, accountId: 'A', onToggle() {}, onBulk(mode, ids) { bulkSelections.push({ mode, ids }); }, focused: '', onFocus() {}, activity: () => '无记录', historyEditor: null };

@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::settings;
@@ -190,7 +190,9 @@ pub fn source_db() -> Result<PathBuf, String> {
 /// `-wal`/`-shm` are copied next to the database so a replica that was not checkpointed
 /// still reads the transactions WhatsApp had already committed. The copy is only redone
 /// when the source changed, which keeps a 30-second sync from rewriting gigabytes.
+static SNAPSHOT_READ:std::sync::Mutex<()>=std::sync::Mutex::new(());
 pub fn snapshot(app_data: &Path) -> Result<PathBuf, String> {
+    let _guard=SNAPSHOT_READ.lock().map_err(|_|"无法锁定 WhatsApp 副本。")?;
     snapshot_from(&source_db()?, app_data)
 }
 
@@ -198,7 +200,7 @@ fn snapshot_from(source: &Path, app_data: &Path) -> Result<PathBuf, String> {
     if !source.is_file() {
         return Err("未找到 WhatsApp 的 ChatStorage.sqlite，请先打开并登录 WhatsApp。".into());
     }
-    let cache = app_data.join("whatsapp-cache");
+    let cache = crate::local_scope::root(app_data).join("whatsapp-cache");
     fs::create_dir_all(&cache).map_err(|error| format!("创建 WhatsApp 缓存目录失败：{error}"))?;
     let target = cache.join(DB_FILE);
     let source_signature = signature(source);
@@ -226,9 +228,12 @@ fn snapshot_from(source: &Path, app_data: &Path) -> Result<PathBuf, String> {
 
 /// Open a readable connection on the snapshot. Every public reader goes through here so
 /// the live database is never held open by the app.
-fn open(app_data: &Path) -> Result<Connection, String> {
-    let db = snapshot(app_data)?;
-    open_readonly(&db)
+struct SnapshotConnection {connection:Connection,_guard:std::sync::MutexGuard<'static,()>}
+impl std::ops::Deref for SnapshotConnection {type Target=Connection;fn deref(&self)->&Connection {&self.connection}}
+fn open(app_data: &Path) -> Result<SnapshotConnection, String> {
+    let guard=SNAPSHOT_READ.lock().map_err(|_|"无法锁定 WhatsApp 副本。")?;
+    let db = snapshot_from(&source_db()?,app_data)?;
+    Ok(SnapshotConnection {connection:open_readonly(&db)?,_guard:guard})
 }
 
 fn open_readonly(path: &Path) -> Result<Connection, String> {
@@ -301,10 +306,12 @@ fn is_visible(chat: &str) -> bool {
 
 /// Sessions newest first, mapped onto the same shape the WeChat reader returns.
 pub fn sessions(app_data: &Path) -> Result<Vec<SessionItem>, String> {
-    sessions_from(&open(app_data)?)
+    sessions_from(&*open(app_data)?)
 }
 
-fn sessions_from(conn: &Connection) -> Result<Vec<SessionItem>, String> {
+fn sessions_from(conn: &Connection) -> Result<Vec<SessionItem>, String> {sessions_page_from(conn,None,None,0)}
+pub fn sessions_page(data:&Path,allowed:&HashSet<String>,limit:usize,offset:usize)->Result<Vec<SessionItem>,String>{sessions_page_from(&*open(data)?,Some(allowed),Some(limit),offset)}
+fn sessions_page_from(conn:&Connection,allowed:Option<&HashSet<String>>,limit:Option<usize>,offset:usize)->Result<Vec<SessionItem>,String>{
     if !table_exists(conn, "ZWACHATSESSION") {
         return Err("WhatsApp 数据版本不受支持（缺少 ZWACHATSESSION）。".into());
     }
@@ -338,9 +345,16 @@ fn sessions_from(conn: &Connection) -> Result<Vec<SessionItem>, String> {
     } else {
         ""
     };
+    let representative_order = if cols.iter().any(|column| column == "ZLASTMESSAGEDATE") {
+        "duplicate.ZLASTMESSAGEDATE DESC, duplicate.Z_PK DESC"
+    } else {
+        "duplicate.Z_PK DESC"
+    };
+    let allowed_clause = allowed.map(|allowed| format!(" AND s.\"{jid}\" IN ({})", allowed.iter().map(|value| format!("'{}'", value.replace("'", "''"))).collect::<Vec<_>>().join(","))).unwrap_or_default();
     let sql = format!(
         "SELECT s.\"{jid}\", {}, {}, {}, {}, {group_members}, {message_fields} FROM ZWACHATSESSION s {message_join} \
-         WHERE s.\"{jid}\" IS NOT NULL AND s.\"{jid}\" != '' \
+         WHERE s.\"{jid}\" IS NOT NULL AND s.\"{jid}\" != '' {allowed_clause} \
+         AND s.Z_PK = (SELECT duplicate.Z_PK FROM ZWACHATSESSION duplicate WHERE duplicate.\"{jid}\" = s.\"{jid}\" ORDER BY {representative_order} LIMIT 1) \
          ORDER BY {} DESC",
         expr(name),
         expr(last.clone()),
@@ -348,6 +362,7 @@ fn sessions_from(conn: &Connection) -> Result<Vec<SessionItem>, String> {
         expr(unread),
         last.map(|value| format!("s.\"{value}\"")).unwrap_or_else(|| "0".into()),
     );
+    let sql=if let Some(limit)=limit {format!("{sql}, s.Z_PK DESC LIMIT {} OFFSET {offset}",limit.clamp(1,100))} else {sql};
     let mut statement = conn.prepare(&sql).map_err(|error| format!("读取 WhatsApp 会话失败：{error}"))?;
     let rows = statement
         .query_map([], |row| {
@@ -453,7 +468,7 @@ pub fn messages(
     limit: usize,
     before: Option<MessageCursor>,
 ) -> Result<Vec<MessageItem>, String> {
-    messages_from(&open(app_data)?, chat, limit, before, None, None)
+    messages_from(&*open(app_data)?, chat, limit, before, None, None)
 }
 
 pub fn messages_between(
@@ -463,7 +478,7 @@ pub fn messages_between(
     until: Option<i64>,
     limit: usize,
 ) -> Result<Vec<MessageItem>, String> {
-    messages_from(&open(app_data)?, chat, limit, None, since, until)
+    messages_from(&*open(app_data)?, chat, limit, None, since, until)
 }
 
 fn messages_from(
@@ -474,6 +489,14 @@ fn messages_from(
     since: Option<i64>,
     until: Option<i64>,
 ) -> Result<Vec<MessageItem>, String> {
+    messages_ordered(conn,chat,limit,before,since,until,false,None)
+}
+
+pub fn upload_page(data: &Path, chat: &str, since: i64, until: Option<i64>, after: Option<MessageCursor>,limit:usize)->Result<Vec<MessageItem>,String>{
+    messages_ordered(&*open(data)?,chat,limit,after,Some(since),until,true,None)
+}
+
+fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<MessageCursor>,since:Option<i64>,until:Option<i64>,ascending:bool,selection:Option<&[crate::settings::MessageRef]>)->Result<Vec<MessageItem>,String>{
     if !table_exists(&conn, "ZWACHATSESSION") || !table_exists(&conn, "ZWAMESSAGE") {
         return Err("WhatsApp 数据版本不受支持（缺少会话或消息表）。".into());
     }
@@ -484,7 +507,8 @@ fn messages_from(
             [chat],
             |row| row.get(0),
         )
-        .map_err(|_| format!("WhatsApp 中找不到会话 {chat}。"))?;
+        .optional().map_err(|e|format!("读取 WhatsApp 会话失败：{e}"))?
+        .ok_or_else(||format!("LOCAL_CHAT_MISSING: WhatsApp 中找不到会话 {chat}。"))?;
     let cols = columns(&conn, "ZWAMESSAGE");
     let time = require(&cols, &["ZMESSAGEDATE"], "ZWAMESSAGE")?.to_string();
     let text = require(&cols, &["ZTEXT"], "ZWAMESSAGE")?.to_string();
@@ -510,6 +534,12 @@ fn messages_from(
         params.push(boundary);
         params.push(before.local_id);
     }
+    if ascending {sql=sql.replace(" < "," > ");}
+    if let Some(refs)=selection {
+        if refs.is_empty() {return Ok(Vec::new());}
+        if refs.len()>1000 {return Err("单批消息超过读取上限。".into());}
+        sql.push_str(&format!(" AND m.Z_PK IN ({})",refs.iter().map(|m|m.local_id.to_string()).collect::<Vec<_>>().join(",")));
+    }
     if let Some(since) = since {
         sql.push_str(&format!(" AND m.\"{time}\" >= ?{}", params.len() + 1));
         params.push(since.saturating_sub(CORE_DATA_EPOCH));
@@ -519,7 +549,7 @@ fn messages_from(
         params.push(until.saturating_sub(CORE_DATA_EPOCH));
     }
     sql.push_str(&format!(
-        " ORDER BY CAST(m.\"{time}\" AS INTEGER) DESC, m.Z_PK DESC LIMIT {limit}"
+        " ORDER BY CAST(m.\"{time}\" AS INTEGER) {order}, m.Z_PK {order} LIMIT {limit}",order=if ascending {"ASC"} else {"DESC"}
     ));
     let mut statement = conn.prepare(&sql).map_err(|error| format!("读取 WhatsApp 消息失败：{error}"))?;
     let rows = statement
@@ -562,6 +592,7 @@ fn messages_from(
             is_self: self_sent,
         });
     }
+    if let Some(refs)=selection {if items.len()!=refs.len() || items.iter().any(|m|!refs.iter().any(|r|r.local_id==m.local_id && r.time==m.time)) {return Err("部分待上传消息已变化，请重新读取。".into());}}
     Ok(items)
 }
 
@@ -735,7 +766,7 @@ fn group_event(text: &str) -> Option<String> {
 
 /// Day buckets for the date picker, newest first, using local dates like the WeChat reader.
 pub fn message_dates(app_data: &Path, chat: &str) -> Result<Vec<(String, usize)>, String> {
-    message_dates_from(&open(app_data)?, chat)
+    message_dates_from(&*open(app_data)?, chat)
 }
 
 fn message_dates_from(conn: &Connection, chat: &str) -> Result<Vec<(String, usize)>, String> {
@@ -843,9 +874,8 @@ pub fn status(app_data: &Path) -> Status {
         Ok(list) => {
             status.sessions = list.len();
             status.last_message_at = list.iter().filter_map(|item| item.last_time).max();
-            status.messages = snapshot(app_data)
-                .and_then(|db| {
-                    let conn = open_readonly(&db)?;
+            status.messages = open(app_data)
+                .and_then(|conn| {
                     conn.query_row("SELECT COUNT(*) FROM ZWAMESSAGE", [], |row| row.get::<_, i64>(0))
                         .map(|count| count as usize)
                         .map_err(|error| error.to_string())
@@ -897,6 +927,9 @@ pub fn upload_conversations(
             .ok_or("部分所选会话已不可用，请重新选择。")?;
         let mut before = None;
         let mut messages: Vec<MessageItem> = Vec::new();
+        if let Some(refs)=selection.get(username) {
+            messages=messages_ordered(&conn,username,refs.len().max(1),None,since,until,false,Some(refs))?;
+        } else {
         loop {
             let page = messages_from(&conn, username, UPLOAD_PAGE, before, None, None)?;
             if page.is_empty() {
@@ -916,6 +949,7 @@ pub fn upload_conversations(
             if since.zip(oldest).map(|(start, oldest)| oldest <= start).unwrap_or(false) {
                 break;
             }
+        }
         }
         if let Some(refs) = selection.get(username) {
             messages.retain(|message| refs.iter().any(|item| item.local_id == message.local_id && item.time == message.time));
@@ -1020,7 +1054,7 @@ pub fn count_after(app_data: &Path, chat: &str, time: i64, local_id: i64) -> Res
 
 /// Newest `(time, local id)`; `None` when the conversation has no readable message.
 pub fn latest_position(app_data: &Path, chat: &str) -> Result<Option<(i64, i64)>, String> {
-    latest_position_from(&open(app_data)?, chat)
+    latest_position_from(&*open(app_data)?, chat)
 }
 
 fn latest_position_from(conn: &Connection, chat: &str) -> Result<Option<(i64, i64)>, String> {
@@ -1099,6 +1133,23 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_session_rows_do_not_duplicate_conversations_or_pages() {
+        let (_root, conn) = fixture();
+        conn.execute_batch("INSERT INTO ZWACHATSESSION (Z_PK,ZCONTACTJID,ZPARTNERNAME) VALUES (4,'8613800000000@s.whatsapp.net','empty duplicate');").unwrap();
+        let list = sessions_from(&conn).unwrap();
+        assert_eq!(list.len(), 2);
+        let direct = list.iter().find(|item| !item.is_group).unwrap();
+        assert_eq!(direct.display, "张杭");
+        let allowed = list.iter().map(|item| item.username.clone()).collect();
+        let first = sessions_page_from(&conn, Some(&allowed), Some(1), 0).unwrap();
+        let second = sessions_page_from(&conn, Some(&allowed), Some(1), 1).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(first[0].username, second[0].username);
+        assert!(sessions_page_from(&conn, Some(&allowed), Some(1), 2).unwrap().is_empty());
+    }
+
+    #[test]
     fn session_previews_use_the_referenced_message_in_the_same_chat() {
         let (_root, conn) = fixture();
         conn.execute_batch(r#"
@@ -1146,6 +1197,16 @@ mod tests {
         assert_eq!(group.community.as_ref().map(|c| (&*c.id, &*c.name, c.is_parent)), Some(("parent@g.us", "社区", false)));
         assert_eq!(messages_from(&conn, "general@g.us", 10, None, None, None).unwrap()[0].text, "General 的消息");
         assert_eq!(messages_from(&conn, "group@g.us", 10, None, None, None).unwrap()[0].text, "另一个群的消息");
+    }
+
+    #[test]
+    fn missing_chat_is_distinct_from_an_unsupported_source_database() {
+        let (_root,conn)=fixture();
+        let missing=messages_from(&conn,"missing@g.us",10,None,None,None).unwrap_err();
+        assert!(missing.starts_with("LOCAL_CHAT_MISSING:"));
+        conn.execute_batch("ALTER TABLE ZWACHATSESSION RENAME COLUMN ZCONTACTJID TO unavailable;").unwrap();
+        let broken=messages_from(&conn,"missing@g.us",10,None,None,None).unwrap_err();
+        assert!(!broken.starts_with("LOCAL_CHAT_MISSING:"));
     }
 
     #[test]

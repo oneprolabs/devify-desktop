@@ -31,7 +31,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPLOCALDATA/image-cache/**"
+          "$APPLOCALDATA/image-cache/**",
+          "$APPLOCALDATA/source-users/*/image-cache/**"
         ]
       }
     }

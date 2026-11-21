@@ -36,11 +36,11 @@ const react = {
 };
 const jsx = { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }), Fragment: Symbol('Fragment') };
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
-const render = (instance, kind = 'reports') => {
+const render = (instance, kind = 'reports', focusId) => {
   current = instance;
   instance.index = 0;
   instance.effects = [];
-  const tree = CloudAnalysisPage({ kind, userId: null });
+  const tree = CloudAnalysisPage({ kind, userId: null, focusId });
   for (const effect of instance.effects) effect();
   current = undefined;
   return tree;
@@ -81,6 +81,7 @@ const load = path => {
   }).outputText;
   const module = { exports: {} };
   const requireMock = id => {
+    if (id === './summary') return { renderAgentMarkdown: value => value };
     if (id in mocks) return mocks[id];
     if (id === './locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
     throw Error(`unexpected import: ${id}`);
@@ -269,3 +270,45 @@ const { tree: errorTree } = await mount(fixture({ status: 'ready' }), true);
 const errorAlert = find(errorTree, node => node.props?.role === 'alert');
 assert.ok(text(errorAlert).includes('虚构详情错误'), 'IPC failure must remain visible');
 console.log('report presentation and CloudAnalysis rendering checks passed');
+
+// A completed event is excluded by the default filter. Cancelling a selected
+// event's in-flight detail must also end loading, even if that request is late.
+const completedEvent={id:601,title:'虚构已完成事件',status:'done',content:'虚构摘要'};
+const eventCalls=[],detailResolvers=[];
+invoke=(command,args)=>{
+  eventCalls.push({command,args});
+  if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'event-fixture'}});
+  if(command==='devify_analysis_list')return Promise.resolve({list:[completedEvent],pagination:{total:1}});
+  if(command==='devify_event_notes'||command==='devify_event_relations')return Promise.resolve([]);
+  if(command==='devify_analysis_detail')return new Promise(resolve=>detailResolvers.push(resolve));
+  throw Error(`unexpected event IPC: ${command}`);
+};
+const eventInstance={hooks:[]};
+const renderEvents=()=>render(eventInstance,'events',null);
+for(let i=0;i<4;i++){renderEvents();await flush();}
+let eventTree=renderEvents();
+const hasDetailLoading=tree=>elements(tree).some(node=>node.type===mocks['./LoadingSkeleton'].LoadingSkeleton&&node.props.label==='正在加载详情');
+assert.equal(eventCalls.filter(call=>call.command==='devify_analysis_detail').length,0,'Default filter must not load a hidden completed event');
+assert.equal(hasDetailLoading(eventTree),false);
+assert.match(text(eventTree),/当前筛选下没有记录/);
+const selectFilter=(tree,label)=>find(byClass(tree,'analysis-pills'),node=>node.type==='button'&&text(node).startsWith(label)).props.onClick();
+selectFilter(eventTree,'已完成');
+for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
+eventTree=renderEvents();
+assert.equal(hasDetailLoading(eventTree),true,'The selected completed event starts a real detail request');
+assert.equal(detailResolvers.length,1);
+selectFilter(eventTree,'待跟进');
+for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
+eventTree=renderEvents();
+assert.equal(hasDetailLoading(eventTree),false,'An empty filter cancels the loading state');
+assert.match(text(eventTree),/当前筛选下没有记录/);
+detailResolvers[0](completedEvent);await flush();eventTree=renderEvents();
+assert.equal(hasDetailLoading(eventTree),false,'Late detail completion must not restore the cancelled view');
+assert.ok(!elements(eventTree).some(node=>node.props?.className==='analysis-doc'));
+find(eventTree,node=>node.type==='button'&&text(node)==='查看全部事件').props.onClick();
+for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
+assert.equal(detailResolvers.length,2,'View all selects the visible event even when focusId is null');
+detailResolvers[1](completedEvent);await flush();eventTree=renderEvents();
+assert.ok(text(byClass(eventTree,'analysis-doc')).includes(completedEvent.title));
+assert.equal(hasDetailLoading(eventTree),false);
+console.log('Event empty-filter, null-focus selection and cancelled-detail loading regressions passed');

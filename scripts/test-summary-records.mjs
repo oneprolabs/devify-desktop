@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import { mergeSummaryRecords, reconcileSummaryPage, summaryRecordKey } from '../src/summaryRecords.ts';
+
+const pending={id:'task:request-1',request_key:'request-1',engine:'cloud',task_id:'request-1',status:'queued',created_at:'2026-11-20T10:00:00Z',body:''};
+const remote={...pending,id:28,task_id:undefined,status:'running'};
+const page=(list,local,offline=false)=>({list,local,offline,pagination:{total:list.length,page:1,next:null}});
+const handoff=reconcileSummaryPage(page([remote],[pending]));
+assert.equal(handoff.rows.length,1,'Local intent and remote running result are one card');
+assert.equal(handoff.total,1,'The handoff does not inflate the badge');
+assert.equal(handoff.rows[0].id,28);
+assert.equal(handoff.rows[0].task_id,'request-1');
+assert.equal(handoff.rows[0].status,'running');
+assert.equal(summaryRecordKey(pending),summaryRecordKey(remote),'React identity survives the handoff');
+assert.equal(mergeSummaryRecords([remote],[pending])[0].id,28,'Late enqueue cannot replace the server identity');
+assert.equal(mergeSummaryRecords([remote],[pending])[0].status,'running');
+assert.equal(mergeSummaryRecords([pending],[remote])[0].task_id,'request-1');
+const ready={...remote,status:'ready',body:'Summary'};
+assert.equal(reconcileSummaryPage(page([ready],[pending])).rows[0].body,'Summary');
+assert.equal(reconcileSummaryPage(page([remote],[{...ready,task_id:'request-1'}])).rows[0].status,'ready','An older list snapshot cannot restart a completed card');
+assert.equal(reconcileSummaryPage(page([], [ready],true)).rows.length,1,'Offline cloud results remain visible');
+assert.equal(reconcileSummaryPage(page([], [pending])).rows.length,1,'Local queue remains visible before submission');
+assert.equal(reconcileSummaryPage(page([], [{...remote,status:'running'}])).rows.length,1,'Pending tasks outside the current server page remain visible');
+assert.equal(mergeSummaryRecords([pending],[{...pending,id:'task:request-2',request_key:'request-2'}]).length,2,'Different requests are never merged by title or range');
+assert.equal(mergeSummaryRecords([pending],[{...pending,engine:'local'}]).length,2,'Local and cloud execution stay distinct');
+console.log('Summary local/server handoff, stable identity, paging, offline and distinct-request regressions passed');

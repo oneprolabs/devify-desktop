@@ -30,27 +30,53 @@ const react = {
 };
 const jsx = { jsx: (type, props, key) => ({ type, props, key }), jsxs: (type, props, key) => ({ type, props, key }), Fragment: Symbol('Fragment') };
 const timers = [];
-globalThis.window = { setTimeout: fn => (timers.push(fn), timers.length), clearTimeout() {}, setInterval() { return 1; }, clearInterval() {}, addEventListener() {}, removeEventListener() {} };
+const intervals = new Map();
+let intervalId = 0;
+let uploadStateCalls = 0;
+let resolveUploadState;
+globalThis.window = { setTimeout: fn => (timers.push(fn), timers.length), clearTimeout() {}, setInterval(fn) { intervals.set(++intervalId, fn); return intervalId; }, clearInterval(id) { intervals.delete(id); }, addEventListener() {}, removeEventListener() {} };
 let resolveAccounts;
 const accounts = new Promise(resolve => { resolveAccounts = resolve; });
 const account = '123456789@s.whatsapp.net';
 const wechat = 'wx_test';
 const session = { username: 'shared', display: 'WhatsApp 测试会话', is_group: false, last_time: 1 };
 const wechatSession = { username: 'shared', display: '微信测试会话', is_group: false, last_time: 2 };
+let hideWhatsAppFromFirstPage = false;
+let runtime = { sources: [{account_id:account,platform:'whatsapp',setup_complete:true},{account_id:wechat,platform:'wechat',setup_complete:true}] };
+let emptyWhatsApp = false;
+let removedWhatsApp = false;
+const badgeReads = [];
+let pagedSessions = false, failNextWeChatPage = false;
+const pageReads = [];
+const sessionReads = [];
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
-  if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: [session.username] } } };
-  if (command === 'wechat_sessions') return args.accountId === wechat ? [wechatSession] : [session];
-  if (['wechat_avatars', 'summary_history_list', 'wechat_upload_state'].includes(command)) return [];
+  if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: removedWhatsApp ? [] : [session.username], [wechat]: [wechatSession.username] } } };
+  if (command === 'chat_sessions') {
+    sessionReads.push(args.accountId);
+    if(removedWhatsApp&&args.accountId===account)return [];
+    if (pagedSessions) {
+      const offset=args.offset??0;
+      if(offset)pageReads.push([args.accountId,offset]);
+      if(offset&&args.accountId===wechat&&failNextWeChatPage){failNextWeChatPage=false;throw Error('temporary local read failure');}
+      return Array.from({length:offset?2:50},(_,i)=>({username:`${args.accountId}-${offset+i}`,display:`${args.accountId} chat ${offset+i}`,last_time:1000-offset-i,is_group:false}));
+    }
+    return args.accountId === wechat ? [wechatSession] : hideWhatsAppFromFirstPage || emptyWhatsApp ? [] : [session];
+  }
+  if (command === 'wechat_upload_state') { badgeReads.push(args); uploadStateCalls++; return new Promise(resolve => { resolveUploadState = resolve; }); }
+  if (['wechat_avatars', 'summary_history_list'].includes(command)) return [];
   return null;
 };
 const MessagePane = () => null;
+const PlatformBar = () => null;
 const component = () => null;
 const mockedRequire = id => {
   if (id === 'react') return react;
   if (id === 'react/jsx-runtime') return jsx;
   if (id === '@tauri-apps/api/core') return { isTauri: () => true };
   if (id === './desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
+  if (id === './ChatPlatformBar') return { ChatPlatformBar: PlatformBar };
+  if (id === './taskRuntime') return { useTaskRuntime: () => runtime };
   if (id === './WeChatLocal') return { default: MessagePane };
   if (id === './entitlements') return {
     useInternalAccount: () => ({ internal: false }),
@@ -83,43 +109,109 @@ function nodes(value) {
   return [value, ...nodes(value.props?.children)];
 }
 render();
-timers.shift()();
+if (timers.length) timers.shift()();
 assert.equal(nodes(render()).filter(node => node.type === MessagePane).length, 0, 'message pane must wait until account discovery completes');
 resolveAccounts([{ id: account, source: 'whatsapp' }, { id: wechat, source: 'wechat' }]);
 for (let i = 0; i < 20; i++) await Promise.resolve();
-const panes = nodes(render()).filter(node => node.type === MessagePane);
-assert.equal(panes.length, 1);
-assert.equal(panes[0].props.accountId, account);
-assert.equal(panes[0].key, account, 'changing accounts must replace the previous pane');
-assert.equal(panes[0].props.focusConversation, session.username);
-let tree = render();
-let buttons = () => nodes(tree).filter(node => node.type === 'button');
-const label = node => nodes(node.props.children).map(child => typeof child.props?.children === 'string' ? child.props.children : '').join(' ');
-assert.ok(buttons().some(node => label(node).includes('WhatsApp 测试会话')));
-assert.ok(buttons().some(node => label(node).includes('微信测试会话')), 'both sources must be visible together');
-// Source grouping replaced the old filter row: one collapsible header per visible source.
-assert.ok(!buttons().some(node => node.props['aria-label'] === '只显示微信会话'), 'the source filter row is gone');
-const deepText = value => {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(deepText).join('');
-  if (value && typeof value === 'object') return deepText(value.props?.children);
-  return '';
-};
-const groupHeaders = () => buttons().filter(node => node.props.className === 'chat-workbench-source-group');
-assert.equal(groupHeaders().length, 2, 'each visible source gets one header');
-assert.ok(groupHeaders().every(node => node.props['aria-expanded'] === true), 'groups start expanded');
-const whatsappHeader = groupHeaders().find(node => deepText(node).includes('WhatsApp'));
-assert.ok(whatsappHeader, 'the WhatsApp group header must be identifiable');
-whatsappHeader.props.onClick();
-tree = render();
-assert.ok(buttons().some(node => label(node).includes('微信测试会话')));
-assert.ok(!buttons().some(node => label(node).includes('WhatsApp 测试会话')), 'collapsing a group hides only its own conversations');
-assert.equal(groupHeaders().find(node => deepText(node).includes('WhatsApp')).props['aria-expanded'], false);
-groupHeaders().find(node => deepText(node).includes('WhatsApp')).props.onClick();
-tree = render();
-assert.ok(buttons().some(node => label(node).includes('WhatsApp 测试会话')), 'expanding brings the conversations back');
-buttons().find(node => label(node).includes('微信测试会话')).props.onClick();
-tree = render();
-const selectedPane = nodes(tree).find(node => node.type === MessagePane);
-assert.equal(selectedPane.props.accountId, wechat, 'identical conversation IDs must keep their owning account');
-console.log('Chat account initialization, source grouping, and collapse checks passed');
+let initialTree = render();
+initialTree = render();
+const firstPane = nodes(initialTree).find(node => node.type === MessagePane);
+assert.equal(firstPane?.props.accountId, wechat, 'initial entry opens the most recent chat across sources');
+assert.equal(firstPane.props.focusConversation, wechatSession.username);
+const textOf = value => typeof value === 'string' || typeof value === 'number' ? String(value) : Array.isArray(value) ? value.map(textOf).join('') : value && typeof value === 'object' ? textOf(value.props?.children) : '';
+const flush = async () => { for (let i=0;i<20;i++) await Promise.resolve(); };
+let tree = initialTree;
+const bar = () => nodes(tree).find(node => node.type === PlatformBar);
+const buttons = () => nodes(tree).filter(node => node.type === 'button');
+const rows = () => buttons().filter(node => node.props.className?.startsWith('chat-workbench-session') && !node.props.className?.includes('label'));
+const scrollList = () => nodes(tree).find(node => node.props?.className === 'chat-workbench-sessions');
+const selectPlatform = source => { bar().props.onSelect(source); tree=render(); tree=render(); };
+assert.equal(bar().props.selected,'wechat');
+assert.equal(bar().props.platforms.length,2);
+assert.ok(rows().every(node=>textOf(node).includes('微信测试会话')),'one platform is displayed at a time');
+assert.equal(badgeReads[0].accountId,wechat,'badges follow the displayed account, not settings.active_account_id');
+for(const tick of intervals.values()){tick();tick();}
+assert.equal(uploadStateCalls,1,'slow badge scans cannot overlap');
+scrollList().props.ref.current={scrollTop:120,getBoundingClientRect:()=>({top:0}),querySelectorAll:()=>[]};
+selectPlatform('whatsapp');
+assert.ok(rows().every(node=>textOf(node).includes('WhatsApp 测试会话')));
+let pane=nodes(tree).find(node=>node.type===MessagePane);
+assert.equal(pane.props.accountId,account);
+assert.equal(pane.key,account,'changing platforms replaces the owning message pane');
+assert.equal(pane.props.focusConversation,session.username);
+assert.equal(uploadStateCalls,1,'switching waits for the previous bounded badge scan');
+resolveUploadState([{username:session.username,state:'pending',new_messages:99}]);
+await flush();tree=render();await flush();tree=render();
+assert.equal(badgeReads.at(-1).accountId,account,'the new platform refreshes as soon as the stale scan finishes');
+assert.ok(!textOf(tree).includes('99 条'),'late WeChat badges cannot appear in WhatsApp');
+resolveUploadState([{username:session.username,state:'local',new_messages:0}]);
+await flush();tree=render();
+const pendingFilter=()=>buttons().find(node=>textOf(node).startsWith('待传'));
+assert.equal(textOf(pendingFilter()),'待传 1','an initial backup belongs to the pending filter');
+pendingFilter().props.onClick();tree=render();
+assert.equal(rows().length,1);assert.ok(textOf(tree).includes('待首次备份'));
+assert.ok(!buttons().some(node=>textOf(node).includes('只在本机')));
+selectPlatform('wechat');
+assert.equal(scrollList().props.ref.current.scrollTop,120,'each platform restores its own scroll position');
+assert.equal(nodes(tree).find(node=>node.type===MessagePane).props.accountId,wechat,'identical IDs retain their owning account');
+resolveUploadState([{username:wechatSession.username,state:'pending',new_messages:3}]);await flush();tree=render();
+assert.equal(textOf(pendingFilter()),'待传 1','new messages also belong to pending');
+selectPlatform('whatsapp');
+assert.equal(pendingFilter().props.className,'active','platform filters are remembered separately');
+// Returning from another section preserves a reader absent from the refreshed first page.
+hideWhatsAppFromFirstPage=true;props.visible=false;tree=render();props.visible=true;tree=render();await flush();tree=render();
+assert.equal(nodes(tree).find(node=>node.type===MessagePane).props.accountId,account);
+hideWhatsAppFromFirstPage=false;
+// Once a slow scan finishes after hiding, no new scan starts until the pane is visible.
+props.visible=false;tree=render();assert.equal(intervals.size,0);
+const hiddenReads=uploadStateCalls;resolveUploadState([]);await flush();tree=render();
+assert.equal(uploadStateCalls,hiddenReads);
+props.visible=true;tree=render();await flush();tree=render();
+resolveUploadState([]);await flush();tree=render();
+// A connected platform with no imported sessions stays reachable and cannot show another platform's reader.
+emptyWhatsApp=true;
+nodes(tree).find(node=>node.props?.['aria-label']==='刷新会话').props.onClick();await flush();tree=render();
+selectPlatform('wechat');selectPlatform('whatsapp');
+// Its remembered chat intentionally remains readable on a first-page omission.
+assert.equal(nodes(tree).find(node=>node.type===MessagePane).props.accountId,account);
+assert.equal(rows().length,0);
+emptyWhatsApp=false;pagedSessions=true;
+selectPlatform('wechat');
+nodes(tree).find(node=>node.props?.['aria-label']==='刷新会话').props.onClick();await flush();tree=render();
+const scrollAt=(source,near=true)=>({currentTarget:{getBoundingClientRect:()=>({top:0,bottom:500}),querySelectorAll:()=>nodes(tree).filter(node=>node.props?.['data-more-source']).map(node=>({dataset:{moreSource:node.props['data-more-source']},getBoundingClientRect:()=>({top:near&&node.props['data-more-source']===source?450:2000,bottom:near&&node.props['data-more-source']===source?460:2010})}))}});
+scrollList().props.onScroll(scrollAt('wechat',false));assert.equal(pageReads.length,0);
+failNextWeChatPage=true;
+scrollList().props.onScroll(scrollAt('wechat'));scrollList().props.onScroll(scrollAt('wechat'));
+await flush();tree=render();
+assert.deepEqual(pageReads,[[wechat,50]],'only the current platform loads, without duplicate requests');
+scrollList().props.onScroll(scrollAt('wechat'));assert.equal(pageReads.length,1,'failed pages require explicit retry');
+buttons().find(node=>node.props.children==='重试').props.onClick();await flush();tree=render();
+assert.deepEqual(pageReads,[[wechat,50],[wechat,50]],'retry preserves the failed offset');
+assert.ok(textOf(tree).includes(`${wechat} chat 51`));
+selectPlatform('whatsapp');
+buttons().find(node=>textOf(node).startsWith('全部')).props.onClick();tree=render();
+assert.ok(!textOf(tree).includes(`${wechat} chat 51`),'WeChat rows cannot leak into WhatsApp');
+scrollList().props.onScroll(scrollAt('whatsapp'));await flush();tree=render();
+assert.deepEqual(pageReads,[[wechat,50],[wechat,50],[account,50]],'platforms keep separate page offsets');
+assert.ok(textOf(tree).includes(`${account} chat 51`));
+selectPlatform('wechat');
+assert.ok(textOf(tree).includes(`${wechat} chat 51`),'switching does not discard the other platform page');
+scrollList().props.onScroll(scrollAt('wechat'));assert.equal(pageReads.length,3,'end of list does not request more pages');
+selectPlatform('whatsapp');removedWhatsApp=true;
+nodes(tree).find(node=>node.props?.['aria-label']==='刷新会话').props.onClick();await flush();tree=render();
+assert.equal(nodes(tree).filter(node=>node.type===MessagePane).length,0,'removing a platform selection cannot retain a stale private reader');
+assert.equal(rows().length,0);assert.ok(textOf(tree).includes('该平台暂无已导入的会话。'));
+assert.equal(bar().props.platforms.length,2,'an empty connected platform remains reachable');
+// A draft account never enters chat navigation or starts another local read.
+removedWhatsApp=false;
+const readsBeforeDraft=sessionReads.length;
+runtime={sources:[{account_id:account,platform:'whatsapp',setup_complete:false},{account_id:wechat,platform:'wechat',setup_complete:true}]};
+tree=render();await flush();tree=render();tree=render();
+assert.equal(bar().props.platforms.length,1);
+assert.equal(bar().props.platforms[0].id,'wechat');
+assert.ok(!sessionReads.slice(readsBeforeDraft).includes(account),'unfinished WhatsApp accounts must not load conversations');
+assert.ok(!nodes(tree).some(node=>node.type===MessagePane&&node.props.accountId===account),'a cached reader is removed when setup becomes incomplete');
+runtime={sources:[{account_id:account,platform:'whatsapp',setup_complete:true},{account_id:wechat,platform:'wechat',setup_complete:true}]};
+tree=render();await flush();tree=render();tree=render();
+assert.equal(bar().props.platforms.length,2,'finishing setup makes the platform available without restarting');
+console.log('Platform isolation, remembered selection/scroll/filter, pending-first-backup, stale badges and independent pagination/retry checks passed');

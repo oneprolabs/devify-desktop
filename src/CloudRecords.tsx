@@ -91,14 +91,10 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
     if (!isTauri() || !spaceId) return;
     setMessagesLoading(true); setMessagesError('');
     try {
-      let target = page;
-      if (!target && !focusMessageId) {
-        // Without a focus anchor the reader opens on the newest page.
-        const probe = await invoke<Page<CloudMessage>>('devify_conversation_messages', { spaceId, conversationId: conversation.id, page: 1, pageSize: 1 });
-        target = pageCount(probe.pagination?.total ?? 0, MESSAGE_PAGE_SIZE);
-      }
+      const target = page;
       const result = await invoke<Page<CloudMessage>>('devify_conversation_messages', {
-        spaceId, conversationId: conversation.id, page: target ?? 1, pageSize: MESSAGE_PAGE_SIZE, focusMessageId,
+        spaceId, conversationId: conversation.id, page: target ?? 1, latest: !target && !focusMessageId,
+        pageSize: MESSAGE_PAGE_SIZE, focusMessageId,
       });
       const list = result.list ?? [];
       setMessages(list);

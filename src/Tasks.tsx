@@ -1,452 +1,89 @@
-import { t, tf, ctf, dateLocale, sortLocale } from './locale';
-import { LoadingSkeleton } from './LoadingSkeleton';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { invoke, isTauri } from '@tauri-apps/api/core';
-import { Collection } from './Collection';
-import { readTaskSnapshot, saveTaskSnapshot } from './taskSnapshot';
-import { advanceCloudRebuild, appendCloudPages, analysisLabel, canRecoverCreate, cloudNeedsPolling, cloudRetryCandidate, fetchCloudPages, linkedLocalJobs, localGroupKey, localQueueCounts, visibleLocalJobs, pollPagePlan, rebuildComplete, rebuildNextPages, refreshInterval, requestIsCurrent, retryCandidate, retryIdentityIsCurrent, sameCloudContext, sameCloudLayout, sameRetryJob, settingsScope, startCloudRebuild, triggerLabel, validateCloudPrefixPage, verifiedDevice, type CloudBatch, type CloudPage, type CloudRebuild, type TaskSettings, type UploadJob } from './taskCloud';
+import { useEffect, useRef, useState } from 'react';
+import { t, tf } from './locale';
+import { desktopInvoke as invoke } from './desktopInvoke';
+import { useTaskRuntime, refreshTaskRuntime } from './taskRuntime';
+import { WizardActionButton } from './WizardActionButton';
+import { BackupRuntimeSwitch } from './BackupRuntimeSwitch';
 
-type RetryPreview = { fingerprint: string; message_count: number; sessions: Array<{ username: string; display: string; message_count: number }> };
-const PAGE_SIZE = 20;
-const statusLabels: Record<string, string> = { created: '待上传', queued: '等待中', pending: '等待中', running: '上传中', uploading: '上传中', processing: '已上传 · 服务端处理中', completed: '已完成', submitted: '已提交', failed: '失败', cancelled: '已取消' };
-function statusLabel(status: string): string {
-  const label = statusLabels[status];
-  return label ? t(label) : (status || t("未知"));
-}
-function TaskStatus({ value, label }: { value: string; label?: string }) {
-  const tone = value === 'completed' ? 'done' : value === 'failed' ? 'failed' : value === 'cancelled' ? 'muted' : 'pending';
-  return <span className={`task-status ${tone}`}><i aria-hidden="true">{tone === 'done' ? '✓' : tone === 'failed' ? '×' : '·'}</i>{label || statusLabel(value)}</span>;
-}
-function timeLabel(value: string | number | null | undefined): string {
-  if (value == null || value === '') return t("时间未知");
-  const time = new Date(value);
-  return Number.isNaN(time.getTime()) ? t("时间未知") : time.toLocaleString(dateLocale(), { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-function shortTimeLabel(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit', hour12: false });
-}
-function localGroupStatus(parts: UploadJob[]): string {
-  if (parts.some(job => job.status === 'failed')) return 'failed';
-  if (parts.some(job => job.status === 'cancelled')) return 'cancelled';
-  if (parts.some(job => ['running', 'uploading', 'processing'].includes(job.status))) return 'processing';
-  return parts[0]?.status || 'queued';
-}
-function count(value: unknown): string { return typeof value === 'number' && Number.isFinite(value) ? String(value) : '—'; }
-function localSelectionLabel(job: UploadJob): string {
-  const selection = job.scope?.message_selection ?? {};
-  const names = job.scope?.usernames ?? [];
-  if (!names.length || !names.every(name => Array.isArray(selection[name]))) return t("按会话范围");
-  return tf("{0} 条已选记录", names.reduce((sum, name) => sum + selection[name].length, 0));
-}
-async function currentUserId(): Promise<number | null> {
-  const user = await invoke<{ id?: unknown }>('devify_current_user');
-  return typeof user.id === 'number' && Number.isSafeInteger(user.id) && user.id > 0 ? user.id : null;
-}
-async function deviceForUser(userId: number | null): Promise<string | null> {
-  if (!userId) return null;
-  const identity = await invoke<unknown>('devify_upload_identity').catch(() => null);
-  return verifiedDevice(identity, userId);
-}
-
-export function Tasks({ onNewUpload, startCreating = false }: { onNewUpload: () => void; startCreating?: boolean }) {
-  const [creating, setCreating] = useState(false);
-  const [settings, setSettings] = useState<TaskSettings | null>(null);
-  const [cloud, setCloud] = useState<CloudBatch[]>([]);
-  const [pagination, setPagination] = useState<CloudPage['pagination'] | null>(null);
-  const [userId, setUserId] = useState<number | null>(null);
-  const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState('');
-  const [loading, setLoading] = useState(isTauri());
-  const [loadingMore, setLoadingMore] = useState(false);
+const labels: Record<string, string> = { queued: '等待备份', running: '正在准备', uploading: '正在上传', processing: '服务端处理中', completed: '已完成', failed: '等待重试', cancelled: '已取消' };
+export function Tasks({ onContinueSetup }: { onNewUpload: () => void; startCreating?: boolean; onContinueSetup?: (platform: string) => void }) {
+  const runtime = useTaskRuntime();
   const [error, setError] = useState('');
-  const [pollError, setPollError] = useState('');
-  const [selectedRetry, setSelectedRetry] = useState<UploadJob | null>(null);
-  const [retryBatch, setRetryBatch] = useState<CloudBatch | null>(null);
-  const [retryPreview, setRetryPreview] = useState<RetryPreview | null>(null);
-  const [retrying, setRetrying] = useState(false);
-  const [retryError, setRetryError] = useState('');
-  const generation = useRef(0);
-  const pageRevision = useRef(0);
-  const pollBusy = useRef(false);
-  const retryPause = useRef(false);
-  const pagesRef = useRef<CloudPage[]>([]);
-  const rebuildRef = useRef<CloudRebuild | null>(null);
-  const rebuildUser = useRef<number | null>(null);
-  const moreRef = useRef(false);
-  const pollCursor = useRef(0);
-  const nextAttempt = useRef(0);
-  const [refreshWake, setRefreshWake] = useState(0);
-  const consumedWake = useRef(0);
-  const [rebuilding, setRebuilding] = useState(false);
-  const cloudRef = useRef(cloud);
-  cloudRef.current = cloud;
-  const scrollAnchor = useRef<{ key: string; offset: number; top: number } | null>(null);
-  const captureScroll = () => {
-    const container = document.getElementById('task-items');
-    if (!container) return;
-    const top = container.getBoundingClientRect().top;
-    const first = Array.from(container.querySelectorAll<HTMLElement>('[data-task-id]'))
-      .find(node => node.getBoundingClientRect().bottom > top);
-    scrollAnchor.current = { key: first?.dataset.taskId ?? '', offset: first ? first.getBoundingClientRect().top - top : 0, top: container.scrollTop };
-  };
-  useLayoutEffect(() => {
-    const anchor = scrollAnchor.current;
-    const container = document.getElementById('task-items');
-    if (!anchor || !container) return;
-    const node = Array.from(container.querySelectorAll<HTMLElement>('[data-task-id]')).find(item => item.dataset.taskId === anchor.key);
-    container.scrollTop = node ? container.scrollTop + node.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset : anchor.top;
-    scrollAnchor.current = null;
-  }, [cloud, settings]);
-  useEffect(() => { if (startCreating) setCreating(true); }, [startCreating]);
-  useEffect(() => () => { generation.current += 1; }, []);
-
-  const load = useCallback(async () => {
-    if (!isTauri()) return;
-    const request = ++generation.current;
-    pageRevision.current += 1; pagesRef.current = []; rebuildRef.current = null; rebuildUser.current = null; moreRef.current = false; retryPause.current = false; pollCursor.current = 0; nextAttempt.current = 0; setRebuilding(false);
-    setLoading(true); setLoadingMore(false); setError(''); setPollError(''); setCloud([]); setPagination(null); setSettings(null); setUserId(null); setDeviceId(null);
-    setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); setRetryError(''); setRetrying(false);
-    let stored: TaskSettings | null = null;
-    try {
-      stored = await invoke<TaskSettings>('app_settings_get');
-      if (request !== generation.current) return;
-      const spaceId = stored.devify?.active_space_id;
-      if (!spaceId || !stored.devify?.base_url) { setSettings(stored); return; }
-      const userBefore = await currentUserId();
-      if (!userBefore) throw new Error(t("无法验证当前云端登录用户"));
-      const pageRequest = invoke<CloudPage>('devify_upload_list', { spaceId, page: 1, pageSize: PAGE_SIZE });
-      void pageRequest.catch(() => {});
-      const [deviceBefore, cachedUser, cachedSettings] = await Promise.all([
-        deviceForUser(userBefore), currentUserId(), invoke<TaskSettings>('app_settings_get'),
-      ]);
-      if (request !== generation.current) return;
-      if (userBefore === cachedUser && settingsScope(stored) === settingsScope(cachedSettings)) {
-        const cached = readTaskSnapshot(cachedSettings, userBefore, deviceBefore);
-        if (cached) {
-          setUserId(userBefore); setDeviceId(deviceBefore); setSettings(cachedSettings);
-          setCloud(cached.list); setPagination(cached.pagination);
-          setPollError(t("正在更新，当前显示的是上次读取的任务。"));
-        }
-      }
-      const page = await pageRequest;
-      const [deviceAfter, userAfter, latest] = await Promise.all([
-        deviceForUser(userBefore), currentUserId(), invoke<TaskSettings>('app_settings_get'),
-      ]);
-      if (request !== generation.current) return;
-      if (settingsScope(stored) !== settingsScope(latest) || userBefore !== userAfter) {
-        setSettings(null); setError(t("服务、空间或登录用户已变化，将自动重试。")); return;
-      }
-      validateCloudPrefixPage(page, 1, spaceId);
-      pagesRef.current = [page];
-      setUserId(userBefore);
-      setDeviceId(deviceBefore && deviceBefore === deviceAfter ? deviceBefore : null);
-      setSettings(latest); setCloud(page.list); setPagination(page.pagination);
-      saveTaskSnapshot(latest, userBefore, deviceBefore && deviceBefore === deviceAfter ? deviceBefore : null, page);
-      setPollError('');
-    } catch (e) {
-      // An offline cloud request may still leave a usable local queue, but never expose
-      // a queue captured before a concurrent server/space change.
-      const latest = stored ? await invoke<TaskSettings>('app_settings_get').catch(() => null) : null;
-      if (request !== generation.current) return;
-      if (stored && latest && settingsScope(stored) === settingsScope(latest)) setSettings(latest);
-      else setSettings(null);
-      setError(tf("无法读取云端任务：{0}。将自动重试。", String(e)));
-    } finally { if (request === generation.current) setLoading(false); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-
-  const alignLoaded = () => {
-    if (!settings || (!settings.devify?.active_space_id || !settings.devify?.base_url) || !pagesRef.current.length) { void load(); return; }
-    if (retryPause.current) return;
-    pageRevision.current += 1; moreRef.current = false;
-    rebuildRef.current = startCloudRebuild(pagesRef.current.length);
-    rebuildUser.current = null; nextAttempt.current = 0;
-    setRebuilding(true); setLoadingMore(false); setError('');
-    setPollError(t("云端列表正在自动对齐，当前显示的是上次读取的快照。"));
-    setRefreshWake(value => value + 1);
-  };
-  const loadMore = () => {
-    if (!pagination?.next || loading || loadingMore || retryPause.current) return;
-    // Supersede any in-flight poll. Check the two boundaries and the new page;
-    // if either moved, retain the old prefix until a verified reconstruction.
-    pageRevision.current += 1;
-    if (rebuildRef.current) rebuildRef.current = startCloudRebuild(pagesRef.current.length + 1);
-    else moreRef.current = true;
-    rebuildUser.current = null; nextAttempt.current = 0;
-    setRebuilding(true); setLoadingMore(true); setError('');
-    setPollError(t("云端列表正在自动对齐，当前显示的是上次读取的快照。"));
-    setRefreshWake(value => value + 1);
-  };
-
-  const jobs = useMemo(() => settings ? visibleLocalJobs(settings, userId, deviceId) : [], [settings, userId, deviceId]);
-  const localCounts = useMemo(() => settings ? localQueueCounts(settings, userId, deviceId) : { hidden: 0, unknown: 0 }, [settings, userId, deviceId]);
-  const cloudScope = settings ? settingsScope(settings) : '';
-  const cloudSpace = settings?.devify?.active_space_id ?? null;
-  const cloudActive = cloudNeedsPolling(cloud) || jobs.some(job => ['queued', 'running', 'processing', 'uploading'].includes(job.status));
+  const [page, setPage] = useState(0);
+  const [cloud, setCloud] = useState<Array<{ id: number; source_type: string; status: string; message_count: number; error_message?: string }>>([]);
+  const [cloudPage, setCloudPage] = useState(0);
+  const [cloudMore, setCloudMore] = useState(false);
+  const [cloudBusy, setCloudBusy] = useState(false);
+  const [nameSnapshot, setNameSnapshot] = useState<{ context?: string | null; names: Record<string, string> }>({ names: {} });
+  const context = useRef(runtime.context);
+  context.current = runtime.context;
+  const request = useRef(0);
   useEffect(() => {
-    if (!isTauri() || loading || retrying || selectedRetry) return;
-    let active = true;
-    const request = generation.current;
-    const tick = async () => {
-      if (pollBusy.current || retryPause.current || Date.now() < nextAttempt.current) return;
-      pollBusy.current = true;
-      const revision = pageRevision.current;
-      const valid = () => active && requestIsCurrent(request, generation.current, revision, pageRevision.current, retryPause.current);
-      try {
-        const before = await invoke<TaskSettings>('app_settings_get');
-        if (!valid()) return;
-        if (!cloudScope || settingsScope(before) !== cloudScope) { void load(); return; }
-        if (!cloudSpace || !before.devify?.base_url) { captureScroll(); setSettings(before); return; }
-        const beforeUser = await currentUserId();
-        if (!valid()) return;
-        if (!beforeUser) throw new Error(t("无法验证当前云端登录用户"));
-        if (userId != null && beforeUser !== userId || rebuildUser.current != null && beforeUser !== rebuildUser.current) { void load(); return; }
-        const beforeDevice = await deviceForUser(beforeUser);
-        if (!valid()) return;
-        if (deviceId && beforeDevice && deviceId !== beforeDevice) { void load(); return; }
-
-        const snapshot = pagesRef.current;
-        let rebuildingNow = rebuildRef.current;
-        if (!snapshot.length && !rebuildingNow) rebuildingNow = startCloudRebuild(1);
-        if (rebuildingNow && rebuildUser.current == null) rebuildUser.current = beforeUser;
-        const selectedCloudId = selectedId.startsWith('cloud:') ? Number(selectedId.slice(6)) : cloudRef.current[0]?.id;
-        const selectedPage = snapshot.findIndex(page => page.list.some(batch => batch.id === selectedCloudId)) + 1;
-        const activePages = snapshot.filter(page => cloudNeedsPolling(page.list)).map(page => page.pagination.page);
-        // Page one is checked every time, so newly inserted records are noticed
-        // even if no existing task is active.
-        const plan = rebuildingNow ? rebuildNextPages(rebuildingNow) : moreRef.current ?
-          [...new Set([1, snapshot.length, snapshot.length + 1])] :
-          pollPagePlan(snapshot.length, selectedPage, activePages, pollCursor.current++);
-        const refreshed = await fetchCloudPages(plan, cloudSpace, page =>
-          invoke<CloudPage>('devify_upload_list', { spaceId: cloudSpace, page, pageSize: PAGE_SIZE }));
-        const afterDevice = await deviceForUser(beforeUser);
-        const afterUser = await currentUserId();
-        const latest = await invoke<TaskSettings>('app_settings_get');
-        if (!valid()) return;
-        if (settingsScope(latest) !== cloudScope || afterUser && afterUser !== beforeUser) { void load(); return; }
-        if (!sameCloudContext(cloudScope, beforeUser, settingsScope(latest), afterUser)) throw new Error(t("无法验证当前云端登录用户"));
-        setDeviceId(beforeDevice && beforeDevice === afterDevice ? beforeDevice : null);
-        captureScroll(); setSettings(latest);
-        if (rebuildingNow) {
-          try {
-            const next = advanceCloudRebuild(rebuildingNow, refreshed, cloudSpace);
-            if (rebuildComplete(next)) {
-              pagesRef.current = next.verified;
-              const items = next.verified.flatMap(page => page.list);
-              cloudRef.current = items; setCloud(items);
-              setPagination(next.verified[next.verified.length - 1].pagination);
-              setUserId(beforeUser); setError(''); setPollError(''); setLoadingMore(false);
-              rebuildRef.current = null; rebuildUser.current = null; setRebuilding(false);
-            } else {
-              rebuildRef.current = next; setRebuilding(true);
-              setPollError(t("云端列表正在自动对齐，当前显示的是上次读取的快照。"));
-            }
-          } catch {
-            rebuildRef.current = startCloudRebuild(rebuildingNow.wanted); rebuildUser.current = null; nextAttempt.current = Date.now() + 10000;
-            setRebuilding(true);
-            setPollError(t("云端列表正在变化，当前显示的是上次读取的快照；将自动重试对齐。"));
-          }
-        } else if (moreRef.current) {
-          moreRef.current = false;
-          const extended = appendCloudPages(snapshot, refreshed, cloudSpace);
-          if (extended) {
-            pagesRef.current = extended;
-            const items = extended.flatMap(page => page.list);
-            cloudRef.current = items; setCloud(items);
-            setPagination(extended[extended.length - 1].pagination);
-            setError(''); setPollError(''); setLoadingMore(false); setRebuilding(false);
-          } else {
-            rebuildRef.current = startCloudRebuild(snapshot.length + 1); rebuildUser.current = null;
-            setRebuilding(true);
-            setPollError(t("云端列表正在自动对齐，当前显示的是上次读取的快照。"));
-          }
-        } else {
-          let changed = false;
-          for (const page of refreshed) {
-            try { validateCloudPrefixPage(page, page.pagination.page, cloudSpace); }
-            catch { changed = true; break; }
-            if (!sameCloudLayout(snapshot[page.pagination.page - 1], page)) { changed = true; break; }
-          }
-          if (changed) {
-            rebuildRef.current = startCloudRebuild(snapshot.length); rebuildUser.current = null;
-            setRebuilding(true);
-            setPollError(t("云端列表正在自动对齐，当前显示的是上次读取的快照。"));
-          } else {
-            const byPage = new Map(refreshed.map(page => [page.pagination.page, page]));
-            const updated = snapshot.map(page => byPage.get(page.pagination.page) ?? page);
-            pagesRef.current = updated;
-            const items = updated.flatMap(page => page.list);
-            cloudRef.current = items; setCloud(items);
-            setPagination(updated[updated.length - 1].pagination);
-            setError(''); setPollError('');
-          }
-        }
-      } catch (e) {
-        const latest = await invoke<TaskSettings>('app_settings_get').catch(() => null);
-        const latestUser = await currentUserId().catch(() => null);
-        if (!valid()) return;
-        if (latest && cloudScope && settingsScope(latest) !== cloudScope || latestUser != null && userId != null && latestUser !== userId) { void load(); return; }
-        setDeviceId(null);
-        if (latest && cloudScope && settingsScope(latest) === cloudScope) { captureScroll(); setSettings(latest); }
-        // A failed or invalid page never removes old rows. Retry at the normal
-        // bounded cadence, starting the rebuild over to avoid mixed scans.
-        if (rebuildRef.current || pagesRef.current.length) {
-          rebuildRef.current = startCloudRebuild(rebuildRef.current?.wanted ?? (pagesRef.current.length + (moreRef.current ? 1 : 0)));
-          moreRef.current = false;
-          rebuildUser.current = null; setRebuilding(true);
-        }
-        nextAttempt.current = Date.now() + 30000;
-        setError('');
-        setPollError(tf("云端自动刷新暂不可用：{0}。当前显示的是上次读取的快照，将自动重试。", String(e)));
-      } finally { pollBusy.current = false; }
-    };
-    // A user-requested load-more starts promptly, but timer restarts caused by
-    // normal state changes never create an unbounded immediate request loop.
-    if (refreshWake !== consumedWake.current) { consumedWake.current = refreshWake; void tick(); }
-    const timer = window.setInterval(() => void tick(), refreshInterval(cloudActive, rebuilding));
-    return () => { active = false; window.clearInterval(timer); };
-  }, [cloudScope, cloudSpace, cloudActive, loading, userId, deviceId, retrying, selectedRetry, selectedId, rebuilding, refreshWake, load]);
-  const groups = useMemo(() => {
-    const seen = new Set<string>();
-    return jobs.filter(job => { const key = localGroupKey(job); if (seen.has(key)) return false; seen.add(key); return true; });
-  }, [jobs]);
-  const selectedCloud = cloud.find(batch => `cloud:${batch.id}` === selectedId) ?? null;
-  const selectedLocal = groups.find(job => `local:${localGroupKey(job)}` === selectedId) ?? null;
-  const fallbackCloud = cloud[0] ?? null;
-  const fallbackLocal = groups[0] ?? null;
-  const activeCloud = selectedCloud || (!selectedLocal ? fallbackCloud : null);
-  const activeLocal = selectedLocal || (!activeCloud ? fallbackLocal : null);
-  const activeKey = activeCloud ? `cloud:${activeCloud.id}` : activeLocal ? `local:${localGroupKey(activeLocal)}` : '';
-  const activeKeyRef = useRef(activeKey);
-  activeKeyRef.current = activeKey;
-  const parts = activeLocal ? jobs.filter(job => localGroupKey(job) === localGroupKey(activeLocal)).sort((a, b) => (a.manual_index ?? 0) - (b.manual_index ?? 0)) : [];
-  const linked = activeCloud && settings ? linkedLocalJobs(activeCloud, settings, deviceId) : [];
-  useEffect(() => { retryPause.current = false; setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); setRetryError(''); }, [activeKey]);
-
-  const verifyRetry = async (target: UploadJob, batch: CloudBatch | null, request: number): Promise<UploadJob> => {
-    if (!settings) throw new Error(t("当前设置不可用，请刷新。"));
-    // Both local and linked retries must still belong to the user and device shown.
-    if (!userId || !deviceId || batch && batch.uploaded_by_id !== userId ||
-        !await retryIdentityIsCurrent(userId, deviceId, currentUserId, deviceForUser)) {
-      setDeviceId(null); throw new Error(t("无法确认当前云端用户或设备，请刷新。"));
-    }
-    if (request !== generation.current) throw new Error(t("任务已刷新。"));
-    if (batch) {
-      const status = await invoke<{ batch_id: number; status: string }>('devify_upload_status', { batchId: batch.id });
-      if (status.batch_id !== batch.id || status.status !== 'failed') throw new Error(t("云端状态已变化，请刷新。"));
-    }
-    const latest = await invoke<TaskSettings>('app_settings_get');
-    const identityCurrent = await retryIdentityIsCurrent(userId, deviceId, currentUserId, deviceForUser);
-    if (request !== generation.current) throw new Error(t("任务已刷新，请重新选择。"));
-    if (settingsScope(latest) !== settingsScope(settings)) { void load(); throw new Error(t("服务或空间已变化。")); }
-    if (!identityCurrent) { setDeviceId(null); throw new Error(t("当前云端用户或设备已变化，请刷新。")); }
-    const job = batch ? cloudRetryCandidate(latest, batch, userId, deviceId, target.id) : retryCandidate(latest, target.id, userId, deviceId);
-    if (!job || !sameRetryJob(target, job)) throw new Error(t("任务或重试范围已变化，请刷新。"));
-    return job;
-  };
-  const prepareRetry = async (target: UploadJob, batch: CloudBatch | null = null) => {
-    if (retrying || !settings) return;
-    const request = generation.current;
-    const key = batch ? `cloud:${batch.id}` : `local:${localGroupKey(target)}`;
-    pageRevision.current += 1; retryPause.current = true;
-    if (rebuildRef.current) { rebuildRef.current = startCloudRebuild(rebuildRef.current.wanted); rebuildUser.current = null; }
-    let waitingConfirmation = false;
-    setRetrying(true); setRetryError(''); setRetryPreview(null); setSelectedRetry(null); setRetryBatch(null);
+    request.current += 1;
+    setPage(0); setCloud([]); setCloudPage(0); setCloudMore(false); setCloudBusy(false); setError('');
+    return () => { request.current += 1; };
+  }, [runtime.context]);
+  const loadCloud = async (target = 1) => {
+    if (cloudBusy) return;
+    setCloudBusy(true); setError('');
+    const id = ++request.current; const owner = context.current;
+    const current = () => id === request.current && owner === context.current;
     try {
-      const job = await verifyRetry(target, batch, request);
-      if (request !== generation.current || activeKeyRef.current !== key) return;
-      const preview = await invoke<RetryPreview>('devify_upload_retry_preview', { jobId: target.id });
-      const currentJob = await verifyRetry(job, batch, request);
-      if (request !== generation.current || activeKeyRef.current !== key) return;
-      waitingConfirmation = true; setSelectedRetry(currentJob); setRetryBatch(batch); setRetryPreview(preview);
-    } catch (e) {
-      const latest = await invoke<TaskSettings>('app_settings_get').catch(() => null);
-      const latestUser = await currentUserId().catch(() => null);
-      const latestDevice = await deviceForUser(latestUser);
-      if (request !== generation.current) return;
-      if (!latest || settingsScope(latest) !== settingsScope(settings) || latestUser !== userId) { void load(); return; }
-      if (!latestDevice || latestDevice !== deviceId) setDeviceId(null);
-      if (activeKeyRef.current === key) setRetryError(String(e));
-    } finally { if (request === generation.current) { retryPause.current = waitingConfirmation; setRetrying(false); } }
+      const settings = await invoke<{ devify: { active_space_id?: string } }>('app_settings_get');
+      if (!current()) return;
+      if (!settings.devify.active_space_id) throw new Error(t('请先选择空间。'));
+      const data = await invoke<{ list: typeof cloud; pagination?: { next?: unknown } }>('devify_upload_list', { spaceId: settings.devify.active_space_id, page: target, pageSize: 20 });
+      if (!current()) return;
+      setCloud(data.list ?? []); setCloudPage(target); setCloudMore(Boolean(data.pagination?.next));
+    } catch (reason) { if (current()) setError(String(reason)); }
+    finally { if (current()) setCloudBusy(false); }
   };
-  const retry = async () => {
-    if (!settings || !selectedRetry || !retryPreview || retrying) return;
-    const request = generation.current;
-    const key = retryBatch ? `cloud:${retryBatch.id}` : `local:${localGroupKey(selectedRetry)}`;
-    setRetrying(true); setRetryError('');
-    try {
-      await verifyRetry(selectedRetry, retryBatch, request);
-      if (request !== generation.current || activeKeyRef.current !== key) return;
-      await invoke('devify_upload_retry', { jobId: selectedRetry.id, fingerprint: retryPreview.fingerprint });
-      if (request === generation.current) { retryPause.current = false; setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); alignLoaded(); }
-    } catch (e) {
-      const latest = await invoke<TaskSettings>('app_settings_get').catch(() => null);
-      const latestUser = await currentUserId().catch(() => null);
-      const latestDevice = await deviceForUser(latestUser);
-      if (request !== generation.current) return;
-      if (!latest || settingsScope(latest) !== settingsScope(settings) || latestUser !== userId) { void load(); return; }
-      if (!latestDevice || latestDevice !== deviceId) setDeviceId(null);
-      if (activeKeyRef.current === key) { setRetryError(String(e)); setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); }
-    } finally { if (request === generation.current) { retryPause.current = false; setRetrying(false); } }
+  const jobs = [...runtime.jobs].sort((a,b) => b.updated_at.localeCompare(a.updated_at));
+  const visible = jobs.slice(page * 20, (page + 1) * 20);
+  // At most two names per visible task; progress events must not rescan metadata.
+  const nameTargets = JSON.stringify(visible.map(job => [job.account_id, job.scope?.usernames.slice(0, 2) ?? []]));
+  useEffect(() => {
+    let cancelled = false;
+    const owner = runtime.context;
+    const groups = new Map<string, Set<string>>();
+    for (const [account, names] of JSON.parse(nameTargets) as [string, string[]][]) {
+      const wanted = groups.get(account) ?? new Set<string>();
+      names.forEach(name => wanted.add(name));
+      if (wanted.size) groups.set(account, wanted);
+    }
+    void (async () => {
+      const names: Record<string, string> = {};
+      // Sequential source reads stay within the shared local read budget.
+      for (const [account, wanted] of groups) {
+        if (cancelled) return;
+        try {
+          const rows = await invoke<Array<{ username: string; display: string }>>('chat_sessions', { accountId: account, focusUsernames: [...wanted], limit: wanted.size });
+          for (const row of rows) if (row.display?.trim() && row.display !== row.username) names[JSON.stringify([account, row.username])] = row.display.trim();
+        } catch { /* Names are optional; keep the task count and status usable. */ }
+      }
+      if (!cancelled && owner === context.current) setNameSnapshot({ context: owner, names });
+    })();
+    return () => { cancelled = true; };
+  }, [runtime.context, nameTargets]);
+  const taskTitle = (job: typeof jobs[number]) => {
+    if(job.kind==='summary')return tf('聊天总结 · {0}',job.title??t('聊天'));
+    const source = job.account_id.endsWith('@s.whatsapp.net') ? 'WhatsApp' : t('微信');
+    const total = job.scope?.usernames.length ?? 0;
+    const names = nameSnapshot.context === runtime.context ? (job.scope?.usernames.slice(0, 2) ?? []).map(name => nameSnapshot.names[JSON.stringify([job.account_id, name])]).filter(Boolean) : [];
+    const summary = names.length ? (names.length === total ? names.join('、') : tf('{0}等 {1} 个会话', names.join('、'), total)) : tf('{0} 个会话', total);
+    return tf('备份{0} · {1}', source, summary);
   };
-  const select = (id: string) => { setCreating(false); setSelectedId(id); };
-  const localTitle = (job: UploadJob) => job.manual_group ? t("手动上传 · 本机未关联批次") : t("本机上传任务 · 未关联批次");
-  const retryDialog = selectedRetry && retryPreview && selectedRetry.scope && <div className="task-retry"><div role="alertdialog" aria-label={t("确认重试上传")}><strong>{t("确认重试原任务")}</strong><p>{t("原会话：")}{retryPreview.sessions.map(item => tf("{0}（{1} 条）", item.display, item.message_count)).join('、')}</p><p>{t("本次重试共")} {retryPreview.message_count} {t("条消息。")}</p><p>{t("时间范围：")}{selectedRetry.scope.since == null ? t("不限起始") : timeLabel(selectedRetry.scope.since * 1000)} {t("至")} {selectedRetry.scope.until == null ? t("不限结束") : tf("{0}（不含）", timeLabel(selectedRetry.scope.until * 1000))}</p><p>{t("服务地址：")}{selectedRetry.scope.base_url} {t("· 目标空间")} {selectedRetry.space_id} {t("· 云端用户 ID")} {userId} {t("· 来源账号")} {selectedRetry.account_id}</p><p>{t("请确认以上云端用户及目标空间。")}{retryBatch ? t("若原内容或附件发生变化将停止重试，请新建采集。") : selectedRetry.manual_group ? t("将重新读取该批原选记录；如果内容发生变化，会停止重试。") : t("重试会重新读取该范围的本地记录；新产生或更新的记录也可能包含在内。")}</p><div className="task-retry-actions"><button type="button" onClick={() => { retryPause.current = false; setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); setRefreshWake(value => value + 1); }} disabled={retrying}>{t("取消")}</button><button type="button" onClick={() => void retry()} disabled={retrying}>{retrying ? t("正在重试…") : t("确认重试")}</button></div></div></div>;
-
-  return <div className="task-page">
-    <aside className="task-list">
-      <header className="task-list-head"><div><h1>{t("任务")}</h1><p>{t("当前空间的云端记录与本机队列")}</p></div></header>
-      <div className="task-list-tools"><button type="button" className="task-new" onClick={() => { retryPause.current = false; setSelectedRetry(null); setRetryBatch(null); setRetryPreview(null); setCreating(true); }} disabled={retrying}><span aria-hidden="true">＋</span>{t("新建采集")}</button></div>
-      <div className="task-list-label"><span>{t("云端任务")}{pagination ? tf(" · 共 {0} 条", pagination.total) : ''}</span><button type="button" className="task-refresh" onClick={alignLoaded} disabled={loading || retrying || !!selectedRetry || !isTauri()} aria-label={t("刷新任务")} title={t("刷新任务")}>↻</button></div>
-      {loading && !cloud.length && <LoadingSkeleton label={t("正在加载任务")} />}
-      {!isTauri() && <p className="task-list-empty">{t("请在桌面应用中查看任务。")}</p>}
-      {!loading && settings && !settings.devify?.active_space_id && <p className="task-list-empty">{t("请先选择上传空间。")}</p>}
-      {!loading && settings?.devify?.active_space_id && !settings.devify.base_url && <p className="task-list-empty">{t("请先设置服务地址。")}</p>}
-      {error && <p className="task-list-empty task-error" role="alert">{t(error)}</p>}
-      {pollError && <p className={pollError.startsWith(t("云端自动刷新暂不可用：")) ? 'task-list-empty task-error' : 'task-list-empty'} role={pollError.startsWith(t("云端自动刷新暂不可用：")) ? 'alert' : 'status'}>{pollError}</p>}
-      <div id="task-items" className="task-items" tabIndex={-1}>
-        {!loading && !error && pagination && cloud.length === 0 && <p className="task-list-empty">{pagination.total === 0 ? t("此空间暂无云端上传记录。") : t("已加载页面没有可显示的记录。")}</p>}
-        {cloud.map(batch => <button key={batch.id} data-task-id={`cloud:${batch.id}`} type="button" className={activeKey === `cloud:${batch.id}` ? 'task-item active' : 'task-item'} onClick={() => select(`cloud:${batch.id}`)} aria-pressed={activeKey === `cloud:${batch.id}`}>
-          <span className="task-item-marker"><TaskStatus value={batch.status}/></span><span className="task-item-body"><span className="task-item-heading"><strong className="task-item-title">{t("云端批次 #")}{batch.id}</strong><time dateTime={batch.created_at} title={timeLabel(batch.created_at)}>{shortTimeLabel(batch.created_at)}</time></span><small className="task-item-description">{statusLabel(batch.status)} {t("· 新增")} {count(batch.message_count)} {t("条")}</small></span>
-        </button>)}
-        {pagination && <p className="task-list-empty">{t("已加载")} {cloud.length} / {pagination.total} {t("条云端记录。")}</p>}
-        {pagination?.next && <div className="task-list-tools"><button type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t("正在加载…") : t("加载更多")}</button></div>}
-        {localCounts.unknown > 0 && <p className="task-list-empty" role="status">{t("本机还有")} {localCounts.unknown} {t("条来源或账号归属无法确认的未关联任务。云端是否已创建批次可能无法确认，请先查看云端记录。账号归属无法确认，请重新创建采集；为保护隐私，不显示详情或提供重试。")}</p>}
-        {localCounts.hidden > localCounts.unknown && <p className="task-list-empty" role="status">{t("本机还有")} {localCounts.hidden - localCounts.unknown} {t("条未关联任务，当前无法确认属于此用户、服务、空间和设备，详情未显示。")}</p>}
-        {settings?.devify?.active_space_id && <><div className="task-list-label"><strong>{t("本机队列 · 未关联云端批次")}</strong></div><p className="task-list-empty">{t("仅显示已确认属于当前云端用户、服务、空间、聊天账号和设备的本机任务。")}</p>
-          {groups.length === 0 && <p className="task-list-empty">{t("没有可确认来源的本机未关联批次任务。")}</p>}
-          {groups.map(job => { const key = `local:${localGroupKey(job)}`; const items = jobs.filter(item => localGroupKey(item) === localGroupKey(job)); return <button key={key} data-task-id={key} type="button" className={activeKey === key ? 'task-item active' : 'task-item'} onClick={() => select(key)} aria-pressed={activeKey === key}>
-            <span className="task-item-marker"><TaskStatus value={localGroupStatus(items)}/></span><span className="task-item-body"><span className="task-item-heading"><strong className="task-item-title">{localTitle(job)}</strong><time dateTime={job.updated_at} title={timeLabel(job.updated_at)}>{shortTimeLabel(job.updated_at)}</time></span><small className="task-item-description">{t("本机 ·")} {statusLabel(localGroupStatus(items))}{job.manual_group ? tf(" · {0} 个未关联批次", items.length) : ''}</small></span>
-          </button>; })}
-        </>}
-      </div>
-      <footer className="task-list-footer"><span>{pagination ? tf("云端已加载 {0} 条", cloud.length) : t("云端尚未读取")}</span></footer>
-    </aside>
-    {creating ? <Collection onSettings={onNewUpload} onComplete={() => { setCreating(false); alignLoaded(); }} /> : <section className="task-detail">
-      <header className="task-detail-bar">{t("任务")} <span>/</span> {activeCloud ? tf("云端批次 #{0}", activeCloud.id) : activeLocal ? localTitle(activeLocal) : t("全部任务")}</header>
-      {activeCloud ? <div className="task-detail-body">
-        <header className="task-overview"><div className="task-overview-copy"><p className="task-kicker">{t("云端上传记录")}<span aria-hidden="true">·</span><TaskStatus value={activeCloud.status}/></p><h2>{t("云端批次")} <span>#{activeCloud.id}</span></h2><p className="task-meta"><time dateTime={activeCloud.created_at}>{timeLabel(activeCloud.created_at)}</time><span>{t("空间")} {activeCloud.space_id}</span></p><p className="task-account">{t("来源账号")} <span>{activeCloud.source_account_id || t("未知")}</span></p><p className="task-meta">{t("平台")} {activeCloud.platform || t("未知")} {t("· 服务端标记：")}{triggerLabel(activeCloud.trigger)}</p><p className="task-meta">{t("历史客户端未提交触发方式，旧记录的服务端标记可能不准确。")}</p></div><TaskStatus value={activeCloud.status}/></header>
-        <div className="task-stages"><h3>{t("执行流程")}</h3>
-          <div className={`task-stage ${activeCloud.archive_received_at ? 'is-complete' : ''}`}><span className="task-stage-dot" aria-hidden="true">{activeCloud.archive_received_at ? '✓' : '·'}</span><div><strong>{t("上传归档")}</strong><p>{activeCloud.archive_received_at ? tf("服务端接收时间：{0}", timeLabel(activeCloud.archive_received_at)) : t("服务端未提供归档接收时间")}</p></div></div>
-          <div className={`task-stage ${activeCloud.status === 'completed' ? 'is-complete' : ''}`}><span className="task-stage-dot" aria-hidden="true">{activeCloud.status === 'completed' ? '✓' : '·'}</span><div><strong>{t("云端解析")}</strong><p>{statusLabel(activeCloud.status)}{activeCloud.parse_started_at ? tf(" · 开始于 {0}", timeLabel(activeCloud.parse_started_at)) : ''}{activeCloud.completed_at ? tf(" · 结束于 {0}", timeLabel(activeCloud.completed_at)) : ''}</p>{activeCloud.error_message && <p className="task-error">{activeCloud.error_message}</p>}</div><TaskStatus value={activeCloud.status}/></div>
-          <div className="task-stage"><span className="task-stage-dot" aria-hidden="true">·</span><div><strong>{t("关联分析")}</strong><p>{analysisLabel(activeCloud.analysis_summary)}</p>{activeCloud.analysis_summary && typeof activeCloud.analysis_summary.job_count === 'number' && activeCloud.analysis_summary.job_count > 0 && <p>{t("关联任务")} {count(activeCloud.analysis_summary.job_count)} {t("· 事件")} {count(activeCloud.analysis_summary.event_count)}</p>}<p>{t("仅反映服务端已关联的分析，不代表全部会话均已分析。")}</p></div></div>
-          <div className="task-result-summary"><span>{t("新增")} <strong>{count(activeCloud.message_count)}</strong> {t("条")}</span><span>{t("已存在")} <strong>{count(activeCloud.duplicate_count)}</strong> {t("条")}</span><span>{t("会话")} <strong>{count(activeCloud.conversation_count)}</strong></span><span>{t("图片")} <strong>{count(activeCloud.image_count)}</strong></span></div>
-        </div>
-        {linked.filter(job => !pollError && settings && cloudRetryCandidate(settings, activeCloud, userId, deviceId, job.id)).map(job => <div className="task-retry" key={job.id}><p>{t("已匹配当前用户和本机任务归属；重试前会重新核验云端状态及原包内容。")}</p><button type="button" onClick={() => void prepareRetry(job, activeCloud)} disabled={retrying}>{t("重试本机上传")}{job.manual_group ? tf(" · 第 {0} 批", (job.manual_index ?? 0) + 1) : ''}</button></div>)}
-        {activeCloud.status === 'failed' && !linked.some(job => !pollError && settings && cloudRetryCandidate(settings, activeCloud, userId, deviceId, job.id)) && <p className="task-meta">{t("未能确认当前用户、本机任务归属或原包，无法安全重试。请先查看云端记录，必要时重新创建采集。")}</p>}
-        {retryError && <p className="task-error" role="alert">{retryError}</p>}{retryDialog}
-        <p className="task-meta">{t("云端任务会自动刷新；列表变化时会自动对齐。")}</p>
-        <section className="task-history" aria-label={t("已加载的云端任务")}><header><h3>{t("已加载的云端任务")} <span>{t("· 上传与解析记录")}</span></h3><small>{cloud.length} {t("条")}{pagination?.next ? t(" · 还有更多") : ''}</small></header><div className="task-history-scroll"><table><thead><tr><th>{t("批次")}</th><th>{t("提交时间")}</th><th>{t("解析结果")}</th><th>{t("状态")}</th></tr></thead><tbody>{cloud.slice(0, 6).map(batch => <tr key={batch.id} className={batch.id === activeCloud.id ? 'selected' : ''}><td><button type="button" onClick={() => select(`cloud:${batch.id}`)}>#{batch.id}</button></td><td>{timeLabel(batch.created_at)}</td><td>{t("新增")} {count(batch.message_count)} {t("条")}</td><td><TaskStatus value={batch.status}/></td></tr>)}</tbody></table></div><footer><span>{t("仅展示已加载记录的前 6 条")}</span><a href="#task-items">{t("查看列表 →")}</a></footer></section>
-      </div> : activeLocal ? <div className="task-detail-body">
-        <header className="task-overview"><div className="task-overview-copy"><p className="task-kicker">{t("本机队列 · 未关联云端批次")}<span aria-hidden="true">·</span><TaskStatus value={localGroupStatus(parts)}/></p><h2>{localTitle(activeLocal)}</h2><p className="task-meta"><time dateTime={activeLocal.created_at || activeLocal.updated_at}>{timeLabel(activeLocal.created_at || activeLocal.updated_at)}</time><span>{t("空间")} {activeLocal.space_id}</span></p><p className="task-account">{t("来源账号")} <span>{activeLocal.account_id}</span></p></div><TaskStatus value={localGroupStatus(parts)}/></header>
-        <div className="task-stages"><h3>{t("执行流程")}</h3><div className="task-stage"><span className="task-stage-dot" aria-hidden="true">·</span><div><strong>{t("本机打包与上传")}</strong><p>{t("这些队列项尚未保存云端批次 ID，不能据此判断云端是否存在记录或是否完成。")}</p></div><TaskStatus value={localGroupStatus(parts)}/></div><div className="task-stage"><span className="task-stage-dot" aria-hidden="true">·</span><div><strong>{t("云端解析与关联分析")}</strong><p>{t("无法从本机队列确认，请查看云端记录。")}</p></div></div></div>
-        <div className="task-group-summary"><h3>{t("本机未关联批次")}{activeLocal.manual_group ? tf(" · {0} 条", parts.length) : ''}</h3>{activeLocal.manual_group && <p>{t("同一手动任务已有的云端批次在云端列表中分别显示；此处保留所有未关联批次队列项。")}</p>}{parts.map(job => <div className="task-batch" key={job.id}><span className="task-batch-number">{job.manual_group ? tf("第 {0} / {1} 批", (job.manual_index ?? 0) + 1, job.manual_total || '未知') : t("本机任务")}</span><span className="task-batch-count">{localSelectionLabel(job)}</span><TaskStatus value={job.status}/>{settings && retryCandidate(settings, job.id, userId, deviceId) && <button type="button" onClick={() => void prepareRetry(job)} disabled={retrying}>{t("重试")}{job.manual_group ? t("该批") : t("上传")}</button>}{job.status === 'failed' && !job.legacy_failure_confirmed && job.create_started !== false && !canRecoverCreate(job) && <p className="task-error">{t("云端是否已创建批次无法确认，请先查看云端记录并重新确认，暂不提供重试。")}</p>}{job.message && <p className={job.status === 'failed' ? 'task-error' : 'task-meta'}>{job.message}</p>}</div>)}
-          <p>{t("重试前会再次核对任务归属、云端登录用户及目标空间。")}</p>
-          {retryError && <p className="task-error" role="alert">{retryError}</p>}
-        </div>
-        {retryDialog}
-      </div> : <div className="task-detail-empty"><h2>{t("从左侧选择任务")}</h2><p>{error ? t("无法获取云端记录，将自动重试。") : t("上传后，可以在这里查看任务状态。")}</p></div>}
-    </section>}
-  </div>;
+  return <section className="settings-block task-runtime-page">
+    <header className="task-runtime-header"><div><h2>{t('任务')}</h2><p>{runtime.paused ? t('自动备份已暂停，手动创建的总结任务仍会继续。') : runtime.running ? t('正在后台处理任务。') : t('备份与聊天总结的执行记录会显示在这里。')}</p></div>
+      <BackupRuntimeSwitch showLabel onError={setError}/>
+    </header>
+    {runtime.pending_config > 0 && <p role="status">{t('设置已保存在本地，正在等待同步。同步完成后自动继续备份。')}</p>}
+    {[...new Set((runtime.sources ?? []).filter(source => !source.setup_complete).map(source => source.platform))].map(platform => <div key={platform} className="task-setup-notice" role="status"><p>{tf('{0} 配置未完成，备份已暂停。', platform === 'whatsapp' ? 'WhatsApp' : t('微信'))}</p>{onContinueSetup && <button type="button" className="wxv-btn" onClick={() => onContinueSetup(platform)}>{t('继续配置')}</button>}</div>)}
+    {(error || runtime.error) && <p className="wx-setup-error" role="alert">{error || runtime.error}</p>}
+    {!visible.length && <p>{t('暂无任务。完成备份设置或生成聊天总结后，会显示在这里。')}</p>}
+    <div className="task-runtime-list">{visible.map(job => <article key={job.id} className="task-runtime-job"><div><strong>{taskTitle(job)}</strong><p>{job.message}</p>{job.kind==='summary'&&<p className="task-summary-caller">{job.caller} · {tf('发起账号：{0}',job.initiator_id??'—')}</p>}<small>{new Date(job.updated_at).toLocaleString()}</small>{job.status === 'failed' && <WizardActionButton disabled={job.kind!=='summary'&&runtime.paused} onAction={async () => { if(job.kind==='summary')await invoke('summary_task_retry',{taskId:job.id});else await invoke('task_runtime_retry', { jobId: job.id }); await refreshTaskRuntime(); }}>{t('重试')}</WizardActionButton>}</div><span className={`task-status ${job.status === 'completed' ? 'done' : job.status === 'failed' ? 'failed' : 'pending'}`}>{t(job.kind==='summary'?({queued:'排队中',running:'正在生成',processing:'云端生成中',completed:'已完成',failed:'等待重试'} as Record<string,string>)[job.status]||job.status:labels[job.status] || job.status)}</span></article>)}</div>
+    <div className="page-actions"><WizardActionButton onAction={() => loadCloud()}>{t('查看云端历史')}</WizardActionButton></div>
+    {cloudPage > 0 && <section><h3>{t('当前空间的云端历史')}</h3>{cloud.map(batch => <article className="task-runtime-job" key={batch.id}><div><strong>{batch.source_type === 'whatsapp' ? 'WhatsApp' : t('微信')} · #{batch.id}</strong><p>{batch.error_message || `${batch.message_count} ${t('条消息')}`}</p></div><span>{t(labels[batch.status] || batch.status)}</span></article>)}<footer className="page-actions"><button disabled={cloudBusy || cloudPage <= 1} onClick={() => void loadCloud(cloudPage - 1)}>{t('上一页')}</button><span>{cloudPage}</span><button disabled={cloudBusy || !cloudMore} onClick={() => void loadCloud(cloudPage + 1)}>{t('下一页')}</button></footer></section>}
+    {jobs.length > 20 && <footer className="page-actions"><button disabled={page === 0} onClick={() => setPage(value => value - 1)}>{t('上一页')}</button><span>{Math.min(page + 1, Math.ceil(jobs.length / 20))} / {Math.ceil(jobs.length / 20)}</span><button disabled={(page + 1) * 20 >= jobs.length} onClick={() => setPage(value => value + 1)}>{t('下一页')}</button></footer>}
+  </section>;
 }

@@ -29,10 +29,10 @@ function TimeWheel({ value, part, onChange }: { value: string; part: Part; onCha
   </div>;
 }
 
-export function DailyTimePicker({ value, disabled, onChange, onConfirm, onCancel }: { value: string; disabled: boolean; onChange: (time: string) => void; onConfirm: () => void; onCancel: () => void }) {
+export function DailyTimePicker({ value, disabled, label, onChange, onConfirm, onCancel }: { value: string; disabled: boolean; label?: string; onChange: (time: string) => void; onConfirm: () => void; onCancel: () => void }) {
   const [open, setOpen] = useState(false);
   return <div className="daily-picker-wrap">
-    <button type="button" className="daily-picker-trigger" aria-label={tf("日报时间 {0}", value)} disabled={disabled} aria-expanded={open} onClick={() => { if (open) onConfirm(); setOpen(current => !current); }}>
+    <button type="button" className="daily-picker-trigger" aria-label={label ?? tf("日报时间 {0}", value)} disabled={disabled} aria-expanded={open} onClick={() => { if (open) onConfirm(); setOpen(current => !current); }}>
       <span aria-hidden="true">◷</span><strong>{value}</strong><span className="daily-picker-chevron" aria-hidden="true">⌄</span>
     </button>
     {open && !disabled && <div className="daily-picker-panel" onKeyDown={event => { if (event.key === 'Escape') { setOpen(false); onCancel(); } }}>

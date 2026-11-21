@@ -169,6 +169,7 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   const start = async query => {
     await page.goto(`${base}/scripts/connectors-e2e.html${query}`);
     await ready('设置'); await click('设置');
+    if (await page.evaluate(() => Boolean(document.querySelector('.connector-back')))) await click('← 返回连接器');
     await page.waitForFunction(() => document.querySelectorAll('.connector-actions .connector-primary:not(:disabled)').length === 2);
     await page.snapshot();
   };
@@ -234,11 +235,14 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   await page.click('loc=css:[aria-label="导入范围"] button:nth-child(1)');
   await page.click('loc=css:[aria-label="导入范围"] button:nth-child(2)');
   await click('最近 7 天'); await click('保存并继续');
+  await page.waitForSelector('.wizard-backup-page');
+  await page.click('loc=role:switch[name="WhatsApp 自动备份"]'); await ready('下一步');
+  await click('下一步');
   await page.waitForSelector('loc=role:heading[name="WhatsApp 已连接"]');
   saved = (await state()).settings;
   assert.equal(saved.active_account_id, '10000000000@s.whatsapp.net');
   assert.equal(saved.chat.allowed_usernames[saved.active_account_id].length,45);
-  assert.equal(saved.sync.enabled, false, 'WA remains manual-only');
+  assert.equal(saved.sync.enabled, true, 'WA completes the same automatic backup handoff');
   assert.ok(!(await state()).calls.slice(waStart).some(x => /^wechat_(capture|decrypt|import|scan|key)/.test(x)), 'WA never runs WeChat connection operations');
   await clean();
   console.log('PASS WhatsApp: intro → system check → activation → private + group selection → ranges → persisted completion, without WeChat key/capture operations');
@@ -266,9 +270,9 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   await page.waitForFunction(() => !document.querySelector('fieldset').disabled);
   assert.equal((await state()).settings.chat.sync_interval_seconds,1800);
   assert.ok(await page.evaluate(() => !document.querySelector('.backup-page').textContent.includes('邮件')));
-  assert.ok(await page.evaluate(() => document.querySelector('.backup-manual-platform').textContent.includes('仅手动备份')));
+  assert.ok(await page.evaluate(() => document.querySelector('.plan-plat-title').textContent.includes('WhatsApp')));
   await clean();
-  console.log('PASS schedule: conflict blocks edits, explicit reload recovers confirmed revision, WA is manual, email is hidden');
+  console.log('PASS schedule: conflict blocks edits, explicit reload recovers confirmed revision, both platforms share the automatic schedule, email is hidden');
   await start('?untrusted');
   await page.click('loc=css:.connector-actions .connector-primary >> nth=0');
   await page.waitForSelector('.wizard-method-options');
@@ -296,7 +300,7 @@ export async function runConnectorEnglishSmoke(task, base = 'http://localhost:14
   await click('Backup');
   await page.waitForSelector('.backup-v7');
   await page.snapshot({ scope: 'full_page' });
-  assert.ok(await page.evaluate(() => document.querySelector('.backup-v7').textContent.includes('Manual backups only')));
+  assert.ok(await page.evaluate(() => document.querySelector('.backup-v7').textContent.includes('WhatsApp')));
   await click('Import');
   await page.waitForSelector('.import-history-range');
   assert.ok(await page.evaluate(() => document.querySelector('.import-history-range').textContent.includes('Chat history for the first backup')));

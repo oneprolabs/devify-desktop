@@ -183,6 +183,7 @@ pub fn decode_for_upload(
         if !source.starts_with(&root) || !source.is_file() {
             continue;
         }
+        if source.metadata().map_or(true,|m|m.len()>crate::settings::ATTACHMENT_LIMIT_BYTES) {continue;}
         let Ok(raw) = fs::read(&source) else {
             continue;
         };

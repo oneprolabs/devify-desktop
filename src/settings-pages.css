@@ -1,0 +1,105 @@
+/* Settings pages share the white grouped surface used by Backup and Analysis. */
+.settings-page.settings-refreshed { --settings-muted: #5f5f5a; --settings-line: #e6e6e3; --settings-accent: #a3279a; color: #1a1a19; }
+.settings-page.settings-refreshed .page-head { margin-bottom: 24px; }
+.settings-page.settings-refreshed .page-head h2 { margin: 0; font-size: 18px; line-height: 1.4; }
+.settings-page.settings-refreshed .page-head .help { margin: 6px 0 0; color: var(--settings-muted); font-size: 13px; line-height: 1.6; }
+.settings-page.settings-refreshed .panel, .settings-refreshed .settings-group { margin: 0 0 24px; padding: 0 20px; border: 1px solid var(--settings-line); border-radius: 14px; background: #fff; box-shadow: none; }
+.settings-refreshed .settings-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.settings-refreshed .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px 0; }
+.settings-refreshed .settings-row + .settings-row { border-top: 1px solid #f0f0ee; }
+.settings-refreshed .settings-row-label { flex: 1; min-width: 0; font-size: 14px; }
+.settings-refreshed .settings-row-label > span { display: block; font-weight: 500; }
+.settings-refreshed .settings-row-label small { display: block; margin-top: 4px; color: var(--settings-muted); font-size: 13px; line-height: 1.6; }
+.settings-refreshed .settings-value { color: var(--settings-muted); font-size: 13px; text-align: right; }
+.settings-refreshed .settings-footnote { margin: -10px 0 0; color: var(--settings-muted); font-size: 12.5px; line-height: 1.6; }
+.settings-refreshed .plan-pills { flex-shrink: 0; justify-content: flex-end; gap: 6px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.settings-refreshed .plan-pills button { min-height: 28px; padding: 4px 12px; border: 1px solid #dededb; border-radius: 999px; background: #fff; color: #4f4f4a; font: inherit; font-size: 13px; box-shadow: none; }
+.settings-refreshed .plan-pills button.on { border-color: var(--settings-accent); background: var(--settings-accent); color: #fff; }
+.settings-refreshed .plan-pills button:hover:not(:disabled):not(.on) { background: #f5f5f3; }
+.settings-refreshed button:focus-visible, .settings-refreshed input:focus-visible, .settings-refreshed select:focus-visible, .settings-refreshed textarea:focus-visible, .settings-refreshed summary:focus-visible { outline: 2px solid var(--settings-accent); outline-offset: 3px; }
+.settings-refreshed :is(.error, .notice) { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+
+/* Account: identity first, then service and space settings. */
+.settings-page.settings-refreshed .account-profile-card, .settings-page.settings-refreshed .account-service-card { margin-bottom: 24px; border: 1px solid var(--settings-line); border-radius: 14px; background: #fff; }
+.settings-page.settings-refreshed .account-profile-card h3, .settings-page.settings-refreshed .account-service-card h3 { padding: 20px 20px 0; background: transparent; color: #1a1a19; font-size: 15px; font-weight: 500; line-height: 1.6; }
+.settings-page.settings-refreshed .account-profile-content { gap: 14px; padding: 20px; }
+.settings-page.settings-refreshed .account-profile-avatar { width: 44px; height: 44px; border-radius: 12px; background: #f0f0ed; color: #76216f; font-size: 21px; }
+.settings-page.settings-refreshed .account-profile-info { flex: 1; }
+.settings-page.settings-refreshed .account-profile-info strong { font-size: 15px; font-weight: 500; }
+.settings-page.settings-refreshed .account-profile-info small { color: var(--settings-muted); font-size: 13px; }
+.settings-page.settings-refreshed .account-login-status { padding: 0; background: transparent; font-size: 12.5px; }
+.settings-page.settings-refreshed .account-auth-action { margin-left: 0; }
+.settings-page.settings-refreshed .plan-button { min-height: 30px; padding: 5px 14px; border: 1px solid #dededb; border-radius: 999px; background: #fff; color: #444440; font: inherit; font-size: 13px; box-shadow: none; }
+.settings-page.settings-refreshed .plan-button:hover { background: #f5f5f3; }
+.settings-page.settings-refreshed .plan-button.primary { border-color: var(--settings-accent); background: var(--settings-accent); color: #fff; }
+.settings-page.settings-refreshed .account-auth-notice { margin: 0 20px 16px; color: var(--settings-muted); }
+.settings-page.settings-refreshed .account-service-card .plan-items { border: 0; background: transparent; }
+.settings-page.settings-refreshed .account-service-card h3 { padding-bottom: 20px; }
+.settings-page.settings-refreshed .account-service-card .plan-row { gap: 24px; padding: 18px 20px; }
+.settings-page.settings-refreshed .account-service-card .plan-row-label > span { font-size: 14px; font-weight: 500; }
+.settings-page.settings-refreshed .account-service-card .plan-row-label small { color: var(--settings-muted); font-size: 13px; line-height: 1.6; }
+.settings-page.settings-refreshed .account-service-card .plan-kv { color: #4f4f4a; font-size: 13px; }
+.settings-page.settings-refreshed .plan-input { min-height: 32px; padding: 6px 10px; border-color: #dededb; border-radius: 6px; background: #fff; font-size: 13px; }
+
+/* Feedback keeps the same form and screenshot editor as the modal. */
+.settings-page.settings-refreshed .feedback-page { color: #1a1a19; font-size: 13px; }
+.settings-page.settings-refreshed .feedback-tabs { gap: 24px; margin: 0 0 20px; border-color: var(--settings-line); }
+.settings-page.settings-refreshed .feedback-tabs button { padding: 8px 0 12px; color: var(--settings-muted); font-size: 14px; }
+.settings-page.settings-refreshed .feedback-tabs button[aria-current] { color: var(--settings-accent); }
+.settings-page.settings-refreshed .feedback-page form { padding: 0 20px 20px; border: 1px solid var(--settings-line); border-radius: 14px; background: #fff; }
+.settings-page.settings-refreshed .feedback-environment { gap: 4px; margin: 0; padding: 18px 0; border-bottom: 1px solid #f0f0ee; }
+.settings-page.settings-refreshed .feedback-environment-value { padding: 0; border: 0; background: transparent; color: var(--settings-muted); font-size: 12.5px; }
+.settings-page.settings-refreshed .feedback-content form > label { margin: 18px 0; gap: 8px; font-size: 14px; font-weight: 500; }
+.settings-page.settings-refreshed .feedback-required { margin-left: 4px; color: var(--settings-muted); }
+.settings-page.settings-refreshed .feedback-content :is(textarea, select) { padding: 8px 10px; border: 1px solid #dededb; border-radius: 6px; background: #fff; font-size: 13px; box-shadow: none; }
+.settings-page.settings-refreshed .feedback-content select { min-height: 34px; }
+.settings-page.settings-refreshed .feedback-content textarea { min-height: 120px; line-height: 1.6; }
+.settings-page.settings-refreshed .feedback-content textarea::placeholder { color: var(--settings-muted); opacity: 1; }
+.settings-page.settings-refreshed .feedback-dropzone { padding: 20px 16px; border-color: #d1d1cc; background: #fafaf9; }
+.settings-page.settings-refreshed .feedback-field-head strong { font-size: 14px; font-weight: 500; }
+.settings-page.settings-refreshed .feedback-content small, .settings-page.settings-refreshed .feedback-field-head span { color: var(--settings-muted); }
+.settings-page.settings-refreshed .feedback-diagnostics { margin-top: 20px; padding: 18px 0 0; border: 0; border-top: 1px solid #f0f0ee; border-radius: 0; }
+.settings-page.settings-refreshed .feedback-diagnostics strong { font-size: 14px; font-weight: 500; }
+.settings-page.settings-refreshed .feedback-diagnostics p { margin-top: 6px; color: var(--settings-muted); line-height: 1.6; }
+.settings-page.settings-refreshed .feedback-actions { gap: 12px; padding-top: 18px; border-top: 1px solid #f0f0ee; }
+.settings-page.settings-refreshed .feedback-actions button { min-height: 32px; padding: 6px 16px; border-color: #dededb; border-radius: 999px; }
+.settings-page.settings-refreshed .feedback-actions button.primary { border-color: var(--settings-accent); background: var(--settings-accent); color: #fff; }
+.settings-page.settings-refreshed .feedback-error, .settings-page.settings-refreshed .feedback-notice { font-size: 13px; }
+.settings-page.settings-refreshed .feedback-history { padding: 0 20px 20px; border: 1px solid var(--settings-line); border-radius: 14px; background: #fff; }
+.settings-page.settings-refreshed .feedback-empty { margin: 0; padding: 32px 0; }
+.settings-page.settings-refreshed .feedback-history blockquote { border-radius: 8px; background: #f5f5f3; }
+
+/* About uses the transparent brand mark; update-dialog styling stays independent. */
+.settings-page.settings-refreshed .about-details { gap: 24px; }
+.settings-page.settings-refreshed .about-details .panel { margin: 0; padding: 20px; }
+.settings-page.settings-refreshed .about-details .panel h2 { margin: 0 0 16px; color: #1a1a19; font-size: 15px; font-weight: 500; }
+.settings-page.settings-refreshed .about-product-identity { display: flex; align-items: center; gap: 16px; padding-bottom: 20px; }
+.settings-page.settings-refreshed .about-product-identity img { flex: none; width: 52px; height: 52px; object-fit: contain; }
+.settings-page.settings-refreshed .about-product-identity strong { display: block; font-size: 20px; font-weight: 600; }
+.settings-page.settings-refreshed .about-product-identity p { margin: 6px 0 0; color: var(--settings-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.settings-page.settings-refreshed .update-panel-compact { gap: 14px; padding-top: 18px; border-top: 1px solid #f0f0ee; }
+.settings-page.settings-refreshed .update-panel-compact .update-panel-identity strong { font-size: 14px; font-weight: 500; line-height: 1.6; }
+.settings-page.settings-refreshed .update-panel-compact button { min-height: 30px; padding: 5px 14px; border-radius: 999px; }
+.settings-page.settings-refreshed .update-panel-compact .update-panel-footer { padding: 0; border: 0; }
+.settings-page.settings-refreshed .update-panel-compact .update-link { min-height: 0; padding: 0; color: var(--settings-accent); text-decoration: underline; text-underline-offset: 3px; }
+.settings-page.settings-refreshed .about-app-details { padding-top: 16px; color: var(--settings-muted); font-size: 13px; }
+.settings-page.settings-refreshed .about-app-details summary, .settings-page.settings-refreshed .about-usage-notes summary { cursor: pointer; }
+.settings-page.settings-refreshed .about-app-details .about-meta { margin-top: 12px; font-size: 13px; }
+.settings-page.settings-refreshed .about-app-details .about-meta dd { overflow-wrap: anywhere; }
+.settings-page.settings-refreshed .about-highlights { gap: 0; }
+.settings-page.settings-refreshed .about-highlights li { padding: 14px 0; border: 0; border-radius: 0; background: transparent; }
+.settings-page.settings-refreshed .about-highlights li + li { border-top: 1px solid #f0f0ee; }
+.settings-page.settings-refreshed .about-highlights li:first-child { padding-top: 0; }
+.settings-page.settings-refreshed .about-highlights li:last-child { padding-bottom: 0; }
+.settings-page.settings-refreshed .about-highlights strong { font-size: 14px; font-weight: 500; }
+.settings-page.settings-refreshed .about-highlights span, .settings-page.settings-refreshed .about-checklist { color: var(--settings-muted); font-size: 13px; line-height: 1.6; }
+.settings-page.settings-refreshed .about-usage-notes summary { font-size: 14px; font-weight: 500; }
+.settings-page.settings-refreshed .about-usage-notes .about-checklist { margin: 16px 0 0; }
+@media (max-width: 1100px) {
+  .settings-refreshed.language-settings .settings-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .settings-refreshed.language-settings .plan-pills { justify-content: flex-start; flex-wrap: wrap; }
+}
+@media (max-width: 760px) {
+  .settings-refreshed .settings-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .settings-page.settings-refreshed .account-profile-content { flex-wrap: wrap; }
+}

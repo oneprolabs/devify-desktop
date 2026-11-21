@@ -541,7 +541,7 @@ pub fn read_voice_blobs(
     let mut paths: Vec<_> = fs::read_dir(&directory).ok().into_iter().flatten().flatten()
         .map(|entry| entry.path())
         .filter(|path| path.file_name().and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("media_") && name.ends_with(".db")))
+            .is_some_and(|name| (name.starts_with("media_") || name.starts_with("biz_media_")) && name.ends_with(".db")))
         .collect();
     paths.sort();
     if paths.is_empty() {
