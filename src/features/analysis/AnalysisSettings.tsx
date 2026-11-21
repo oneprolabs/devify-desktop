@@ -1,11 +1,11 @@
-import { t } from './locale';
+import { t } from '../../locale';
 import { ReportSchedules } from './ReportSchedules';
-import { AgentSettings } from './AgentSettings';
+import { AgentSettings } from '../agents/AgentSettings';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
+import { type AppSettings, defaultSettings, mergeSettings } from '../settings/Settings';
 import { analysisSettingsError } from './analysisSettingsText';
-import { WizardActionButton } from './WizardActionButton';
+import { WizardActionButton } from '../../WizardActionButton';
 import './analysis-settings.css';
 
 type AnalysisPreferences = {

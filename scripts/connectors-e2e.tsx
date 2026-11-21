@@ -12,7 +12,7 @@ import slackIcon from '../src/assets/connectors/slack.svg';
 import discordIcon from '../src/assets/connectors/discord.svg';
 import lineIcon from '../src/assets/connectors/line.svg';
 import wecomIcon from '../src/assets/connectors/wecom.svg';
-import { defaultSettings } from '../src/Settings';
+import { defaultSettings } from '../src/features/settings/Settings';
 import '../src/style.css';
 const query = new URLSearchParams(location.search);
 // Optional, local-only snapshot. Never import chat data into the production bundle.

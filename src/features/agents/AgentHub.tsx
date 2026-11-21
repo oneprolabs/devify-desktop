@@ -1,8 +1,8 @@
-import { t } from './locale';
+import { t } from '../../locale';
 import { useState } from 'react';
 import { AgentSettings } from './AgentSettings';
 import { AgentAccess } from './AgentAccess';
-import { granted, useInternalAccount } from './entitlements';
+import { granted, useInternalAccount } from '../auth/entitlements';
 
 type Section = 'summary' | 'access';
 

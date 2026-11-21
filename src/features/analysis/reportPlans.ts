@@ -1,5 +1,5 @@
-import { t } from './locale';
-import { findDailyPlan, type DailyPlan } from './dailyPlan';
+import { t } from '../../locale';
+import { findDailyPlan, type DailyPlan } from '../../dailyPlan';
 
 export type ReportPeriod = 'day' | 'week' | 'month';
 export const REPORT_PLANS = [

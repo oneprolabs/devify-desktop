@@ -23,8 +23,8 @@ import {
   type SummaryRecord,
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
-import { useCapability, useInternalAccount } from './entitlements';
-import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
+import { useCapability, useInternalAccount } from './features/auth/entitlements';
+import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './features/settings/Settings';
 
 type DbFile = {
   rel: string;

@@ -1,9 +1,9 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../../locale';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import appIcon from './assets/app-icon.png';
-import appMark from './assets/app-mark-transparent.png';
-import { checkForUpdates, dismissInstallBlockers, downloadUpdate, installUpdate, RELEASE_URL, useUpdater } from './updater';
+import appIcon from '../../assets/app-icon.png';
+import appMark from '../../assets/app-mark-transparent.png';
+import { checkForUpdates, dismissInstallBlockers, downloadUpdate, installUpdate, RELEASE_URL, useUpdater } from '../updates/updater';
 
 type AppInfo = {
   name: string;

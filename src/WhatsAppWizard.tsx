@@ -2,7 +2,7 @@ import { t, tf } from './locale';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { detectTitleFor, useConnectorDetect } from './connectorDetect';
-import { WhitelistSettings, type AppSettings, requireSettingsRevision } from './Settings';
+import { WhitelistSettings, type AppSettings, requireSettingsRevision } from './features/settings/Settings';
 import { Icons } from './icons';
 import { BackupSchedule } from './BackupSchedule';
 import { WizardActionButton } from './WizardActionButton';

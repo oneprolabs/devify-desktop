@@ -10,7 +10,7 @@ import {
 } from './summary';
 import { classifyWorkText, extractWorkTerms } from './workInsights';
 import { currentSessionSummaries } from './features/chat/chatPresentation';
-import { useCapability, useInternalAccount } from './entitlements';
+import { useCapability, useInternalAccount } from './features/auth/entitlements';
 
 /** Minimal conversation shape shared with the chat page. */
 export type SummarySession = {

@@ -1,7 +1,7 @@
 import { t, tf, ctf } from './locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from './Settings';
+import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from './features/settings/Settings';
 import { detectTitle, detectTitleFor, useConnectorDetect } from './connectorDetect';
 import { useTaskRuntime } from './taskRuntime';
 import wechatIcon from './assets/connectors/wechat.svg';

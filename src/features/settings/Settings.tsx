@@ -1,17 +1,17 @@
-import { t, tf, ctf, dateLocale, sortLocale } from './locale';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../locale';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
-import { registerDevifyDevice } from './devifyDevice';
-import { sameServiceUrl, storedBaseUrl } from './serviceUrl.ts';
-import type { UploadOwner } from './taskCloud';
-import { AccountPicker } from './AccountPicker';
-import { ConnectorIcon } from './Connectors';
-import { WizardSessionPicker } from './WizardSessionPicker';
-import { WizardImportScope } from './WizardImportScope';
-import { Icons } from './icons';
-import { ImportHistoryRange, presetHistoryRange, type HistoryRange, type HistoryChoice, type HistoryScope } from './ImportHistoryRange';
+import { registerDevifyDevice } from '../../devifyDevice';
+import { sameServiceUrl, storedBaseUrl } from '../../serviceUrl.ts';
+import type { UploadOwner } from '../../taskCloud';
+import { AccountPicker } from '../../AccountPicker';
+import { ConnectorIcon } from '../../Connectors';
+import { WizardSessionPicker } from '../../WizardSessionPicker';
+import { WizardImportScope } from '../../WizardImportScope';
+import { Icons } from '../../icons';
+import { ImportHistoryRange, presetHistoryRange, type HistoryRange, type HistoryChoice, type HistoryScope } from '../../ImportHistoryRange';
 
 type SessionItem = {
   username: string;

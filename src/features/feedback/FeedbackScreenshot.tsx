@@ -1,4 +1,4 @@
-import { t } from './locale';
+import { t } from '../../locale';
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { imageSource } from './feedbackTypes';
 

@@ -1,7 +1,7 @@
 import { t } from './locale';
 import { Component, type ReactNode } from 'react';
 import { recordDiagnostic } from './desktopInvoke';
-import { Feedback } from './Feedback';
+import { Feedback } from './features/feedback/Feedback';
 
 export class AppErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };

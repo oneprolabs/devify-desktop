@@ -69,9 +69,9 @@ const mocks = {
   react,
   'react/jsx-runtime': jsx,
   '@tauri-apps/api/core': { invoke: (...args) => invoke(...args), isTauri: () => true },
-  './SidebarResizeHandle': { SidebarResizeHandle: () => null },
-  './LoadingSkeleton': { LoadingPage: () => null, LoadingSkeleton: () => null },
-  './EvidenceDrawer': { EvidenceDrawer },
+  '../../SidebarResizeHandle': { SidebarResizeHandle: () => null },
+  '../../LoadingSkeleton': { LoadingPage: () => null, LoadingSkeleton: () => null },
+  '../../EvidenceDrawer': { EvidenceDrawer },
   './toast': { exportNotSupported: () => {} },
 };
 const load = path => {
@@ -81,18 +81,18 @@ const load = path => {
   }).outputText;
   const module = { exports: {} };
   const requireMock = id => {
-    if (id === './summary') return { renderAgentMarkdown: value => value };
+    if (id === '../../summary') return { renderAgentMarkdown: value => value };
     if (id in mocks) return mocks[id];
-    if (id === './locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+    if (id === '../../locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
     throw Error(`unexpected import: ${id}`);
   };
   new Function('require', 'module', 'exports', compiled)(requireMock, module, module.exports);
   return module.exports;
 };
-const { reportPresentation } = load('../src/reportPresentation.ts');
+const { reportPresentation } = load('../src/features/analysis/reportPresentation.ts');
 mocks['./reportPresentation'] = { reportPresentation };
-mocks['./pageSnapshots'] = load('../src/pageSnapshots.ts');
-const { CloudAnalysisPage } = load('../src/CloudAnalysis.tsx');
+mocks['../../pageSnapshots'] = load('../src/pageSnapshots.ts');
+const { CloudAnalysisPage } = load('../src/features/analysis/CloudAnalysis.tsx');
 
 const partialWith = '报告未完全生成，以下展示已保存的内容。';
 const partialWithout = '报告未完全生成，暂无已保存的正文。';
@@ -150,7 +150,7 @@ invoke = command => {
 };
 for (const [kind, label] of [['events', '事件'], ['reports', '报告']]) {
   const loading = render({ hooks: [] }, kind);
-  assert.equal(loading.type, mocks['./LoadingSkeleton'].LoadingPage);
+  assert.equal(loading.type, mocks['../../LoadingSkeleton'].LoadingPage);
   assert.equal(loading.props.title, label);
 }
 
@@ -287,7 +287,7 @@ const eventInstance={hooks:[]};
 const renderEvents=()=>render(eventInstance,'events',null);
 for(let i=0;i<4;i++){renderEvents();await flush();}
 let eventTree=renderEvents();
-const hasDetailLoading=tree=>elements(tree).some(node=>node.type===mocks['./LoadingSkeleton'].LoadingSkeleton&&node.props.label==='正在加载详情');
+const hasDetailLoading=tree=>elements(tree).some(node=>node.type===mocks['../../LoadingSkeleton'].LoadingSkeleton&&node.props.label==='正在加载详情');
 assert.equal(eventCalls.filter(call=>call.command==='devify_analysis_detail').length,0,'Default filter must not load a hidden completed event');
 assert.equal(hasDetailLoading(eventTree),false);
 assert.match(text(eventTree),/当前筛选下没有记录/);

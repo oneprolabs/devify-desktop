@@ -12,7 +12,7 @@ import { EvidenceDrawer, type EvidenceTarget } from '../../EvidenceDrawer';
 import WeChatLocal from '../../WeChatLocal';
 import { ConversationSummary } from './summary/ConversationSummary';
 import type { SummaryMessage } from './summary/summaryInput';
-import { WhitelistSettings } from '../../Settings';
+import { WhitelistSettings } from '../settings/Settings';
 import wechatIcon from '../../assets/connectors/wechat.svg';
 import whatsappIcon from '../../assets/connectors/whatsapp.svg';
 import { syncFeedback, type SyncBatchStatus } from '../../syncFeedback';

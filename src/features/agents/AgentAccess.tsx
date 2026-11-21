@@ -1,4 +1,4 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../../locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 

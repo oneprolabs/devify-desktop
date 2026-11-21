@@ -75,31 +75,31 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/core') return { invoke: (...args) => invoke(...args), isTauri: () => true };
   if (id === '@tauri-apps/api/event') return { listen: async () => () => {} };
   if (id === '@tauri-apps/plugin-deep-link') return { onOpenUrl: async () => () => {} };
-  if (id === './devifyDevice') return { registerDevifyDevice: async () => {} };
-  if (id === './desktopInvoke') return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
-  if (id === './Settings') return module.exports;
+  if (id === '../../devifyDevice') return { registerDevifyDevice: async () => {} };
+  if (['../../desktopInvoke', './desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
+  if (['../settings/Settings', './features/settings/Settings'].includes(id)) return module.exports;
   if (id === './wechatSetupState') return loadModule('../src/wechatSetupState.ts');
   if (id === './Permission') return loadModule('../src/Permission.tsx');
   if (id === './WizardActionButton') return wizardActionModule ??= loadModule('../src/WizardActionButton.tsx');
-  if (id === './WizardSessionPicker') return loadModule('../src/WizardSessionPicker.tsx');
-  if (id === './WizardImportScope') return loadModule('../src/WizardImportScope.tsx');
-  if (id === './ImportHistoryRange') return loadModule('../src/ImportHistoryRange.tsx');
+  if (id === '../../WizardSessionPicker') return loadModule('../src/WizardSessionPicker.tsx');
+  if (id === '../../WizardImportScope') return loadModule('../src/WizardImportScope.tsx');
+  if (id === '../../ImportHistoryRange') return loadModule('../src/ImportHistoryRange.tsx');
   if (id === './BackupSchedule') return loadModule('../src/BackupSchedule.tsx');
   if (id === './WeChatWizardComplete') return loadModule('../src/WeChatWizardComplete.tsx');
   if (id === './settingsSaveQueue') return loadModule('../src/settingsSaveQueue.ts');
   if (id === './taskRuntime') return { useTaskRuntime: () => backupRuntime, refreshTaskRuntime: async () => {} };
   if (id === './BackupRuntimeSwitch') return loadModule('../src/BackupRuntimeSwitch.tsx');
-  if (id === './icons') return { Icons: { check: '✓', clock: '◷' } };
-  if (id === './AccountPicker') return loadModule('../src/AccountPicker.tsx');
-  if (id === './Connectors') return loadModule('../src/Connectors.tsx');
+  if (['../../icons', './icons'].includes(id)) return { Icons: { check: '✓', clock: '◷' } };
+  if (id === '../../AccountPicker') return loadModule('../src/AccountPicker.tsx');
+  if (['../../Connectors', './Connectors'].includes(id)) return loadModule('../src/Connectors.tsx');
   if (id === './connectorDetect') return {
     useConnectorDetect: () => connectorInstall,
     detectTitle: { not_installed: '未检测到微信', untrusted: '检测到的微信不是官方版本' },
     detectTitleFor: (label, state) => ({ not_installed: `未检测到${label}`, untrusted: `检测到的${label}不是官方版本`, installed: `已检测到${label}` })[state],
     currentAccount: (accounts, remembered) => accounts.find(item => item.id === remembered) ?? accounts[0],
   };
-  if (id === './serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
-  if (id === './locale') return {
+  if (id === '../../serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
+  if (['../../locale', './locale'].includes(id)) return {
     t: text => text,
     tf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
     ctf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
@@ -119,7 +119,7 @@ new Function('require', 'module', 'exports', serviceUrlCompiled)(
   mockedRequire, serviceUrlModule, serviceUrlModule.exports,
 );
 const serviceUrl = serviceUrlModule.exports;
-const source = fs.readFileSync(new URL('../src/Settings.tsx', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../src/features/settings/Settings.tsx', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
 const module = { exports: {} };
 new Function('require', 'module', 'exports', compiled)(mockedRequire, module, module.exports);
@@ -318,7 +318,7 @@ assert.ok(!elements(tree).some(node => node.type === 'a' && node.props.href === 
 connectorInstall = installed;
 
 // Login gate saves from its loaded context and does not overwrite later typing.
-const { LoginGate } = loadModule('../src/LoginGate.tsx');
+const { LoginGate } = loadModule('../src/features/auth/LoginGate.tsx');
 const gateLoad = deferred(), gateSaves = [];
 invoke = (command, args) => {
   if (command === 'app_settings_get') return gateLoad.promise;

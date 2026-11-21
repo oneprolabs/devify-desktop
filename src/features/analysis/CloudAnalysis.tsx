@@ -1,12 +1,12 @@
-import { t, tf, ctf, dateLocale, sortLocale } from './locale';
-import { LoadingPage, LoadingSkeleton } from './LoadingSkeleton';
-import { SidebarResizeHandle } from './SidebarResizeHandle';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../locale';
+import { LoadingPage, LoadingSkeleton } from '../../LoadingSkeleton';
+import { SidebarResizeHandle } from '../../SidebarResizeHandle';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
+import { EvidenceDrawer, type EvidenceTarget } from '../../EvidenceDrawer';
 import { reportPresentation } from './reportPresentation';
-import { renderAgentMarkdown } from './summary';
-import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from './pageSnapshots';
+import { renderAgentMarkdown } from '../../summary';
+import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from '../../pageSnapshots';
 
 type Kind = 'events' | 'reports';
 type EventItem = { id: number; title: string; content: string; status?: string | null; tags?: Array<{ label?: string }>; last_activity_at?: string | null; opened_at?: string | null; updated_at?: string | null };

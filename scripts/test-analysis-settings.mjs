@@ -18,6 +18,7 @@ function DailyTimePicker() {}
 function AgentSettings() {}
 const cache=new Map();
 function load(file) {
+  file = new URL(file, import.meta.url).href;
   if(cache.has(file))return cache.get(file);
   const output=ts.transpileModule(fs.readFileSync(new URL(file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText;
   const module={exports:{}};
@@ -25,21 +26,21 @@ function load(file) {
     if(name==='react')return react;
     if(name==='react/jsx-runtime')return jsx;
     if(name==='@tauri-apps/api/core')return{invoke:(...args)=>invoke(...args)};
-    if(name==='./locale')return translate;
-    if(name==='./Settings')return{defaultSettings:()=>({devify:{active_space_id:null}}),mergeSettings:value=>value};
-    if(['./dailyPlan','./reportPlans','./ReportSchedules'].includes(name))return load(`../src/${name.slice(2)}.${name==='./ReportSchedules'?'tsx':'ts'}`);
+    if(['../../locale', './locale'].includes(name))return translate;
+    if(name==='../settings/Settings')return{defaultSettings:()=>({devify:{active_space_id:null}}),mergeSettings:value=>value};
+    if(['../../dailyPlan','./reportPlans','./ReportSchedules'].includes(name))return load(`${new URL(name, file).href}.${name.endsWith('ReportSchedules')?'tsx':'ts'}`);
     if(name==='./analysisSettingsText')return{analysisSettingsError:value=>value instanceof Error?value.message:String(value)};
-    if(name==='./WizardActionButton')return{WizardActionButton};
-    if(name==='./DailyTimePicker')return{DailyTimePicker};
-    if(name==='./AgentSettings')return{AgentSettings};
+    if(name==='../../WizardActionButton')return{WizardActionButton};
+    if(name==='../../DailyTimePicker')return{DailyTimePicker};
+    if(name==='../agents/AgentSettings')return{AgentSettings};
     if(name.endsWith('.css'))return{};
     throw Error(name);
   },module,module.exports);
   cache.set(file,module.exports);return module.exports;
 }
-const {AnalysisSettings}=load('../src/AnalysisSettings.tsx');
-const {ReportSchedules,ReportScheduleRow}=load('../src/ReportSchedules.tsx');
-const {REPORT_PLANS,reportPlanSelection}=load('../src/reportPlans.ts');
+const {AnalysisSettings}=load('../src/features/analysis/AnalysisSettings.tsx');
+const {ReportSchedules,ReportScheduleRow}=load('../src/features/analysis/ReportSchedules.tsx');
+const {REPORT_PLANS,reportPlanSelection}=load('../src/features/analysis/reportPlans.ts');
 const nodes=tree=>Array.isArray(tree)?tree.flatMap(nodes):tree&&typeof tree==='object'?[tree,...nodes(tree.props?.children)]:[];
 const text=tree=>Array.isArray(tree)?tree.map(text).join(''):tree&&typeof tree==='object'?text(tree.props?.children):String(tree??'');
 function find(tree,test){const found=nodes(tree).find(test);assert.ok(found,'expected control missing');return found;}
