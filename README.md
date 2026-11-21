@@ -553,7 +553,11 @@ WX_PASS='<64 hex>' cargo run --quiet --example probe -- 会议 200
 - `src/shared/`: native/API helpers, localization, common UI, content rendering, scheduling helpers, and shared state utilities.
 - `src/assets/`: brand artwork, platform icons, and fonts.
 - [Frontend source layout](src/README.md): directory ownership, retained legacy boundaries, and the incremental refactoring workflow.
-- `src-tauri/src/lib.rs`: Tauri commands, scheduled sync, rule-based digest, agent summarisation, server-side daily schedule sync, and service startup wiring.
+- `src-tauri/src/lib.rs`: application wiring and native command registration; authentication, upload/sync orchestration and daily schedule integration are still being extracted in bounded batches.
+- `src-tauri/src/commands/`: native adapters grouped by feature, including analysis/events/topics/questions, local Agents, summary history and chat reads.
+- `src-tauri/src/chat/`: shared source/session access checks and the process-wide local-read budget; database/media implementations remain with WeChat and WhatsApp.
+- `src-tauri/src/mcp/runtime.rs`: the single desktop-managed local Agent service state and start/stop reconciliation.
+- `src-tauri/src/tests/`: entry-layer regression tests; its README explains ownership and the required serial harness.
 - `src-tauri/src/agent.rs`: agent detection (PATH/search dirs/login shell), bounded non-interactive runs, timeout/kill handling, output and error normalisation.
 - `src-tauri/src/access.rs`: embedded skill documents, host → skills-directory mapping, `wxq` resolution, prompt and install-script generation.
 - `src-tauri/src/wechat/query.rs`: schema-discovered reads, whitelist filtering, and the bounded transcript builder shared by interactive and automated summaries.
