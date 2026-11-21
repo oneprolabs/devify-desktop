@@ -1,12 +1,12 @@
-import { t, tf, ctf } from '../../locale';
+import { t, tf, ctf } from '../../shared/i18n/locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { desktopInvoke as invoke } from '../../desktopInvoke';
+import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import brandMark from '../../assets/app-mark-transparent.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from '../settings/Settings';
-import { apiBaseUrl, storedBaseUrl } from '../../serviceUrl.ts';
-import { requestFeedback } from '../../desktopInvoke';
+import { apiBaseUrl, storedBaseUrl } from '../../shared/api/serviceUrl.ts';
+import { requestFeedback } from '../../shared/api/desktopInvoke';
 
 type GateSettings = {
   user_settings_revision: number;

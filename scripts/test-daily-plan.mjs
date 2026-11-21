@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { findDailyPlan, enableDailyPlan, stepTimePart } from '../src/dailyPlan.ts'
+import { findDailyPlan, enableDailyPlan, stepTimePart } from '../src/shared/scheduling/dailyPlan.ts'
 const plan = { id: 3, title: '微信工作日报', period: 'day', time_local: '18:00:00', enabled: true, timezone: 'Asia/Shanghai' }
 assert.equal(findDailyPlan([plan])?.id, 3)
 const serverPlan = { ...plan, id: 5, title: '每日报告', time_local: '18:00:00' }

@@ -1,12 +1,12 @@
-import { t, tf, ctf, dateLocale, sortLocale } from '../../locale';
-import { LoadingPage } from '../../LoadingSkeleton';
-import { SidebarResizeHandle } from '../../SidebarResizeHandle';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
+import { LoadingPage } from '../../shared/ui/LoadingSkeleton';
+import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { EvidenceDrawer, type EvidenceTarget } from '../../EvidenceDrawer';
+import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
 import { questionAnswerError } from './analysisSettingsText';
 import { formatAskAnswer } from './askAnswer';
-import { renderAgentMarkdown } from '../../summary';
+import { renderAgentMarkdown } from '../../shared/content/summary';
 
 type Citation = { kind: string; id: number; title: string; excerpt: string; conversation_id?: number | null; event_id?: number | null; note_id?: number | null };
 type Question = { id: number; thread_id?: number | null; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string };

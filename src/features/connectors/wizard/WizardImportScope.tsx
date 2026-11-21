@@ -1,5 +1,5 @@
-import { t, tf } from '../../../locale';
-import { Icons } from '../../../icons';
+import { t, tf } from '../../../shared/i18n/locale';
+import { Icons } from '../../../shared/ui/icons';
 import { useEffect, useState, type ReactNode } from 'react';
 
 type Session = { username: string; is_group: boolean };

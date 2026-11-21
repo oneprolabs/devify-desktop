@@ -1,4 +1,4 @@
-import { t, tf, ctf, cf } from '../../../locale';
+import { t, tf, ctf, cf } from '../../../shared/i18n/locale';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -7,7 +7,7 @@ import {
   renderAgentMarkdown,
   type NewSummaryRecord,
   type SummaryRecord,
-} from '../../../summary';
+} from '../../../shared/content/summary';
 import { classifyWorkText, extractWorkTerms } from './workInsights';
 import { currentSessionSummaries } from '../chatPresentation';
 import { useCapability, useInternalAccount } from '../../auth/entitlements';

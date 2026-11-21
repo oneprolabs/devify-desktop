@@ -1,4 +1,4 @@
-import { t, tf, ctf } from '../../locale';
+import { t, tf, ctf } from '../../shared/i18n/locale';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import appIcon from '../../assets/app-icon.png';

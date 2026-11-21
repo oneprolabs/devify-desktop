@@ -1,4 +1,4 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../i18n/locale';
 import './loading-skeleton.css';
 
 type LoadingKind = 'list' | 'messages' | 'detail';

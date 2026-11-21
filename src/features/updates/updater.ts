@@ -1,4 +1,4 @@
-import { t, tf, ctf } from '../../locale';
+import { t, tf, ctf } from '../../shared/i18n/locale';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';

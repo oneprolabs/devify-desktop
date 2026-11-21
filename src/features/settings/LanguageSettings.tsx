@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
-import { applyLanguage, t, tf, ctf } from '../../locale';
-import { createSettingsSaveQueue, settingsSaveFailure, settingsUserRevision, type SettingsSaveQueue } from '../../settingsSaveQueue';
+import { applyLanguage, t, tf, ctf } from '../../shared/i18n/locale';
+import { createSettingsSaveQueue, settingsSaveFailure, settingsUserRevision, type SettingsSaveQueue } from '../../shared/state/settingsSaveQueue';
 
 type Option = { label: string; disabled?: boolean; hint?: string };
 

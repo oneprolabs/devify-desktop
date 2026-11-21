@@ -1,4 +1,4 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../i18n/locale';
 /** Sequentially save explicit user edits against the last confirmed user revision. */
 export type SettingsEdit<T> = (current: T) => T;
 

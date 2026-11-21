@@ -1,4 +1,4 @@
-import { t, tf, ctf } from '../../locale';
+import { t, tf, ctf } from '../../shared/i18n/locale';
 export function currentSessionSummaries<T extends { account_id: string; sessions: { username: string }[] }>(records: T[], accountId: string | null | undefined, username: string | null | undefined): T[] {
   return accountId && username ? records.filter(record => record.account_id === accountId && record.sessions.some(session => session.username === username)) : [];
 }

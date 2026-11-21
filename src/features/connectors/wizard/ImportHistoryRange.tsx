@@ -1,4 +1,4 @@
-import { t, tf } from '../../../locale';
+import { t, tf } from '../../../shared/i18n/locale';
 import { useState } from 'react';
 type Session = { username: string; display: string; is_group: boolean };
 export type HistoryRange = { since: number | null; until: number | null };

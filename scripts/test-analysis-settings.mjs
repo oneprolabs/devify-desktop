@@ -26,12 +26,12 @@ function load(file) {
     if(name==='react')return react;
     if(name==='react/jsx-runtime')return jsx;
     if(name==='@tauri-apps/api/core')return{invoke:(...args)=>invoke(...args)};
-    if(['../../locale', './locale'].includes(name))return translate;
+    if(['../../shared/i18n/locale', '../i18n/locale'].includes(name))return translate;
     if(name==='../settings/Settings')return{defaultSettings:()=>({devify:{active_space_id:null}}),mergeSettings:value=>value};
-    if(['../../dailyPlan','./reportPlans','./ReportSchedules'].includes(name))return load(`${new URL(name, file).href}.${name.endsWith('ReportSchedules')?'tsx':'ts'}`);
+    if(['../../shared/scheduling/dailyPlan','./reportPlans','./ReportSchedules'].includes(name))return load(`${new URL(name, file).href}.${name.endsWith('ReportSchedules')?'tsx':'ts'}`);
     if(name==='./analysisSettingsText')return{analysisSettingsError:value=>value instanceof Error?value.message:String(value)};
-    if(name==='../../WizardActionButton')return{WizardActionButton};
-    if(name==='../../DailyTimePicker')return{DailyTimePicker};
+    if(name==='../../shared/ui/WizardActionButton')return{WizardActionButton};
+    if(name==='../../shared/ui/DailyTimePicker')return{DailyTimePicker};
     if(name==='../agents/AgentSettings')return{AgentSettings};
     if(name.endsWith('.css'))return{};
     throw Error(name);

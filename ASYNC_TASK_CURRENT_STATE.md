@@ -6,7 +6,7 @@
 
 所有图统一为用户、客户端组（客户端／客户端数据库／客户端配置文件）与服务端。客户端内含界面、Tauri 命令和原生后台；没有把这些职责虚构为独立进程。
 
-核对入口：[ChatWorkbench.tsx](src/ChatWorkbench.tsx)、[WeChatLocal.tsx](src/WeChatLocal.tsx)、[CloudRecords.tsx](src/CloudRecords.tsx)、[EvidenceDrawer.tsx](src/EvidenceDrawer.tsx)、[lib.rs](src-tauri/src/lib.rs)。改造前任务菜单没有全局状态输入，任务页仍独立定时刷新；页面快照最多 30 项、任务页快照和近期消息缓存在内存中，微信解密库、WhatsApp 快照及媒体已有落盘。
+核对入口：[ChatWorkbench.tsx](src/features/chat/ChatWorkbench.tsx)、[WeChatLocal.tsx](src/features/chat/local-reader/WeChatLocal.tsx)、[CloudRecords.tsx](src/features/chat/CloudRecords.tsx)、[EvidenceDrawer.tsx](src/shared/ui/EvidenceDrawer.tsx)、[lib.rs](src-tauri/src/lib.rs)。改造前任务菜单没有全局状态输入，任务页仍独立定时刷新；页面快照最多 30 项、任务页快照和近期消息缓存在内存中，微信解密库、WhatsApp 快照及媒体已有落盘。
 
 <!-- flow:flow-7 -->
 ## A.1 本地消息按需加载

@@ -1,4 +1,4 @@
-import { t, tf, ctf } from '../../locale';
+import { t, tf, ctf } from '../../shared/i18n/locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { defaultSettings, mergeSettings, mergeSavedSettings, requireSettingsRevision, settingsSaveError, type AppSettings } from '../settings/Settings';

@@ -1,4 +1,4 @@
-import { t, tf, ctf, dateLocale, sortLocale } from '../../locale';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 

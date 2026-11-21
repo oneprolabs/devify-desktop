@@ -1,4 +1,4 @@
-import { t } from '../../locale';
+import { t } from '../../shared/i18n/locale';
 import { useState } from 'react';
 import { AgentSettings } from './AgentSettings';
 import { AgentAccess } from './AgentAccess';

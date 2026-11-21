@@ -1,4 +1,4 @@
-import { t } from '../../locale';
+import { t } from '../../shared/i18n/locale';
 // Translate known backend error prefixes only. Arbitrary server errors can contain
 // user-provided addresses or usernames, so never rewrite their embedded text.
 export function analysisSettingsError(reason: unknown): string {

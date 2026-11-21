@@ -1,11 +1,11 @@
-import { t, tf } from '../../../locale';
+import { t, tf } from '../../../shared/i18n/locale';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { detectTitleFor, useConnectorDetect } from '../connectorDetect';
 import { WhitelistSettings, type AppSettings, requireSettingsRevision } from '../../settings/Settings';
-import { Icons } from '../../../icons';
+import { Icons } from '../../../shared/ui/icons';
 import { BackupSchedule } from '../../backup/BackupSchedule';
-import { WizardActionButton } from '../../../WizardActionButton';
+import { WizardActionButton } from '../../../shared/ui/WizardActionButton';
 import whatsappIcon from '../../../assets/connectors/whatsapp.svg';
 
 type WhatsAppStatus = {

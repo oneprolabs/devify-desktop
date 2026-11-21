@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { desktopInvoke as invoke } from '../../desktopInvoke';
+import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { useTaskRuntime, refreshTaskRuntime } from '../tasks/taskRuntime';
-import { t, tf } from '../../locale';
+import { t, tf } from '../../shared/i18n/locale';
 import './backup-runtime-switch.css';
 
 export function BackupRuntimeSwitch({ showLabel = false, onError }: { showLabel?: boolean; onError: (message: string) => void }) {

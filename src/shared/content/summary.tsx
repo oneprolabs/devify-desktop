@@ -1,4 +1,4 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../i18n/locale';
 import type { ReactNode } from 'react';
 
 /** One conversation included in a saved summary. */

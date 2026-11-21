@@ -1,7 +1,7 @@
-import { t } from './locale';
+import { t } from '../shared/i18n/locale';
 import { Component, type ReactNode } from 'react';
-import { recordDiagnostic } from './desktopInvoke';
-import { Feedback } from './features/feedback/Feedback';
+import { recordDiagnostic } from '../shared/api/desktopInvoke';
+import { Feedback } from '../features/feedback/Feedback';
 
 export class AppErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };

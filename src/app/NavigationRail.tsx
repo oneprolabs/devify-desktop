@@ -1,9 +1,9 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../shared/i18n/locale';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useTaskRuntime } from './features/tasks/taskRuntime';
-import { RailIcons } from './icons';
-import brandMark from './assets/app-mark-transparent.png';
+import { useTaskRuntime } from '../features/tasks/taskRuntime';
+import { RailIcons } from '../shared/ui/icons';
+import brandMark from '../assets/app-mark-transparent.png';
 
 const avatarColors = ['#7c4d80', '#3f6b8f', '#3f766b', '#8a5b42', '#5869a6', '#8a4764', '#72703e', '#486d92'];
 

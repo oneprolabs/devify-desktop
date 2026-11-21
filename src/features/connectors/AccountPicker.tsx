@@ -1,4 +1,4 @@
-import { t } from '../../locale';
+import { t } from '../../shared/i18n/locale';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { ChatAccount } from './connectorDetect';
 import wechatIcon from '../../assets/connectors/wechat.svg';

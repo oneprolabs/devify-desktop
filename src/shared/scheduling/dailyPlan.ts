@@ -1,4 +1,4 @@
-import { t } from './locale';
+import { t } from '../i18n/locale';
 export type DailyPlan = { id: number; title: string; period: string; enabled: boolean; time_local: string | null; timezone: string; last_run_at?: string | null; last_error?: string | null };
 // Plan titles are persisted on the server; changing the UI language must not hide them.
 const reportTitles = ['每日报告', 'Daily report'];

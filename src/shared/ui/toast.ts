@@ -1,4 +1,4 @@
-import { t } from './locale';
+import { t } from '../i18n/locale';
 /**
  * One shared, self-dismissing toast for placeholder actions.
  *

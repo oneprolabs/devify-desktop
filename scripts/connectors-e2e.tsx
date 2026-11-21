@@ -2,7 +2,7 @@
 // This route never reads credentials, changes macOS permissions or uploads chat data.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import PrototypeShell from '../src/PrototypeShell';
+import PrototypeShell from '../src/app/PrototypeShell';
 import { RemoteChatFallback } from '../src/features/chat/RemoteChatFallback';
 import { ChatPlatformBar, type ChatPlatform } from '../src/features/chat/ChatPlatformBar';
 import wechatIcon from '../src/assets/connectors/wechat.svg';
@@ -13,7 +13,7 @@ import discordIcon from '../src/assets/connectors/discord.svg';
 import lineIcon from '../src/assets/connectors/line.svg';
 import wecomIcon from '../src/assets/connectors/wecom.svg';
 import { defaultSettings } from '../src/features/settings/Settings';
-import '../src/style.css';
+import '../src/app/styles/style.css';
 const query = new URLSearchParams(location.search);
 // Optional, local-only snapshot. Never import chat data into the production bundle.
 // The file is excluded locally and fetched only for this explicit preview URL.

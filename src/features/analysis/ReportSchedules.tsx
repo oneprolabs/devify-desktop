@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { DailyTimePicker } from '../../DailyTimePicker';
+import { DailyTimePicker } from '../../shared/ui/DailyTimePicker';
 import { analysisSettingsError } from './analysisSettingsText';
 import { REPORT_PLANS, reportPlanSelection, type ReportDefinition } from './reportPlans';
-import { t, tf } from '../../locale';
+import { t, tf } from '../../shared/i18n/locale';
 
 function readPlan(value: unknown, definition: ReportDefinition) {
   try { return { ...reportPlanSelection(value, definition), error: '' }; }

@@ -1,15 +1,15 @@
 import { formatSize, toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, Highlight, formatAge, formatKeyDate } from './presentation';
 import { isSummaryText } from '../summary/summaryInput';
-import { t, tf, ctf, dateLocale, sortLocale } from '../../../locale';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../../shared/i18n/locale';
 import { RemoteChatFallback } from '../RemoteChatFallback';
-import { LoadingSkeleton } from '../../../LoadingSkeleton';
+import { LoadingSkeleton } from '../../../shared/ui/LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { desktopInvoke as invoke } from '../../../desktopInvoke';
+import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import './wechat.css';
-import { Icons } from '../../../icons';
+import { Icons } from '../../../shared/ui/icons';
 import { DiskAccessCard } from '../../connectors/Permission';
 import { WeChatSetupChecklist } from '../../connectors/wizard/WeChatSetupChecklist';
 import { capturePrerequisiteFailure, checkWeChatStep, type WeChatAction, type StepContext } from '../../connectors/wizard/wechatStepGuard';
@@ -21,7 +21,7 @@ import {
   type HistorySession,
   type NewSummaryRecord,
   type SummaryRecord,
-} from '../../../summary';
+} from '../../../shared/content/summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from '../summary/workInsights';
 import { useCapability, useInternalAccount } from '../../auth/entitlements';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from '../../settings/Settings';

@@ -1,62 +1,69 @@
 # Frontend source layout
 
-Group code by user-facing feature. Keep a feature's components, presentation helpers,
-types, and styles together. Move existing code in small, independently verified batches;
-the root modules are intentionally retained until their own migration is reviewed.
-
-## Current boundaries
+Organize code by user-facing feature. A feature keeps its existing components, helpers,
+types, and styles together. The root contains only the application entry, Vite type
+declarations, and this guide.
 
 ```text
 src/
-  main.tsx                    # Application entry
-  PrototypeShell.tsx          # Navigation and page composition
+  main.tsx                    # Mount the app and register global diagnostics
+  vite-env.d.ts
+  app/                        # Shell, navigation, error boundary, desktop context menu
+    styles/                   # Global theme, shell, and navigation styles
   features/
-    chat/
-      ChatWorkbench.tsx       # Conversation selection and workspace orchestration
-      ChatEventsPane.tsx      # Event filtering, grouping, and presentation only
-      ChatPlatformBar.tsx     # Platform navigation
-      LocalChatAvatar.tsx     # Lazy local avatars
-      RemoteChatFallback.tsx  # Missing-local-record fallback
-      chatPresentation.ts     # Chat presentation helpers
-      *.css                   # Chat workspace and platform styles
-      local-reader/
-        presentation.tsx      # Pure date/size/avatar formatting and search highlighting
-      summary/
-        ConversationSummary.tsx
-        summaryInput.ts       # Input admission and bounded message reads
-        summaryRecords.ts     # Durable task/server-result reconciliation
-        conversation-summary.css
-  assets/                     # Application artwork, platform icons, fonts
-  ...                         # Existing modules awaiting later batches
+    auth/                     # Login, authentication events, access capabilities
+    chat/                     # Conversation workspace and platform navigation
+      local-reader/           # Existing local reader, formatting, viewer styles
+      summary/                # Conversation summaries, history, input/record helpers
+      collections/            # Existing collection/message views
+    connectors/               # Source detection, account picker, disk access
+      wizard/                 # WeChat/WhatsApp setup and import scope controls
+    backup/                   # Shared backup schedule, switch, submission feedback
+    tasks/                    # Task page, runtime, cloud jobs, snapshots, status
+    analysis/                 # Events, topics, reports, Q&A, analysis settings
+    agents/                   # Local CLI configuration and tool access
+    settings/                 # Account, language, About, existing settings model/editor
+    feedback/                 # Feedback form, screenshots, diagnostic presentation
+    updates/                  # Update checks, download, installation state
+  shared/
+    api/                      # Native IPC, diagnostics, service URL, device registration
+    i18n/                     # Locale state and English catalog
+    ui/                       # Common controls, evidence drawer, icons, loading states
+    content/                  # Existing markdown/summary rendering and record types
+    scheduling/               # Shared daily/report plan helpers
+    state/                    # Page snapshots and serialized settings saves
+  assets/                     # Brand artwork, platform icons, fonts, licenses
 ```
 
-## Dependency rules
+## Ownership and dependencies
 
-- The application shell composes features. Feature modules must not import the shell.
-- Import the owning module directly. Avoid forwarding files at old locations and broad
-  barrel exports that hide dependencies or introduce cycles.
-- Feature code may use the existing root infrastructure (`desktopInvoke`, `locale`,
-  `taskRuntime`, settings, and entitlements). Extract shared infrastructure only when its
-  boundary is clear; do not copy it into each feature.
-- Keep CSS import order and DOM structure stable during directory moves. Several styles
-  currently rely on the global cascade, so moving a stylesheet does not change when it loads.
-- The existing `WeChatLocal.tsx`, `ChatSummary.tsx`, and `summary.tsx` still provide legacy
-  reading, local-summary, and rendering APIs. Their consumers and state lifetimes need a
-  separate review before splitting or moving them.
+- `main.tsx` starts the application. `app/` composes feature pages and owns global styles.
+- Features import their dependencies directly. Avoid broad barrel exports and forwarding
+  modules at former paths; both hide ownership and can introduce cycles.
+- `shared/` contains existing code used across features. It does not import `app/` or
+  `features/`. Assets remain in one shared resource directory.
+- Keep feature-specific styles beside their feature. The global CSS cascade still relies
+  on import order, so relocation must preserve when each stylesheet loads.
+- Existing cross-feature dependencies are retained. For example, the settings editor uses
+  connector scope controls, and the chat reader uses connection checks and task state.
+  Directory grouping does not introduce new services, state stores, or request ownership.
 
-## Incremental refactoring
+## Boundaries reserved for later extraction
 
-1. Move one coherent feature and update all production, fixture, and test imports.
-2. Verify `npm run build`, `npm run test:frontend`, and the affected browser interactions.
-3. Save the directory move separately from component/logic extraction.
-4. Extract presentation first. Keep request ownership, cancellation, pagination, and
-   task scheduling in their existing owner until each has its own focused review.
+`features/settings/Settings.tsx` still combines the settings model and several editors.
+`features/chat/local-reader/WeChatLocal.tsx` still combines the legacy reader and WeChat
+setup UI. `shared/content/summary.tsx` still combines legacy record types and rendering.
+Move these files intact first; review their internal boundaries separately before splitting
+them. The native Rust modules under `src-tauri/src/` are a separate refactoring scope.
 
-Subsequent batches can group connectors/wizards, tasks/backup, analysis workspaces,
-and settings. The large native `src-tauri/src/lib.rs` requires a separate Rust refactor;
-frontend organization does not require changes to native commands or server contracts.
+## Safe migration and extraction
 
-Extracted presentation is limited to the chat event pane and the local reader's pure
-formatting/highlighting functions. Event loading, request cancellation, retry timing,
-conversation ownership, media queues, and task scheduling remain in their existing
-modules. Review larger stateful extractions as separate batches.
+1. Change one bounded set of file locations and update production, preview, and test paths.
+2. Run `npm run build` and `npm run test:frontend` before the next batch. For a pure move,
+   compare production artifacts with the preceding stable baseline when possible.
+3. Check affected interactions in the isolated browser fixture. This validates the React
+   UI with simulated native IPC; it does not replace packaged native/server E2E tests.
+4. Commit each verified batch separately. Keep directory moves separate from logic changes.
+5. After the directory layout is stable, extract one responsibility at a time. Preserve
+   cancellation, identity boundaries, pagination, media queues, and task scheduling until
+   their own implementation and tests have been reviewed.

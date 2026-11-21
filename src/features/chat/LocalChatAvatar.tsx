@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { desktopInvoke as invoke } from '../../desktopInvoke';
+import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 let activeReads = 0;
 const waiting: Array<() => void> = [];
 function readAvatar(run: () => Promise<void>) {

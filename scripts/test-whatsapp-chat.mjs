@@ -74,7 +74,7 @@ const mockedRequire = id => {
   if (id === 'react') return react;
   if (id === 'react/jsx-runtime') return jsx;
   if (id === '@tauri-apps/api/core') return { isTauri: () => true };
-  if (id === '../../desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
+  if (id === '../../shared/api/desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
   if (id === './ChatPlatformBar') return { ChatPlatformBar: PlatformBar };
   if (id === '../tasks/taskRuntime') return { useTaskRuntime: () => runtime };
   if (id === './local-reader/WeChatLocal') return { default: MessagePane };
@@ -85,7 +85,7 @@ const mockedRequire = id => {
   if (id === '../connectors/connectorDetect') return { currentAccount: (items, remembered) => items.find(item => item.id === remembered) ?? items[0] };
   if (id === '../backup/syncFeedback') return { syncFeedback: () => 'completed' };
   if (id === './chatPresentation') return { eventViewState: () => 'empty', syncErrorMessage: String };
-  if (id === '../../locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+  if (id === '../../shared/i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
   if (id === '../../toast') return { exportNotSupported() {} };
   if (id.endsWith('.svg')) return id;
   return new Proxy({}, { get: () => component });

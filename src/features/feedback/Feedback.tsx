@@ -1,9 +1,9 @@
-import { t, tf, ctf } from '../../locale';
+import { t, tf, ctf } from '../../shared/i18n/locale';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FeedbackScreenshot, readScreenshot } from './FeedbackScreenshot';
 import { feedbackCategories, feedbackCode, feedbackStatuses, imageSource, diagnosticCount, diagnosticText, type DiagnosticSnapshot, type FeedbackDraft, type FeedbackReport } from './feedbackTypes';
-import { recordDiagnostic } from '../../desktopInvoke';
+import { recordDiagnostic } from '../../shared/api/desktopInvoke';
 import './feedback.css';
 
 export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [], onClose, pageMode = false }: { category?: string; page?: string; relatedBatchIds?: number[]; onClose?: () => void; pageMode?: boolean }) {

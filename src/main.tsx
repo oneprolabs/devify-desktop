@@ -1,10 +1,10 @@
 import { createRoot } from 'react-dom/client';
-import './style.css';
+import './app/styles/style.css';
 import { isTauri } from '@tauri-apps/api/core';
-import PrototypeShell from './PrototypeShell';
-import { suppressDesktopContextMenu } from './contextMenu';
-import { AppErrorBoundary } from './AppErrorBoundary';
-import { recordDiagnostic } from './desktopInvoke';
+import PrototypeShell from './app/PrototypeShell';
+import { suppressDesktopContextMenu } from './app/contextMenu';
+import { AppErrorBoundary } from './app/AppErrorBoundary';
+import { recordDiagnostic } from './shared/api/desktopInvoke';
 
 document.addEventListener('contextmenu', event => suppressDesktopContextMenu(event, isTauri()));
 

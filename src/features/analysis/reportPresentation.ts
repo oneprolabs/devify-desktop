@@ -1,4 +1,4 @@
-import { t } from '../../locale';
+import { t } from '../../shared/i18n/locale';
 type ReportPresentationInput = {
   status?: string | null;
   body?: string | null;

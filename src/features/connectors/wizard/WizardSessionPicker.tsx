@@ -1,4 +1,4 @@
-import { t, tf } from '../../../locale';
+import { t, tf } from '../../../shared/i18n/locale';
 import { useEffect, useState } from 'react';
 import wechatIcon from '../../../assets/connectors/wechat.svg';
 import whatsappIcon from '../../../assets/connectors/whatsapp.svg';

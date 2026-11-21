@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { suppressDesktopContextMenu } from '../src/contextMenu.ts'
+import { suppressDesktopContextMenu } from '../src/app/contextMenu.ts'
 const target = editable => ({ closest: () => editable ? {} : null })
 let prevented = false
 suppressDesktopContextMenu({ target: target(false), preventDefault: () => { prevented = true } }, true)

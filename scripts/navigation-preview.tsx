@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { NavigationRail, type Section } from '../src/NavigationRail';
-import '../src/style.css';
-import '../src/prototype-shell.css';
-import '../src/navigation-rail.css';
+import { NavigationRail, type Section } from '../src/app/NavigationRail';
+import '../src/app/styles/style.css';
+import '../src/app/styles/prototype-shell.css';
+import '../src/app/styles/navigation-rail.css';
 import './navigation-preview.css';
 
 const labels: Record<Section, string> = { chat: '聊天', events: '事件', topics: '主题', reports: '报告', ask: '问答', tasks: '任务', settings: '设置' };

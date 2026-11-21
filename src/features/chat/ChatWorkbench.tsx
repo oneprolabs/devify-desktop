@@ -1,14 +1,14 @@
-import { t, tf, ctf, dateLocale, sortLocale } from '../../locale';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
 import { LocalChatAvatar } from './LocalChatAvatar';
-import { LoadingSkeleton } from '../../LoadingSkeleton';
+import { LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { ChatPlatformBar } from './ChatPlatformBar';
 import { syncErrorMessage } from './chatPresentation';
 import { ChatEventsPane, type EventItem } from './ChatEventsPane';
-import { SidebarResizeHandle } from '../../SidebarResizeHandle';
+import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
-import { desktopInvoke as invoke } from '../../desktopInvoke';
-import { EvidenceDrawer, type EvidenceTarget } from '../../EvidenceDrawer';
+import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
+import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
 import WeChatLocal from './local-reader/WeChatLocal';
 import { ConversationSummary } from './summary/ConversationSummary';
 import type { SummaryMessage } from './summary/summaryInput';
@@ -16,7 +16,7 @@ import { WhitelistSettings } from '../settings/Settings';
 import wechatIcon from '../../assets/connectors/wechat.svg';
 import whatsappIcon from '../../assets/connectors/whatsapp.svg';
 import { syncFeedback, type SyncBatchStatus } from '../backup/syncFeedback';
-import { requestFeedback } from '../../desktopInvoke';
+import { requestFeedback } from '../../shared/api/desktopInvoke';
 import { currentAccount as pickAccount, type ChatAccount } from '../connectors/connectorDetect';
 import { useTaskRuntime } from '../tasks/taskRuntime';
 

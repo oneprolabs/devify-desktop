@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { t, tf, dateLocale } from '../../locale';
-import { LoadingSkeleton } from '../../LoadingSkeleton';
+import { t, tf, dateLocale } from '../../shared/i18n/locale';
+import { LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { eventViewState } from './chatPresentation';
 
 export type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };

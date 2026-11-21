@@ -1,4 +1,4 @@
-import { t, tf, dateLocale } from '../../../locale';
+import { t, tf, dateLocale } from '../../../shared/i18n/locale';
 
 export function formatSize(bytes: number): string {
   if (bytes > 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;

@@ -17,9 +17,9 @@ const mod={exports:{}};
 new Function('require','module','exports',code)(id=>{
  if(id==='react')return react;
  if(id==='react/jsx-runtime')return jsx;
- if(id==='../../desktopInvoke')return {desktopInvoke:invoke};
- if(id==='../../locale')return {t:s=>s};
- if(id==='../../WizardActionButton')return {WizardActionButton:()=>null};
+ if(id==='../../shared/api/desktopInvoke')return {desktopInvoke:invoke};
+ if(id==='../../shared/i18n/locale')return {t:s=>s};
+ if(id==='../../shared/ui/WizardActionButton')return {WizardActionButton:()=>null};
  throw Error(id);
 },mod,mod.exports);
 instance={hooks:[]};

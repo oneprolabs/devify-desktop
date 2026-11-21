@@ -1,4 +1,4 @@
-import { t } from './locale';
+import { t } from '../i18n/locale';
 import { useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 
 const MIN_WIDTH = 280;

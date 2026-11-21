@@ -1,6 +1,6 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../i18n/locale';
 import { useEffect, useRef, useState } from 'react';
-import { stepTimePart } from './dailyPlan';
+import { stepTimePart } from '../scheduling/dailyPlan';
 
 type Part = 'hour' | 'minute';
 function TimeWheel({ value, part, onChange }: { value: string; part: Part; onChange: (time: string) => void }) {

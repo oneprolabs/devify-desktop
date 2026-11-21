@@ -75,21 +75,21 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/core') return { invoke: (...args) => invoke(...args), isTauri: () => true };
   if (id === '@tauri-apps/api/event') return { listen: async () => () => {} };
   if (id === '@tauri-apps/plugin-deep-link') return { onOpenUrl: async () => () => {} };
-  if (id === '../../devifyDevice') return { registerDevifyDevice: async () => {} };
-  if (['../../../desktopInvoke', '../../desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
+  if (id === '../../shared/api/devifyDevice') return { registerDevifyDevice: async () => {} };
+  if (['../../../shared/api/desktopInvoke', '../../shared/api/desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
   if (['../../settings/Settings', '../settings/Settings'].includes(id)) return module.exports;
   if (id === './wechatSetupState') return loadModule('../src/features/connectors/wizard/wechatSetupState.ts');
   if (['../../connectors/Permission', '../Permission'].includes(id)) return loadModule('../src/features/connectors/Permission.tsx');
-  if (['../../../WizardActionButton', '../../WizardActionButton'].includes(id)) return wizardActionModule ??= loadModule('../src/WizardActionButton.tsx');
+  if (['../../../shared/ui/WizardActionButton', '../../shared/ui/WizardActionButton'].includes(id)) return wizardActionModule ??= loadModule('../src/shared/ui/WizardActionButton.tsx');
   if (id === '../connectors/wizard/WizardSessionPicker') return loadModule('../src/features/connectors/wizard/WizardSessionPicker.tsx');
   if (id === '../connectors/wizard/WizardImportScope') return loadModule('../src/features/connectors/wizard/WizardImportScope.tsx');
   if (id === '../connectors/wizard/ImportHistoryRange') return loadModule('../src/features/connectors/wizard/ImportHistoryRange.tsx');
   if (id === '../../backup/BackupSchedule') return loadModule('../src/features/backup/BackupSchedule.tsx');
   if (id === './WeChatWizardComplete') return loadModule('../src/features/connectors/wizard/WeChatWizardComplete.tsx');
-  if (id === '../../settingsSaveQueue') return loadModule('../src/settingsSaveQueue.ts');
+  if (id === '../../shared/state/settingsSaveQueue') return loadModule('../src/shared/state/settingsSaveQueue.ts');
   if (id === '../tasks/taskRuntime') return { useTaskRuntime: () => backupRuntime, refreshTaskRuntime: async () => {} };
   if (id === './BackupRuntimeSwitch') return loadModule('../src/features/backup/BackupRuntimeSwitch.tsx');
-  if (['../../../icons', '../../icons'].includes(id)) return { Icons: { check: '✓', clock: '◷' } };
+  if (['../../../shared/ui/icons', '../../shared/ui/icons'].includes(id)) return { Icons: { check: '✓', clock: '◷' } };
   if (id === '../connectors/AccountPicker') return loadModule('../src/features/connectors/AccountPicker.tsx');
   if (id === '../connectors/Connectors') return loadModule('../src/features/connectors/Connectors.tsx');
   if (['../connectorDetect', '../connectors/connectorDetect', './connectorDetect'].includes(id)) return {
@@ -98,8 +98,8 @@ const mockedRequire = id => {
     detectTitleFor: (label, state) => ({ not_installed: `未检测到${label}`, untrusted: `检测到的${label}不是官方版本`, installed: `已检测到${label}` })[state],
     currentAccount: (accounts, remembered) => accounts.find(item => item.id === remembered) ?? accounts[0],
   };
-  if (id === '../../serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
-  if (['../../../locale', '../../locale', './locale'].includes(id)) return {
+  if (id === '../../shared/api/serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
+  if (['../../../shared/i18n/locale', '../../shared/i18n/locale', '../i18n/locale'].includes(id)) return {
     t: text => text,
     tf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
     ctf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
@@ -110,7 +110,7 @@ const mockedRequire = id => {
   if (id.endsWith('.css')) return {};
   throw Error(`unexpected import ${id}`);
 };
-const serviceUrlSource = fs.readFileSync(new URL('../src/serviceUrl.ts', import.meta.url), 'utf8');
+const serviceUrlSource = fs.readFileSync(new URL('../src/shared/api/serviceUrl.ts', import.meta.url), 'utf8');
 const serviceUrlCompiled = ts.transpileModule(serviceUrlSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText;
@@ -385,7 +385,7 @@ backupRuntime = { ...backupRuntime, sources: [{ account_id: 'draft@s.whatsapp.ne
 render(unfinishedEntry, () => ChatEntry(unfinishedProps)); await flush();
 assert.equal(unfinishedReady, 1, 'completed setup can enter chat');
 const { DiskAccessCard } = loadModule('../src/features/connectors/Permission.tsx');
-const { WizardActionButton } = mockedRequire('../../../WizardActionButton');
+const { WizardActionButton } = mockedRequire('../../../shared/ui/WizardActionButton');
 const previousWindow = globalThis.window, previousDocument = globalThis.document;
 globalThis.window = new EventTarget();
 globalThis.document = Object.assign(new EventTarget(), { visibilityState: 'visible' });

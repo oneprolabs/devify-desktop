@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { advanceCloudRebuild, appendCloudPages, rebuildComplete, rebuildNextPages, refreshInterval, requestIsCurrent, sameCloudContext, sameCloudLayout, startCloudRebuild, validateCloudPrefixPage, analysisLabel, cloudNeedsPolling, cloudRetryCandidate, fetchCloudPages, hasCompleteOwner, jobInScope, linkedLocalJobs, localGroupKey, localQueueCounts, localUnbatched, visibleLocalJobs, ownerMatches, verifiedDevice, mergeCloudPages, pollPagePlan, retryCandidate, retryIdentityIsCurrent, sameRetryJob, settingsScope, triggerLabel, updateLoadedCloud, validateCloudPage } from '../src/features/tasks/taskCloud.ts';
-import { apiBaseUrl, sameServiceUrl, storedBaseUrl } from '../src/serviceUrl.ts';
+import { apiBaseUrl, sameServiceUrl, storedBaseUrl } from '../src/shared/api/serviceUrl.ts';
 
 const scope = { base_url: 'https://example.test/', usernames: ['alice'], since: null, until: null };
 const owner = { base_url: 'https://example.test/', space_id: 'space-2', account_id: 'wx-a', user_id: 42, device_id: 'device-a' };

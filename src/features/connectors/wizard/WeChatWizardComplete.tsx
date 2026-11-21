@@ -1,8 +1,8 @@
-import { t, tf } from '../../../locale';
+import { t, tf } from '../../../shared/i18n/locale';
 import { useEffect, useRef, useState } from 'react';
-import { desktopInvoke as invoke } from '../../../desktopInvoke';
+import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import { mergeSettings, type AppSettings } from '../../settings/Settings';
-import { WizardActionButton } from '../../../WizardActionButton';
+import { WizardActionButton } from '../../../shared/ui/WizardActionButton';
 
 type Capture = { pending: boolean; needs_cleanup: boolean; recovery_error_code: string | null; wechat_official: boolean };
 export function WeChatWizardComplete({ edit, onFinish, onBack }: { edit: boolean; onFinish: () => void; onBack: () => void }) {
