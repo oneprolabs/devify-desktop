@@ -1,7 +1,7 @@
 //! Source-level guards: invasive capture stays behind the install gate, while ordinary local
 //! database reads and trusted key imports remain available without a signed app bundle.
 
-const LIB: &str = include_str!("lib.rs");
+const LIB: &str = include_str!("../lib.rs");
 
 fn body_of(name: &str) -> &'static str {
     let start = LIB

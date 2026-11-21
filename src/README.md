@@ -83,6 +83,19 @@ legacy record types and rendering.
 Review each remaining internal boundary independently before further extraction. The native
 Rust modules under `src-tauri/src/` are a separate refactoring scope.
 
+## File size
+
+Keep new or extracted handwritten files around or below 1000 lines, with a clear
+responsibility. Treat larger files as a signal to review their boundaries. Split
+state, effects, operations and views by ownership; do not compress code or create
+forwarding layers solely to reduce a line count. Existing large files are migrated
+in independently verified batches. Generated catalogs and static assets are reviewed
+according to their own format rather than split arbitrarily.
+
+Entry-layer Rust unit tests live in `src-tauri/src/tests/`; their README documents
+ownership, filters and the required serial regression command. Production Rust
+extraction is a separate batch from test relocation.
+
 ## Safe migration and extraction
 
 1. Change one bounded set of file locations and update production, preview, and test paths.
