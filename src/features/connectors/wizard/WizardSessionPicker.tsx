@@ -1,7 +1,7 @@
-import { t, tf } from './locale';
+import { t, tf } from '../../../locale';
 import { useEffect, useState } from 'react';
-import wechatIcon from './assets/connectors/wechat.svg';
-import whatsappIcon from './assets/connectors/whatsapp.svg';
+import wechatIcon from '../../../assets/connectors/wechat.svg';
+import whatsappIcon from '../../../assets/connectors/whatsapp.svg';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null };
 type Props = {

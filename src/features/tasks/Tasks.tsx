@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { t, tf } from './locale';
-import { desktopInvoke as invoke } from './desktopInvoke';
+import { t, tf } from '../../locale';
+import { desktopInvoke as invoke } from '../../desktopInvoke';
 import { useTaskRuntime, refreshTaskRuntime } from './taskRuntime';
-import { WizardActionButton } from './WizardActionButton';
-import { BackupRuntimeSwitch } from './BackupRuntimeSwitch';
+import { WizardActionButton } from '../../WizardActionButton';
+import { BackupRuntimeSwitch } from '../backup/BackupRuntimeSwitch';
 
 const labels: Record<string, string> = { queued: '等待备份', running: '正在准备', uploading: '正在上传', processing: '服务端处理中', completed: '已完成', failed: '等待重试', cancelled: '已取消' };
 export function Tasks({ onContinueSetup }: { onNewUpload: () => void; startCreating?: boolean; onContinueSetup?: (platform: string) => void }) {

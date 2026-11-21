@@ -1,18 +1,18 @@
-import { formatSize, toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, Highlight, formatAge, formatKeyDate } from './features/chat/local-reader/presentation';
-import { isSummaryText } from './features/chat/summary/summaryInput';
-import { t, tf, ctf, dateLocale, sortLocale } from './locale';
-import { RemoteChatFallback } from './features/chat/RemoteChatFallback';
-import { LoadingSkeleton } from './LoadingSkeleton';
+import { formatSize, toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, Highlight, formatAge, formatKeyDate } from './presentation';
+import { isSummaryText } from '../summary/summaryInput';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../../locale';
+import { RemoteChatFallback } from '../RemoteChatFallback';
+import { LoadingSkeleton } from '../../../LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { desktopInvoke as invoke } from './desktopInvoke';
+import { desktopInvoke as invoke } from '../../../desktopInvoke';
 import './wechat.css';
-import { Icons } from './icons';
-import { DiskAccessCard } from './Permission';
-import { WeChatSetupChecklist } from './WeChatSetupChecklist';
-import { capturePrerequisiteFailure, checkWeChatStep, type WeChatAction, type StepContext } from './wechatStepGuard';
+import { Icons } from '../../../icons';
+import { DiskAccessCard } from '../../connectors/Permission';
+import { WeChatSetupChecklist } from '../../connectors/wizard/WeChatSetupChecklist';
+import { capturePrerequisiteFailure, checkWeChatStep, type WeChatAction, type StepContext } from '../../connectors/wizard/wechatStepGuard';
 import {
   HISTORY_KIND_LABEL,
   HISTORY_LIMIT,
@@ -21,10 +21,10 @@ import {
   type HistorySession,
   type NewSummaryRecord,
   type SummaryRecord,
-} from './summary';
-import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
-import { useCapability, useInternalAccount } from './features/auth/entitlements';
-import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './features/settings/Settings';
+} from '../../../summary';
+import { classifyWorkText, extractWorkTerms, type InsightCategory } from '../summary/workInsights';
+import { useCapability, useInternalAccount } from '../../auth/entitlements';
+import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from '../../settings/Settings';
 
 type DbFile = {
   rel: string;
@@ -536,7 +536,7 @@ export default function WeChatLocal({
   accountId?: string | null;
   /** Reports loaded and selected messages to the page-level actions. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
-  onSummarySelection?: (messages: import('./features/chat/summary/summaryInput').SummaryMessage[]) => void;
+  onSummarySelection?: (messages: import('../summary/summaryInput').SummaryMessage[]) => void;
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
   const { internal: internalAccount } = useInternalAccount();

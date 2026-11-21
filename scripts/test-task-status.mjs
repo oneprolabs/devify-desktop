@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { localTaskStatus } from '../src/taskStatus.ts';
+import { localTaskStatus } from '../src/features/tasks/taskStatus.ts';
 assert.equal(localTaskStatus({ status: 'completed' }, []), 'completed');
 assert.equal(localTaskStatus({ status: 'processing' }, []), 'processing');
 assert.equal(localTaskStatus({ status: 'failed' }, []), 'failed');

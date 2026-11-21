@@ -1,18 +1,18 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../../locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from './features/settings/Settings';
+import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from '../settings/Settings';
 import { detectTitle, detectTitleFor, useConnectorDetect } from './connectorDetect';
-import { useTaskRuntime } from './taskRuntime';
-import wechatIcon from './assets/connectors/wechat.svg';
-import whatsappIcon from './assets/connectors/whatsapp.svg';
-import telegramIcon from './assets/connectors/telegram.svg';
-import slackIcon from './assets/connectors/slack.svg';
-import feishuIcon from './assets/connectors/feishu.svg';
-import dingtalkIcon from './assets/connectors/dingtalk.svg';
-import wecomIcon from './assets/connectors/wecom.svg';
-import discordIcon from './assets/connectors/discord.svg';
-import lineIcon from './assets/connectors/line.svg';
+import { useTaskRuntime } from '../tasks/taskRuntime';
+import wechatIcon from '../../assets/connectors/wechat.svg';
+import whatsappIcon from '../../assets/connectors/whatsapp.svg';
+import telegramIcon from '../../assets/connectors/telegram.svg';
+import slackIcon from '../../assets/connectors/slack.svg';
+import feishuIcon from '../../assets/connectors/feishu.svg';
+import dingtalkIcon from '../../assets/connectors/dingtalk.svg';
+import wecomIcon from '../../assets/connectors/wecom.svg';
+import discordIcon from '../../assets/connectors/discord.svg';
+import lineIcon from '../../assets/connectors/line.svg';
 
 const connectorIcons: Record<string, string> = {
   微信: wechatIcon, WhatsApp: whatsappIcon, Telegram: telegramIcon, Slack: slackIcon,

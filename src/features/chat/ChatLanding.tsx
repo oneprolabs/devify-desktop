@@ -1,9 +1,9 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../../locale';
 import { useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { ConnectorIcon } from './Connectors';
-import { currentAccount, detectTitleFor, useConnectorDetect, type ChatAccount } from './connectorDetect';
-import { useTaskRuntime } from './taskRuntime';
+import { ConnectorIcon } from '../connectors/Connectors';
+import { currentAccount, detectTitleFor, useConnectorDetect, type ChatAccount } from '../connectors/connectorDetect';
+import { useTaskRuntime } from '../tasks/taskRuntime';
 
 type HomeMode = 'new' | 'connected';
 type KeyStatus = { keys?: Array<{ account: string }> };

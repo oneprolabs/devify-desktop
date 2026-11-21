@@ -1,12 +1,12 @@
-import { t, tf } from './locale';
+import { t, tf } from '../../../locale';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { detectTitleFor, useConnectorDetect } from './connectorDetect';
-import { WhitelistSettings, type AppSettings, requireSettingsRevision } from './features/settings/Settings';
-import { Icons } from './icons';
-import { BackupSchedule } from './BackupSchedule';
-import { WizardActionButton } from './WizardActionButton';
-import whatsappIcon from './assets/connectors/whatsapp.svg';
+import { detectTitleFor, useConnectorDetect } from '../connectorDetect';
+import { WhitelistSettings, type AppSettings, requireSettingsRevision } from '../../settings/Settings';
+import { Icons } from '../../../icons';
+import { BackupSchedule } from '../../backup/BackupSchedule';
+import { WizardActionButton } from '../../../WizardActionButton';
+import whatsappIcon from '../../../assets/connectors/whatsapp.svg';
 
 type WhatsAppStatus = {
   installed: boolean;

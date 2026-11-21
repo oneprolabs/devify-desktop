@@ -1,7 +1,7 @@
 import { t, tf, ctf } from './locale';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useTaskRuntime } from './taskRuntime';
+import { useTaskRuntime } from './features/tasks/taskRuntime';
 import { RailIcons } from './icons';
 import brandMark from './assets/app-mark-transparent.png';
 

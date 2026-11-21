@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { saveTaskSnapshot, readTaskSnapshot, clearTaskSnapshot } from '../src/taskSnapshot.ts';
+import { saveTaskSnapshot, readTaskSnapshot, clearTaskSnapshot } from '../src/features/tasks/taskSnapshot.ts';
 const settings = { active_account_id: 'wechat-a', devify: { base_url: 'https://example.test', active_space_id: '09e5118d-0f76-4018-bc3a-9c48c61e0271', device_id: 'device-a' } };
 const page = { list: [], pagination: { total: 0, page: 1, page_size: 20, next: null, previous: null } };
 saveTaskSnapshot(settings, 9, 'device-a', page);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { captureTask, captureAttemptFor, connectionStep, setupChecks, systemEnvironment } from '../src/wechatSetupState.ts';
+import { captureTask, captureAttemptFor, connectionStep, setupChecks, systemEnvironment } from '../src/features/connectors/wizard/wechatSetupState.ts';
 const capture = { pending: false, stage: 'idle', needs_cleanup: false, recovery_error_code: null, prepared_process_exited: null, resume_available: false, monitor_ready: false, capture_phase: null, platform_supported: true, lldb_available: true, wechat_official: true, user_can_write: true };
 const ready = { permission: true, account: true, scanning: false, keys: 2, keyStatusLoaded: true, savedKey: true, freshKey: false, decrypted: true, capture, platform: 'macos' };
 assert.deepEqual(setupChecks(ready), [true, true, true, true, true]);

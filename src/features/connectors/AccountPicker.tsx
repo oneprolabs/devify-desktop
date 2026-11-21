@@ -1,8 +1,8 @@
-import { t } from './locale';
+import { t } from '../../locale';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { ChatAccount } from './connectorDetect';
-import wechatIcon from './assets/connectors/wechat.svg';
-import whatsappIcon from './assets/connectors/whatsapp.svg';
+import wechatIcon from '../../assets/connectors/wechat.svg';
+import whatsappIcon from '../../assets/connectors/whatsapp.svg';
 import './account-picker.css';
 
 const icons: Record<string, string> = { wechat: wechatIcon, whatsapp: whatsappIcon };

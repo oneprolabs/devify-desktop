@@ -1,5 +1,5 @@
-import { t, tf, ctf } from './locale';
-import { apiBaseUrl } from './serviceUrl.ts';
+import { t, tf, ctf } from '../../locale';
+import { apiBaseUrl } from '../../serviceUrl.ts';
 
 export type UploadScope = { usernames: string[]; since: number | null; until: number | null; base_url: string; message_selection?: Record<string, unknown[]> };
 export type UploadOwner = { base_url: string; space_id: string; account_id: string; user_id: number; device_id: string };

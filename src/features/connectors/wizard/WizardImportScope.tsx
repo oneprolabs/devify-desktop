@@ -1,5 +1,5 @@
-import { t, tf } from './locale';
-import { Icons } from './icons';
+import { t, tf } from '../../../locale';
+import { Icons } from '../../../icons';
 import { useEffect, useState, type ReactNode } from 'react';
 
 type Session = { username: string; is_group: boolean };

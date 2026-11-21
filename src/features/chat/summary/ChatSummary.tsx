@@ -1,4 +1,4 @@
-import { t, tf, ctf, cf } from './locale';
+import { t, tf, ctf, cf } from '../../../locale';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -7,10 +7,10 @@ import {
   renderAgentMarkdown,
   type NewSummaryRecord,
   type SummaryRecord,
-} from './summary';
+} from '../../../summary';
 import { classifyWorkText, extractWorkTerms } from './workInsights';
-import { currentSessionSummaries } from './features/chat/chatPresentation';
-import { useCapability, useInternalAccount } from './features/auth/entitlements';
+import { currentSessionSummaries } from '../chatPresentation';
+import { useCapability, useInternalAccount } from '../../auth/entitlements';
 
 /** Minimal conversation shape shared with the chat page. */
 export type SummarySession = {

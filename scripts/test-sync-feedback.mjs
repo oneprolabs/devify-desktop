@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { syncFeedback } from '../src/syncFeedback.ts';
+import { syncFeedback } from '../src/features/backup/syncFeedback.ts';
 assert.equal(syncFeedback([{status:'completed'}, {status:'completed'}]), 'completed');
 assert.equal(syncFeedback([{status:'processing'}, {status:'completed'}]), 'processing');
 assert.equal(syncFeedback([{status:'failed', error_message:'错误'}, {status:'processing'}]), 'failed');

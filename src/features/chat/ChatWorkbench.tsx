@@ -9,16 +9,16 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { isTauri } from '@tauri-apps/api/core';
 import { desktopInvoke as invoke } from '../../desktopInvoke';
 import { EvidenceDrawer, type EvidenceTarget } from '../../EvidenceDrawer';
-import WeChatLocal from '../../WeChatLocal';
+import WeChatLocal from './local-reader/WeChatLocal';
 import { ConversationSummary } from './summary/ConversationSummary';
 import type { SummaryMessage } from './summary/summaryInput';
 import { WhitelistSettings } from '../settings/Settings';
 import wechatIcon from '../../assets/connectors/wechat.svg';
 import whatsappIcon from '../../assets/connectors/whatsapp.svg';
-import { syncFeedback, type SyncBatchStatus } from '../../syncFeedback';
+import { syncFeedback, type SyncBatchStatus } from '../backup/syncFeedback';
 import { requestFeedback } from '../../desktopInvoke';
-import { currentAccount as pickAccount, type ChatAccount } from '../../connectorDetect';
-import { useTaskRuntime } from '../../taskRuntime';
+import { currentAccount as pickAccount, type ChatAccount } from '../connectors/connectorDetect';
+import { useTaskRuntime } from '../tasks/taskRuntime';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null; community?: { id: string; name: string; is_parent: boolean } | null };
 type OwnedSession = Session & { accountId: string; source: string };

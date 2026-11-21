@@ -1,10 +1,10 @@
-import { t, tf, ctf, dateLocale, sortLocale } from './locale';
+import { t, tf, ctf, dateLocale, sortLocale } from '../../../locale';
 import { useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { CollectionMessages, type MessageRef } from './CollectionMessages';
-import { AccountPicker } from './AccountPicker';
-import wechatIcon from './assets/connectors/wechat.svg';
-import whatsappIcon from './assets/connectors/whatsapp.svg';
+import { AccountPicker } from '../../connectors/AccountPicker';
+import wechatIcon from '../../../assets/connectors/wechat.svg';
+import whatsappIcon from '../../../assets/connectors/whatsapp.svg';
 import './collection.css';
 
 type Account = { id: string; modified_at?: number | null; source?: string; display?: string | null };

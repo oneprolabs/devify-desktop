@@ -1,9 +1,9 @@
-import { t, tf } from './locale';
+import { t, tf } from '../../../locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { DiskAccessCard, type DiskAccessCheck } from './Permission';
-import { Icons } from './icons';
-import { WizardActionButton } from './WizardActionButton';
+import { DiskAccessCard, type DiskAccessCheck } from '../Permission';
+import { Icons } from '../../../icons';
+import { WizardActionButton } from '../../../WizardActionButton';
 import { captureTask, captureAttemptFor, connectionStep, setupChecks, systemEnvironment, type CaptureAttempt, type ConnectionStep, type SetupCapture } from './wechatSetupState';
 import type { StepCheck, StepContext, WeChatAction } from './wechatStepGuard';
 

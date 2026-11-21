@@ -76,30 +76,30 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/event') return { listen: async () => () => {} };
   if (id === '@tauri-apps/plugin-deep-link') return { onOpenUrl: async () => () => {} };
   if (id === '../../devifyDevice') return { registerDevifyDevice: async () => {} };
-  if (['../../desktopInvoke', './desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
-  if (['../settings/Settings', './features/settings/Settings'].includes(id)) return module.exports;
-  if (id === './wechatSetupState') return loadModule('../src/wechatSetupState.ts');
-  if (id === './Permission') return loadModule('../src/Permission.tsx');
-  if (id === './WizardActionButton') return wizardActionModule ??= loadModule('../src/WizardActionButton.tsx');
-  if (id === '../../WizardSessionPicker') return loadModule('../src/WizardSessionPicker.tsx');
-  if (id === '../../WizardImportScope') return loadModule('../src/WizardImportScope.tsx');
-  if (id === '../../ImportHistoryRange') return loadModule('../src/ImportHistoryRange.tsx');
-  if (id === './BackupSchedule') return loadModule('../src/BackupSchedule.tsx');
-  if (id === './WeChatWizardComplete') return loadModule('../src/WeChatWizardComplete.tsx');
-  if (id === './settingsSaveQueue') return loadModule('../src/settingsSaveQueue.ts');
-  if (id === './taskRuntime') return { useTaskRuntime: () => backupRuntime, refreshTaskRuntime: async () => {} };
-  if (id === './BackupRuntimeSwitch') return loadModule('../src/BackupRuntimeSwitch.tsx');
-  if (['../../icons', './icons'].includes(id)) return { Icons: { check: '✓', clock: '◷' } };
-  if (id === '../../AccountPicker') return loadModule('../src/AccountPicker.tsx');
-  if (['../../Connectors', './Connectors'].includes(id)) return loadModule('../src/Connectors.tsx');
-  if (id === './connectorDetect') return {
+  if (['../../../desktopInvoke', '../../desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
+  if (['../../settings/Settings', '../settings/Settings'].includes(id)) return module.exports;
+  if (id === './wechatSetupState') return loadModule('../src/features/connectors/wizard/wechatSetupState.ts');
+  if (['../../connectors/Permission', '../Permission'].includes(id)) return loadModule('../src/features/connectors/Permission.tsx');
+  if (['../../../WizardActionButton', '../../WizardActionButton'].includes(id)) return wizardActionModule ??= loadModule('../src/WizardActionButton.tsx');
+  if (id === '../connectors/wizard/WizardSessionPicker') return loadModule('../src/features/connectors/wizard/WizardSessionPicker.tsx');
+  if (id === '../connectors/wizard/WizardImportScope') return loadModule('../src/features/connectors/wizard/WizardImportScope.tsx');
+  if (id === '../connectors/wizard/ImportHistoryRange') return loadModule('../src/features/connectors/wizard/ImportHistoryRange.tsx');
+  if (id === '../../backup/BackupSchedule') return loadModule('../src/features/backup/BackupSchedule.tsx');
+  if (id === './WeChatWizardComplete') return loadModule('../src/features/connectors/wizard/WeChatWizardComplete.tsx');
+  if (id === '../../settingsSaveQueue') return loadModule('../src/settingsSaveQueue.ts');
+  if (id === '../tasks/taskRuntime') return { useTaskRuntime: () => backupRuntime, refreshTaskRuntime: async () => {} };
+  if (id === './BackupRuntimeSwitch') return loadModule('../src/features/backup/BackupRuntimeSwitch.tsx');
+  if (['../../../icons', '../../icons'].includes(id)) return { Icons: { check: '✓', clock: '◷' } };
+  if (id === '../connectors/AccountPicker') return loadModule('../src/features/connectors/AccountPicker.tsx');
+  if (id === '../connectors/Connectors') return loadModule('../src/features/connectors/Connectors.tsx');
+  if (['../connectorDetect', '../connectors/connectorDetect', './connectorDetect'].includes(id)) return {
     useConnectorDetect: () => connectorInstall,
     detectTitle: { not_installed: '未检测到微信', untrusted: '检测到的微信不是官方版本' },
     detectTitleFor: (label, state) => ({ not_installed: `未检测到${label}`, untrusted: `检测到的${label}不是官方版本`, installed: `已检测到${label}` })[state],
     currentAccount: (accounts, remembered) => accounts.find(item => item.id === remembered) ?? accounts[0],
   };
   if (id === '../../serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
-  if (['../../locale', './locale'].includes(id)) return {
+  if (['../../../locale', '../../locale', './locale'].includes(id)) return {
     t: text => text,
     tf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
     ctf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
@@ -235,7 +235,7 @@ assert.equal(accountInput(tree).props.value, 'https://third.example');
 assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
 
 // Exercise the actual WeChat callbacks with controlled save completion.
-const wxSource = fs.readFileSync(new URL('../src/WeChatLocal.tsx', import.meta.url), 'utf8');
+const wxSource = fs.readFileSync(new URL('../src/features/chat/local-reader/WeChatLocal.tsx', import.meta.url), 'utf8');
 const start = wxSource.indexOf('  const rememberAccount = useCallback(');
 const end = wxSource.indexOf('  /** Fetch the avatars', start);
 const switchStart = wxSource.indexOf('  const switchAccount = useCallback(');
@@ -269,7 +269,7 @@ wxSave.resolve({ ...wxContext.sent, user_settings_revision: 5 }); await switchin
 assert.equal(wxContext.setAccountIdValue, 'new');
 assert.equal(wxContext.settingsRef.current.user_settings_revision, 5);
 // Waitlist writes are ordered and distinguish unsaved drafts after a conflict.
-const { Connectors } = loadModule('../src/Connectors.tsx');
+const { Connectors } = loadModule('../src/features/connectors/Connectors.tsx');
 const connectorLoad = deferred(), connectorSaves = [];
 invoke = (command, args) => {
   if (command === 'app_settings_get') return connectorLoad.promise;
@@ -340,7 +340,7 @@ gateSaves[0].resolve({ ...gateSaves[0].args.value, user_settings_revision: 31 })
 tree = render(gate, () => LoginGate({ onAuthenticated() {} }));
 assert.equal(gateInput(tree).props.value, 'https://later.example');
 assert.ok(elements(tree).some(node => node.props?.role === 'status' && String(node.props.children).includes('尚未保存')));
-const { ChatEntry } = loadModule('../src/ChatLanding.tsx');
+const { ChatEntry } = loadModule('../src/features/chat/ChatLanding.tsx');
 backupRuntime = { paused: false, sources: [{ account_id: 'locked-account', platform: 'wechat', setup_complete: true }] };
 let entryChecks = 0, unlocks = 0;
 let entryAccounts = deferred();
@@ -384,8 +384,8 @@ assert.equal(unfinishedReady, 0, 'local readability must not skip unfinished set
 backupRuntime = { ...backupRuntime, sources: [{ account_id: 'draft@s.whatsapp.net', platform: 'whatsapp', setup_complete: true }] };
 render(unfinishedEntry, () => ChatEntry(unfinishedProps)); await flush();
 assert.equal(unfinishedReady, 1, 'completed setup can enter chat');
-const { DiskAccessCard } = loadModule('../src/Permission.tsx');
-const { WizardActionButton } = mockedRequire('./WizardActionButton');
+const { DiskAccessCard } = loadModule('../src/features/connectors/Permission.tsx');
+const { WizardActionButton } = mockedRequire('../../../WizardActionButton');
 const previousWindow = globalThis.window, previousDocument = globalThis.document;
 globalThis.window = new EventTarget();
 globalThis.document = Object.assign(new EventTarget(), { visibilityState: 'visible' });
@@ -426,7 +426,7 @@ assert.equal(permissionChecks, 3, 'focus and visibility must never trigger check
 for (const hook of permission.hooks) hook?.cleanup?.();
 // Returning from System Settings must not toggle the wizard's installation row
 // back to "checking". Catalog/chat views keep their existing focus refresh.
-const { useConnectorDetect } = loadModule('../src/connectorDetect.ts');
+const { useConnectorDetect } = loadModule('../src/features/connectors/connectorDetect.ts');
 let installationChecks = 0;
 let installationResult = deferred();
 invoke = command => {
@@ -459,8 +459,8 @@ window.dispatchEvent(new Event('focus')); await flush();
 assert.equal(installationChecks, 3, 'entering the wizard removes the existing focus listener');
 for (const hook of installation.hooks) hook?.cleanup?.();
 // WhatsApp gets its own wizard, without any WeChat key/capture commands.
-const { WhatsAppWizard } = loadModule('../src/WhatsAppWizard.tsx');
-const { WeChatSetupChecklist } = loadModule('../src/WeChatSetupChecklist.tsx');
+const { WhatsAppWizard } = loadModule('../src/features/connectors/wizard/WhatsAppWizard.tsx');
+const { WeChatSetupChecklist } = loadModule('../src/features/connectors/wizard/WeChatSetupChecklist.tsx');
 const recoveryView = { hooks: [] };
 let acceptedOfficial = 0, restores = 0;
 const recoveryProps = {
@@ -715,7 +715,7 @@ assert.equal(elements(unverifiedSteps).filter(node => node.props?.className === 
 for (const hook of reusedView.hooks) hook?.cleanup?.();
 // Completion only opens a verified restored official app, and retries do not
 // bypass a pending recovery or launch failure.
-const { WeChatWizardComplete } = loadModule('../src/WeChatWizardComplete.tsx');
+const { WeChatWizardComplete } = loadModule('../src/features/connectors/wizard/WeChatWizardComplete.tsx');
 const complete = { hooks: [] };
 let officialOpens = 0, officialState = { pending: true, needs_cleanup: true, recovery_error_code: null, wechat_official: true }, launchWorks = false;
 invoke = async command => {
@@ -746,7 +746,7 @@ tree = render(complete, () => WeChatWizardComplete(completeProps));
 assert.equal(officialOpens, 2);
 assert.ok(elements(tree).some(node => node.type === 'p' && node.props.children === '已请求打开官方微信，请在微信中确认登录。'));
 for (const hook of complete.hooks) hook?.cleanup?.();
-const { BackupSchedule } = loadModule('../src/BackupSchedule.tsx');
+const { BackupSchedule } = loadModule('../src/features/backup/BackupSchedule.tsx');
 const backupView = { hooks: [] }, backupWrites = [];
 let backupNext = 0;
 const backupInitial = { ...defaultSettings(), active_account_id: 'A', user_settings_revision: 100, sync: { ...defaultSettings().sync, enabled: true } };
@@ -840,7 +840,7 @@ assert.ok(elements(tree).some(node => String(node.props?.children).includes('pau
 assert.ok(!scheduleCalls.some(call => call.command === 'app_settings_save'), 'pause uses the task action without rewriting backup configuration');
 for (const hook of controlView.hooks) hook?.cleanup?.();
 for (const hook of scheduleView.hooks) hook?.cleanup?.();
-const { WizardSessionPicker } = loadModule('../src/WizardSessionPicker.tsx');
+const { WizardSessionPicker } = loadModule('../src/features/connectors/wizard/WizardSessionPicker.tsx');
 const picker = { hooks: [] }, bulkSelections = [];
 const pickerProps = { items: Array.from({ length: 63 }, (_, i) => ({ username: `s${i}`, display: `会话 ${i}`, is_group: false, last_time: null })), total: 63, groupCount: 0, selected: new Set(), selectedCount: 0, kind: 'all', onKind() {}, search: '', onSearch() {}, loading: false, disabled: false, accountId: 'A', onToggle() {}, onBulk(mode, ids) { bulkSelections.push({ mode, ids }); }, focused: '', onFocus() {}, activity: () => '无记录', historyEditor: null };
 tree = render(picker, () => WizardSessionPicker(pickerProps));
@@ -853,7 +853,7 @@ assert.deepEqual(bulkSelections[1].ids, pickerProps.items.slice(20, 40).map(item
 for (const hook of picker.hooks) hook?.cleanup?.();
 
 // The default V7 screen is the scope form. The table opens only on an explicit choice.
-const { WizardImportScope } = loadModule('../src/WizardImportScope.tsx');
+const { WizardImportScope } = loadModule('../src/features/connectors/wizard/WizardImportScope.tsx');
 const scopeView = { hooks: [] }, scopeChanges = [];
 let clearedScopeIssue = 0;
 const scopeProps = { catalog: [{ username: 'd', is_group: false }, { username: 'g', is_group: true }], selected: new Set(['d', 'g']), loading: false, disabled: false, accountId: 'A', onScope: (...args) => scopeChanges.push(args), selectionIssue: null, onClearIssue: () => clearedScopeIssue++, children: jsx.jsx('table', { 'aria-label': 'custom table' }) };
@@ -973,7 +973,7 @@ for (const hook of management.hooks) hook?.cleanup?.();
 
 // Initial history ranges share the same editor across quick scopes and the custom
 // table. Defaults are seven local calendar days; explicit saved ranges stay intact.
-const historyModule = loadModule('../src/ImportHistoryRange.tsx');
+const historyModule = loadModule('../src/features/connectors/wizard/ImportHistoryRange.tsx');
 const { ImportHistoryRange, presetHistoryRange, historyChoiceForRange, historyDateText, historyDateSeconds } = historyModule;
 const historyNow = new Date(2026, 0, 3, 15, 30);
 assert.equal(historyDateText(presetHistoryRange('7', historyNow).since), '2025-12-28');

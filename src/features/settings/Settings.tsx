@@ -5,13 +5,13 @@ import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { registerDevifyDevice } from '../../devifyDevice';
 import { sameServiceUrl, storedBaseUrl } from '../../serviceUrl.ts';
-import type { UploadOwner } from '../../taskCloud';
-import { AccountPicker } from '../../AccountPicker';
-import { ConnectorIcon } from '../../Connectors';
-import { WizardSessionPicker } from '../../WizardSessionPicker';
-import { WizardImportScope } from '../../WizardImportScope';
+import type { UploadOwner } from '../tasks/taskCloud';
+import { AccountPicker } from '../connectors/AccountPicker';
+import { ConnectorIcon } from '../connectors/Connectors';
+import { WizardSessionPicker } from '../connectors/wizard/WizardSessionPicker';
+import { WizardImportScope } from '../connectors/wizard/WizardImportScope';
 import { Icons } from '../../icons';
-import { ImportHistoryRange, presetHistoryRange, type HistoryRange, type HistoryChoice, type HistoryScope } from '../../ImportHistoryRange';
+import { ImportHistoryRange, presetHistoryRange, type HistoryRange, type HistoryChoice, type HistoryScope } from '../connectors/wizard/ImportHistoryRange';
 
 type SessionItem = {
   username: string;

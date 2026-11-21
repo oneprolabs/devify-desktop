@@ -1,4 +1,4 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../../../locale';
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -7,7 +7,7 @@ import {
   SummaryDetail,
   summarySourceTitle,
   type SummaryRecord,
-} from './summary';
+} from '../../../summary';
 
 type KindFilter = 'all' | 'ai' | 'local' | 'daily';
 

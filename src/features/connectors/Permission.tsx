@@ -1,7 +1,7 @@
-import { t, tf, ctf } from './locale';
+import { t, tf, ctf } from '../../locale';
 import { useCallback, useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { WizardActionButton } from './WizardActionButton';
+import { WizardActionButton } from '../../WizardActionButton';
 
 type PlatformCapabilities = { platform: string; key_acquisition: string; supports_memory_scan: boolean; supports_macos_capture: boolean; supports_key_import: boolean };
 type DiskAccess = {

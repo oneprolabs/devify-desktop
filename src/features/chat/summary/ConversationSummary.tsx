@@ -4,7 +4,7 @@ import { t, tf, dateLocale } from '../../../locale';
 import { useInternalAccount } from '../../auth/entitlements';
 import { renderAgentMarkdown } from '../../../summary';
 import { readSummaryRange, summaryBounds, validateSummaryMessages, validateCloudSummaryInput, type CloudSummary, type SummaryChat, type SummaryMessage, type SummaryPage, type SummaryRange } from './summaryInput';
-import { refreshTaskRuntime } from '../../../taskRuntime';
+import { refreshTaskRuntime } from '../../tasks/taskRuntime';
 import { mergeSummaryRecords, reconcileSummaryPage, summaryRecordKey } from './summaryRecords';
 import './conversation-summary.css';
 
