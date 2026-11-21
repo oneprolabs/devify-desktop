@@ -13,7 +13,7 @@ src/
   features/
     auth/                     # Login, authentication events, access capabilities
     chat/                     # Conversation workspace and platform navigation
-      local-reader/           # Existing local reader, formatting, viewer styles
+      local-reader/           # Existing local reader, native response types, formatting, styles
       summary/                # Conversation summaries, history, input/record helpers
       collections/            # Existing collection/message views
     connectors/               # Source detection, account picker, disk access
@@ -52,13 +52,19 @@ src/
   `features/settings/settingsModel.ts`. Import `Settings.tsx` only to render its editors.
   The model does not import page components, native IPC, or lifecycle hooks; saves remain
   owned by the existing callers and serialized save queue.
+- Local-reader native response types live in `features/chat/local-reader/nativeTypes.ts`.
+  Consumers use `import type`; the module has no runtime dependencies. UI state types stay
+  beside their component, and existing IPC response fields remain unchanged.
 
 ## Boundaries reserved for later extraction
 
 `features/settings/Settings.tsx` still combines import, account, and legacy automation
 editors; its shared model has been extracted without changing the declarations.
 `features/chat/local-reader/WeChatLocal.tsx` still combines the legacy reader and WeChat
-setup UI. `shared/content/summary.tsx` still combines legacy record types and rendering.
+setup UI; its native response types are now separate. Extract the self-contained lazy
+media thumbnail next, preserving its shared preview queue and cancellation behavior before
+considering setup or reader lifecycle boundaries. `shared/content/summary.tsx` still combines
+legacy record types and rendering.
 Review each remaining internal boundary independently before further extraction. The native
 Rust modules under `src-tauri/src/` are a separate refactoring scope.
 
