@@ -28,11 +28,10 @@ import type {
 } from './nativeTypes';
 import { formatSize, toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, Highlight, formatAge, formatKeyDate } from './presentation';
 import { isSummaryText } from '../summary/summaryInput';
-import { t, tf, ctf, dateLocale, sortLocale } from '../../../shared/i18n/locale';
+import { t, tf, dateLocale } from '../../../shared/i18n/locale';
 import { RemoteChatFallback } from '../RemoteChatFallback';
 import { LoadingSkeleton } from '../../../shared/ui/LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
@@ -43,8 +42,6 @@ import { WeChatSetupChecklist } from '../../connectors/wizard/WeChatSetupCheckli
 import { capturePrerequisiteFailure, checkWeChatStep, type WeChatAction, type StepContext } from '../../connectors/wizard/wechatStepGuard';
 import {
   HISTORY_KIND_LABEL,
-  HISTORY_LIMIT,
-  SummaryDetail,
   renderAgentMarkdown,
   type HistorySession,
   type NewSummaryRecord,
@@ -158,13 +155,10 @@ export default function WeChatLocal({
   onWizardStep,
   onWizardBack,
   onWizardNext,
-  openSummary = false,
-  onSummaryRequestHandled,
   focusConversation,
   focusMessageId,
   searchKeyword = '',
   onClearSearch,
-  workRequest = 0,
   sessionRevision = 0,
   accountId: pinnedAccountId,
   onChatState,
@@ -183,15 +177,11 @@ export default function WeChatLocal({
   onWizardStep?: (step: string) => void;
   onWizardBack?: () => void;
   onWizardNext?: () => void;
-  openSummary?: boolean;
-  onSummaryRequestHandled?: () => void;
   focusConversation?: string | null;
   focusMessageId?: string | number | null;
   /** Keyword typed in the embedding page's header. Highlights matches in the open chat. */
   searchKeyword?: string;
   onClearSearch?: () => void;
-  /** Counters from the embedding page header's 整理工作内容 button. */
-  workRequest?: number;
   sessionRevision?: number;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
@@ -207,7 +197,7 @@ export default function WeChatLocal({
   const canOrganize = internalAccount && workDigestGranted;
   const canUseAi = internalAccount && aiSummaryGranted;
   const [env, setEnv] = useState<WechatEnv | null>(null);
-  const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
+  const [platform] = useState<PlatformCapabilities | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [accountId, setAccountId] = useState('');
   const settingsRef = useRef<AppSettings | null>(null);
@@ -306,7 +296,6 @@ export default function WeChatLocal({
   const pendingFocusMessage = useRef<string>('');
   const syncLock = useRef(false);
   const clearingRef = useRef(false);
-  const handledWorkRequest = useRef(0);
   const sourceSeen = useRef<{ exists: boolean; modifiedAt: number | null } | null>(null);
   const [loadSeq, setLoadSeq] = useState(0);
 
@@ -1434,13 +1423,6 @@ export default function WeChatLocal({
   };
 
   useEffect(() => {
-    if (openSummary && ready && !workOpen) {
-      openWorkPicker();
-      onSummaryRequestHandled?.();
-    }
-  }, [openSummary, ready]);
-
-  useEffect(() => {
     if (!focusConversation || !ready || !account) return;
     if (!sessions.some(item => item.username === focusConversation)) { const key = `${account.id}:${focusConversation}`; if (focusLookup.current !== key) { focusLookup.current = key; void loadSessions(account.id); } return; }
     const session = sessions.find(item => item.username === focusConversation);
@@ -1927,14 +1909,6 @@ export default function WeChatLocal({
       </section>
     );
   };
-
-  // Header buttons live in the embedding page. They are requests, not state, so a click
-  // while the pane is hidden still opens the drawer / downloads once the chat is ready.
-  useEffect(() => {
-    if (!canOrganize || !workRequest || workRequest === handledWorkRequest.current || !ready) return;
-    handledWorkRequest.current = workRequest;
-    openWorkPicker();
-  }, [workRequest, ready, canOrganize]);
 
   useEffect(() => {
     onChatState?.({

@@ -81,3 +81,5 @@ Rust modules under `src-tauri/src/` are a separate refactoring scope.
 5. After the directory layout is stable, extract one responsibility at a time. Preserve
    cancellation, identity boundaries, pagination, media queues, and task scheduling until
    their own implementation and tests have been reviewed.
+6. Remove obsolete logic separately from extraction. Check production and preview callers
+   first; a hidden control or an old name alone is not evidence that a flow is unused.
