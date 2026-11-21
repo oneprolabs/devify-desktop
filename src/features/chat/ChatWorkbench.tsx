@@ -2,7 +2,8 @@ import { t, tf, ctf, dateLocale, sortLocale } from '../../locale';
 import { LocalChatAvatar } from './LocalChatAvatar';
 import { LoadingSkeleton } from '../../LoadingSkeleton';
 import { ChatPlatformBar } from './ChatPlatformBar';
-import { eventViewState, syncErrorMessage } from './chatPresentation';
+import { syncErrorMessage } from './chatPresentation';
+import { ChatEventsPane, type EventItem } from './ChatEventsPane';
 import { SidebarResizeHandle } from '../../SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
@@ -23,7 +24,6 @@ type Session = { username: string; display: string; is_group: boolean; last_time
 type OwnedSession = Session & { accountId: string; source: string };
 type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; connectors?: { wechat_enabled?: boolean; whatsapp_enabled?: boolean }; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: string | null; base_url?: string }; upload_queue?: Array<{ status?: string }> };
 type SyncResult = { uploaded: number; message_count: number; batch_ids?: number[]; error?: string | null };
-type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
 type Page<T> = { list?: T[]; pagination?: { total?: number; next?: unknown } };
 type CloudConversation = { id: number; platform: string; source_namespace: string; source_conversation_id: string };
 type Avatar = { username: string; data_url: string };
@@ -37,7 +37,6 @@ type PlatformMemory = { session: OwnedSession | null; scrollTop: number; query: 
 const needsBackup = (item: UploadState) => ['pending', 'local', 'failed', 'history_failed'].includes(item.state);
 const sessionKey = (accountId: string, username: string) => JSON.stringify([accountId, username]);
 
-const dateLabel = (value?: string | number | null) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("时间未知");
 const timeLabel = (value?: number | null) => {
   if (!value) return '';
   const date = new Date(value * 1000);
@@ -46,24 +45,6 @@ const timeLabel = (value?: number | null) => {
   if (sameDay) return date.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' });
   return date.toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
 };
-const dayLabel = (value?: string | null) => {
-  if (!value) return t("时间未知");
-  const date = new Date(value);
-  const now = new Date();
-  const day = date.toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
-  if (date.toDateString() === now.toDateString()) return tf("{0} · 今天", day);
-  const yesterday = new Date(now.getTime() - 86400000);
-  if (date.toDateString() === yesterday.toDateString()) return tf("{0} · 昨天", day);
-  return day;
-};
-const statusLabel = (value?: string | null) => ({ open: t("待我处理"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("未标记");
-
-function StateDot({ done }: { done: boolean }) {
-  return <svg className="chat-event-dot" viewBox="0 0 16 16" aria-hidden="true">
-    <circle cx="8" cy="8" r="6.25" fill={done ? '#1a1a19' : 'transparent'} stroke={done ? '#1a1a19' : '#c4a06a'} strokeWidth={1.5}/>
-    {done && <path d="M5 8.3l2.1 2.1L11 6.1" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" fill="none"/>}
-  </svg>;
-}
 
 export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent, onAddPlatform }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void; onAddPlatform?: () => void }) {
   const runtime = useTaskRuntime();
@@ -431,22 +412,6 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     return groups;
   };
   const scopedEvents = eventsScope === JSON.stringify([settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username]) ? events : [];
-  const visibleEvents = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    return scopedEvents.filter(event => (!keyword || `${event.title} ${event.content ?? ''}`.toLowerCase().includes(keyword)) && (filter !== 'pending' || event.status !== 'done'));
-  }, [scopedEvents, query, filter]);
-  const eventGroups = useMemo(() => {
-    const groups = new Map<string, EventItem[]>();
-    [...visibleEvents]
-      .sort((a, b) => (b.last_activity_at ?? '').localeCompare(a.last_activity_at ?? ''))
-      .forEach(event => {
-        const day = (event.last_activity_at || event.updated_at || '').slice(0, 10) || 'unknown';
-        const list = groups.get(day) ?? [];
-        list.push(event);
-        groups.set(day, list);
-      });
-    return Array.from(groups.entries());
-  }, [visibleEvents]);
 
   const openEventPage = (eventId: number) => {
     if (onOpenEvent) onOpenEvent(eventId);
@@ -554,42 +519,18 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         {selectedSession && <p className="chat-workbench-conversation-meta"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">{selectedSession.is_group?<><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></>:<><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></>}</svg>{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}{view === 'raw' && chatState.active ? ` · ${tf('已加载 {0} 条消息', chatState.messages)}` : ''}</p>}
       </header>
 
-      <div className={`chat-workbench-pane${view === 'events' ? '' : ' is-hidden'}`}>
-        <div className="chat-workbench-subline">
-          <span>{eventsLoading ? t("正在同步事件…") : tf("{0} 条事件", scopedEvents.length)} · {sessions.length} {t("个会话 · 云端整理，可人工修改")}</span>
-        </div>
-        <div className="chat-workbench-feed">
-          {eventsLoading && <LoadingSkeleton label={t("正在加载事件")} kind="detail" />}
-          {(error || eventsError) && <div className="chat-workbench-error" role="alert"><span>{scopedEvents.length ? t("事件刷新失败，显示的是上次读取结果。") : t("暂时无法读取事件，请检查网络或稍后重试。")}</span> <button type="button" onClick={() => { if (error) void load(); else setEventRefresh(value => value + 1); }}>{t("重试")}</button></div>}
-          {eventViewState(eventsLoading, error || eventsError, visibleEvents.length) === 'empty' && <div className="chat-workbench-empty-panel">
-            <h2>{t("当前会话暂无事件")}</h2>
-            <p>{t("上传当前会话并等待服务端分析后，相关事件会出现在这里。")}</p>
-            <button type="button" onClick={onSchedule}>{t("设置备份周期")}</button>
-          </div>}
-          {eventGroups.map(([day, list]) => <section className="chat-event-day" key={day}>
-            <div className="chat-event-divider"><span/>{dayLabel(list[0]?.last_activity_at || day)}<span/></div>
-            {list.map(event => {
-              const done = event.status === 'done';
-              return <div className="chat-event" key={event.id}>
-                <div className="chat-event-gutter">
-                  <span className={`chat-event-tag${done ? ' done' : ''}`}>{statusLabel(event.status)}</span>
-                </div>
-                <button type="button" className="chat-event-card" onClick={() => setEvidence({ kind: 'event', id: event.id, title: event.title })}>
-                  <span className="chat-event-head">
-                    <StateDot done={done}/>
-                    <strong>{event.title}</strong>
-                  </span>
-                  {event.content && <span className="chat-event-content">{event.content}</span>}
-                  <span className="chat-event-foot">
-                    <span>{dateLabel(event.last_activity_at || event.updated_at)}</span>
-                    <span className="chat-event-link">{t("查看完整事件 →")}</span>
-                  </span>
-                </button>
-              </div>;
-            })}
-          </section>)}
-        </div>
-      </div>
+      <ChatEventsPane
+        active={view === 'events'}
+        loading={eventsLoading}
+        error={error || eventsError}
+        events={scopedEvents}
+        sessionCount={sessions.length}
+        query={query}
+        filter={filter}
+        onRetry={() => { if (error) void load(); else setEventRefresh(value => value + 1); }}
+        onSchedule={onSchedule}
+        onOpenEvidence={event => setEvidence({ kind: 'event', id: event.id, title: event.title })}
+      />
 
       {(!rawMounted || !accountId) && view === 'raw' && <div className="chat-workbench-empty" role="status">{platformSessions.length ? t("选择一个会话开始查看") : t("该平台暂无已导入的会话。")}</div>}
       {rawMounted && accountId && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>

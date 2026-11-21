@@ -13,6 +13,7 @@ src/
   features/
     chat/
       ChatWorkbench.tsx       # Conversation selection and workspace orchestration
+      ChatEventsPane.tsx      # Event filtering, grouping, and presentation only
       ChatPlatformBar.tsx     # Platform navigation
       LocalChatAvatar.tsx     # Lazy local avatars
       RemoteChatFallback.tsx  # Missing-local-record fallback
@@ -52,3 +53,8 @@ src/
 Subsequent batches can group connectors/wizards, tasks/backup, analysis workspaces,
 and settings. The large native `src-tauri/src/lib.rs` requires a separate Rust refactor;
 frontend organization does not require changes to native commands or server contracts.
+
+The first batch establishes the chat directory and extracts only its event presentation.
+Event loading, request cancellation, retry timing, conversation ownership, and task
+scheduling remain in their existing modules. Larger stateful modules are later batches,
+not part of this change.
