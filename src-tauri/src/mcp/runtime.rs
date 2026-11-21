@@ -168,4 +168,7 @@ pub(crate) async fn refresh_entitlements_then_reconcile(app: &AppHandle) {
         }
     }
     reconcile_local_service(app).await;
+    // Independent of login success and backups; persistent interval/backoff prevents
+    // a restored session or repeated heartbeats from downloading on every startup.
+    let _ = crate::summary_config::refresh(app, false).await;
 }

@@ -51,6 +51,7 @@ mod runtime_commands;
 mod report_plan;
 mod cloud_summary;
 mod summary_jobs;
+mod summary_config;
 use runtime_commands::{flush_config_outbox,emit_task_runtime};
 #[cfg(test)]
 use task_runtime::plan_automatic_batch;
@@ -3606,6 +3607,8 @@ struct DevifyDeviceResult {
     status: String,
     #[serde(skip)]
     generation: u64,
+    #[serde(skip)]
+    summary_config_version: Option<String>,
 }
 
 /// Bind or refresh this machine on Devify without forcing a new browser login.
@@ -3620,6 +3623,10 @@ async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, St
     let base = settings::load(&data)?.devify.resolved_base_url()?;
     let (_, generation) = establish_device_session(&data, &base, &result).await?;
     result.generation = generation;
+    if result.summary_config_version.is_some() {
+        let service = app.clone();
+        tauri::async_runtime::spawn(async move { let _ = summary_config::refresh(&service, false).await; });
+    }
     Ok(result)
 }
 
@@ -3693,6 +3700,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
             "device_id": device_id.clone(),
             "label": device_label.clone(),
             "platform": platform.clone(),
+            "summary_config_schema": 1,
         }))
         .send_traced_retrying(&data, diagnostics::Module::Auth, RetryPolicy::WRITE)
         .await
@@ -3705,6 +3713,9 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
         .await
         .map_err(|e| format!("读取设备响应失败：{e}"))?;
     let device = payload.get("data").unwrap_or(&payload);
+    let summary_config_version = device.get("chat_summary_config")
+        .filter(|hint| hint["schema_version"].as_u64() == Some(1))
+        .and_then(|hint| hint["version"].as_str()).filter(|s| !s.is_empty()).map(str::to_string);
     let device_id = device
         .get("device_id")
         .and_then(|value| value.as_str())
@@ -3743,6 +3754,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
             platform,
             status: device.get("status").and_then(|value| value.as_str()).unwrap_or("active").to_string(),
             generation,
+            summary_config_version,
         });
     }
     let device_changed = device_id != settings.devify.device_id;
@@ -3775,6 +3787,7 @@ async fn devify_device_register_for(app: AppHandle, expected: Option<(&desktop_c
             .unwrap_or("active")
             .to_string(),
         generation: generation.wrapping_add(u64::from(device_changed)),
+        summary_config_version,
     })
 }
 
@@ -6717,6 +6730,8 @@ pub fn run() {
             commands::analysis::devify_analysis_preferences_get,
             cloud_summary::cloud_summary_list,
             cloud_summary::cloud_summary_action,
+            summary_config::summary_config_get,
+            summary_config::summary_config_refresh,
             summary_jobs::summary_task_enqueue,
             summary_jobs::summary_task_retry,
             summary_jobs::summary_task_delete,

@@ -28,6 +28,7 @@ const catalog = (account: string) => localSnapshot ? localSnapshot.sessions[acco
 const capture = {pending:false,needs_cleanup:false,stage:'idle',transaction_id:null,wechat_official:true,wechat_ad_hoc:false,platform_supported:true,lldb_available:true,user_can_write:true,sip_disabled:true,os_version:'15.7',arch:'aarch64',recovery_error_code:null,resume_available:false};
 const feedbackDraft = () => ({client_id:'00000000-0000-4000-8000-000000000001',environment:{app_version:'0.1.17',platform:'macos',arch:'aarch64',os_version:'macOS 15.7',wechat_version:'4.1.2'},related_batch_ids:[],receiver:'https://example.invalid',owner_id:1,category:'other',description:'',page:'settings',screenshots:[] as {data:string}[],diagnostics:null as any,attempted:false});
 const state = {
+ summaryConfig:{schema_version:1,version:'fixture-v7',default_scenario:'three_part',max_instructions_chars:4000,scenarios:[['summary','总结','只概括主要内容、结论与当前结果。'],['action_items','待办','只列行动、负责人、期限及待确认项。'],['timeline','时间线','只按时间顺序整理事情经过。'],['three_part','综合分析','总结、时间线和待办三项都有。'],['custom','自定义','描述希望从聊天记录中得到什么，自定关注点和输出结构。']].map(([id,name,description])=>({id,name,description,requires_instructions:id==='custom',sha256:'fixture-'+id,budgets:{cloud:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:2000,reserved_overhead_bytes:64,max_content_bytes:9936},local_cli:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:1800,reserved_overhead_bytes:2048,max_content_bytes:8152}}}))},summaryConfigError:'',
  runtime:{context:'e2e',revision:1,paused:false,running:false,pending_config:0,jobs:[] as any[],sources:accounts.map(a=>({account_id:a.id,platform:a.source,setup_complete:true,backup_enabled:true,wizard_step:null as 'sessions'|'backup'|null}))},
  settings:{...defaultSettings(),user_settings_revision:1,active_account_id:wx,devify:{...defaultSettings().devify,...(query.has('anonymous')?{base_url:query.has('no-server')?'':'https://example.invalid'}:{})},language:{...defaultSettings().language,ui:query.has('english')?'English':'中文'}},
  calls:[] as Array<{command:string;args:unknown}>, errors:[] as string[], writes:[] as unknown[],
@@ -150,6 +151,11 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     const local=state.summaryLocal.filter(row=>row.source_namespace===args.accountId&&row.source_conversation_id===args.username);
     return {list:rows.filter(row=>row.engine==='cloud'),local:clone([...rows,...local]),pagination:{total:rows.filter(row=>row.engine==='cloud').length,page:1,next:null}};
    }
+   case 'summary_config_get':{
+    if(state.summaryConfigError)throw state.summaryConfigError;
+    return {config:clone(state.summaryConfig),language:state.settings.language.summary==='跟随界面'?state.settings.language.ui:state.settings.language.summary,ui_language:state.settings.language.ui,instructions:state.settings.agent.instructions};
+   }
+   case 'summary_config_refresh':if(state.summaryConfigError)throw state.summaryConfigError;return null;
    case 'summary_task_enqueue':{
     if(state.summaryError)throw state.summaryError;
     const old=state.summaries.find(row=>row.request_key===args.body.request_key);if(old)return clone(old);
