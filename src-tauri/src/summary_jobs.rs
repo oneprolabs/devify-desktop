@@ -1,6 +1,7 @@
 //! Durable, owner-bound summary intents, processed by the existing coordinator.
 //! Cloud execution is delegated; local CLI execution is serialized with preparation.
 use super::*;
+use crate::chat::access::{allowed_usernames, whatsapp_allowed_usernames};
 use rusqlite::{params, TransactionBehavior};
 
 static ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());

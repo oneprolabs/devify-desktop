@@ -10,6 +10,9 @@ This directory groups Tauri command adapters by product responsibility:
   local summary invocation. Existing CLI execution remains in `agent.rs`.
 - `summary_history.rs`: account-scoped summary history. Persistence and record limits
   remain in `history.rs`; scope resolution remains in `local_scope.rs`.
+- `chat/`: local conversations/messages and search, collection date ranges, media,
+  voice and explicit cloud reads. Its README describes the five capability owners.
+  Existing `wechat_` IPC names also serve the original WhatsApp branches.
 
 `mod.rs` only declares owners. `lib.rs` registers commands through their full owner
 paths in `tauri::generate_handler!`; it does not keep forwarding functions or broad
@@ -29,6 +32,12 @@ entitlement refresh, settings saves and the existing background tick keep callin
 the same reconciliation owner. Agent commands read that state; they do not create
 another listener or their own service lock. State access stays crate-internal;
 the listener task and token remain private to the runtime owner.
+
+Chat adapters share the policy helpers in `chat/access.rs` and the single local-read
+semaphore in `chat/mod.rs` (paths relative to the native source root). Local reads,
+media decoding, avatars and the existing upload-state command retain that same
+budget. Do not put a new semaphore in each command module or duplicate source
+whitelists in summary callers.
 
 Keep handwritten files around or below 1000 lines, grouped by coherent behavior.
 Move tests with their private owner when appropriate. For example, `events.rs`

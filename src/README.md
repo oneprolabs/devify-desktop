@@ -104,6 +104,11 @@ MCP desktop lifecycle lives in `src-tauri/src/mcp/runtime.rs`, alongside the exi
 listener module. Startup and login/settings callbacks share its single managed
 state; command extraction must not create additional service tasks or state locks.
 
+Native chat reads are grouped by capability under `src-tauri/src/commands/chat/`.
+Source-specific access checks and the shared local-read budget belong to
+`src-tauri/src/chat/`; summary callers share those checks. Existing WeChat/WhatsApp
+branches, cache scoping, pagination and IPC names remain unchanged by relocation.
+
 ## Safe migration and extraction
 
 1. Change one bounded set of file locations and update production, preview, and test paths.

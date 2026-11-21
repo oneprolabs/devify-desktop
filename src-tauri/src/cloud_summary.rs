@@ -13,9 +13,9 @@ pub(crate) fn validate_source(
     let settings = settings::load(&data)?;
     validate_devify_space(&settings, space)?;
     let allowed = if crate::whatsapp::is_account(account) {
-        crate::whatsapp_allowed_usernames(app, account)?
+        crate::chat::access::whatsapp_allowed_usernames(app, account)?
     } else {
-        crate::allowed_usernames(app, account)?
+        crate::chat::access::allowed_usernames(app, account)?
     };
     if !allowed.contains(username) {
         return Err("该会话不在当前导入范围内。".into());

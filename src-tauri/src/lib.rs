@@ -29,6 +29,9 @@ pub mod backup;
 pub mod capabilities;
 pub mod connectors;
 mod commands;
+mod chat;
+use chat::access::{account_root, allowed_usernames, validate_account_id, whatsapp_allowed_usernames};
+use chat::LOCAL_READ_BUDGET;
 mod desktop_credentials;
 mod diagnostics;
 mod devify_http;
@@ -141,7 +144,7 @@ use wechat::decrypt::{self, DecryptOutcome};
 use wechat::discover::{self, ScanResult};
 use wechat::keys::{self, KeyStore};
 use wechat::media;
-use wechat::query::{self, DigestReport, MessageItem, SearchReport, SessionItem};
+use wechat::query::{self, MessageItem};
 use wechat::voice;
 #[cfg(target_os = "windows")]
 use wechat::windows_keys;
@@ -868,96 +871,6 @@ async fn devify_current_user(app: AppHandle) -> Result<serde_json::Value, String
 
 
 
-
-#[tauri::command]
-async fn devify_conversations(
-    app: AppHandle,
-    space_id: String,
-    search: Option<String>,
-    page: Option<u32>,
-    page_size: Option<u32>,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let mut path = format!(
-        "/api/v1/spaces/{space_id}/conversations?page={}&page_size={}",
-        page.unwrap_or(1).max(1),
-        page_size.unwrap_or(25).clamp(1, 100)
-    );
-    let keyword = search.unwrap_or_default().trim().to_string();
-    if !keyword.is_empty() {
-        let encoded: String = url::form_urlencoded::byte_serialize(keyword.as_bytes()).collect();
-        path.push_str(&format!("&search={encoded}"));
-    }
-    devify_json_request(&app, reqwest::Method::GET, path, None).await
-}
-
-#[tauri::command]
-async fn devify_conversation_detail(
-    app: AppHandle,
-    space_id: String,
-    conversation_id: i64,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    if conversation_id <= 0 {
-        return Err("会话标识无效。".into());
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/spaces/{space_id}/conversations/{conversation_id}"),
-        None,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn devify_conversation_messages(
-    app: AppHandle,
-    space_id: String,
-    conversation_id: i64,
-    page: Option<u32>,
-    page_size: Option<u32>,
-    focus_message_id: Option<i64>,
-    latest: Option<bool>,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    if conversation_id <= 0 {
-        return Err("会话标识无效。".into());
-    }
-    let mut path = format!(
-        "/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages?page={}&page_size={}",
-        if latest.unwrap_or(false) {"last".to_string()} else {page.unwrap_or(1).max(1).to_string()},
-        page_size.unwrap_or(50).clamp(1, 100)
-    );
-    if let Some(message_id) = focus_message_id.filter(|id| *id > 0) {
-        path.push_str(&format!("&focus_message_id={message_id}"));
-    }
-    devify_json_request(&app, reqwest::Method::GET, path, None).await
-}
-
-#[tauri::command]
-async fn devify_message_detail(
-    app: AppHandle,
-    space_id: String,
-    conversation_id: i64,
-    message_id: i64,
-) -> Result<serde_json::Value, String> {
-    if conversation_id <= 0 || message_id <= 0 {
-        return Err("消息标识无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages/{message_id}"),
-        None,
-    )
-    .await
-}
 
 
 
@@ -1979,16 +1892,6 @@ fn prepare_whatsapp_upload(
     })
 }
 
-fn validate_account_id(account_id: &str) -> Result<(), String> {
-    let mut components = Path::new(account_id).components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err("微信账号标识无效。".into());
-    }
-    Ok(())
-}
-
 fn validate_upload_scope(
     settings: &settings::AppSettings,
     account_id: &str,
@@ -2008,76 +1911,6 @@ fn validate_upload_scope(
         return Err("上传范围包含不在当前白名单中的会话。".into());
     }
     Ok(())
-}
-
-#[tauri::command]
-async fn wechat_collection_dates(app: AppHandle, account_id: String, usernames: Vec<String>) -> Result<BTreeMap<String, Vec<(String, usize)>>, String> {
-    if whatsapp::is_account(&account_id) {
-        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
-        if usernames.iter().any(|name| !allowed.contains(name)) { return Err("会话不在已选范围中。".into()); }
-        let data = app_data(&app);
-        return tauri::async_runtime::spawn_blocking(move || {
-            usernames.into_iter().map(|name| whatsapp::message_dates(&data, &name).map(|dates| (name, dates))).collect()
-        }).await.map_err(|e| format!("读取日期失败：{e}"))?;
-    }
-    let allowed = allowed_usernames(&app, &account_id)?;
-    if usernames.iter().any(|name| !allowed.contains(name)) { return Err("会话不在已选范围中。".into()); }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    tauri::async_runtime::spawn_blocking(move || usernames.into_iter().map(|name| query::message_dates(&cache, &name).map(|dates| (name, dates))).collect()).await.map_err(|e| format!("读取日期失败：{e}"))?
-}
-
-#[tauri::command]
-async fn wechat_catalog_dates(app: AppHandle, account_id: String, username: String) -> Result<Vec<(String, usize)>, String> {
-    validate_account_id(&account_id)?;
-    if whatsapp::is_account(&account_id) {
-        let data = app_data(&app);
-        return tauri::async_runtime::spawn_blocking(move || whatsapp::message_dates(&data, &username))
-            .await
-            .map_err(|error| format!("读取日期失败：{error}"))?;
-    }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    tauri::async_runtime::spawn_blocking(move || {
-        if !query::is_chat_session(&cache, &username) { return Err("该会话不可用。".into()); }
-        query::message_dates(&cache, &username)
-    }).await.map_err(|e| format!("读取日期失败：{e}"))?
-}
-
-#[tauri::command]
-async fn wechat_collection_messages(
-    app: AppHandle,
-    account_id: String,
-    username: String,
-    since: Option<i64>,
-    until: Option<i64>,
-) -> Result<Vec<MessageItem>, String> {
-    if since.zip(until).is_some_and(|(start, end)| start >= end) {
-        return Err("日期范围无效。".into());
-    }
-    if whatsapp::is_account(&account_id) {
-        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
-        if !allowed.contains(&username) {
-            return Err("该会话不在白名单中。".into());
-        }
-        let data = app_data(&app);
-        return tauri::async_runtime::spawn_blocking(move || {
-            whatsapp::messages_between(&data, &username, since, until, 5000)
-        })
-        .await
-        .map_err(|error| format!("读取消息失败：{error}"))?;
-    }
-    let allowed = allowed_usernames(&app, &account_id)?;
-    if !allowed.contains(&username) {
-        return Err("该会话不在白名单中。".into());
-    }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    if !query::is_chat_session(&cache, &username) {
-        return Err("该会话不在可采集范围中。".into());
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        collect_upload_messages(&cache, &username, since, until, Some(5000))
-    })
-    .await
-    .map_err(|e| format!("读取消息失败：{e}"))?
 }
 
 #[tauri::command]
@@ -4189,29 +4022,6 @@ fn perm_reveal_app() -> Result<String, String> {
     perm::reveal_app()
 }
 
-/// Shown whenever a read is blocked because the user disconnected WeChat.
-const WECHAT_DISCONNECTED: &str = "微信连接已断开，重新连接后才能读取聊天。已上传的记录不受影响。";
-
-fn allowed_usernames(app: &AppHandle, account_id: &str) -> Result<HashSet<String>, String> {
-    validate_account_id(account_id)?;
-    let settings = settings::load(&app_data(app))?;
-    if !settings.connectors.wechat_enabled {
-        return Err(WECHAT_DISCONNECTED.into());
-    }
-    Ok(config_runtime::browse_names(&settings,account_id).into_iter().collect())
-}
-
-/// Whitelist for a WhatsApp account. Same policy shape as WeChat, separate connect switch.
-fn whatsapp_allowed_usernames(app: &AppHandle, account_id: &str) -> Result<HashSet<String>, String> {
-    validate_account_id(account_id)?;
-    let settings = settings::load(&app_data(app))?;
-    if !settings.connectors.whatsapp_enabled {
-        return Err("WhatsApp 已断开，已停止读取本机消息。".into());
-    }
-    if whatsapp::account().is_none_or(|a|a.id!=account_id) {return Err("WhatsApp 登录账号已变化，请重新完成连接向导。".into());}
-    Ok(config_runtime::browse_names(&settings,account_id).into_iter().collect())
-}
-
 const DAILY_TOPIC_TITLE: &str = "微信工作日报";
 const DAILY_TOPIC_INSTRUCTION: &str =
     "根据已上传的微信聊天记录生成每日工作日报，汇总当天进展、待办和风险。";
@@ -5036,7 +4846,6 @@ async fn devify_sync_now(app: AppHandle, scope_confirmation: Option<String>) -> 
 }
 
 
-static LOCAL_READ_BUDGET:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(2);
 static TASK_WAKE:tokio::sync::Notify=tokio::sync::Notify::const_new();
 
 #[tauri::command]
@@ -6383,351 +6192,6 @@ async fn wechat_sync(
     outcomes
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct VoiceRequest {
-    local_id: i64,
-    server_id: String,
-}
-
-#[derive(Serialize)]
-struct VoiceAudio {
-    data_uri: String,
-    duration_secs: f64,
-}
-
-/// Whitelist + visibility guard shared by the media and voice commands.
-fn require_visible_session(
-    app: &AppHandle,
-    account_id: &str,
-    username: &str,
-) -> Result<(), String> {
-    let cache = decrypt::cache_dir(&app_data(app), account_id);
-    if !query::is_chat_session(&cache, username) {
-        return Err("公众号、服务号和系统会话不在查看范围内。".into());
-    }
-    if !allowed_usernames(app, account_id)?.contains(username) {
-        return Err("该会话不在当前策略白名单中。".into());
-    }
-    Ok(())
-}
-
-fn account_root(account_id: &str) -> Result<PathBuf, String> {
-    discover::scan()
-        .accounts
-        .into_iter()
-        .find(|account| account.id == account_id)
-        .map(|account| PathBuf::from(account.dir))
-        .ok_or_else(|| format!("找不到账号 {account_id} 的本机数据目录。"))
-}
-
-/// Per-message attachment manifest (images, videos, documents, voice).
-#[tauri::command]
-async fn wechat_message_media(
-    app: AppHandle,
-    account_id: String,
-    username: String,
-    since: i64,
-    until: i64,
-) -> Result<media::MediaReport, String> {
-    require_visible_session(&app, &account_id, &username)?;
-    let root = account_root(&account_id)?;
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    let raw = query::raw_messages_between(&cache, &username, since, until, 20000)?;
-    let keys = media::resolve_image_keys(&root, &query::md5_hex(&username));
-    Ok(media::resolve(&root, &username, &raw, keys.as_ref()))
-}
-
-/// Build (and cache) a display preview for one image message.
-#[tauri::command]
-async fn wechat_media_preview(
-    app: AppHandle,
-    account_id: String,
-    local_id: i64,
-    paths: Vec<String>,
-) -> Result<Option<String>, String> {
-    let root = account_root(&account_id)?;
-    let targets: Vec<PathBuf> = paths.iter().map(|path| root.join(path)).collect();
-    let data = local_scope::root(&app_data(&app));
-    let _budget = LOCAL_READ_BUDGET.acquire().await.map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        Ok(media::make_preview(&data, &account_id, local_id, &root, &targets).ok().map(|p|p.to_string_lossy().to_string()))
-    }).await.map_err(|e| e.to_string())?
-}
-
-/// Decode one encrypted image offline for the in-app viewer.
-#[tauri::command]
-async fn wechat_media_open_image(
-    app: AppHandle,
-    account_id: String,
-    paths: Vec<String>,
-) -> Result<String, String> {
-    let root = account_root(&account_id)?;
-    let targets: Vec<PathBuf> = paths
-        .iter()
-        .map(|path| {
-            if Path::new(path).is_absolute() {
-                PathBuf::from(path)
-            } else {
-                root.join(path)
-            }
-        })
-        .collect();
-    let data = local_scope::root(&app_data(&app));
-    let _budget = LOCAL_READ_BUDGET.acquire().await.map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || media::open_image(&data, &account_id, &root, &targets)
-        .map(|out| out.to_string_lossy().to_string())).await.map_err(|e| e.to_string())?
-}
-
-/// Reveal one attachment in Finder/Explorer. The path must stay inside the account folder.
-#[tauri::command]
-async fn wechat_media_reveal(account_id: String, path: String) -> Result<(), String> {
-    let root = account_root(&account_id)?;
-    let target = if Path::new(&path).is_absolute() {
-        PathBuf::from(&path)
-    } else {
-        root.join(&path)
-    };
-    media::reveal(&root, &target)
-}
-
-/// Export transcript + manifest + plaintext attachments into `~/Downloads/AIMyChats/…`.
-#[tauri::command]
-async fn wechat_export_bundle(
-    app: AppHandle,
-    account_id: String,
-    username: String,
-    display: String,
-    since: i64,
-    until: i64,
-) -> Result<media::ExportReport, String> {
-    let data = app_data(&app);
-    let settings = settings::load(&data)?;
-    entitlements::require(&data, &settings.devify.base_url, capabilities::BRIDGE_EXPORT)?;
-    require_visible_session(&app, &account_id, &username)?;
-    let root = account_root(&account_id)?;
-    media::export_bundle(
-        &app_data(&app),
-        &root,
-        &account_id,
-        &username,
-        &display,
-        since,
-        until,
-    )
-}
-
-#[tauri::command]
-async fn wechat_voice_status(app: AppHandle) -> voice::VoiceSettingsView {
-    voice::view(&app_data(&app))
-}
-
-#[tauri::command]
-async fn wechat_voice_settings_save(
-    app: AppHandle,
-    engine: String,
-    model: String,
-    language: String,
-) -> Result<voice::VoiceSettingsView, String> {
-    let settings = voice::VoiceSettings {
-        engine: engine.trim().to_string(),
-        model: model.trim().to_string(),
-        language: if language.trim().is_empty() {
-            "zh".to_string()
-        } else {
-            language.trim().to_string()
-        },
-    };
-    voice::save_settings(&app_data(&app), &settings)?;
-    Ok(voice::view(&app_data(&app)))
-}
-
-/// Decode and transcribe selected voice messages. Results are cached by `account|server_id`.
-async fn voice_blobs_with_refresh(
-    app: &AppHandle,
-    state: State<'_, SyncState>,
-    account_id: &str,
-    ids: &[i64],
-) -> Result<std::collections::BTreeMap<i64, Vec<u8>>, String> {
-    let cache = decrypt::cache_dir(&app_data(app), account_id);
-    let cached = voice::read_voice_blobs(&cache, ids).unwrap_or_default();
-    if ids.iter().all(|id| cached.contains_key(id)) {
-        return Ok(cached);
-    }
-    wechat_sync(app.clone(), state, account_id.to_string()).await
-        .map_err(|error| format!("无法刷新语音数据：{error}"))?;
-    voice::read_voice_blobs(&cache, ids)
-}
-
-#[tauri::command]
-async fn wechat_voice_transcribe(
-    app: AppHandle,
-    state: State<'_, SyncState>,
-    account_id: String,
-    username: String,
-    items: Vec<VoiceRequest>,
-) -> Result<Vec<voice::VoiceResult>, String> {
-    require_visible_session(&app, &account_id, &username)?;
-    if items.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ids: Vec<i64> = items.iter().map(|item| item.server_id.parse().map_err(|_| "无效的语音标识。".to_string())).collect::<Result<_, _>>()?;
-    let data_dir = app_data(&app);
-    let private_data=local_scope::root(&data_dir);
-    let settings = settings::load(&data_dir)?;
-    entitlements::require(
-        &data_dir,
-        &settings.devify.base_url,
-        capabilities::LOCAL_VOICE_TRANSCRIBE,
-    )?;
-    let blobs = voice_blobs_with_refresh(&app, state, &account_id, &ids).await?;
-    let view = voice::view(&data_dir);
-    if view.selected.is_none() {
-        return Err(
-            "没有检测到本地转写引擎。可安装 whisper.cpp（brew install whisper-cpp）、mlx-whisper 或 openai-whisper，然后在「设置 → 语音转写」里选择。"
-                .into(),
-        );
-    }
-
-    let mut transcripts = voice::load_transcripts(&private_data);
-    let mut results = Vec::new();
-    for (item, server_id) in items.into_iter().zip(ids) {
-        let key = voice::transcript_key(&account_id, server_id);
-        let mut result = voice::VoiceResult {
-            server_id,
-            local_id: item.local_id,
-            wav: None,
-            duration_secs: 0.0,
-            text: None,
-            cached: false,
-            error: None,
-        };
-        let Some(blob) = blobs.get(&server_id) else {
-            result.error = Some("本地暂未找到这条语音，请刷新微信数据后重试。".into());
-            results.push(result);
-            continue;
-        };
-        match voice::ensure_wav(&private_data, &account_id, server_id, blob) {
-            Ok((wav, duration)) => {
-                result.wav = Some(wav.to_string_lossy().to_string());
-                result.duration_secs = duration;
-                if let Some(entry) = transcripts.get(&key) {
-                    result.text = Some(entry.text.clone());
-                    result.cached = true;
-                } else {
-                    match voice::transcribe_file(&data_dir, &wav, 300) {
-                        Ok((text, engine, model)) => {
-                            transcripts.insert(
-                                key,
-                                voice::TranscriptEntry {
-                                    text: text.clone(),
-                                    engine,
-                                    model,
-                                    created_at: voice::now_secs(),
-                                },
-                            );
-                            let _ = voice::save_transcripts(&private_data, &transcripts);
-                            result.text = Some(text);
-                        }
-                        Err(error) => result.error = Some(error),
-                    }
-                }
-            }
-            Err(error) => result.error = Some(error),
-        }
-        results.push(result);
-    }
-    Ok(results)
-}
-
-/// Decode one voice message to a data URI so the webview can play it.
-#[tauri::command]
-async fn wechat_voice_audio(
-    app: AppHandle,
-    state: State<'_, SyncState>,
-    account_id: String,
-    username: String,
-    server_id: String,
-) -> Result<VoiceAudio, String> {
-    require_visible_session(&app, &account_id, &username)?;
-    let server_id: i64 = server_id.parse().map_err(|_| "无效的语音标识。".to_string())?;
-    let data_dir = app_data(&app);
-    let private_data=local_scope::root(&data_dir);
-    let blobs = voice_blobs_with_refresh(&app, state, &account_id, &[server_id]).await?;
-    let blob = blobs
-        .get(&server_id)
-        .ok_or_else(|| "本地暂未找到这条语音，请刷新微信数据后重试。".to_string())?;
-    let (wav, duration) = voice::ensure_wav(&private_data, &account_id, server_id, blob)?;
-    Ok(VoiceAudio {
-        data_uri: voice::audio_data_uri(&wav)?,
-        duration_secs: duration,
-    })
-}
-
-#[tauri::command]
-async fn chat_remote_lookup(app:AppHandle,account_id:String,username:String)->Result<serde_json::Value,String>{
-    let data=app_data(&app);let s=settings::load(&data)?;let owner=config_runtime::local_owner(&data,&s,&account_id)?;
-    if !config_runtime::browse_names(&s,&account_id).contains(&username) {return Err("该会话不在所选范围内。".into());}
-    let path={let mut query=url::form_urlencoded::Serializer::new(String::new());
-        query.append_pair("platform",expected_source_type(&account_id)).append_pair("source_account_id",&account_id).append_pair("source_conversation_id",&username);
-        format!("/api/v1/spaces/{}/desktop/conversation?{}",owner.space_id,query.finish())};
-    devify_json_request(&app,reqwest::Method::GET,path,None).await
-}
-#[tauri::command]
-async fn chat_remote_image(app:AppHandle,space_id:String,item_id:Option<i64>,sha256:Option<String>)->Result<String,String>{
-    static IMAGES:tokio::sync::Semaphore=tokio::sync::Semaphore::const_new(2);
-    let _budget=IMAGES.acquire().await.map_err(|e|e.to_string())?;
-    let data=app_data(&app);let s=settings::load(&data)?;validate_devify_space(&s,&space_id)?;
-    let media_path=if let Some(hash)=sha256 {if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit()) {return Err("图片摘要无效。".into());}format!("/api/v1/spaces/{space_id}/chat-media/{hash}")}
-        else if let Some(id)=item_id.filter(|id|*id>0) {format!("/api/v1/spaces/{space_id}/media/{id}")} else {return Err("图片标识无效。".into());};
-    let base=s.devify.resolved_base_url()?;let token=devify_access_token_async(&data,&base).await?;let generation=request_generation(&data,&base,&token)?;
-    let mut response=http_client::api().get(format!("{base}{media_path}")).bearer_auth(&token).send().await.map_err(|e|devify_network_message("读取图片失败",&e))?;
-    if !response.status().is_success() {return Err(format!("读取图片失败：HTTP {}",response.status()));}
-    let mime=response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|h|h.to_str().ok()).unwrap_or("").split(';').next().unwrap_or("").to_string();
-    if !matches!(mime.as_str(),"image/png"|"image/jpeg"|"image/gif"|"image/webp") {return Err("当前媒体没有可显示的图片。".into());}
-    let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|e|e.to_string())? {
-        if bytes.len().saturating_add(chunk.len())>8*1024*1024 {return Err("图片较大，请查看原记录。".into());}bytes.extend_from_slice(&chunk);
-    }
-    if request_generation(&data,&base,&token).ok()!=Some(generation) {return Err("登录状态已改变。".into());}
-    Ok(format!("data:{mime};base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes)))
-}
-
-#[tauri::command]
-async fn chat_sessions(app: AppHandle, account_id: String, limit: Option<usize>, offset: Option<usize>, focus_username: Option<String>, focus_usernames: Option<Vec<String>>) -> Result<Vec<SessionItem>, String> {
-    let _read_budget=LOCAL_READ_BUDGET.acquire().await.map_err(|e|e.to_string())?;
-    validate_account_id(&account_id)?;
-    let data=app_data(&app);let value=settings::load(&data)?;
-    let mut allowed:HashSet<String>=config_runtime::browse_names(&value,&account_id).into_iter().collect();
-    let principal=config_runtime::local_owner(&data,&value,&account_id)?;
-    if value.runtime.sources.get(&account_id).and_then(|s|s.owner.as_ref()).or_else(||value.sync.owners.get(&account_id)).is_some_and(|old|!config_runtime::same_principal(old,&principal)) {return Ok(Vec::new());}
-    if let Some(name)=focus_username {allowed.retain(|v|v==&name);}
-    if let Some(names)=focus_usernames {
-        if names.len()>40 {return Err("一次最多读取 40 个会话名称。".into());}
-        let names:HashSet<_>=names.into_iter().collect();
-        allowed.retain(|v|names.contains(v));
-    }
-    let wa=whatsapp::is_account(&account_id);let cache=decrypt::cache_dir(&data,&account_id);
-    let cache_key=hex::encode(sha2::Sha256::digest(serde_json::to_vec(&("sessions-v1",&principal,limit.unwrap_or(50),offset.unwrap_or(0),&{let mut v:Vec<_>=allowed.iter().cloned().collect();v.sort();v})).map_err(|e|e.to_string())?));
-    let read_data=data.clone();let read_key=cache_key.clone();
-    tauri::async_runtime::spawn_blocking(move||{
-        if !wa && allowed.iter().any(|name|name.ends_with("@qy_g") || name.ends_with("@qy_u")) {let _=decrypt::prepare_business_cache(&data,&account_id,false);}
-        let result=if wa {whatsapp::sessions_page(&data,&allowed,limit.unwrap_or(50).clamp(1,100),offset.unwrap_or(0).min(1000))}
-        else {query::sessions_page(&cache,Some(&allowed),Some(limit.unwrap_or(50).clamp(1,100)),offset.unwrap_or(0).min(1000))};
-        match result {
-            Ok(mut list)=>{
-                if let Some(old)=task_store::cache_get(&read_data,&read_key).and_then(|v|serde_json::from_value::<Vec<SessionItem>>(v).ok()) {
-                    for item in old {if allowed.contains(&item.username) && !list.iter().any(|s|s.username==item.username) {list.push(item);}}
-                    list.sort_by(|a,b|b.last_time.cmp(&a.last_time));list.truncate(limit.unwrap_or(50).clamp(1,100));
-                }
-                if !list.is_empty(){if let Ok(body)=serde_json::to_value(&list){let _=task_store::cache_put(&read_data,&read_key,&body);}}Ok(list)
-            },
-            Err(error) if !wa && !cache.join("session/session.db").exists()=>{
-                task_store::cache_get(&read_data,&read_key).and_then(|v|serde_json::from_value(v).ok()).ok_or(error)
-            }
-            Err(error)=>Err(error)
-        }
-    }).await.map_err(|e|format!("读取会话失败：{e}"))?
-}
-
 #[derive(Serialize)]
 struct SessionUploadState {
     username: String,
@@ -7127,176 +6591,6 @@ async fn wechat_upload_state(
     .map_err(|e| format!("读取上传状态失败：{e}"))
 }
 
-#[derive(Serialize)]
-struct AvatarItem {
-    username: String,
-    data_url: String,
-}
-
-#[derive(Serialize)]
-struct WechatAccountProfile {
-    nickname: Option<String>,
-    alias: Option<String>,
-    avatar: Option<String>,
-}
-
-#[tauri::command]
-async fn wechat_account_profile(app: AppHandle, account_id: String) -> Option<WechatAccountProfile> {
-    if whatsapp::is_account(&account_id) {
-        let account = whatsapp::account()?;
-        return Some(WechatAccountProfile {
-            nickname: account.name.or_else(|| Some(account.phone)),
-            alias: Some(account.id),
-            avatar: None,
-        });
-    }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    let profile = query::account_profile(&cache, &account_id)?;
-    let avatar = wechat::avatar::avatars(&cache, &[profile.username]).into_iter().next().map(|item| item.data_url);
-    Some(WechatAccountProfile { nickname: profile.nickname, alias: profile.alias, avatar })
-}
-
-/// Avatars for the given usernames, as `data:` URLs. Missing names are simply absent, so the
-/// caller keeps its letter avatars; nothing here is an error worth interrupting a chat for.
-#[tauri::command]
-async fn wechat_avatars(
-    app: AppHandle,
-    account_id: String,
-    usernames: Vec<String>,
-) -> Vec<AvatarItem> {
-    if whatsapp::is_account(&account_id) {
-        return Vec::new();
-    }
-    let Ok(_budget) = LOCAL_READ_BUDGET.acquire().await else {return Vec::new();};
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    tauri::async_runtime::spawn_blocking(move||wechat::avatar::avatars(&cache, &usernames.into_iter().take(100).collect::<Vec<_>>())
-        .into_iter()
-        .map(|avatar| AvatarItem {
-            username: avatar.username,
-            data_url: avatar.data_url,
-        })
-        .collect()).await.unwrap_or_default()
-}
-
-#[tauri::command]
-async fn wechat_session_catalog(
-    app: AppHandle,
-    account_id: String,
-) -> Result<Vec<SessionItem>, String> {
-    if whatsapp::is_account(&account_id) {
-        validate_account_id(&account_id)?;
-        let data = app_data(&app);
-        return tauri::async_runtime::spawn_blocking(move || whatsapp::sessions(&data))
-            .await
-            .map_err(|error| format!("读取 WhatsApp 会话失败：{error}"))?;
-    }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    query::sessions(&cache)
-}
-
-#[tauri::command]
-async fn wechat_messages(
-    app: AppHandle,
-    account_id: String,
-    username: String,
-    limit: Option<usize>,
-    before: Option<i64>,
-    before_id: Option<i64>,
-    before_shard: Option<String>,
-) -> Result<Vec<MessageItem>, String> {
-    let _read_budget=LOCAL_READ_BUDGET.acquire().await.map_err(|e|e.to_string())?;
-    if whatsapp::is_account(&account_id) {
-        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
-        if !allowed.contains(&username) {
-            return Err("该会话不在当前策略白名单中。".into());
-        }
-        let cursor = before.map(|time| match before_id {
-            Some(id) => query::MessageCursor { time, local_id: id, source_shard: before_shard.unwrap_or_default() },
-            None => query::MessageCursor::before_time(time),
-        });
-        let data = app_data(&app);
-        return tauri::async_runtime::spawn_blocking(move || {
-            let rows=whatsapp::messages(&data,&username,limit.unwrap_or(100).clamp(1,100),cursor)?;
-            if rows.is_empty() && before.is_none() {return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());}Ok(rows)
-        })
-        .await
-        .map_err(|error| format!("读取 WhatsApp 消息失败：{error}"))?;
-    }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    let allowed = allowed_usernames(&app, &account_id)?;
-    if !allowed.contains(&username) {
-        return Err("该会话不在当前策略白名单中。".into());
-    }
-    // Both halves of the cursor come from the last row already on screen; without the id
-    // this degrades to the old timestamp-only paging, which cannot see past a shared second.
-    let cursor = before.map(|time| match before_id {
-        Some(id) => query::MessageCursor { time, local_id: id, source_shard: before_shard.unwrap_or_default() },
-        None => query::MessageCursor::before_time(time),
-    });
-    if !query::is_visible_chat_username(&username) {return Err("该会话不在查看范围内。".into());}
-    tauri::async_runtime::spawn_blocking(move||{
-        if username.ends_with("@qy_g") || username.ends_with("@qy_u") {decrypt::prepare_business_cache(&app_data(&app),&account_id,true)?;}
-        if !query::chat_present(&cache,&username)? {return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());}
-        let rows=query::messages(&cache,&username,limit.unwrap_or(100).clamp(1,100),cursor)?;
-        if rows.is_empty() && before.is_none() {return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());}
-        Ok(rows)
-    }).await.map_err(|e|e.to_string())?
-}
-
-/// Bounded keyword search over decrypted message content.
-///
-/// `max_sessions` caps how many conversations are scanned; the report tells the UI how
-/// many were actually scanned and how many were skipped, so results are never presented
-/// as exhaustive when they are not.
-#[tauri::command]
-async fn wechat_search(
-    app: AppHandle,
-    account_id: String,
-    keyword: String,
-    groups_only: Option<bool>,
-    max_sessions: Option<usize>,
-) -> Result<SearchReport, String> {
-    if whatsapp::is_account(&account_id) {
-        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
-        let data = app_data(&app);
-        return tauri::async_runtime::spawn_blocking(move || {
-            let mut report = whatsapp::search(&data, &keyword, max_sessions.unwrap_or(200), Some(&allowed))?;
-            // Rust enforces the whitelist even though the search only ever returns names.
-            report.hits.retain(|hit| allowed.contains(&hit.username));
-            if !groups_only.unwrap_or(false) { return Ok(report); }
-            report.hits.retain(|hit| hit.is_group);
-            Ok(report)
-        })
-        .await
-        .map_err(|error| format!("搜索失败：{error}"))?;
-    }
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    let allowed = allowed_usernames(&app, &account_id)?;
-    query::search_filtered(
-        &cache,
-        &keyword,
-        groups_only.unwrap_or(false),
-        max_sessions.unwrap_or(200),
-        Some(&allowed),
-    )
-}
-
-#[tauri::command]
-async fn wechat_digest(
-    app: AppHandle,
-    account_id: String,
-    usernames: Vec<String>,
-    since: Option<i64>,
-    until: Option<i64>,
-) -> Result<DigestReport, String> {
-    let cache = decrypt::cache_dir(&app_data(&app), &account_id);
-    let allowed = allowed_usernames(&app, &account_id)?;
-    if usernames.iter().any(|username| !allowed.contains(username)) {
-        return Err("整理内容包含不在当前策略白名单中的会话。".into());
-    }
-    query::digest_filtered(&cache, &usernames, since, until, Some(&allowed))
-}
-
 #[tauri::command]
 async fn wechat_clear_cache(app: AppHandle, account_id: String) -> Result<String, String> {
     let cache = decrypt::cache_dir(&app_data(&app), &account_id);
@@ -7447,10 +6741,10 @@ pub fn run() {
             commands::events::devify_event_relations,
             commands::events::devify_event_relation_create,
             commands::events::devify_event_relation_delete,
-            devify_conversations,
-            devify_conversation_detail,
-            devify_conversation_messages,
-            devify_message_detail,
+            commands::chat::remote::devify_conversations,
+            commands::chat::remote::devify_conversation_detail,
+            commands::chat::remote::devify_conversation_messages,
+            commands::chat::remote::devify_message_detail,
             devify_sync_now,
             commands::topics::devify_topics,
             commands::topics::devify_topic_create,
@@ -7463,9 +6757,9 @@ pub fn run() {
             commands::questions::devify_question_detail,
             commands::questions::devify_question_ask,
             commands::topics::devify_note_detail,
-            wechat_collection_messages,
-            wechat_collection_dates,
-            wechat_catalog_dates,
+            commands::chat::collections::wechat_collection_messages,
+            commands::chat::collections::wechat_collection_dates,
+            commands::chat::collections::wechat_catalog_dates,
             devify_upload_preview,
             devify_upload_identity,
             devify_upload_selected,
@@ -7507,25 +6801,25 @@ pub fn run() {
             wechat_import_saved_key,
             wechat_decrypt,
             wechat_sync,
-            chat_remote_lookup,
-            chat_remote_image,
-            chat_sessions,
+            commands::chat::remote::chat_remote_lookup,
+            commands::chat::remote::chat_remote_image,
+            commands::chat::local::chat_sessions,
             wechat_upload_state,
-            wechat_avatars,
-            wechat_account_profile,
-            wechat_session_catalog,
-            wechat_messages,
-            wechat_message_media,
-            wechat_media_reveal,
-            wechat_media_open_image,
-            wechat_media_preview,
-            wechat_export_bundle,
-            wechat_voice_status,
-            wechat_voice_settings_save,
-            wechat_voice_transcribe,
-            wechat_voice_audio,
-            wechat_search,
-            wechat_digest,
+            commands::chat::local::wechat_avatars,
+            commands::chat::local::wechat_account_profile,
+            commands::chat::local::wechat_session_catalog,
+            commands::chat::local::wechat_messages,
+            commands::chat::media::wechat_message_media,
+            commands::chat::media::wechat_media_reveal,
+            commands::chat::media::wechat_media_open_image,
+            commands::chat::media::wechat_media_preview,
+            commands::chat::media::wechat_export_bundle,
+            commands::chat::voice::wechat_voice_status,
+            commands::chat::voice::wechat_voice_settings_save,
+            commands::chat::voice::wechat_voice_transcribe,
+            commands::chat::voice::wechat_voice_audio,
+            commands::chat::local::wechat_search,
+            commands::chat::local::wechat_digest,
             wechat_clear_cache,
             wechat_env,
             app_info,

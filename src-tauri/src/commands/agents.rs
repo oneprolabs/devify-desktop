@@ -1,10 +1,8 @@
 //! Local Agent discovery, access setup and summary invocation through native IPC.
+use crate::chat::access::{allowed_usernames, whatsapp_allowed_usernames};
 use crate::mcp::runtime::{access_state, McpState, McpStatus};
 use crate::wechat::{decrypt, query};
-use crate::{
-    access, agent, allowed_usernames, app_data, capabilities, entitlements, mcp, settings,
-    whatsapp, whatsapp_allowed_usernames,
-};
+use crate::{access, agent, app_data, capabilities, entitlements, mcp, settings, whatsapp};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
