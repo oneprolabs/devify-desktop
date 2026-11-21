@@ -27,7 +27,7 @@ function load(file) {
     if(name==='react/jsx-runtime')return jsx;
     if(name==='@tauri-apps/api/core')return{invoke:(...args)=>invoke(...args)};
     if(['../../shared/i18n/locale', '../i18n/locale'].includes(name))return translate;
-    if(name==='../settings/Settings')return{defaultSettings:()=>({devify:{active_space_id:null}}),mergeSettings:value=>value};
+    if(name==='../settings/settingsModel')return{defaultSettings:()=>({devify:{active_space_id:null}}),mergeSettings:value=>value};
     if(['../../shared/scheduling/dailyPlan','./reportPlans','./ReportSchedules'].includes(name))return load(`${new URL(name, file).href}.${name.endsWith('ReportSchedules')?'tsx':'ts'}`);
     if(name==='./analysisSettingsText')return{analysisSettingsError:value=>value instanceof Error?value.message:String(value)};
     if(name==='../../shared/ui/WizardActionButton')return{WizardActionButton};

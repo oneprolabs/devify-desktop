@@ -3,7 +3,7 @@ import { ReportSchedules } from './ReportSchedules';
 import { AgentSettings } from '../agents/AgentSettings';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { type AppSettings, defaultSettings, mergeSettings } from '../settings/Settings';
+import { type AppSettings, defaultSettings, mergeSettings } from '../settings/settingsModel';
 import { analysisSettingsError } from './analysisSettingsText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import './analysis-settings.css';

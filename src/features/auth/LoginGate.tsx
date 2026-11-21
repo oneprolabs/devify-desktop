@@ -4,7 +4,7 @@ import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import brandMark from '../../assets/app-mark-transparent.png';
-import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from '../settings/Settings';
+import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from '../settings/settingsModel';
 import { apiBaseUrl, storedBaseUrl } from '../../shared/api/serviceUrl.ts';
 import { requestFeedback } from '../../shared/api/desktopInvoke';
 

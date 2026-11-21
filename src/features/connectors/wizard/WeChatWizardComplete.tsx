@@ -1,7 +1,7 @@
 import { t, tf } from '../../../shared/i18n/locale';
 import { useEffect, useRef, useState } from 'react';
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
-import { mergeSettings, type AppSettings } from '../../settings/Settings';
+import { mergeSettings, type AppSettings } from '../../settings/settingsModel';
 import { WizardActionButton } from '../../../shared/ui/WizardActionButton';
 
 type Capture = { pending: boolean; needs_cleanup: boolean; recovery_error_code: string | null; wechat_official: boolean };

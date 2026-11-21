@@ -24,7 +24,7 @@ import {
 } from '../../../shared/content/summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from '../summary/workInsights';
 import { useCapability, useInternalAccount } from '../../auth/entitlements';
-import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from '../../settings/Settings';
+import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from '../../settings/settingsModel';
 
 type DbFile = {
   rel: string;

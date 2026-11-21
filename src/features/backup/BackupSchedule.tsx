@@ -1,7 +1,7 @@
 import { t, tf, ctf } from '../../shared/i18n/locale';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { type AppSettings, defaultSettings, mergeSettings } from '../settings/Settings';
+import { type AppSettings, defaultSettings, mergeSettings } from '../settings/settingsModel';
 import wechatIcon from '../../assets/connectors/wechat.svg';
 import whatsappIcon from '../../assets/connectors/whatsapp.svg';
 import { createSettingsSaveQueue, settingsUserRevision, type SettingsSaveQueue } from '../../shared/state/settingsSaveQueue';

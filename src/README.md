@@ -22,7 +22,8 @@ src/
     tasks/                    # Task page, runtime, cloud jobs, snapshots, status
     analysis/                 # Events, topics, reports, Q&A, analysis settings
     agents/                   # Local CLI configuration and tool access
-    settings/                 # Account, language, About, existing settings model/editor
+    settings/                 # Settings model, account, language, About, existing editors
+      settingsModel.ts        # Types, defaults, revision checks and merge/error helpers
     feedback/                 # Feedback form, screenshots, diagnostic presentation
     updates/                  # Update checks, download, installation state
   shared/
@@ -47,14 +48,19 @@ src/
 - Existing cross-feature dependencies are retained. For example, the settings editor uses
   connector scope controls, and the chat reader uses connection checks and task state.
   Directory grouping does not introduce new services, state stores, or request ownership.
+- Settings consumers import types, defaults, revision checks, and merge/error helpers from
+  `features/settings/settingsModel.ts`. Import `Settings.tsx` only to render its editors.
+  The model does not import page components, native IPC, or lifecycle hooks; saves remain
+  owned by the existing callers and serialized save queue.
 
 ## Boundaries reserved for later extraction
 
-`features/settings/Settings.tsx` still combines the settings model and several editors.
+`features/settings/Settings.tsx` still combines import, account, and legacy automation
+editors; its shared model has been extracted without changing the declarations.
 `features/chat/local-reader/WeChatLocal.tsx` still combines the legacy reader and WeChat
 setup UI. `shared/content/summary.tsx` still combines legacy record types and rendering.
-Move these files intact first; review their internal boundaries separately before splitting
-them. The native Rust modules under `src-tauri/src/` are a separate refactoring scope.
+Review each remaining internal boundary independently before further extraction. The native
+Rust modules under `src-tauri/src/` are a separate refactoring scope.
 
 ## Safe migration and extraction
 

@@ -77,6 +77,7 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/plugin-deep-link') return { onOpenUrl: async () => () => {} };
   if (id === '../../shared/api/devifyDevice') return { registerDevifyDevice: async () => {} };
   if (['../../../shared/api/desktopInvoke', '../../shared/api/desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
+  if (['./settingsModel', '../../settings/settingsModel', '../settings/settingsModel'].includes(id)) return settingsModel;
   if (['../../settings/Settings', '../settings/Settings'].includes(id)) return module.exports;
   if (id === './wechatSetupState') return loadModule('../src/features/connectors/wizard/wechatSetupState.ts');
   if (['../../connectors/Permission', '../Permission'].includes(id)) return loadModule('../src/features/connectors/Permission.tsx');
@@ -119,11 +120,13 @@ new Function('require', 'module', 'exports', serviceUrlCompiled)(
   mockedRequire, serviceUrlModule, serviceUrlModule.exports,
 );
 const serviceUrl = serviceUrlModule.exports;
+const settingsModel = loadModule('../src/features/settings/settingsModel.ts');
 const source = fs.readFileSync(new URL('../src/features/settings/Settings.tsx', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
 const module = { exports: {} };
 new Function('require', 'module', 'exports', compiled)(mockedRequire, module, module.exports);
-const { defaultSettings, mergeSavedSettings, requireSettingsRevision, settingsSaveError, StrategySettings, DevifySettings } = module.exports;
+const { defaultSettings, mergeSavedSettings, requireSettingsRevision, settingsSaveError } = settingsModel;
+const { StrategySettings, DevifySettings } = module.exports;
 
 assert.throws(() => requireSettingsRevision({}), /版本/);
 assert.throws(() => requireSettingsRevision({ user_settings_revision: -1 }), /版本/);
@@ -248,7 +251,7 @@ for (const name of ['setAccountSwitching','setError','setAccountId','setSessions
 wxContext.loadSessions = async () => [];
 wxContext.requireSettingsRevision = requireSettingsRevision;
 wxContext.settingsSaveError = settingsSaveError;
-wxContext.isSettingsConflict = module.exports.isSettingsConflict;
+wxContext.isSettingsConflict = settingsModel.isSettingsConflict;
 wxContext.tf = (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? ''));
 wxContext.useCallback = fn => fn;
 let wxSave = deferred();

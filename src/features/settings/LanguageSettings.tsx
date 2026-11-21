@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { type AppSettings, defaultSettings, mergeSettings } from './Settings';
+import { type AppSettings, defaultSettings, mergeSettings } from './settingsModel';
 import { applyLanguage, t, tf, ctf } from '../../shared/i18n/locale';
 import { createSettingsSaveQueue, settingsSaveFailure, settingsUserRevision, type SettingsSaveQueue } from '../../shared/state/settingsSaveQueue';
 
