@@ -41,8 +41,8 @@ globalThis.window = {
   setTimeout(fn) { released.push(fn); return released.length; },
 };
 let invoke;
-mock.module('react', { exports: { ...react, useSyncExternalStore: (_, get) => get() } });
-mock.module(new URL('../src/shared/api/desktopInvoke.ts', import.meta.url).href, { exports: { desktopInvoke: (...args) => invoke(...args) } });
+mock.module('react', { namedExports: { ...react, useSyncExternalStore: (_, get) => get() } });
+mock.module(new URL('../src/shared/api/desktopInvoke.ts', import.meta.url).href, { namedExports: { desktopInvoke: (...args) => invoke(...args) } });
 const { useWeChatConnection } = await import('../src/features/connectors/wechat/useWeChatConnection.ts');
 const A = { id: 'A', dbs: [{ rel: 'session/session.db', encrypted: true }, { rel: 'message/message_0.db', encrypted: true }] };
 const idle = { pending: false, stage: 'idle', platform_supported: true, lldb_available: true, wechat_official: true, user_can_write: true };
