@@ -1,20 +1,16 @@
-# WeChat Devify Agent Skills
+# AIMyChats Agent Skills
 
-这三个 Skill 由桌面应用 **AIMyChats** 直接提供，不需要从仓库构建或手动复制：
+只提供一个 **`aimychats` Skill**，由桌面应用直接安装，不需要从仓库构建或手动复制。
+它统一负责发现可读取的平台与账号、查找会话、分页读取和检索原文。总结、日报、项目分析
+是用户智能体拿到这些材料之后的不同处理方式，无需分别安装 Skills。
 
-- `wechat-chat-records`：白名单聊天记录读取与检索。
-- `wechat-work-exploration`：跨会话探索、项目重点和 timeline。
-- `wechat-daily-summary`：每日工作摘要草稿。
+## 安装与范围
 
-## 一条提示词安装
+打开 AIMyChats 的 **智能体集成** 页，为检测到的智能体点击 **安装 Skills**。安装后重新打开智能体会话即可使用，无需输入端口或 Token。
 
-打开 AIMyChats 的 **Agent 集成** 页，切到 **工具接入**：
+Skills 只连接 AIMyChats 的统一本机只读接口。先用 `wxq accounts --json` 发现可读取的平台和账号，再携带 `--account ID` 读取会话；目前支持微信与 WhatsApp，权限、平台适配与账号变化校验均由客户端负责。会话和消息均分页读取。
 
-1. 选择当前工具，确认 CLI 目录（如 `~/.local/bin`）和 Skills 目录（如 `~/.claude/skills`）。
-2. 复制页面生成的提示词，粘贴到该工具的会话中，允许它执行 shell。
-3. Agent 会从本机服务下载 `wxq` 和三个 `SKILL.md`，然后运行 `wxq health` / `wxq policy` 验证。
-
-页面不会展示或使用 MCP。所有下载都在本机回环地址上完成，应用关闭后服务停止。
+升级时，应用管理的旧 `wechat-*` Skills 会在新版全部写入后移到应用数据目录的 `legacy-skill-backups`，避免智能体重复发现。无应用标记的旧 Skills 保留并提示用户处理；旧下载地址与 MCP 工具名仍兼容。
 
 ## 下载接口
 

@@ -613,12 +613,49 @@ pub struct AutomationSettings {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct AgentSettings {
+    /// None preserves the pre-switch behavior of an existing configured installation.
+    pub enabled: Option<bool>,
+    pub profiles: BTreeMap<String, AgentProfile>,
     pub provider_id: String,
     pub command: String,
     pub model: String,
     pub timeout_seconds: u64,
     pub instructions: String,
     pub use_for_daily: bool,
+}
+
+/// Per-host overrides; shared summary instructions stay on AgentSettings.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct AgentProfile {
+    pub command: String,
+    pub model: String,
+    pub timeout_seconds: u64,
+    pub skills_dir: String,
+}
+impl Default for AgentProfile {
+    fn default() -> Self {
+        Self { command: String::new(), model: String::new(), timeout_seconds: 180, skills_dir: String::new() }
+    }
+}
+impl AgentSettings {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or_else(|| !self.provider_id.trim().is_empty())
+    }
+    pub fn for_provider(&self, id: &str) -> Self {
+        let mut selected = self.clone();
+        if let Some(profile) = self.profiles.get(id) {
+            selected.command = profile.command.clone();
+            selected.model = profile.model.clone();
+            selected.timeout_seconds = profile.timeout_seconds;
+        } else if self.provider_id != id {
+            selected.command.clear();
+            selected.model.clear();
+            selected.timeout_seconds = 180;
+        }
+        selected.provider_id = id.to_string();
+        selected
+    }
 }
 
 impl Default for AppSettings {
@@ -717,6 +754,8 @@ impl Default for AutomationSettings {
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
+            enabled: None,
+            profiles: BTreeMap::new(),
             provider_id: String::new(),
             command: String::new(),
             model: String::new(),
@@ -1012,6 +1051,24 @@ fn validate_keys(keys: &KeysSettings) -> Result<(), String> {
 }
 
 fn validate_agent(agent: &AgentSettings) -> Result<(), String> {
+    if agent.profiles.len() > 16 { return Err("智能体配置数量过多。".into()); }
+    for (id, profile) in &agent.profiles {
+        if id.is_empty() || id.len() > 64 || id.chars().any(|c| c.is_control()) {
+            return Err("智能体标识无效。".into());
+        }
+        let mut entry = agent.for_provider(id);
+        entry.profiles.clear();
+        validate_agent(&entry)?;
+        for path in [&profile.command, &profile.skills_dir] {
+            if path.len() > 1024 || path.chars().any(|c| c.is_control()) {
+                return Err("智能体路径无效。".into());
+            }
+            if !path.is_empty() && crate::access::expand_path(path).is_none() {
+                return Err("智能体路径必须是绝对路径或以 ~/ 开头。".into());
+            }
+        }
+    }
+
     if agent.provider_id.len() > 64 || agent.provider_id.chars().any(|ch| ch.is_control()) {
         return Err("Agent 标识无效。".into());
     }
@@ -1454,6 +1511,24 @@ mod tests {
         settings.agent.instructions = "重点看交付风险".to_string();
         settings.agent.provider_id = "codex".to_string();
         assert!(validate(&settings).is_ok());
+    }
+
+    #[test]
+    fn agent_switch_migrates_existing_choices_and_profiles_stay_separate() {
+        let mut value: AgentSettings = serde_json::from_str(r#"{"provider_id":"codex","model":"legacy-model"}"#).unwrap();
+        assert!(value.is_enabled());
+        assert!(!AgentSettings::default().is_enabled());
+        value.enabled = Some(false);
+        assert!(!value.is_enabled());
+        value.profiles.insert("claude-code".into(), AgentProfile { model: "sonnet".into(), ..Default::default() });
+        let other = value.for_provider("claude-code");
+        assert_eq!(other.model, "sonnet");
+        assert_eq!(value.for_provider("codex").model, "legacy-model");
+        assert!(value.for_provider("gemini-cli").model.is_empty());
+        let mut app = AppSettings::default();
+        app.agent = value;
+        app.agent.profiles.get_mut("claude-code").unwrap().skills_dir = "relative/path".into();
+        assert!(validate(&app).is_err());
     }
 
     #[test]

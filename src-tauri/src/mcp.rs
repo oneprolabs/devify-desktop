@@ -1,3 +1,7 @@
+pub(crate) mod runtime;
+mod chat;
+use chat::{accounts_json, policy_json, sessions_json, messages_json, search_json, digest_json};
+
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -6,7 +10,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -17,8 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
-use crate::settings::{self, AppSettings};
-use crate::wechat::{decrypt, query};
+use crate::settings;
 use crate::access;
 use crate::entitlements;
 
@@ -72,14 +75,14 @@ pub fn load_or_create_token(app_data: &Path) -> Result<String, String> {
 /// Whether the loopback listener may exist at all.
 ///
 /// The port is opened for a signed-in account whose plan carries a bridge capability, and
-/// only while the WeChat connector is on. A missing snapshot means "no": the app must not
+/// only while at least one connector is on. A missing snapshot means "no": the app must not
 /// expose a port before login or before the server has answered. An unenforced snapshot
 /// still counts as granted so self-hosted servers without `/me/entitlements` keep working.
 pub fn bridge_listen_allowed(app_data: &Path) -> bool {
     let Ok(settings) = settings::load(app_data) else {
         return false;
     };
-    if !settings.connectors.wechat_enabled {
+    if !settings.connectors.wechat_enabled && !settings.connectors.whatsapp_enabled {
         return false;
     }
     let Ok(base_url) = settings.devify.resolved_base_url() else {
@@ -110,6 +113,8 @@ struct SessionQuery {
 #[derive(Deserialize, Default)]
 struct AccountArgs {
     account_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -191,72 +196,22 @@ fn safe_account_id(account_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-struct Context {
-    account_id: String,
-    cache: PathBuf,
-    allowed: HashSet<String>,
-    settings: AppSettings,
-}
-
-fn context(app_data: &Path, account_id: Option<String>) -> Result<Context, String> {
-    let settings = settings::load(app_data)?;
-    if !settings.connectors.wechat_enabled {
-        return Err("微信连接已断开，重新连接后才能通过 MCP 读取聊天。".into());
-    }
-    crate::entitlements::require(
-        app_data,
-        &settings.devify.base_url,
-        crate::capabilities::BRIDGE_MCP,
-    )?;
-    let account_id = account_id
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| settings.active_account_id.clone());
-    safe_account_id(&account_id)?;
-    let allowed = settings
-        .chat
-        .allowed_usernames
-        .get(&account_id)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    Ok(Context {
-        cache: decrypt::cache_dir(app_data, &account_id),
-        account_id,
-        allowed,
-        settings,
-    })
-}
-
-fn sessions(context: &Context) -> Result<Vec<query::SessionItem>, String> {
-    query::sessions_filtered(&context.cache, Some(&context.allowed))
-}
-
-fn ensure_allowed(context: &Context, username: &str) -> Result<(), String> {
-    if !query::is_chat_session(&context.cache, username) {
-        return Err("公众号、服务号和系统会话不在 MCP 查看范围内。".into());
-    }
-    if !context.allowed.contains(username) {
-        return Err("该会话不在聊天白名单中。".into());
-    }
-    Ok(())
-}
-
 fn tools() -> Value {
     json!({
         "tools": [
+            {"name":"aimychats_list_accounts", "description":"列出当前 AIMyChats 中允许读取的平台和账号，后续读取传入 account_id。", "inputSchema":{"type":"object","properties":{}}},
             {
-                "name": "wechat_get_policy",
+                "name": "aimychats_get_policy",
                 "description": "读取当前账号和白名单会话。只返回群聊和单聊，不返回公众号、服务号或系统会话。",
                 "inputSchema": {"type": "object", "properties": {"account_id": {"type": "string"}}}
             },
             {
-                "name": "wechat_list_sessions",
-                "description": "列出当前白名单内的聊天会话。白名单为空时返回空列表。",
-                "inputSchema": {"type": "object", "properties": {"account_id": {"type": "string"}}}
+                "name": "aimychats_list_sessions",
+                "description": "分页列出当前账号允许读取的聊天会话。next_offset 非空时继续翻页。",
+                "inputSchema": {"type": "object", "properties": {"account_id": {"type": "string"}, "limit":{"type":"integer","minimum":1,"maximum":500,"default":100},"offset":{"type":"integer","minimum":0,"default":0}}}
             },
             {
-                "name": "wechat_get_messages",
+                "name": "aimychats_get_messages",
                 "description": "读取一个白名单会话的消息。支持分页读取更早消息。",
                 "inputSchema": {
                     "type": "object",
@@ -272,7 +227,7 @@ fn tools() -> Value {
                 }
             },
             {
-                "name": "wechat_search_messages",
+                "name": "aimychats_search_messages",
                 "description": "在白名单会话中搜索消息。搜索范围最多 200 个会话。",
                 "inputSchema": {
                     "type": "object",
@@ -286,7 +241,7 @@ fn tools() -> Value {
                 }
             },
             {
-                "name": "wechat_digest",
+                "name": "aimychats_digest",
                 "description": "对指定的白名单会话做规则整理，输出待办、决定、问题、风险、数据和时间线素材。不是本地 AI 结论。",
                 "inputSchema": {
                     "type": "object",
@@ -317,78 +272,14 @@ fn arguments<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, String
         .map_err(|error| format!("工具参数无效：{error}"))
 }
 
-fn policy_json(app_data: &Path, args: AccountArgs) -> Result<Value, String> {
-    let context = context(app_data, args.account_id)?;
-    let sessions = sessions(&context)?;
-    Ok(json!({
-        "account_id": context.account_id,
-        "whitelist_count": context.allowed.len(),
-        "sessions": sessions,
-        "automation_enabled": context.settings.automation.enabled
-    }))
-}
-
-fn sessions_json(app_data: &Path, args: AccountArgs) -> Result<Value, String> {
-    let context = context(app_data, args.account_id)?;
-    Ok(json!({"account_id": context.account_id, "sessions": sessions(&context)?}))
-}
-
-fn messages_json(app_data: &Path, args: MessagesArgs) -> Result<Value, String> {
-    let context = context(app_data, args.account_id)?;
-    ensure_allowed(&context, &args.username)?;
-    let limit = args.limit.unwrap_or(100).clamp(1, 500);
-    let cursor = args.before.map(|time| match args.before_id {
-        Some(id) => query::MessageCursor { time, local_id: id, source_shard: args.before_shard.unwrap_or_default() },
-        None => query::MessageCursor::before_time(time),
-    });
-    let messages = query::messages(&context.cache, &args.username, limit, cursor)?;
-    let has_more = messages.len() == limit;
-    Ok(json!({
-        "account_id": context.account_id,
-        "username": args.username,
-        "messages": messages,
-        "has_more": has_more,
-        "next_cursor": messages.last().map(|m| json!({"before": m.time, "before_id": m.local_id, "before_shard": m.source_shard}))
-    }))
-}
-
-fn search_json(app_data: &Path, args: SearchArgs) -> Result<Value, String> {
-    let context = context(app_data, args.account_id)?;
-    let report = query::search_filtered(
-        &context.cache,
-        &args.keyword,
-        args.groups_only.unwrap_or(false),
-        args.max_sessions.unwrap_or(200).clamp(1, 200),
-        Some(&context.allowed),
-    )?;
-    serde_json::to_value(report).map_err(|error| error.to_string())
-}
-
-fn digest_json(app_data: &Path, args: DigestArgs) -> Result<Value, String> {
-    if args.usernames.is_empty() || args.usernames.len() > 100 {
-        return Err("usernames 必须包含 1 到 100 个会话。".into());
-    }
-    let context = context(app_data, args.account_id)?;
-    for username in &args.usernames {
-        ensure_allowed(&context, username)?;
-    }
-    let digest = query::digest_filtered(
-        &context.cache,
-        &args.usernames,
-        args.since,
-        args.until,
-        Some(&context.allowed),
-    )?;
-    serde_json::to_value(digest).map_err(|error| error.to_string())
-}
-
 fn call_tool(app_data: &Path, name: &str, params: &Value) -> Value {
     let output = match name {
-        "wechat_get_policy" => arguments::<AccountArgs>(params).and_then(|args| policy_json(app_data, args)),
-        "wechat_list_sessions" => arguments::<AccountArgs>(params).and_then(|args| sessions_json(app_data, args)),
-        "wechat_get_messages" => arguments::<MessagesArgs>(params).and_then(|args| messages_json(app_data, args)),
-        "wechat_search_messages" => arguments::<SearchArgs>(params).and_then(|args| search_json(app_data, args)),
-        "wechat_digest" => arguments::<DigestArgs>(params).and_then(|args| digest_json(app_data, args)),
+        "aimychats_list_accounts" => accounts_json(app_data),
+        "aimychats_get_policy" | "wechat_get_policy" => arguments::<AccountArgs>(params).and_then(|args| policy_json(app_data, args)),
+        "aimychats_list_sessions" | "wechat_list_sessions" => arguments::<AccountArgs>(params).and_then(|args| sessions_json(app_data, args)),
+        "aimychats_get_messages" | "wechat_get_messages" => arguments::<MessagesArgs>(params).and_then(|args| messages_json(app_data, args)),
+        "aimychats_search_messages" | "wechat_search_messages" => arguments::<SearchArgs>(params).and_then(|args| search_json(app_data, args)),
+        "aimychats_digest" | "wechat_digest" => arguments::<DigestArgs>(params).and_then(|args| digest_json(app_data, args)),
         _ => Err(format!("未知工具：{name}")),
     };
     match output {
@@ -535,6 +426,12 @@ async fn api_policy(
     }
     let app_data = state.app_data.clone();
     api_task(move || policy_json(&app_data, args)).await
+}
+
+async fn api_accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &state.token) { return api_unauthorized(); }
+    let app_data = state.app_data.clone();
+    api_task(move || accounts_json(&app_data)).await
 }
 
 async fn api_sessions(
@@ -723,7 +620,7 @@ async fn agent_skill(
     if !internal_agent_allowed(&state) {
         return agent_forbidden();
     }
-    let Some(skill) = access::SKILLS.iter().find(|skill| skill.name == name) else {
+    let Some(skill) = access::skill_by_name(&name) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "未知的 Skill。" }))).into_response();
     };
     (
@@ -732,7 +629,11 @@ async fn agent_skill(
             (header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
             (header::CACHE_CONTROL, "no-store".to_string()),
         ],
-        skill.content,
+        if skill.legacy_names.contains(&name.as_str()) {
+            skill.content.replacen(&format!("name: {}", skill.name), &format!("name: {}", name), 1)
+        } else {
+            skill.content.to_string()
+        },
     )
         .into_response()
 }
@@ -825,6 +726,7 @@ pub async fn start(
         .route("/messages", post(messages))
         .route("/health", get(health))
         .route("/api/policy", get(api_policy))
+        .route("/api/accounts", get(api_accounts))
         .route("/api/sessions", get(api_sessions))
         .route("/api/messages", get(api_messages))
         .route("/api/search", get(api_search))
@@ -871,6 +773,7 @@ pub async fn run_from_env() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AppSettings;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wcd-mcp-{name}-{}", std::process::id()));
@@ -976,6 +879,7 @@ mod tests {
 
         let mut settings = settings::load(&dir).unwrap();
         settings.connectors.wechat_enabled = false;
+        settings.connectors.whatsapp_enabled = false;
         settings::save(&dir, &settings).unwrap();
         assert!(!bridge_listen_allowed(&dir), "connector off");
     }

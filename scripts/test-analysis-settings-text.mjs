@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {
   analysisSettingsError,
   questionAnswerError,
-} from '../src/analysisSettingsText.ts';
+} from '../src/features/analysis/analysisSettingsText.ts';
 
 assert.equal(analysisSettingsError('当前 Devify 服务端不可用'), '当前服务端不可用');
 assert.equal(analysisSettingsError('Devify 请求失败：无权访问'), '服务端请求失败：无权访问');

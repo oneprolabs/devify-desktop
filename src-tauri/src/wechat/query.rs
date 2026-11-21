@@ -53,6 +53,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn server_id_verification_reads_rows_when_cache_index_is_stale() {
+        // Model a decrypted cache whose recovered table page is newer than its index.
+        // A missing index entry must not look like a conflicting message identity.
+        for occurrences in [1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(temp.path().join("message")).unwrap();
+            let path = temp.path().join("message/message_0.db");
+            let table = format!("Msg_{}", md5_hex("person"));
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "PRAGMA page_size=4096; CREATE TABLE {table}(local_id INTEGER PRIMARY KEY,server_id INTEGER,create_time INTEGER); CREATE INDEX server_lookup ON {table}(server_id); INSERT INTO {table} VALUES(1,11,100);"
+            )).unwrap();
+            let page: usize = conn.query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name=?1", [&table], |row| row.get(0),
+            ).unwrap();
+            let mut original = std::fs::read(&path).unwrap();
+            for id in 2..2 + occurrences {
+                conn.execute(&format!("INSERT INTO {table} VALUES(?1,22,200)"), [id]).unwrap();
+            }
+            drop(conn);
+            let updated = std::fs::read(&path).unwrap();
+            let offset = (page - 1) * 4096;
+            original[offset..offset + 4096].copy_from_slice(&updated[offset..offset + 4096]);
+            std::fs::write(&path, original).unwrap();
+            let conn = open_readonly(&path).unwrap();
+            let indexed: usize = conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE server_id=22"), [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(indexed, 0, "fixture must reproduce a stale index");
+            let counts = server_id_counts_for(temp.path(), "person", Some(&[11, 22])).unwrap();
+            assert_eq!(counts.get(&11), Some(&1));
+            assert_eq!(counts.get(&22), Some(&(occurrences as usize)));
+            assert_eq!(server_id_counts(temp.path(), "person").unwrap(), counts);
+        }
+    }
+
+    #[test]
     fn business_groups_use_their_own_names_and_bounded_message_shard() {
         let temp = tempfile::tempdir().unwrap();
         let cache = temp.path();
@@ -1206,7 +1243,9 @@ pub fn server_id_counts_for(cache: &Path,username: &str,ids: Option<&[i64]>) -> 
         let cols = columns(&conn, &table);
         let Some(server) = pick(&cols, &["server_id", "serverId"]) else { continue };
         let Some(time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else { continue };
-        let sql = format!("SELECT {}, COUNT(*) FROM {} WHERE {} IS NOT NULL AND {} IS NOT NULL AND {} != 0 GROUP BY {}", quote(server), quote(&table), quote(time), quote(server), quote(server), quote(server));
+        // Limited WAL recovery can leave a secondary index older than its table.
+        // Identity verification must count the actual rows, including real duplicates.
+        let sql = format!("SELECT {}, COUNT(*) FROM {} NOT INDEXED WHERE {} IS NOT NULL AND {} IS NOT NULL AND {} != 0 GROUP BY {}", quote(server), quote(&table), quote(time), quote(server), quote(server), quote(server));
         let sql=if let Some(ids)=ids {sql.replace(" GROUP BY",&format!(" AND {} IN ({}) GROUP BY",quote(server),ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")))} else {sql};
         let mut stmt = conn.prepare(&sql).map_err(|e| format!("无法核对服务端消息编号：{e}"))?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?))).map_err(|e| format!("无法核对服务端消息编号：{e}"))?;
@@ -2160,6 +2199,20 @@ pub fn digest_filtered(
     }
     let session_list = sessions_filtered(cache, allowed_usernames).unwrap_or_default();
     let me = self_username(cache);
+    let pages = usernames.iter()
+        .filter(|username| session_list.iter().any(|s| s.username.as_str() == username.as_str()))
+        .filter_map(|username| {
+            messages_inner(cache, username, 800, None, None, None, me.as_deref())
+                .ok().map(|list| (username.clone(), list))
+        }).collect();
+    digest_from_pages(&session_list, usernames, pages, since, until)
+}
+
+/// Apply the same deterministic rules to bounded pages from any supported source.
+pub fn digest_from_pages(
+    session_list: &[SessionItem], usernames: &[String],
+    pages: Vec<(String, Vec<MessageItem>)>, since: Option<i64>, until: Option<i64>,
+) -> Result<DigestReport, String> {
     let lookup: HashMap<&str, &SessionItem> = session_list
         .iter()
         .map(|s| (s.username.as_str(), s))
@@ -2170,15 +2223,9 @@ pub fn digest_filtered(
     let mut capped: Vec<String> = Vec::new();
     let per_session_limit = 800usize;
 
-    for username in usernames {
-        let Some(session) = lookup.get(username.as_str()) else {
-            continue;
-        };
+    for (username, list) in pages {
+        let Some(session) = lookup.get(username.as_str()) else { continue; };
         let display = session.display.clone();
-        let Ok(list) = messages_inner(cache, username, per_session_limit, None, None, None, me.as_deref())
-        else {
-            continue;
-        };
         if list.len() == per_session_limit {
             capped.push(display.clone());
         }

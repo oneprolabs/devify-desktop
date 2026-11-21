@@ -8,3 +8,11 @@ In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the re
 
 If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
 <!-- CODEGRAPH_END -->
+
+## Code organization memory
+
+Before reorganizing directories or splitting large files in this project, read
+`/Users/ray/.codex/memories/devify-desktop-code-organization.md` and the current
+`src/README.md`. For native test changes, also read `src-tauri/src/tests/README.md`.
+These record the agreed ownership boundaries, the roughly 1000-line file preference,
+and the requirement to verify and commit each bounded batch before continuing.

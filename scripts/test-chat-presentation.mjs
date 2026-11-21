@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { currentSessionSummaries, eventViewState, syncErrorMessage } from '../src/chatPresentation.ts';
+import { currentSessionSummaries, eventViewState, syncErrorMessage } from '../src/features/chat/chatPresentation.ts';
 
 const rows = [{ account_id: 'x', sessions: [{ username: 'a' }] }, { account_id: 'x', sessions: [{ username: 'a' }, { username: 'b' }] }, { account_id: 'y', sessions: [{ username: 'a' }] }];
 assert.deepEqual(currentSessionSummaries(rows, 'x', 'a'), [rows[0], rows[1]]);

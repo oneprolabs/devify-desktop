@@ -58,7 +58,7 @@ Constraints that bind any visual work:
 ## Evidence on Hand
 
 - Real product data exists on this machine: `~/Library/Application Support/local.wechat.devifybridge/app-settings.json`, `summary-history.json` (real AI summaries in Markdown), `wechat-keys.json`, and a populated decrypted cache.
-- Screenshots of the incumbent UI are not committed. The incumbent look lives in `src/style.css` (224 lines) and `src/wechat.css` (3413 lines) and in the components.
+- Screenshots of the incumbent UI are not committed. The incumbent look lives in `src/app/styles/style.css` (224 lines) and `src/features/chat/local-reader/wechat.css` (3413 lines) and in the components.
 - No customer quotes, benchmarks, pricing, or press. Future work must not fabricate any.
 
 ## Product Principles

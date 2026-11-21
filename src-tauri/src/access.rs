@@ -1,11 +1,12 @@
 //! Agent access kit.
 //!
-//! The desktop app serves the read-only `wxq` CLI and three `SKILL.md` documents from its
+//! The desktop app serves the read-only `wxq` CLI and the unified `SKILL.md` document from its
 //! loopback listener. The Agent 集成 page turns that into one prompt: the user pastes it
 //! into an agent, and the agent downloads both artifacts into the directories the user
 //! chose. No repository checkout, MCP client, or manual `cargo build` is involved.
 
 use crate::agent;
+pub mod install;
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -16,23 +17,20 @@ pub const CLI_NAME: &str = "wxq";
 #[derive(Clone, Copy, Debug)]
 pub struct SkillDoc {
     pub name: &'static str,
+    pub legacy_names: &'static [&'static str],
     pub content: &'static str,
 }
 
-pub const SKILLS: &[SkillDoc] = &[
-    SkillDoc {
-        name: "wechat-chat-records",
-        content: include_str!("../../skills/wechat-chat-records/SKILL.md"),
-    },
-    SkillDoc {
-        name: "wechat-daily-summary",
-        content: include_str!("../../skills/wechat-daily-summary/SKILL.md"),
-    },
-    SkillDoc {
-        name: "wechat-work-exploration",
-        content: include_str!("../../skills/wechat-work-exploration/SKILL.md"),
-    },
-];
+pub const SKILLS: &[SkillDoc] = &[SkillDoc {
+    name: "aimychats",
+    legacy_names: &["wechat-chat-records", "wechat-daily-summary", "wechat-work-exploration",
+        "aimychats-chat-records", "aimychats-daily-summary", "aimychats-work-exploration"],
+    content: include_str!("../../skills/aimychats/SKILL.md"),
+}];
+
+pub fn skill_by_name(name: &str) -> Option<&'static SkillDoc> {
+    SKILLS.iter().find(|skill| skill.name == name || skill.legacy_names.contains(&name))
+}
 
 #[derive(Serialize, Clone, Debug)]
 pub struct AccessTarget {
@@ -105,6 +103,7 @@ fn skills_rel(id: &str) -> Option<&'static str> {
         "qwen-code" => Some(".qwen/skills"),
         "cursor-agent" => Some(".cursor/skills"),
         "workbuddy" => Some(".workbuddy/skills"),
+        "deepseek-harness" => Some(".dsh/skills"),
         _ => None,
     }
 }
@@ -137,10 +136,11 @@ fn installed_skills(skills_dir: &Path) -> Vec<String> {
 /// Every host the app knows how to install into, plus a custom entry.
 pub fn targets() -> Vec<AccessTarget> {
     let home = home_dir();
+    let commands = agent::detected_commands();
     let mut targets: Vec<AccessTarget> = agent::ids()
         .filter_map(|id| {
             let rel = skills_rel(id)?;
-            let command = agent::detect(id);
+            let command = commands.get(id).cloned();
             let dir = home.as_ref().map(|home| home.join(rel));
             Some(AccessTarget {
                 id: id.to_string(),
@@ -156,19 +156,20 @@ pub fn targets() -> Vec<AccessTarget> {
         })
         .collect();
 
-    if let Some(home) = &home {
-        let workbuddy = home.join(".workbuddy");
-        if workbuddy.is_dir() {
-            let dir = workbuddy.join("skills");
-            targets.push(AccessTarget {
-                id: "workbuddy".to_string(),
-                name: "WorkBuddy".to_string(),
-                available: true,
-                command: None,
-                skills_dir: dir.to_string_lossy().to_string(),
-                installed: installed_skills(&dir),
-            });
-        }
+    for (id, name, app_name, config) in [
+        ("workbuddy", "WorkBuddy", "WorkBuddy AI.app", ".workbuddy"),
+        ("deepseek-harness", "DeepSeek Harness", "DeepSeek.app", ".dsh"),
+    ] {
+        let custom_home = if id == "deepseek-harness" { env::var_os("DSH_HOME").map(PathBuf::from).filter(|path| path.is_absolute()) } else { None };
+        let dir = custom_home.as_ref().map(|home| home.join("skills")).or_else(|| home.as_ref().map(|home| home.join(skills_rel(id).unwrap())));
+        let available = commands.contains_key(id) || custom_home.as_ref().is_some_and(|path| path.is_dir()) || home.as_ref().is_some_and(|home| home.join(config).is_dir())
+            || Path::new("/Applications").join(app_name).is_dir()
+            || home.as_ref().is_some_and(|home| home.join("Applications").join(app_name).is_dir());
+        targets.push(AccessTarget {
+            id: id.into(), name: name.into(), available, command: commands.get(id).map(|path| path.to_string_lossy().into()),
+            skills_dir: dir.as_ref().map(|path| path.to_string_lossy().to_string()).unwrap_or_default(),
+            installed: dir.as_deref().map(installed_skills).unwrap_or_default(),
+        });
     }
 
     let custom = default_skills_dir();
@@ -324,6 +325,26 @@ pub fn status(
     }
 }
 
+/// Apply saved per-tool paths without changing the legacy HTTP manifest contract.
+pub fn configured_status(mut status: AccessStatus, settings: &crate::settings::AgentSettings) -> AccessStatus {
+    for target in &mut status.targets {
+        let selected = settings.for_provider(&target.id);
+        if !selected.command.trim().is_empty() {
+            if let Some(path) = agent::resolve(&selected) {
+                target.available = true;
+                target.command = Some(path.to_string_lossy().to_string());
+            }
+        }
+        if let Some(profile) = settings.profiles.get(&target.id) {
+            if let Some(dir) = expand_path(&profile.skills_dir) {
+                target.skills_dir = dir.to_string_lossy().to_string();
+                target.installed = installed_skills(&dir);
+            }
+        }
+    }
+    status
+}
+
 fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -408,7 +429,7 @@ pub fn build_prompt(
     prompt.push_str(&format!("```bash\n{}\n{}\n```\n\n", sh_quote(&wxq_path) + " health", sh_quote(&wxq_path) + " policy"));
     prompt.push_str("health 应返回 `ok · wechat-devify-bridge`；policy 应返回当前账号和白名单会话。若服务不可用，让用户打开 AIMyChats 后重试；不要自行解密数据库或启动其它服务。白名单为空时，提示用户在应用的「聊天白名单」页配置。Token 已由应用写入本机文件，不要回显、复制或写入其它位置；若文件不可读，让用户回到「Agent 集成 → 工具接入」重新复制提示词。\n\n");
     prompt.push_str("## 第 4 步：汇报\n");
-    prompt.push_str("只汇报：wxq 的最终路径、skills 目录、三个 `SKILL.md` 是否写入、health/policy 的结果摘要、失败原因。完成后提示用户重新打开或刷新当前工具的 Skills 列表。\n");
+    prompt.push_str("只汇报：wxq 的最终路径、skills 目录、`aimychats/SKILL.md` 是否写入、health/policy 的结果摘要、失败原因。完成后提示用户重新打开或刷新当前工具的 Skills 列表。\n");
     prompt
 }
 
@@ -466,12 +487,13 @@ mod tests {
     }
 
     #[test]
-    fn embeds_three_skills_with_descriptions() {
-        assert_eq!(SKILLS.len(), 3);
+    fn embeds_the_unified_skill_with_legacy_aliases() {
+        assert_eq!(SKILLS.len(), 1);
         for skill in SKILLS {
             assert!(skill.content.starts_with("---"), "{} has frontmatter", skill.name);
             assert!(skill.content.contains(&format!("name: {}", skill.name)));
             assert!(!skill_description(skill.content).is_empty());
+            for name in skill.legacy_names { assert_eq!(skill_by_name(name).unwrap().name, skill.name); }
         }
     }
 
@@ -489,9 +511,10 @@ mod tests {
         assert!(prompt.contains("Claude Code"));
         assert!(prompt.contains("http://127.0.0.1:18765/agent/wxq"));
         assert!(prompt.contains("/Users/me/.local/bin/wxq"));
-        assert!(prompt.contains("wechat-chat-records"));
-        assert!(prompt.contains("wechat-daily-summary"));
-        assert!(prompt.contains("wechat-work-exploration"));
+        assert!(!prompt.contains("aimychats-chat-records"));
+        assert!(!prompt.contains("aimychats-daily-summary"));
+        assert!(!prompt.contains("aimychats-work-exploration"));
+        assert!(prompt.contains("/agent/skills/aimychats"));
         assert!(prompt.contains("health"));
         assert!(prompt.contains("policy"));
         assert!(prompt.contains("agent-token"));
@@ -525,7 +548,7 @@ mod tests {
         assert!(script.contains("#!/bin/sh"));
         assert!(script.contains("it'\\''s bin"));
         assert!(script.contains("/agent/wxq"));
-        assert!(script.contains("/agent/skills/wechat-chat-records"));
+        assert!(script.contains("/agent/skills/aimychats"));
         assert!(script.contains("\"$WXQ\" health"));
         assert!(script.contains("TOKEN_FILE='/Users/me/agent-token'"));
         assert!(script.contains("missing agent token"));

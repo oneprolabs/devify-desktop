@@ -16,7 +16,7 @@ Covered paths:
 
 - WeChat: system checks, explicit permission retry without focus polling, preparation/login/authorization/logout/capture sequence, selection across pages, individual and bulk initial ranges, seven-day defaults, schedule save acknowledgement and completion, and the official-WeChat open request.
 - WhatsApp: system checks, activation, simultaneous private/group selection, range persistence and completion; no WeChat key/capture operations.
-- Schedule: save conflicts block editing, explicit reload restores the confirmed revision, WhatsApp remains manual-only, and unsupported email is hidden.
+- Schedule: the wizard initially confirms the shared schedule, explicit edits wait for save acknowledgement, keeping the current schedule does not rewrite it for another platform, runtime pause/resume uses one shared control, save conflicts block editing, explicit reload restores the confirmed revision, and unsupported email is hidden.
 
 These are browser UI end-to-end tests with an IPC boundary, not live macOS authorization, debugger attachment, real account login or server-upload tests. Run `cargo test --manifest-path src-tauri/Cargo.toml --lib` and `npm run test:frontend` (Node 22.15+; includes the existing regression scripts) alongside them. Real permission restart, key capture and account-specific database compatibility still need a signed-client hardware acceptance run; do not report the isolated fixture as that acceptance.
 

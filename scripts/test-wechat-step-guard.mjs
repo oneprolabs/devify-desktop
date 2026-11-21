@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { capturePrerequisiteFailure, checkWeChatStep } from '../src/wechatStepGuard.ts';
+import { capturePrerequisiteFailure, checkWeChatStep } from '../src/features/connectors/wizard/wechatStepGuard.ts';
 
 const idle = { pending: false, stage: 'idle', needs_cleanup: false, recovery_error_code: null, prepared_process_exited: null, resume_available: false, platform_supported: true, lldb_available: true, wechat_official: true, user_can_write: true, transaction_id: null };
 let capture = idle, account = true, keys = 2, source = { exists: true, secure: true }, calls = [];

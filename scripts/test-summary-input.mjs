@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readSummaryRange,validateSummaryMessages,validateCloudSummaryInput,summaryBounds,isSummaryText} from '../src/summaryInput.ts';
+import {readSummaryRange,validateSummaryMessages,validateCloudSummaryInput,summaryBounds,isSummaryText} from '../src/features/chat/summary/summaryInput.ts';
 
 const chat={username:'group',display:'Group',is_group:true,last_time:null};
 const messages=Array.from({length:140},(_,i)=>({local_id:140-i,time:1000-Math.floor(i/3),source_shard:'message_0.db',kind:1,text:`text ${i}`,sender_name:'member'}));

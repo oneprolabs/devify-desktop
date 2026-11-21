@@ -1,6 +1,7 @@
 //! Durable, owner-bound summary intents, processed by the existing coordinator.
 //! Cloud execution is delegated; local CLI execution is serialized with preparation.
 use super::*;
+use crate::chat::access::{allowed_usernames, whatsapp_allowed_usernames};
 use rusqlite::{params, TransactionBehavior};
 
 static ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -189,17 +190,7 @@ pub(crate) async fn summary_task_enqueue(
             &value.devify.base_url,
             capabilities::AI_AGENT_SUMMARY,
         )?;
-        let mut selected = value.agent.clone();
-        if selected.provider_id.trim().is_empty() {
-            selected.provider_id = std::iter::once("codex")
-                .chain(agent::ids().filter(|id| *id != "codex"))
-                .find(|id| agent::detect(id).is_some())
-                .ok_or("未检测到本地工具，请安装并登录 Codex 后重试。")?
-                .into();
-        }
-        if agent::resolve(&selected).is_none() {
-            return Err("找不到已选择的本地工具，请在设置中重新检测。".into());
-        }
+        let selected = agent::selected(&value.agent)?;
         Some(selected)
     } else {
         None

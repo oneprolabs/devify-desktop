@@ -15,9 +15,10 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{reso
 const flush=async()=>{for(let count=0;count<30;count++)await Promise.resolve();};
 function WizardActionButton() {}
 function DailyTimePicker() {}
-function AgentSettings() {}
+function AgentSummaryInstructions() {}
 const cache=new Map();
 function load(file) {
+  file = new URL(file, import.meta.url).href;
   if(cache.has(file))return cache.get(file);
   const output=ts.transpileModule(fs.readFileSync(new URL(file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText;
   const module={exports:{}};
@@ -25,21 +26,21 @@ function load(file) {
     if(name==='react')return react;
     if(name==='react/jsx-runtime')return jsx;
     if(name==='@tauri-apps/api/core')return{invoke:(...args)=>invoke(...args)};
-    if(name==='./locale')return translate;
-    if(name==='./Settings')return{defaultSettings:()=>({devify:{active_space_id:null}}),mergeSettings:value=>value};
-    if(['./dailyPlan','./reportPlans','./ReportSchedules'].includes(name))return load(`../src/${name.slice(2)}.${name==='./ReportSchedules'?'tsx':'ts'}`);
+    if(['../../shared/i18n/locale', '../i18n/locale'].includes(name))return translate;
+    if(name==='../settings/settingsModel')return{defaultSettings:()=>({devify:{active_space_id:null}}),mergeSettings:value=>value};
+    if(['../../shared/scheduling/dailyPlan','./reportPlans','./ReportSchedules'].includes(name))return load(`${new URL(name, file).href}.${name.endsWith('ReportSchedules')?'tsx':'ts'}`);
     if(name==='./analysisSettingsText')return{analysisSettingsError:value=>value instanceof Error?value.message:String(value)};
-    if(name==='./WizardActionButton')return{WizardActionButton};
-    if(name==='./DailyTimePicker')return{DailyTimePicker};
-    if(name==='./AgentSettings')return{AgentSettings};
+    if(name==='../../shared/ui/WizardActionButton')return{WizardActionButton};
+    if(name==='../../shared/ui/DailyTimePicker')return{DailyTimePicker};
+    if(name==='../agents/AgentSummaryInstructions')return{AgentSummaryInstructions};
     if(name.endsWith('.css'))return{};
     throw Error(name);
   },module,module.exports);
   cache.set(file,module.exports);return module.exports;
 }
-const {AnalysisSettings}=load('../src/AnalysisSettings.tsx');
-const {ReportSchedules,ReportScheduleRow}=load('../src/ReportSchedules.tsx');
-const {REPORT_PLANS,reportPlanSelection}=load('../src/reportPlans.ts');
+const {AnalysisSettings}=load('../src/features/analysis/AnalysisSettings.tsx');
+const {ReportSchedules,ReportScheduleRow}=load('../src/features/analysis/ReportSchedules.tsx');
+const {REPORT_PLANS,reportPlanSelection}=load('../src/features/analysis/reportPlans.ts');
 const nodes=tree=>Array.isArray(tree)?tree.flatMap(nodes):tree&&typeof tree==='object'?[tree,...nodes(tree.props?.children)]:[];
 const text=tree=>Array.isArray(tree)?tree.map(text).join(''):tree&&typeof tree==='object'?text(tree.props?.children):String(tree??'');
 function find(tree,test){const found=nodes(tree).find(test);assert.ok(found,'expected control missing');return found;}
@@ -81,12 +82,10 @@ assert.deepEqual(navigation,['chat','topics'],'each capability opens its own wor
 assert.equal(mutations.length,0,'navigation never saves analysis preferences or creates report plans');
 preferences.props.canUseLocalSummary=true;
 tree=render(preferences);
-assert.ok(!nodes(tree).some(node=>node.type===AgentSettings),'local tool detection stays lazy');
-find(tree,node=>node.type==='button'&&text(node).includes('本地总结设置')).props.onClick();
-tree=render(preferences);
 const summarySection=find(tree,node=>node.props?.['aria-label']==='聊天总结设置');
-assert.equal(find(summarySection,node=>node.type===AgentSettings).props.summaryOnly,true,'existing local settings render inside the chat summary group, without voice settings');
-assert.ok(!nodes(find(tree,node=>node.props?.['aria-label']==='事件与笔记设置')).some(node=>node.type===AgentSettings),'event preferences never contain local summary options');
+const summaryControl=find(summarySection,node=>node.type===AgentSummaryInstructions);
+assert.equal(summaryControl.props.settings.devify.active_space_id,'space','shared instructions stay in the chat summary group');
+assert.ok(!nodes(find(tree,node=>node.props?.['aria-label']==='事件与笔记设置')).some(node=>node.type===AgentSummaryInstructions),'event preferences never contain local summary options');
 const style=find(tree,node=>node.type==='select');assert.equal(style.props.value,'actions');
 style.props.onChange({target:{value:'concise'}});tree=render(preferences);
 let pending=find(tree,node=>node.type===WizardActionButton).props.onAction();find(tree,node=>node.type===WizardActionButton).props.onAction();await flush();

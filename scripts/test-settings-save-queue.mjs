@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createSettingsSaveQueue, settingsUserRevision } from '../src/settingsSaveQueue.ts';
+import { createSettingsSaveQueue, settingsUserRevision } from '../src/shared/state/settingsSaveQueue.ts';
 
 const initial = { user_settings_revision: 3, language: '中文', time: '08:00', store: 'old' };
 const deferred = () => {

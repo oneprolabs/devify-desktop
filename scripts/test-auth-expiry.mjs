@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 
-const source = fs.readFileSync(new URL('../src/authEvents.ts', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../src/features/auth/authEvents.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2020 } }).outputText;
 const { shouldApplyAuthExpired } = await import(`data:text/javascript,${encodeURIComponent(js)}`);
 

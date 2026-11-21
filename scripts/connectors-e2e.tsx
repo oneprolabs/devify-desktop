@@ -2,9 +2,9 @@
 // This route never reads credentials, changes macOS permissions or uploads chat data.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import PrototypeShell from '../src/PrototypeShell';
-import { RemoteChatFallback } from '../src/RemoteChatFallback';
-import { ChatPlatformBar, type ChatPlatform } from '../src/ChatPlatformBar';
+import PrototypeShell from '../src/app/PrototypeShell';
+import { RemoteChatFallback } from '../src/features/chat/RemoteChatFallback';
+import { ChatPlatformBar, type ChatPlatform } from '../src/features/chat/ChatPlatformBar';
 import wechatIcon from '../src/assets/connectors/wechat.svg';
 import whatsappIcon from '../src/assets/connectors/whatsapp.svg';
 import telegramIcon from '../src/assets/connectors/telegram.svg';
@@ -12,8 +12,8 @@ import slackIcon from '../src/assets/connectors/slack.svg';
 import discordIcon from '../src/assets/connectors/discord.svg';
 import lineIcon from '../src/assets/connectors/line.svg';
 import wecomIcon from '../src/assets/connectors/wecom.svg';
-import { defaultSettings } from '../src/Settings';
-import '../src/style.css';
+import { defaultSettings } from '../src/features/settings/settingsModel';
+import '../src/app/styles/style.css';
 const query = new URLSearchParams(location.search);
 // Optional, local-only snapshot. Never import chat data into the production bundle.
 // The file is excluded locally and fetched only for this explicit preview URL.
@@ -35,6 +35,8 @@ const state = {
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
  chatPageError:'', chatPageAccount:'', chatBadgeDelay:0,
  summaries:[] as any[],summaryLocal:[] as any[],summaryError:'',
+ agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
+ agents: query.has('no-agents')?[]:['codex','claude-code','gemini-cli'].map(id=>({id,name:id,command:'/e2e/'+id,version:'1.0 (fixture)',available:true,note:'Synthetic tool'})),
  analysisEvents:[] as any[],analysisReports:[] as any[],questions:[] as any[],
  analysisPreferences:{event_granularity:'balanced',summary_length:'standard',summary_style:'concise',conversation_types:['direct','group'],lookback_days:0,auto_analyze:true},
  analysisSaveError:'', reportSaveError:'', reportReadError:'', reportDelay:0,
@@ -162,7 +164,17 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     state.summaries=state.summaries.filter(row=>row.id!==args.summaryId&&row.task_id!==args.taskId);return null;
    }
    case 'summary_task_retry':return null;
-   case 'agent_scan':return [{id:'codex',name:'Codex CLI',command:'/e2e/codex',version:'1.0 (fixture)',available:true,note:'演示工具'}];
+   case 'agent_scan': {
+    if(state.agentScanDelay)await new Promise(resolve=>setTimeout(resolve,state.agentScanDelay));
+    if(state.agentScanError)throw state.agentScanError;return clone(state.agents);
+   }
+   case 'agent_access_status':return {running:true,reason:null,wxq:{path:'/e2e/wxq'},skills:[{name:'aimychats'}],targets:['codex','claude-code','gemini-cli','workbuddy','deepseek-harness','opencode','cursor-agent','qwen-code'].map(id=>({id,name:id,available:state.agents.some(agent=>agent.id===id),command:'/e2e/'+id,skills_dir:state.settings.agent.profiles?.[id]?.skills_dir||'/e2e/'+id+'/skills',installed:state.agentSkills[id]??[]}))};
+   case 'agent_access_install': {
+    if(state.agentInstallError)throw state.agentInstallError;
+    await new Promise(resolve=>setTimeout(resolve,150));state.agentSkills[args.tool]=['aimychats'];return {tool:args.tool,installed:clone(state.agentSkills[args.tool]),skills_dir:'/e2e/'+args.tool+'/skills'};
+   }
+   case 'wechat_voice_status':return {settings:{engine:'',model:'',language:''},engines:[],selected:null};
+   case 'wechat_voice_settings_save':return {settings:args,engines:[],selected:null};
    case 'agent_models':return [];
    case 'agent_test':return {output:'OK',elapsed_ms:30,command:'Codex CLI'};
    case 'plugin:event|listen':eventHandlers.set(args.event,[...(eventHandlers.get(args.event)??[]),args.handler]);return ++callbackId;
@@ -211,7 +223,11 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     return query.has('chat')?args.usernames.map((username:string,index:number)=>({username,state:index===0?'local':index===1?'pending':'synced',new_messages:index===1?3:0})):[];
    }
    case 'wechat_avatars':case 'devify_my_spaces':case 'summary_history_list':return [];
-   case 'agent_current':return {id:null,name:'未配置',enabled:false};
+   case 'agent_current': {
+    const id=state.settings.agent.provider_id||state.agents[0]?.id||'';
+    const configured=state.settings.agent.enabled??Boolean(state.settings.agent.provider_id);
+    return {configured,agent_id:id,agent_name:state.agents.find(agent=>agent.id===id)?.name||id,model:state.settings.agent.profiles?.[id]?.model??(state.settings.agent.provider_id===id?state.settings.agent.model:''),command:configured?'/e2e/'+id:null,available:configured&&state.agents.some(agent=>agent.id===id)};
+   }
    default:state.errors.push(command);throw Error(`E2E unsupported IPC: ${command}`);
   }
  }

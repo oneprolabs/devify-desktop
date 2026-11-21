@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { clearPageSnapshots, pageSnapshotGeneration, readPageSnapshot, savePageSnapshot } from '../src/pageSnapshots.ts';
+import { clearPageSnapshots, pageSnapshotGeneration, readPageSnapshot, savePageSnapshot } from '../src/shared/state/pageSnapshots.ts';
 
 const previousLogin = pageSnapshotGeneration();
 savePageSnapshot('user-a', ['old'], previousLogin);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { formatAskAnswer } from '../src/askAnswer.ts';
+import { formatAskAnswer } from '../src/features/analysis/askAnswer.ts';
 
 const ORDERED_LINE = /^(\s*)(\d{1,3})[.)]\s+(.*)$/;
 

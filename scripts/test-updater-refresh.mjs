@@ -11,7 +11,7 @@ mock.module('@tauri-apps/plugin-updater', { namedExports: {
 } });
 mock.module('react', { namedExports: { useSyncExternalStore: (_, getSnapshot) => getSnapshot() } });
 
-const { checkForUpdates, downloadUpdate, useUpdater } = await import('../src/updater.ts');
+const { checkForUpdates, downloadUpdate, useUpdater } = await import('../src/features/updates/updater.ts');
 const closed = [];
 const downloaded = [];
 const offer = (version) => ({
