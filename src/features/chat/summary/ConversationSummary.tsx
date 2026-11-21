@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { desktopInvoke as invoke } from './desktopInvoke';
-import { t, tf, dateLocale } from './locale';
-import { useInternalAccount } from './entitlements';
-import { renderAgentMarkdown } from './summary';
+import { desktopInvoke as invoke } from '../../../desktopInvoke';
+import { t, tf, dateLocale } from '../../../locale';
+import { useInternalAccount } from '../../../entitlements';
+import { renderAgentMarkdown } from '../../../summary';
 import { readSummaryRange, summaryBounds, validateSummaryMessages, validateCloudSummaryInput, type CloudSummary, type SummaryChat, type SummaryMessage, type SummaryPage, type SummaryRange } from './summaryInput';
-import { refreshTaskRuntime } from './taskRuntime';
+import { refreshTaskRuntime } from '../../../taskRuntime';
 import { mergeSummaryRecords, reconcileSummaryPage, summaryRecordKey } from './summaryRecords';
 import './conversation-summary.css';
 

@@ -1,6 +1,6 @@
-import { isSummaryText } from './summaryInput';
+import { isSummaryText } from './features/chat/summary/summaryInput';
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
-import { RemoteChatFallback } from './RemoteChatFallback';
+import { RemoteChatFallback } from './features/chat/RemoteChatFallback';
 import { LoadingSkeleton } from './LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -635,7 +635,7 @@ export default function WeChatLocal({
   accountId?: string | null;
   /** Reports loaded and selected messages to the page-level actions. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
-  onSummarySelection?: (messages: import('./summaryInput').SummaryMessage[]) => void;
+  onSummarySelection?: (messages: import('./features/chat/summary/summaryInput').SummaryMessage[]) => void;
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
   const { internal: internalAccount } = useInternalAccount();

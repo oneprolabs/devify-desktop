@@ -3,8 +3,8 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import PrototypeShell from '../src/PrototypeShell';
-import { RemoteChatFallback } from '../src/RemoteChatFallback';
-import { ChatPlatformBar, type ChatPlatform } from '../src/ChatPlatformBar';
+import { RemoteChatFallback } from '../src/features/chat/RemoteChatFallback';
+import { ChatPlatformBar, type ChatPlatform } from '../src/features/chat/ChatPlatformBar';
 import wechatIcon from '../src/assets/connectors/wechat.svg';
 import whatsappIcon from '../src/assets/connectors/whatsapp.svg';
 import telegramIcon from '../src/assets/connectors/telegram.svg';

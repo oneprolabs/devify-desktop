@@ -9,7 +9,7 @@ import {
   type SummaryRecord,
 } from './summary';
 import { classifyWorkText, extractWorkTerms } from './workInsights';
-import { currentSessionSummaries } from './chatPresentation';
+import { currentSessionSummaries } from './features/chat/chatPresentation';
 import { useCapability, useInternalAccount } from './entitlements';
 
 /** Minimal conversation shape shared with the chat page. */

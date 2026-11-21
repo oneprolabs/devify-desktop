@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { t, tf } from './locale';
+import { t, tf } from '../../locale';
 import './chat-platform-bar.css';
 
 export type ChatPlatform = { id: string; label: string; icon: string; updated: boolean };

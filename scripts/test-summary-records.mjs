@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mergeSummaryRecords, reconcileSummaryPage, summaryRecordKey } from '../src/summaryRecords.ts';
+import { mergeSummaryRecords, reconcileSummaryPage, summaryRecordKey } from '../src/features/chat/summary/summaryRecords.ts';
 
 const pending={id:'task:request-1',request_key:'request-1',engine:'cloud',task_id:'request-1',status:'queued',created_at:'2026-11-20T10:00:00Z',body:''};
 const remote={...pending,id:28,task_id:undefined,status:'running'};

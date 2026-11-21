@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { desktopInvoke as invoke } from './desktopInvoke';
-import { t } from './locale';
-import { WizardActionButton } from './WizardActionButton';
+import { desktopInvoke as invoke } from '../../desktopInvoke';
+import { t } from '../../locale';
+import { WizardActionButton } from '../../WizardActionButton';
 
 type Part = { id: number; kind: string; text?: string; upload_item_id?: number | null; media_url?: string };
 type Message = { id: number; sender_name: string; sender_key: string; preview: string; occurred_at: string; parts?: Part[] };

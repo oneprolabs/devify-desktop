@@ -74,23 +74,23 @@ const mockedRequire = id => {
   if (id === 'react') return react;
   if (id === 'react/jsx-runtime') return jsx;
   if (id === '@tauri-apps/api/core') return { isTauri: () => true };
-  if (id === './desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
+  if (id === '../../desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
   if (id === './ChatPlatformBar') return { ChatPlatformBar: PlatformBar };
-  if (id === './taskRuntime') return { useTaskRuntime: () => runtime };
-  if (id === './WeChatLocal') return { default: MessagePane };
-  if (id === './entitlements') return {
+  if (id === '../../taskRuntime') return { useTaskRuntime: () => runtime };
+  if (id === '../../WeChatLocal') return { default: MessagePane };
+  if (id === '../../entitlements') return {
     useInternalAccount: () => ({ internal: false }),
     useCapability: () => ({ allowed: false, loading: false, view: null }),
   };
-  if (id === './connectorDetect') return { currentAccount: (items, remembered) => items.find(item => item.id === remembered) ?? items[0] };
-  if (id === './syncFeedback') return { syncFeedback: () => 'completed' };
+  if (id === '../../connectorDetect') return { currentAccount: (items, remembered) => items.find(item => item.id === remembered) ?? items[0] };
+  if (id === '../../syncFeedback') return { syncFeedback: () => 'completed' };
   if (id === './chatPresentation') return { eventViewState: () => 'empty', syncErrorMessage: String };
-  if (id === './locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
-  if (id === './toast') return { exportNotSupported() {} };
+  if (id === '../../locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+  if (id === '../../toast') return { exportNotSupported() {} };
   if (id.endsWith('.svg')) return id;
   return new Proxy({}, { get: () => component });
 };
-const source = fs.readFileSync(new URL('../src/ChatWorkbench.tsx', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../src/features/chat/ChatWorkbench.tsx', import.meta.url), 'utf8');
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
 const loaded = { exports: {} };
 new Function('require', 'module', 'exports', code)(mockedRequire, loaded, loaded.exports);
