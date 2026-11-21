@@ -168,7 +168,7 @@ export default function WeChatLocal({
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
   /** Reports loaded and selected messages to the page-level actions. */
-  onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
+  onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean; agentName: string; agentModel: string }) => void;
   onSummarySelection?: (messages: import('../summary/summaryInput').SummaryMessage[]) => void;
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
@@ -277,17 +277,23 @@ export default function WeChatLocal({
     };
     // The agent can be configured from Settings while this page stays mounted, so a
     // return to the window is also a refresh point for the hidden actions' permission.
+    let agentActive = true;
+    let agentRequest = 0;
     const loadAgent = () => {
+      const request = ++agentRequest;
       void invoke<AgentCurrent>('agent_current')
-        .then(setAgentCurrent)
-        .catch(() => setAgentCurrent(null));
+        .then(value => { if (agentActive && request === agentRequest) setAgentCurrent(value); })
+        .catch(() => { if (agentActive && request === agentRequest) setAgentCurrent(null); });
     };
     loadAgent();
     window.addEventListener('focus', loadConnection);
     window.addEventListener('focus', loadAgent);
+    window.addEventListener('agent-settings-changed', loadAgent);
     return () => {
+      agentActive = false;
       window.removeEventListener('focus', loadConnection);
       window.removeEventListener('focus', loadAgent);
+      window.removeEventListener('agent-settings-changed', loadAgent);
     };
   }, [pinnedAccountId]);
 
@@ -1429,8 +1435,10 @@ export default function WeChatLocal({
       messages: messages.length,
       selected: selectedMessages.length,
       agentReady: Boolean(agentCurrent?.configured && agentCurrent.available),
+      agentName: agentCurrent?.agent_name ?? '',
+      agentModel: agentCurrent?.model ?? '',
     });
-  }, [active?.username, messages.length, selectedMessages.length, agentCurrent?.configured, agentCurrent?.available, onChatState]);
+  }, [active?.username, messages.length, selectedMessages.length, agentCurrent, onChatState]);
 
   useEffect(()=>{
     onSummarySelection?.(selectedMessages.filter(item=>isSummaryText(item.message)).map(({session,message})=>({username:session.username,display:session.display,is_group:session.is_group,sender:message.sender_name||message.sender||'',time:message.time,text:message.text,local_id:message.local_id,source_shard:message.source_shard})));

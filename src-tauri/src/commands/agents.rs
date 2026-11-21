@@ -22,22 +22,65 @@ fn require_internal_agent(data: &std::path::Path, base_url: &str) -> Result<(), 
 }
 
 #[tauri::command]
-pub(crate) fn agent_access_status(
+pub(crate) async fn agent_access_status(
     app: AppHandle,
-    state: State<McpState>,
+    state: State<'_, McpState>,
 ) -> Result<access::AccessStatus, String> {
     let service = access_state(&state)?;
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     require_internal_agent(&data, &settings.devify.base_url)?;
-    let configured = settings.agent.provider_id;
-    Ok(access::status(
-        &data,
-        &configured,
-        &service.address,
-        service.running,
-        service.reason,
-    ))
+    tauri::async_runtime::spawn_blocking(move || {
+        access::configured_status(
+            access::status(
+                &data,
+                &settings.agent.provider_id,
+                &service.address,
+                service.running,
+                service.reason,
+            ),
+            &settings.agent,
+        )
+    })
+    .await
+    .map_err(|error| format!("读取 Skills 状态失败：{error}"))
+}
+
+/// Install only the app-owned read-only CLI and bundled Skills. No shell script or network download.
+#[tauri::command]
+pub(crate) async fn agent_access_install(
+    app: AppHandle,
+    state: State<'_, McpState>,
+    tool: String,
+) -> Result<access::install::InstallResult, String> {
+    let data = app_data(&app);
+    let value = settings::load(&data)?;
+    require_internal_agent(&data, &value.devify.base_url)?;
+    let service = access_state(&state)?;
+    if !service.running {
+        return Err("本机接入暂不可用，请确认已登录并重新打开智能体集成。".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let status = access::configured_status(
+            access::status(
+                &data,
+                &value.agent.provider_id,
+                &service.address,
+                service.running,
+                service.reason,
+            ),
+            &value.agent,
+        );
+        let target = access::target_by_id(&status.targets, &tool).ok_or("不支持的智能体。")?;
+        if !target.available {
+            return Err("未检测到该智能体，请安装后重新扫描。".into());
+        }
+        let cli =
+            access::resolve_wxq(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
+        access::install::install(&data, &target, &cli, &status.base_url)
+    })
+    .await
+    .map_err(|error| format!("安装 Skills 失败：{error}"))?
 }
 
 #[tauri::command]
@@ -131,36 +174,44 @@ pub(crate) struct AgentCurrent {
     configured: bool,
     agent_id: String,
     agent_name: String,
+    model: String,
     command: Option<String>,
     available: bool,
 }
 
 #[tauri::command]
 pub(crate) async fn agent_current(app: AppHandle) -> Result<AgentCurrent, String> {
-    let agent = settings::load(&app_data(&app))?.agent;
-    let configured = !agent.provider_id.trim().is_empty();
-    let path = if configured {
-        agent::resolve(&agent)
-    } else {
-        None
-    };
-    Ok(AgentCurrent {
-        configured,
-        agent_id: agent.provider_id.clone(),
-        agent_name: if configured {
-            agent::agent_name(&agent.provider_id)
-        } else {
-            String::new()
-        },
-        command: path.as_ref().map(|path| path.to_string_lossy().to_string()),
-        available: path.is_some(),
+    let configured_settings = settings::load(&app_data(&app))?.agent;
+    tauri::async_runtime::spawn_blocking(move || {
+        let configured = configured_settings.is_enabled();
+        let selected = agent::selected(&configured_settings).ok();
+        let path = selected.as_ref().and_then(agent::resolve);
+        Ok(AgentCurrent {
+            configured,
+            agent_id: selected
+                .as_ref()
+                .map(|value| value.provider_id.clone())
+                .unwrap_or_default(),
+            agent_name: selected
+                .as_ref()
+                .map(|value| agent::agent_name(&value.provider_id))
+                .unwrap_or_default(),
+            model: selected
+                .as_ref()
+                .map(|value| value.model.clone())
+                .unwrap_or_default(),
+            command: path.as_ref().map(|path| path.to_string_lossy().to_string()),
+            available: path.is_some(),
+        })
     })
+    .await
+    .map_err(|error| format!("读取智能体状态失败：{error}"))?
 }
 
 #[tauri::command]
 pub(crate) async fn agent_scan(app: AppHandle) -> Result<Vec<agent::AgentInfo>, String> {
     let agent = settings::load(&app_data(&app))?.agent;
-    tauri::async_runtime::spawn_blocking(move || agent::scan(&agent.provider_id, &agent.command))
+    tauri::async_runtime::spawn_blocking(move || agent::scan(&agent))
         .await
         .map_err(|error| format!("扫描本地 Agent 失败：{error}"))
 }
@@ -224,9 +275,7 @@ pub(crate) async fn agent_summarize(
         &value.devify.base_url,
         capabilities::AI_AGENT_SUMMARY,
     )?;
-    if value.agent.provider_id.trim().is_empty() {
-        return Err("尚未在「Agent 总结」页面选择本地 Agent。".into());
-    }
+    let agent_settings = agent::selected(&value.agent)?;
     // Each source has its own connect switch, so a WhatsApp summary must not be refused
     // just because WeChat happens to be disconnected.
     let allowed = if whatsapp::is_account(&account_id) {
@@ -262,7 +311,8 @@ pub(crate) async fn agent_summarize(
         input.characters,
         input.truncated,
     );
-    let agent_settings = value.agent.clone();
+    let selected_id = agent_settings.provider_id.clone();
+    let selected_model = agent_settings.model.clone();
     let language = value.language.summary_language().to_string();
     let run = tauri::async_runtime::spawn_blocking(move || {
         agent::summarize(&agent_settings, &input, &language, &data)
@@ -270,9 +320,9 @@ pub(crate) async fn agent_summarize(
     .await
     .map_err(|error| format!("Agent 总结任务失败：{error}"))??;
     Ok(AgentSummary {
-        agent_id: value.agent.provider_id.clone(),
-        agent_name: agent::agent_name(&value.agent.provider_id),
-        model: value.agent.model.clone(),
+        agent_id: selected_id.clone(),
+        agent_name: agent::agent_name(&selected_id),
+        model: selected_model,
         output: run.output,
         sessions: stats.0,
         messages: stats.1,

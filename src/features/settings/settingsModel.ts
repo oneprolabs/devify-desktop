@@ -56,6 +56,8 @@ export type AppSettings = {
     last_schedule_error?: string | null;
   };
   agent: {
+    enabled?: boolean | null;
+    profiles?: Record<string, { command: string; model: string; timeout_seconds: number; skills_dir: string }>;
     provider_id: string;
     command: string;
     model: string;
@@ -100,6 +102,8 @@ export function defaultSettings(): AppSettings {
       last_schedule_error: null,
     },
     agent: {
+      enabled: null,
+      profiles: {},
       provider_id: '',
       command: '',
       model: '',

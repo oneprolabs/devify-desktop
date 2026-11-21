@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import { t, tf, dateLocale } from '../../../shared/i18n/locale';
-import { useInternalAccount } from '../../auth/entitlements';
+import { useInternalAccount, useCapability } from '../../auth/entitlements';
 import { renderAgentMarkdown } from '../../../shared/content/summary';
 import { readSummaryRange, summaryBounds, validateSummaryMessages, validateCloudSummaryInput, type CloudSummary, type SummaryChat, type SummaryMessage, type SummaryPage, type SummaryRange } from './summaryInput';
 import { refreshTaskRuntime } from '../../tasks/taskRuntime';
@@ -34,12 +34,14 @@ function SummaryBody({ body }: { body:string }) {
   </div>;
 }
 
-export function ConversationSummary({ visible, spaceId, accountId, session, sessions, selection, pickRequest, query, onPick, onOpenTasks, onStatus }: {
-  visible:boolean;spaceId:string|null;accountId:string|null;session:SummaryChat|null;sessions:SummaryChat[];
+export function ConversationSummary({ visible, localAgentReady = false, localAgentName = '', localAgentModel = '', spaceId, accountId, session, sessions, selection, pickRequest, query, onPick, onOpenTasks, onStatus }: {
+  visible:boolean;localAgentReady?:boolean;localAgentName?:string;localAgentModel?:string;spaceId:string|null;accountId:string|null;session:SummaryChat|null;sessions:SummaryChat[];
   selection:SummaryMessage[];pickRequest:number;query:string;onPick:()=>void;onOpenTasks:()=>void;
   onStatus:(state:{count:number;busy:boolean})=>void;
 }) {
   const { internal }=useInternalAccount();
+  const { allowed: localGranted } = useCapability('ai.agent_summary');
+  const canUseLocal = internal && localGranted && localAgentReady;
   const [rows,setRows]=useState<CloudSummary[]>([]);
   const [open,setOpen]=useState(false);
   const [range,setRange]=useState<SummaryRange>('today');
@@ -98,13 +100,14 @@ export function ConversationSummary({ visible, spaceId, accountId, session, sess
     return()=>{stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',show);};
   },[visible,pending,load]);
   useEffect(()=>{if(pickRequest){setMode('pick');setOpen(true);setExcluded([]);submission.current=null;}},[pickRequest]);
-  useEffect(()=>{if(!internal)setEngine('cloud');},[internal]);
+  useEffect(()=>{if(!canUseLocal)setEngine('cloud');},[canUseLocal]);
   useEffect(()=>{submission.current=null;setExcluded([]);},[selection]);
   const change=()=>{submission.current=null;setError('');setNotice('');};
   const selected=selection.filter(item=>!excluded.includes(keyOf(item)));
 
   const generate=async()=>{
     if(lock.current||!spaceId||!accountId||!session)return;
+    if(engine==='local'&&!canUseLocal){setError(t('请先在智能体集成中开启可用的本地智能体。'));return;}
     lock.current=true;const owner=scope;request.current++;setLoading(false);
     setError('');setNotice('');setPhase(t('正在读取所选消息…'));
     try {
@@ -156,8 +159,17 @@ export function ConversationSummary({ visible, spaceId, accountId, session, sess
         <div className="chat-summary-row"><span className="chat-summary-label">{t('聊天')}</span><div className="summary-chat-scope"><div className="summary-chat-chips"><span>{session?.display}</span>{extras.map(username=><span key={username}>{sessions.find(item=>item.username===username)?.display}<button type="button" aria-label={tf('移除 {0}',username)} disabled={Boolean(phase)} onClick={()=>{setExtras(old=>old.filter(item=>item!==username));change();}}>×</button></span>)}<button type="button" disabled={Boolean(phase)} onClick={()=>setPicker(value=>!value)}>{picker?t('完成选择'):t('添加聊天')}</button></div>
         {picker&&<div className="summary-chat-picker"><input aria-label={t('搜索聊天名称')} placeholder={t('搜索聊天名称')} value={chatQuery} onChange={event=>setChatQuery(event.target.value)}/><div>{sessions.filter(chat=>chat.username!==session?.username&&chat.display.toLowerCase().includes(chatQuery.toLowerCase())).slice(0,80).map(chat=><label key={chat.username}><input type="checkbox" checked={extras.includes(chat.username)} disabled={Boolean(phase)||(!extras.includes(chat.username)&&extras.length>=7)} onChange={event=>{setExtras(old=>event.target.checked?[...old,chat.username]:old.filter(item=>item!==chat.username));change();}}/><span>{chat.display}</span><small>{chat.is_group?t('群聊'):t('单聊')}</small></label>)}</div><small>{t('最多 8 个聊天，仅列出当前平台已加载的会话。')}</small></div>}</div></div>
       </>:<div className="summary-message-picker"><div className="summary-message-picker-head"><strong>{tf('已选 {0} 条文字消息',selected.length)}</strong><button type="button" onClick={onPick}>{t('去原始记录选择')}</button></div>{selection.length?selection.slice(0,100).map(message=><label key={keyOf(message)}><input type="checkbox" checked={!excluded.includes(keyOf(message))} onChange={event=>{setExcluded(old=>event.target.checked?old.filter(key=>key!==keyOf(message)):[...old,keyOf(message)]);change();}}/><span><small>{message.display} · {message.sender} · {new Date(message.time*1000).toLocaleString(dateLocale(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><span>{message.text}</span></span></label>):<p>{t('在原始记录中点击消息进行选择，再回来生成总结。')}</p>}{selection.length>100&&<p>{tf('预览前 100 条，共选择 {0} 条。',selection.length)}</p>}</div>}
-      {internal&&<div className="chat-summary-row"><span className="chat-summary-label">{t('处理方式')}</span><div className="summary-segments">{([['cloud','云端模型'],['local','本地工具']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={engine===id} disabled={Boolean(phase)} onClick={()=>{setEngine(id);change();}}>{t(label)}</button>)}</div></div>}
-      <p className="chat-summary-note">{engine==='cloud'?t('由云端处理文字内容，完成后自动保存。图片、语音和视频不参与此次总结。'):t('自动使用已配置的本地工具；未指定时优先使用 Codex。沿用工具已有的登录与模型设置。')}</p>
+      <div className="chat-summary-row"><span className="chat-summary-label">{t('智能体')}</span>
+        <div className="summary-segments summary-agent-options" role="group" aria-label={t('智能体')}>
+          <button type="button" aria-pressed={engine==='cloud'} disabled={Boolean(phase)} onClick={()=>{setEngine('cloud');change();}}>
+            <span>{t('服务端')}</span><small>{t('默认')}</small>
+          </button>
+          {internal&&<button type="button" aria-pressed={engine==='local'} disabled={Boolean(phase)||!canUseLocal} title={!canUseLocal?t('请先在智能体集成中开启可用的本地智能体。'):undefined} onClick={()=>{setEngine('local');change();}}>
+            <span>{localAgentName?tf('本地 · {0}',localAgentName):t('本地')}</span>
+          </button>}
+        </div>
+      </div>
+      <p className="chat-summary-note">{engine==='cloud'?t('由云端处理文字内容，完成后自动保存。图片、语音和视频不参与此次总结。'):tf('模型：{0}。沿用智能体已有的登录状态。',localAgentModel.trim()||t('沿用智能体默认模型'))}</p>
       {engine==='local'&&<p className="chat-summary-note">{t('本地工具可能使用在线模型服务；所选文字会交给该工具处理。')}</p>}
       <div className="chat-summary-actions"><button type="button" disabled={Boolean(phase)} onClick={()=>setOpen(false)}>{t('取消')}</button><button type="button" className="primary" disabled={Boolean(phase)||!session||(mode==='pick'&&!selected.length)} onClick={()=>void generate()}>{phase||t('开始生成')}</button></div>
     </section>}

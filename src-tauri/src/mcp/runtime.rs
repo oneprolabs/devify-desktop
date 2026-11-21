@@ -63,8 +63,8 @@ fn local_service_idle_reason(data: &Path) -> String {
     let Ok(settings) = settings::load(data) else {
         return "无法读取本机设置，本机 Agent 服务不会启动。".to_string();
     };
-    if !settings.connectors.wechat_enabled {
-        return "微信连接已断开，本机 Agent 服务不会启动。".to_string();
+    if !settings.connectors.wechat_enabled && !settings.connectors.whatsapp_enabled {
+        return "所有平台连接均已断开，本机 Agent 服务不会启动。".to_string();
     }
     let Ok(base_url) = settings.devify.resolved_base_url() else {
         return "服务端地址无效，本机 Agent 服务不会启动。".to_string();

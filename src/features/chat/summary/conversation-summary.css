@@ -6,6 +6,9 @@
 .summary-segments button { border: 0; padding: 5px 12px; border-radius: 6px; background: transparent; color: #4f4f4a; font: inherit; font-size: 12.5px; cursor: pointer; }
 .summary-segments button[aria-pressed=true] { background: #fff; color: #1a1a19; box-shadow: 0 1px 2px #00000014; }
 .summary-segments button:disabled { cursor: default; opacity: .6; }
+.summary-agent-options { flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 4px; justify-self: start; }
+.summary-agent-options button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; text-align: start; white-space: normal; overflow-wrap: anywhere; }
+.summary-agent-options small { font-size: 11px; line-height: 1.5; color: inherit; }
 .summary-chat-scope { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .summary-chat-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .summary-chat-chips > span { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 10px; border-radius: 7px; background: #f3f3f1; color: #3a3a37; font-size: 12px; overflow-wrap: anywhere; }

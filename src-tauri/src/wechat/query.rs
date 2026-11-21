@@ -2199,6 +2199,20 @@ pub fn digest_filtered(
     }
     let session_list = sessions_filtered(cache, allowed_usernames).unwrap_or_default();
     let me = self_username(cache);
+    let pages = usernames.iter()
+        .filter(|username| session_list.iter().any(|s| s.username.as_str() == username.as_str()))
+        .filter_map(|username| {
+            messages_inner(cache, username, 800, None, None, None, me.as_deref())
+                .ok().map(|list| (username.clone(), list))
+        }).collect();
+    digest_from_pages(&session_list, usernames, pages, since, until)
+}
+
+/// Apply the same deterministic rules to bounded pages from any supported source.
+pub fn digest_from_pages(
+    session_list: &[SessionItem], usernames: &[String],
+    pages: Vec<(String, Vec<MessageItem>)>, since: Option<i64>, until: Option<i64>,
+) -> Result<DigestReport, String> {
     let lookup: HashMap<&str, &SessionItem> = session_list
         .iter()
         .map(|s| (s.username.as_str(), s))
@@ -2209,15 +2223,9 @@ pub fn digest_filtered(
     let mut capped: Vec<String> = Vec::new();
     let per_session_limit = 800usize;
 
-    for username in usernames {
-        let Some(session) = lookup.get(username.as_str()) else {
-            continue;
-        };
+    for (username, list) in pages {
+        let Some(session) = lookup.get(username.as_str()) else { continue; };
         let display = session.display.clone();
-        let Ok(list) = messages_inner(cache, username, per_session_limit, None, None, None, me.as_deref())
-        else {
-            continue;
-        };
         if list.len() == per_session_limit {
             capped.push(display.clone());
         }

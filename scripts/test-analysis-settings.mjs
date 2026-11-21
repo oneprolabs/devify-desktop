@@ -15,7 +15,7 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{reso
 const flush=async()=>{for(let count=0;count<30;count++)await Promise.resolve();};
 function WizardActionButton() {}
 function DailyTimePicker() {}
-function AgentSettings() {}
+function AgentSummaryInstructions() {}
 const cache=new Map();
 function load(file) {
   file = new URL(file, import.meta.url).href;
@@ -32,7 +32,7 @@ function load(file) {
     if(name==='./analysisSettingsText')return{analysisSettingsError:value=>value instanceof Error?value.message:String(value)};
     if(name==='../../shared/ui/WizardActionButton')return{WizardActionButton};
     if(name==='../../shared/ui/DailyTimePicker')return{DailyTimePicker};
-    if(name==='../agents/AgentSettings')return{AgentSettings};
+    if(name==='../agents/AgentSummaryInstructions')return{AgentSummaryInstructions};
     if(name.endsWith('.css'))return{};
     throw Error(name);
   },module,module.exports);
@@ -82,12 +82,10 @@ assert.deepEqual(navigation,['chat','topics'],'each capability opens its own wor
 assert.equal(mutations.length,0,'navigation never saves analysis preferences or creates report plans');
 preferences.props.canUseLocalSummary=true;
 tree=render(preferences);
-assert.ok(!nodes(tree).some(node=>node.type===AgentSettings),'local tool detection stays lazy');
-find(tree,node=>node.type==='button'&&text(node).includes('本地总结设置')).props.onClick();
-tree=render(preferences);
 const summarySection=find(tree,node=>node.props?.['aria-label']==='聊天总结设置');
-assert.equal(find(summarySection,node=>node.type===AgentSettings).props.summaryOnly,true,'existing local settings render inside the chat summary group, without voice settings');
-assert.ok(!nodes(find(tree,node=>node.props?.['aria-label']==='事件与笔记设置')).some(node=>node.type===AgentSettings),'event preferences never contain local summary options');
+const summaryControl=find(summarySection,node=>node.type===AgentSummaryInstructions);
+assert.equal(summaryControl.props.settings.devify.active_space_id,'space','shared instructions stay in the chat summary group');
+assert.ok(!nodes(find(tree,node=>node.props?.['aria-label']==='事件与笔记设置')).some(node=>node.type===AgentSummaryInstructions),'event preferences never contain local summary options');
 const style=find(tree,node=>node.type==='select');assert.equal(style.props.value,'actions');
 style.props.onChange({target:{value:'concise'}});tree=render(preferences);
 let pending=find(tree,node=>node.type===WizardActionButton).props.onAction();find(tree,node=>node.type===WizardActionButton).props.onAction();await flush();

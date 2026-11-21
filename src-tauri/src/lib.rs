@@ -6829,6 +6829,7 @@ pub fn run() {
             commands::agents::mcp_status,
             commands::agents::agent_access_status,
             commands::agents::agent_access_prompt,
+            commands::agents::agent_access_install,
             commands::agents::agent_build_wxq,
             commands::agents::agent_current,
             commands::agents::agent_scan,

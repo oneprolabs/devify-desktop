@@ -256,7 +256,16 @@ export function ChatSummary({
   const pageRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    void invoke<AgentCurrent>('agent_current').then(setAgent).catch(() => setAgent(null));
+    let active = true;
+    let request = 0;
+    const refresh = () => {
+      const current = ++request;
+      void invoke<AgentCurrent>('agent_current')
+        .then(value => { if (active && current === request) setAgent(value); })
+        .catch(() => { if (active && current === request) setAgent(null); });
+    };
+    refresh(); window.addEventListener('agent-settings-changed', refresh);
+    return () => { active = false; window.removeEventListener('agent-settings-changed', refresh); };
   }, []);
 
   useEffect(() => {

@@ -85,6 +85,7 @@ export type AgentCurrent = {
   configured: boolean;
   agent_id: string;
   agent_name: string;
+  model?: string;
   command: string | null;
   available: boolean;
 };

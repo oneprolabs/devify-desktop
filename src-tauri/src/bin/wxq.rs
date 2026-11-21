@@ -212,6 +212,7 @@ fn dispatch(cli: Cli) -> Result<String, String> {
             }
             Ok(format!("ok · {service}\n服务地址：{}", cli.endpoint))
         }
+        "accounts" => pretty(&request_json(&cli, "GET", "/api/accounts", None)?),
         "policy" => {
             let path = with_account("/api/policy", account.as_deref());
             let body = request_json(&cli, "GET", &path, None)?;
@@ -222,13 +223,20 @@ fn dispatch(cli: Cli) -> Result<String, String> {
             Ok(format_policy(&policy))
         }
         "sessions" => {
-            let path = with_account("/api/sessions", account.as_deref());
+            let limit = cli.args.number("limit")?.unwrap_or(100).clamp(1, 500);
+            let offset = cli.args.number("offset")?.unwrap_or(0);
+            let path = with_account(&format!("/api/sessions?limit={limit}&offset={offset}"), account.as_deref());
             let body = request_json(&cli, "GET", &path, None)?;
             if cli.json {
                 return pretty(&body);
             }
+            let next_offset = body.get("next_offset").and_then(Value::as_u64);
             let list: SessionList = decode(body)?;
-            Ok(format_sessions(&list.account_id, &list.sessions))
+            let mut output = format_sessions(&list.account_id, &list.sessions);
+            if let Some(next) = next_offset {
+                output.push_str(&format!("\n继续：wxq sessions --account '{}' --limit {limit} --offset {next}\n", list.account_id));
+            }
+            Ok(output)
         }
         "messages" => {
             let chat = cli.args.required("chat")?;
@@ -716,8 +724,9 @@ fn usage() -> String {
 
 命令:
   health                                    检查本地服务是否在运行
+  accounts                                  列出 AIMyChats 中可读取的平台和账号
   policy   [--account ID]                   账号、白名单数量、可见会话
-  sessions [--account ID]                   只列白名单会话
+  sessions [--account ID] [--limit N --offset N]  分页列出允许访问的会话
   messages --chat USERNAME [--limit N] [--before TS --before-id ID --before-shard FILE] [--account ID]
   search   --keyword KEY [--groups-only] [--max-sessions N] [--account ID]
   digest   --chat USERNAME [--chat ...] [--since TIME] [--until TIME] [--account ID]

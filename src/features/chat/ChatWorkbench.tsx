@@ -89,7 +89,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [rawMounted, setRawMounted] = useState(false);
   const loadGeneration = useRef(0);
   // The raw pane reports loaded and selected messages to the conversation header.
-  const [chatState, setChatState] = useState({ active: false, messages: 0, selected: 0, agentReady: false });
+  const [chatState, setChatState] = useState({ active: false, messages: 0, selected: 0, agentReady: false, agentName: '', agentModel: '' });
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
   // Read messages only for the selected conversation, including the initial first chat.
   useEffect(() => { if (selectedSession && view === 'raw') setRawMounted(true); }, [selectedSession, view]);
@@ -564,6 +564,9 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       <div className={`chat-workbench-pane${view === 'summary' ? '' : ' is-hidden'}`}>
         <ConversationSummary
           visible={visible&&view==='summary'}
+          localAgentReady={chatState.agentReady}
+          localAgentName={chatState.agentName}
+          localAgentModel={chatState.agentModel}
           spaceId={settings?.devify?.active_space_id??null}
           accountId={accountId}
           sessions={sessions.filter(session => session.accountId === accountId)}

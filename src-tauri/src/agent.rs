@@ -70,6 +70,16 @@ struct Spec {
 /// most people have installed come first.
 const SPECS: &[Spec] = &[
     Spec {
+        id: "codex",
+        name: "Codex CLI",
+        bins: &["codex"],
+        prefix_args: &["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral"],
+        prompt: PromptArg::Stdin(Some("-")),
+        model_flag: Some("-m"),
+        last_message_flag: Some("-o"),
+        models_args: None,
+    },
+    Spec {
         id: "claude-code",
         name: "Claude Code",
         bins: &["claude"],
@@ -80,13 +90,13 @@ const SPECS: &[Spec] = &[
         models_args: None,
     },
     Spec {
-        id: "codex",
-        name: "Codex CLI",
-        bins: &["codex"],
-        prefix_args: &["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral"],
-        prompt: PromptArg::Stdin(Some("-")),
+        id: "gemini-cli",
+        name: "Gemini CLI",
+        bins: &["gemini"],
+        prefix_args: &[],
+        prompt: PromptArg::Flag("-p"),
         model_flag: Some("-m"),
-        last_message_flag: Some("-o"),
+        last_message_flag: None,
         models_args: None,
     },
     Spec {
@@ -100,19 +110,9 @@ const SPECS: &[Spec] = &[
         models_args: Some(&["models"]),
     },
     Spec {
-        id: "gemini-cli",
-        name: "Gemini CLI",
-        bins: &["gemini"],
-        prefix_args: &[],
-        prompt: PromptArg::Flag("-p"),
-        model_flag: Some("-m"),
-        last_message_flag: None,
-        models_args: None,
-    },
-    Spec {
-        id: "qwen-code",
-        name: "Qwen Code",
-        bins: &["qwen"],
+        id: "cursor-agent",
+        name: "Cursor Agent",
+        bins: &["cursor-agent"],
         prefix_args: &[],
         prompt: PromptArg::Flag("-p"),
         model_flag: Some("--model"),
@@ -120,9 +120,9 @@ const SPECS: &[Spec] = &[
         models_args: None,
     },
     Spec {
-        id: "cursor-agent",
-        name: "Cursor Agent",
-        bins: &["cursor-agent"],
+        id: "qwen-code",
+        name: "Qwen Code",
+        bins: &["qwen"],
         prefix_args: &[],
         prompt: PromptArg::Flag("-p"),
         model_flag: Some("--model"),
@@ -273,7 +273,7 @@ fn resolve_command(provider_id: &str, override_command: &str) -> Option<PathBuf>
     let spec = spec(provider_id)?;
     let override_path = override_command.trim();
     if !override_path.is_empty() {
-        let path = PathBuf::from(override_path);
+        let path = crate::access::expand_path(override_path)?;
         return is_executable(&path).then_some(path);
     }
     let found = resolve_bins(spec.bins);
@@ -283,6 +283,29 @@ fn resolve_command(provider_id: &str, override_command: &str) -> Option<PathBuf>
 /// Resolve the executable for the configured agent without running it.
 pub fn resolve(settings: &AgentSettings) -> Option<PathBuf> {
     resolve_command(&settings.provider_id, &settings.command)
+}
+
+/// Select one host with its own overrides; never transfer a model/path to another host.
+pub fn selected(settings: &AgentSettings) -> Result<AgentSettings, String> {
+    if !settings.is_enabled() {
+        return Err("本地智能体总结尚未开启，请在「智能体集成」中开启。".into());
+    }
+    if !settings.provider_id.trim().is_empty() {
+        let selected = settings.for_provider(&settings.provider_id);
+        return resolve(&selected).map(|_| selected).ok_or_else(|| "找不到已选择的智能体，请扫描或检查执行路径。".into());
+    }
+    std::iter::once("codex").chain(ids().filter(|id| *id != "codex"))
+        .map(|id| settings.for_provider(id)).find(|entry| resolve(entry).is_some())
+        .ok_or_else(|| "未发现可用的本地智能体，请安装后点击扫描智能体。".into())
+}
+
+/// Batch the login-shell lookup once, including missing CLIs, for an explicit scan.
+pub fn detected_commands() -> HashMap<String, PathBuf> {
+    let bins: Vec<&str> = SPECS.iter().flat_map(|spec| spec.bins.iter().copied()).chain(std::iter::once("dsh")).collect();
+    let found = resolve_bins(&bins);
+    let mut commands: HashMap<String, PathBuf> = SPECS.iter().filter_map(|spec| spec.bins.iter().find_map(|bin| found.get(*bin)).map(|path| (spec.id.into(), path.clone()))).collect();
+    if let Some(path) = found.get("dsh") { commands.insert("deepseek-harness".into(), path.clone()); }
+    commands
 }
 
 /// Resolve one known agent's executable without probing `--version` (the access page only
@@ -300,28 +323,32 @@ fn with_timeout<T: Send + 'static>(duration: Duration, task: impl FnOnce() -> T 
 }
 
 fn probe_version(path: &Path) -> Option<String> {
-    let path = path.to_path_buf();
-    with_timeout(VERSION_TIMEOUT, move || {
-        let output = Command::new(path)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
-        Some(line.chars().take(80).collect::<String>())
-    })?
+    let mut child = Command::new(path).arg("--version").stdin(Stdio::null())
+        .stderr(Stdio::null()).stdout(Stdio::piped()).spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    // Bound stdout even for a broken CLI; closing the pipe stops an endless producer.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut text = String::new();
+        stdout.take(8192).read_to_string(&mut text).ok();
+        let _ = tx.send(text);
+    });
+    let (timed_out, _) = wait_with_timeout(&mut child, VERSION_TIMEOUT).ok()?;
+    if timed_out { return None; }
+    let text = rx.recv_timeout(Duration::from_millis(200)).ok()?;
+    text.lines().map(str::trim).find(|line| !line.is_empty()).map(|line| line.chars().take(80).collect())
 }
 
-/// Detect every supported agent. `override_id`/`override_command` come from the saved
-/// settings so a user-pinned path is reflected in the list without a second pass.
-pub fn scan(override_id: &str, override_command: &str) -> Vec<AgentInfo> {
+/// Detect every supported agent and include each saved executable override.
+pub fn scan(settings: &AgentSettings) -> Vec<AgentInfo> {
+    let detected = detected_commands();
     SPECS
         .iter()
         .map(|spec| {
-            let overridden = spec.id == override_id && !override_command.trim().is_empty();
-            let command = resolve_command(spec.id, if overridden { override_command } else { "" });
+            let entry = settings.for_provider(spec.id);
+            let overridden = !entry.command.trim().is_empty();
+            let command = if overridden { resolve(&entry) } else { detected.get(spec.id).cloned() };
             match command {
                 Some(path) => {
                     let version = probe_version(&path);
@@ -574,6 +601,12 @@ fn run_agent(settings: &AgentSettings, prompt: &str, app_data: &Path, timeout: D
             output = result.trim().to_string();
         }
     }
+    if code != Some(0) {
+        let detail = if output.is_empty() { &stderr_text } else { &output };
+        let mut message = format!("{} 执行失败（退出码 {:?}）：{}", spec.name, code, tail(detail, STDERR_TAIL_CHARS));
+        if looks_like_auth_failure(detail) { message.push_str("\n\n"); message.push_str(AUTH_HINT); }
+        return Err(message);
+    }
     if output.is_empty() {
         let mut detail = tail(&stderr_text, STDERR_TAIL_CHARS);
         let reason = match code {
@@ -749,6 +782,37 @@ mod tests {
             characters: 42,
             truncated: false,
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn automatic_selection_uses_host_profile_and_respects_switch() {
+        let mut settings = AgentSettings::default();
+        settings.profiles.insert("codex".into(), crate::settings::AgentProfile {
+            command: "/bin/echo".into(), model: "test-model".into(), ..Default::default()
+        });
+        assert!(selected(&settings).is_err());
+        settings.enabled = Some(true);
+        let chosen = selected(&settings).unwrap();
+        assert_eq!(chosen.provider_id, "codex");
+        assert_eq!(chosen.model, "test-model");
+        assert_eq!(chosen.command, "/bin/echo");
+        settings.provider_id = "not-installed".into();
+        assert!(selected(&settings).is_err(), "an explicit missing host must not silently switch");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cli_error_output_is_not_reported_as_a_successful_test() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("fake-agent");
+        fs::write(&cli, "#!/bin/sh\ncat >/dev/null\necho 'not logged in'\nexit 1\n").unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut config = AgentSettings::default();
+        config.provider_id = "codex".into(); config.command = cli.to_string_lossy().into();
+        let error = test(&config, dir.path()).unwrap_err();
+        assert!(error.contains("not logged in")); assert!(error.contains(AUTH_HINT));
     }
 
     #[test]

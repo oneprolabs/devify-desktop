@@ -1,6 +1,6 @@
 import { t } from '../../shared/i18n/locale';
 import { ReportSchedules } from './ReportSchedules';
-import { AgentSettings } from '../agents/AgentSettings';
+import { AgentSummaryInstructions } from '../agents/AgentSummaryInstructions';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from '../settings/settingsModel';
@@ -38,7 +38,6 @@ export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, can
   const [preferencesSaving, setPreferencesSaving] = useState(false);
   const [preferencesRefresh, setPreferencesRefresh] = useState(0);
   const [advanced, setAdvanced] = useState(false);
-  const [localSummaryOpen, setLocalSummaryOpen] = useState(false);
   const active = useRef(false);
   const loadId = useRef(0);
   const preferencesLock = useRef(false);
@@ -107,13 +106,7 @@ export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, can
     {!spaceId ? <p role="alert">{t('请先在账户中选择可用空间。')}</p> : <>
       <section className="analysis-main-settings analysis-summary-settings" aria-label={t('聊天总结设置')}>
         <div className="analysis-setting-row"><div><h3>{t('聊天总结')}</h3><p>{t('在聊天中选择时间或消息，按需生成独立总结。')}</p></div><button type="button" className="analysis-feature-link" onClick={onOpenChats}>{t('前往聊天')}</button></div>
-        {canUseLocalSummary && <>
-          <button type="button" className="analysis-advanced-trigger" aria-expanded={localSummaryOpen} aria-controls="analysis-local-summary" onClick={() => setLocalSummaryOpen(value => !value)}>
-            <span><strong>{t('本地总结设置')}</strong><small>{t('本地工具、模型和补充要求')}</small></span>
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={localSummaryOpen ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'}/></svg>
-          </button>
-          {localSummaryOpen && <div id="analysis-local-summary" className="analysis-local-summary"><AgentSettings summaryOnly /></div>}
-        </>}
+        {canUseLocalSummary && <AgentSummaryInstructions settings={settings} onSaved={setSettings}/>}
       </section>
       <section className="analysis-main-settings" aria-label={t('事件与笔记设置')}>
         <div className="analysis-setting-row">

@@ -74,7 +74,7 @@ const settingsPages: { id: SettingsPage; label: string; group: 'main' | 'local' 
   // Local summaries are saved on this machine only; the prototype has no page for
   // them, but without this entry the records are unreachable from settings.
   { id: 'history', label: '总结记录', group: 'local' },
-  { id: 'agent', label: 'Agent 集成', group: 'local' },
+  { id: 'agent', label: '智能体集成', group: 'local' },
   { id: 'feedback', label: '问题反馈', group: 'local' },
   { id: 'about', label: '关于', group: 'local' },
 ];
@@ -453,7 +453,7 @@ export default function PrototypeShell() {
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && internalAccount && <HistoryPage />}
-          {settingsPage === 'agent' && showAgentHub && <AgentHub />}
+          {settingsPage === 'agent' && showAgentHub && <AgentHub onOpenAnalysis={() => setSettingsPage('analysis')} />}
           {settingsPage === 'feedback' && <FeedbackSettings />}
           {settingsPage === 'about' && <About />}
         </div>

@@ -71,6 +71,38 @@ src/
   preview queue. The queue remains module-scoped, capped at three active previews;
   observers and cancellation remain owned by each thumbnail instance.
 
+## Agent integration
+
+`features/agents/AgentHub.tsx` composes the online-default explanation, optional local
+summary controls, local Skills directory and lazy voice section. Discovery and confirmed
+settings saves are owned by `useAgentIntegration.ts`; there is no status/discovery interval.
+`AgentSelect.tsx` owns the logo-bearing keyboard-accessible selector. Each tool's path,
+model, timeout and Skills directory are kept in `agent.profiles`; the existing selected
+fields remain compatible with older settings. A missing `enabled` value preserves a
+previously configured installation; new users start with online summaries.
+
+`AgentSummaryInstructions.tsx` belongs to the chat-summary group of Intelligent analysis;
+it never scans tools. Shared instructions remain on `agent.instructions`, independent of
+tool profiles. `AgentVoiceSettings.tsx` detects engines only when expanded. WorkBuddy and
+DeepSeek retain Skills directory entries and explicitly mark direct summary calls pending.
+The existing six CLI adapters are unchanged.
+
+Native direct Skills installation lives in `src-tauri/src/access/install.rs`. It installs
+the bundled read-only CLI into app-owned storage and atomically writes each bundled
+Skill, preserving differing existing Skill files as backups. It does not run a downloaded
+installer or change unrelated global executables. Login/entitlement and live listener
+checks remain in `commands/agents.rs`; Skills use the current listener policy and token.
+The single canonical Skill is `aimychats`; reading, daily summaries and exploration are
+workflows within that same Skill. App-managed legacy directories move to
+app-data `legacy-skill-backups` after successful installation; custom legacy Skills stay
+untouched and produce a notice. Legacy download and MCP tool names remain aliases.
+
+`src-tauri/src/mcp/chat.rs` owns the unified local read API: account discovery, bounded
+session/message pages, search and deterministic digest. It dispatches to existing source
+readers, uses `config_runtime::browse_names` for the completed configuration, and checks
+each connector independently. WhatsApp reads also verify the current source login. Skills
+call the same API for every platform, retaining account IDs rather than merging names.
+
 ## Boundaries reserved for later extraction
 
 `features/settings/Settings.tsx` still combines import, account, and legacy automation
