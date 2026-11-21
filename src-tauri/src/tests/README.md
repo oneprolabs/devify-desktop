@@ -1,9 +1,11 @@
 # Entry-layer Rust unit tests
 
-These files test the crate's command and orchestration layer. `lib.rs` declares each
-as a direct child module with `#[cfg(test)]` and `#[path = "tests/…"]`. Keeping that
-parent preserves access through `super` without making production internals public.
-Module-local tests in other production modules stay beside those modules.
+These files test the crate's command and orchestration layer. Root orchestration
+tests remain direct children of `lib.rs` through `#[cfg(test)]` and `#[path]`.
+When a private owner moves, its test registration can follow it: `commands/events.rs`
+registers `id_list.rs` under `commands::events::id_list_tests`. This preserves access
+through `super` without making the parser public. Other module-local tests remain
+with their production modules.
 
 Run the full library regression from the repository root:
 

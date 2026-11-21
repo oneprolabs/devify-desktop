@@ -28,6 +28,7 @@ pub mod agent;
 pub mod backup;
 pub mod capabilities;
 pub mod connectors;
+mod commands;
 mod desktop_credentials;
 mod diagnostics;
 mod devify_http;
@@ -701,126 +702,7 @@ async fn devify_spaces(app: AppHandle) -> Result<Vec<DevifySpace>, String> {
     serde_json::from_value(data.clone()).map_err(|e| format!("空间响应格式无效：{e}"))
 }
 
-/// Create a report snapshot on the server. The server generates the body asynchronously
-/// (`202` + status `queued`); listing again picks up the finished report.
-#[tauri::command]
-async fn devify_report_create(
-    app: AppHandle,
-    space_id: String,
-    title: String,
-    period_start: Option<String>,
-    period_end: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    entitlements::require(
-        &app_data(&app),
-        &settings.devify.base_url,
-        capabilities::CLOUD_REPORTS_GENERATE,
-    )?;
-    let title = title.trim();
-    if title.is_empty() {
-        return Err("报告标题不能为空。".into());
-    }
-    // `request_key` makes the create idempotent server-side; a fresh key per click means a
-    // deliberate second generation is not treated as a retry of the first one.
-    let request_key = format!(
-        "desktop-{}-{}",
-        chrono::Utc::now().timestamp_millis(),
-        chrono::Utc::now().timestamp_subsec_nanos()
-    );
-    devify_json_request(
-        &app,
-        reqwest::Method::POST,
-        format!("/api/v1/spaces/{space_id}/reports"),
-        Some(serde_json::json!({
-            "request_key": request_key,
-            "title": title,
-            "period_start": period_start,
-            "period_end": period_end,
-        })),
-    )
-    .await
-}
 
-#[tauri::command]
-async fn devify_analysis_list(
-    app: AppHandle,
-    kind: String,
-    space_id: String,
-    page: Option<u32>,
-    conversation_id: Option<i64>,
-) -> Result<serde_json::Value, String> {
-    if !matches!(kind.as_str(), "events" | "reports") {
-        return Err("不支持的服务端分析类型。".into());
-    }
-    if space_id.trim().is_empty() {
-        return Err("请先选择 空间。".into());
-    }
-    if conversation_id.is_some_and(|id| id <= 0) || (conversation_id.is_some() && kind != "events") {
-        return Err("会话标识无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    if settings.devify.active_space_id.as_deref() != Some(space_id.as_str()) {
-        return Err("空间已改变，请重新选择后再同步。".into());
-    }
-    let resource = if kind == "events" {
-        "events"
-    } else {
-        "reports"
-    };
-    let first_page = page.unwrap_or(1).max(1);
-    let client = http_client::api();
-    let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
-    let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
-    let mut all_items = Vec::new();
-    let mut current_page = first_page;
-    let mut total = None;
-    for _ in 0..100 {
-        let mut url = format!(
-            "{}/api/v1/spaces/{space_id}/{resource}?page={current_page}&page_size=100",
-            settings.devify.resolved_base_url()?
-        );
-        if let Some(id) = conversation_id {
-            url.push_str(&format!("&conversation_id={id}"));
-        }
-        let response = client
-            .get(url)
-            .bearer_auth(&token)
-            .send_traced_retrying(&app_data(&app), diagnostics::Module::App, RetryPolicy::READ)
-            .await
-            .map_err(|e| devify_network_message(&format!("同步服务端{kind}失败"), &e))?;
-        let status = response.status();
-        let payload: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("读取服务端{kind}响应失败：{e}"))?;
-        if !status.is_success() {
-            let detail = devify_response_error(&app, status, &payload, "服务端拒绝了请求", &settings.devify.base_url, &token, generation);
-            return Err(format!("同步服务端{kind}失败：{detail}"));
-        }
-        let data = payload.get("data").cloned().unwrap_or(payload);
-        if let Some(items) = data.get("list").and_then(|value| value.as_array()) {
-            all_items.extend(items.iter().cloned());
-        }
-        total = data
-            .get("pagination")
-            .and_then(|value| value.get("total"))
-            .and_then(serde_json::Value::as_u64);
-        let next = data
-            .get("pagination")
-            .and_then(|value| value.get("next"))
-            .and_then(|value| (!value.is_null()).then_some(value));
-        if next.is_none() {
-            break;
-        }
-        current_page += 1;
-    }
-    Ok(serde_json::json!({
-        "list": all_items,
-        "pagination": { "total": total.unwrap_or(all_items.len() as u64), "page": first_page, "page_size": all_items.len(), "next": null }
-    }))
-}
 
 fn validate_devify_space(settings: &settings::AppSettings, space_id: &str) -> Result<(), String> {
     if space_id.trim().is_empty() || settings.devify.active_space_id.as_deref() != Some(space_id) {
@@ -971,382 +853,18 @@ async fn devify_current_user(app: AppHandle) -> Result<serde_json::Value, String
     Ok(result)
 }
 
-#[tauri::command]
-async fn devify_analysis_preferences_get(app: AppHandle, space_id: String) -> Result<serde_json::Value, String> {
-    validate_devify_space(&settings::load(&app_data(&app))?, &space_id)?;
-    let data = devify_json_request(&app, reqwest::Method::GET, format!("/api/v1/spaces/{space_id}/workflow-config"), None).await?;
-    data.get("chat_analysis_preferences").cloned().ok_or_else(|| "服务端尚不支持分析偏好设置，请更新服务端。".to_string())
-}
 
-#[tauri::command]
-async fn devify_analysis_preferences_save(app: AppHandle, space_id: String, preferences: serde_json::Value) -> Result<serde_json::Value, String> {
-    validate_devify_space(&settings::load(&app_data(&app))?, &space_id)?;
-    let body = serde_json::json!({"chat_analysis_preferences": preferences});
-    let data = devify_json_request(&app, reqwest::Method::PATCH, format!("/api/v1/spaces/{space_id}/workflow-config"), Some(body)).await?;
-    data.get("chat_analysis_preferences").cloned().ok_or_else(|| "服务端未确认分析偏好，请更新服务端。".to_string())
-}
 
-#[tauri::command]
-async fn devify_analysis_manual_start(app: AppHandle, space_id: String, conversation_id: i64) -> Result<serde_json::Value, String> {
-    validate_devify_space(&settings::load(&app_data(&app))?, &space_id)?;
-    if conversation_id <= 0 { return Err("会话标识无效。".into()); }
-    devify_json_request(&app, reqwest::Method::POST, format!("/api/v1/spaces/{space_id}/analysis-jobs/manual"), Some(serde_json::json!({"conversation_id": conversation_id}))).await
-}
 
-#[tauri::command]
-async fn devify_analysis_detail(
-    app: AppHandle,
-    kind: String,
-    space_id: String,
-    item_id: i64,
-) -> Result<serde_json::Value, String> {
-    if !matches!(kind.as_str(), "events" | "reports") || item_id <= 0 {
-        return Err("服务端分析对象无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let resource = if kind == "events" {
-        "events"
-    } else {
-        "reports"
-    };
-    devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/{resource}/{item_id}"),
-        None,
-    )
-    .await
-}
 
-/// The server serialises id lists as an array on some endpoints and as a JSON string
-/// (``"[22]"``) on others, so accept both before touching the notes.
-fn id_list(value: Option<&serde_json::Value>) -> Vec<i64> {
-    let Some(value) = value else {
-        return Vec::new();
-    };
-    let parsed = match value {
-        serde_json::Value::String(text) => match serde_json::from_str(text) {
-            Ok(parsed) => parsed,
-            Err(_) => return Vec::new(),
-        },
-        other => other.clone(),
-    };
-    parsed
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|item| {
-            item.as_i64()
-                .or_else(|| item.as_str().and_then(|text| text.parse().ok()))
-        })
-        .collect()
-}
 
-#[tauri::command]
-async fn devify_event_notes(
-    app: AppHandle,
-    space_id: String,
-    event_id: i64,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let event = devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/events/{event_id}"),
-        None,
-    )
-    .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
-        return Err("事件不属于当前 空间。".into());
-    }
-    let mut notes = Vec::new();
-    for id in id_list(event.get("note_ids")) {
-        if let Ok(note) = devify_json_request(
-            &app,
-            reqwest::Method::GET,
-            format!("/api/v1/notes/{id}"),
-            None,
-        )
-        .await
-        {
-            notes.push(note);
-        }
-    }
-    Ok(serde_json::Value::Array(notes))
-}
 
-/// Detach one note (a step in the timeline) from an event. The note itself is
-/// kept; only the event membership is removed.
-#[tauri::command]
-async fn devify_event_note_remove(
-    app: AppHandle,
-    space_id: String,
-    event_id: i64,
-    note_id: i64,
-) -> Result<serde_json::Value, String> {
-    if event_id <= 0 || note_id <= 0 {
-        return Err("进展记录无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let event = devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/events/{event_id}"),
-        None,
-    )
-    .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
-        return Err("事件不属于当前 空间。".into());
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::DELETE,
-        format!("/api/v1/events/{event_id}/notes/{note_id}"),
-        None,
-    )
-    .await
-}
 
-/// Create a manual note (a progress update that happened outside chat) and
-/// attach it to the event, mirroring the prototype's「补充进展」row.
-#[tauri::command]
-async fn devify_event_note_create(
-    app: AppHandle,
-    space_id: String,
-    event_id: i64,
-    text: String,
-    start_at: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        return Err("请先填写进展内容。".into());
-    }
-    if event_id <= 0 {
-        return Err("事件无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let event = devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/events/{event_id}"),
-        None,
-    )
-    .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
-        return Err("事件不属于当前 空间。".into());
-    }
-    let now = chrono::Utc::now();
-    let note_key = format!("manual:{event_id}:{}", now.timestamp_millis());
-    let body = serde_json::json!({
-        "note_key": note_key,
-        "title": "［我补充］聊天之外的信息",
-        "content": text,
-        "start_at": start_at.unwrap_or_else(|| now.to_rfc3339()),
-    });
-    let note = devify_json_request(
-        &app,
-        reqwest::Method::POST,
-        format!("/api/v1/spaces/{space_id}/notes"),
-        Some(body),
-    )
-    .await?;
-    let note_id = note
-        .get("id")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| "服务端没有返回新的进展记录。".to_string())?;
-    devify_json_request(
-        &app,
-        reqwest::Method::POST,
-        format!("/api/v1/events/{event_id}/notes"),
-        Some(serde_json::json!({ "note_ids": [note_id] })),
-    )
-    .await?;
-    Ok(note)
-}
 
-/// Re-attach a note to an event (used by the timeline's undo action).
-#[tauri::command]
-async fn devify_event_note_assign(
-    app: AppHandle,
-    space_id: String,
-    event_id: i64,
-    note_id: i64,
-) -> Result<serde_json::Value, String> {
-    if event_id <= 0 || note_id <= 0 {
-        return Err("进展记录无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let event = devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/events/{event_id}"),
-        None,
-    )
-    .await?;
-    if event.get("space_id").and_then(serde_json::Value::as_str) != Some(space_id.as_str()) {
-        return Err("事件不属于当前 空间。".into());
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::POST,
-        format!("/api/v1/events/{event_id}/notes"),
-        Some(serde_json::json!({ "note_ids": [note_id] })),
-    )
-    .await
-}
 
-/// Update an event's own fields. The server accepts `title`, `content` and
-/// `status`; the desktop never sends the timestamp fields.
-#[tauri::command]
-async fn devify_event_update(
-    app: AppHandle,
-    space_id: String,
-    event_id: i64,
-    title: Option<String>,
-    content: Option<String>,
-    status: Option<String>,
-) -> Result<serde_json::Value, String> {
-    if event_id <= 0 {
-        return Err("事件无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let mut body = serde_json::Map::new();
-    if let Some(title) = title {
-        let title = title.trim();
-        if title.is_empty() {
-            return Err("事件标题不能为空。".into());
-        }
-        body.insert("title".into(), serde_json::Value::String(title.to_string()));
-    }
-    if let Some(content) = content {
-        body.insert("content".into(), serde_json::Value::String(content));
-    }
-    if let Some(status) = status {
-        if !matches!(status.as_str(), "open" | "in_progress" | "done") {
-            return Err("不支持的事件状态。".into());
-        }
-        body.insert("status".into(), serde_json::Value::String(status));
-    }
-    if body.is_empty() {
-        return Err("没有需要保存的修改。".into());
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::PATCH,
-        format!("/api/v1/events/{event_id}"),
-        Some(serde_json::Value::Object(body)),
-    )
-    .await
-}
 
-/// All event relations in one space; the event detail only returns relation ids,
-/// so the client joins these records against the event list to show titles.
-#[tauri::command]
-async fn devify_event_relations(
-    app: AppHandle,
-    space_id: String,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let mut all = Vec::new();
-    for page in 1..=50u32 {
-        let value = devify_json_request(
-            &app,
-            reqwest::Method::GET,
-            format!("/api/v1/spaces/{space_id}/event-relations?page={page}&page_size=100"),
-            None,
-        )
-        .await?;
-        let list = value
-            .get("list")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let count = list.len();
-        all.extend(list);
-        let has_next = value
-            .get("pagination")
-            .and_then(|pagination| pagination.get("next"))
-            .and_then(serde_json::Value::as_str)
-            .map(|next| !next.is_empty())
-            .unwrap_or(false);
-        if !has_next || count == 0 {
-            break;
-        }
-    }
-    Ok(serde_json::Value::Array(all))
-}
 
-/// Record a judgement about two events. The desktop uses it for the
-/// 「关联事件」 action: related + accepted.
-#[tauri::command]
-async fn devify_event_relation_create(
-    app: AppHandle,
-    space_id: String,
-    left_event_id: i64,
-    right_event_id: i64,
-    relation_kind: Option<String>,
-    decision: Option<String>,
-    reason: Option<String>,
-) -> Result<serde_json::Value, String> {
-    if left_event_id <= 0 || right_event_id <= 0 || left_event_id == right_event_id {
-        return Err("请选择两个不同的事件。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let kind = relation_kind.unwrap_or_else(|| "related".into());
-    if !matches!(
-        kind.as_str(),
-        "same" | "related" | "separate" | "depends_on"
-    ) {
-        return Err("不支持的事件关系。".into());
-    }
-    let decision = decision.unwrap_or_else(|| "accepted".into());
-    if !matches!(decision.as_str(), "pending" | "accepted" | "rejected") {
-        return Err("不支持的关系判定。".into());
-    }
-    let body = serde_json::json!({
-        "left_event_id": left_event_id,
-        "right_event_id": right_event_id,
-        "relation_kind": kind,
-        "decision": decision,
-        "reason": reason.unwrap_or_default(),
-    });
-    devify_json_request(
-        &app,
-        reqwest::Method::POST,
-        format!("/api/v1/spaces/{space_id}/event-relations"),
-        Some(body),
-    )
-    .await
-}
 
-#[tauri::command]
-async fn devify_event_relation_delete(
-    app: AppHandle,
-    space_id: String,
-    relation_id: i64,
-) -> Result<serde_json::Value, String> {
-    if relation_id <= 0 {
-        return Err("关联记录无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    devify_json_request(
-        &app,
-        reqwest::Method::DELETE,
-        format!("/api/v1/event-relations/{relation_id}"),
-        None,
-    )
-    .await
-}
 
 #[tauri::command]
 async fn devify_conversations(
@@ -1438,239 +956,16 @@ async fn devify_message_detail(
     .await
 }
 
-#[tauri::command]
-async fn devify_topics(app: AppHandle, space_id: String) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/spaces/{space_id}/topics"),
-        None,
-    )
-    .await
-}
 
-#[tauri::command]
-async fn devify_topic_create(
-    app: AppHandle,
-    space_id: String,
-    title: String,
-    instruction: String,
-    period: String,
-    time_local: Option<String>,
-    timezone: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let title = title.trim();
-    let instruction = instruction.trim();
-    if title.is_empty() || instruction.is_empty() {
-        return Err("请填写主题名称和关注说明。".into());
-    }
-    if !matches!(period.as_str(), "day" | "week" | "month") {
-        return Err("主题周期无效。".into());
-    }
-    let mut body = serde_json::json!({
-        "title": title,
-        "instruction": instruction,
-        "period": period,
-    });
-    if let Some(time_local) = time_local.filter(|value| !value.trim().is_empty()) {
-        if !settings::is_valid_time(time_local.trim()) {
-            return Err("执行时间必须使用 HH:MM 格式。".into());
-        }
-        body["time_local"] = serde_json::json!(time_local.trim());
-    }
-    if let Some(timezone) = timezone.filter(|value| !value.trim().is_empty()) {
-        body["timezone"] = serde_json::json!(timezone.trim());
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::POST,
-        format!("/api/v1/spaces/{space_id}/topics"),
-        Some(body),
-    )
-    .await
-}
 
-#[tauri::command]
-async fn devify_topic_detail(
-    app: AppHandle,
-    space_id: String,
-    topic_id: i64,
-) -> Result<serde_json::Value, String> {
-    if topic_id <= 0 {
-        return Err("主题标识无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let topic = devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/topics/{topic_id}"),
-        None,
-    )
-    .await?;
-    if topic
-        .get("space_id")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|topic_space_id| topic_space_id != space_id)
-    {
-        return Err("主题不属于当前 空间。".into());
-    }
-    Ok(topic)
-}
 
-#[tauri::command]
-async fn devify_note_detail(
-    app: AppHandle,
-    space_id: String,
-    note_id: i64,
-) -> Result<serde_json::Value, String> {
-    if note_id <= 0 {
-        return Err("原文标识无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    let note = devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/notes/{note_id}"),
-        None,
-    )
-    .await?;
-    if note
-        .get("space_id")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|note_space_id| note_space_id != space_id)
-    {
-        return Err("原文不属于当前 空间。".into());
-    }
-    Ok(note)
-}
 
-#[tauri::command]
-async fn devify_topic_update(
-    app: AppHandle,
-    topic_id: i64,
-    enabled: bool,
-) -> Result<serde_json::Value, String> {
-    if topic_id <= 0 {
-        return Err("主题标识无效。".into());
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::PATCH,
-        format!("/api/v1/topics/{topic_id}"),
-        Some(serde_json::json!({"enabled": enabled})),
-    )
-    .await
-}
 
-#[tauri::command]
-async fn devify_daily_plan_update(
-    app: AppHandle, space_id: String, topic_id: i64, enabled: Option<bool>, time_local: Option<String>,
-) -> Result<serde_json::Value, String> {
-    devify_report_plan_update(app, space_id, topic_id, "day".into(), enabled, time_local).await
-}
 
-#[tauri::command]
-async fn devify_report_plan_update(
-    app: AppHandle, space_id: String, topic_id: i64, period: String, enabled: Option<bool>, time_local: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let topic = devify_topic_detail(app.clone(), space_id.clone(), topic_id).await?;
-    let body = report_plan::update_body(&topic, &period, enabled, time_local.as_deref())?;
-    let current = settings::load(&app_data(&app))?;
-    validate_devify_space(&current, &space_id)?;
-    devify_json_request(&app, reqwest::Method::PATCH, format!("/api/v1/topics/{topic_id}"), Some(body)).await
-}
 
-#[tauri::command]
-async fn devify_topic_delete(app: AppHandle, topic_id: i64) -> Result<(), String> {
-    if topic_id <= 0 {
-        return Err("主题标识无效。".into());
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::DELETE,
-        format!("/api/v1/topics/{topic_id}"),
-        None,
-    )
-    .await
-    .map(|_| ())
-}
 
-#[tauri::command]
-async fn devify_questions(app: AppHandle, space_id: String) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/spaces/{space_id}/questions"),
-        None,
-    )
-    .await
-}
 
-#[tauri::command]
-async fn devify_question_detail(
-    app: AppHandle,
-    space_id: String,
-    question_id: i64,
-) -> Result<serde_json::Value, String> {
-    if question_id <= 0 {
-        return Err("问答标识无效。".into());
-    }
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    devify_json_request(
-        &app,
-        reqwest::Method::GET,
-        format!("/api/v1/spaces/{space_id}/questions/{question_id}"),
-        None,
-    )
-    .await
-}
 
-#[tauri::command]
-async fn devify_question_ask(
-    app: AppHandle,
-    space_id: String,
-    question: String,
-    thread_id: Option<i64>,
-    since: Option<String>,
-    until: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let settings = settings::load(&app_data(&app))?;
-    validate_devify_space(&settings, &space_id)?;
-    entitlements::require(&app_data(&app), &settings.devify.base_url, capabilities::CLOUD_ASK)?;
-    let question = question.trim();
-    if question.is_empty() {
-        return Err("请输入问题。".into());
-    }
-    let mut body = serde_json::json!({"question": question});
-    if let Some(thread_id) = thread_id {
-        if thread_id <= 0 {
-            return Err("问答会话无效。".into());
-        }
-        body["thread_id"] = thread_id.into();
-    }
-    if let Some(since) = since.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
-        body["since"] = since.into();
-    }
-    if let Some(until) = until.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
-        body["until"] = until.into();
-    }
-    devify_json_request(
-        &app,
-        reqwest::Method::POST,
-        format!("/api/v1/spaces/{space_id}/questions"),
-        Some(body),
-    )
-    .await
-}
 
 #[derive(Serialize)]
 struct UploadPreviewSession {
@@ -8573,14 +7868,14 @@ pub fn run() {
             devify_auth_cancel,
             devify_auth_status,
             devify_current_user,
-            devify_analysis_preferences_get,
+            commands::analysis::devify_analysis_preferences_get,
             cloud_summary::cloud_summary_list,
             cloud_summary::cloud_summary_action,
             summary_jobs::summary_task_enqueue,
             summary_jobs::summary_task_retry,
             summary_jobs::summary_task_delete,
-            devify_analysis_preferences_save,
-            devify_analysis_manual_start,
+            commands::analysis::devify_analysis_preferences_save,
+            commands::analysis::devify_analysis_manual_start,
             capabilities_list,
             entitlements_get,
             entitlements_refresh,
@@ -8589,33 +7884,33 @@ pub fn run() {
             devify_logout,
             devify_spaces,
             devify_space_ensure,
-            devify_report_create,
-            devify_analysis_list,
-            devify_analysis_detail,
-            devify_event_notes,
-            devify_event_update,
-            devify_event_note_remove,
-            devify_event_note_assign,
-            devify_event_note_create,
-            devify_event_relations,
-            devify_event_relation_create,
-            devify_event_relation_delete,
+            commands::analysis::devify_report_create,
+            commands::analysis::devify_analysis_list,
+            commands::analysis::devify_analysis_detail,
+            commands::events::devify_event_notes,
+            commands::events::devify_event_update,
+            commands::events::devify_event_note_remove,
+            commands::events::devify_event_note_assign,
+            commands::events::devify_event_note_create,
+            commands::events::devify_event_relations,
+            commands::events::devify_event_relation_create,
+            commands::events::devify_event_relation_delete,
             devify_conversations,
             devify_conversation_detail,
             devify_conversation_messages,
             devify_message_detail,
             devify_sync_now,
-            devify_topics,
-            devify_topic_create,
-            devify_topic_detail,
-            devify_topic_update,
-            devify_daily_plan_update,
-            devify_report_plan_update,
-            devify_topic_delete,
-            devify_questions,
-            devify_question_detail,
-            devify_question_ask,
-            devify_note_detail,
+            commands::topics::devify_topics,
+            commands::topics::devify_topic_create,
+            commands::topics::devify_topic_detail,
+            commands::topics::devify_topic_update,
+            commands::topics::devify_daily_plan_update,
+            commands::topics::devify_report_plan_update,
+            commands::topics::devify_topic_delete,
+            commands::questions::devify_questions,
+            commands::questions::devify_question_detail,
+            commands::questions::devify_question_ask,
+            commands::topics::devify_note_detail,
             wechat_collection_messages,
             wechat_collection_dates,
             wechat_catalog_dates,
@@ -8739,7 +8034,3 @@ mod space_tests;
 #[cfg(test)]
 #[path = "tests/upload_coverage.rs"]
 mod upload_coverage_tests;
-
-#[cfg(test)]
-#[path = "tests/id_list.rs"]
-mod id_list_tests;

@@ -94,7 +94,10 @@ according to their own format rather than split arbitrarily.
 
 Entry-layer Rust unit tests live in `src-tauri/src/tests/`; their README documents
 ownership, filters and the required serial regression command. Production Rust
-extraction is a separate batch from test relocation.
+extraction is a separate batch from test relocation. Native command adapters are
+grouped under `src-tauri/src/commands/`; that directory's README describes ownership
+and IPC compatibility. When a private production owner moves, register its tests
+under that owner rather than widening helper visibility.
 
 ## Safe migration and extraction
 
