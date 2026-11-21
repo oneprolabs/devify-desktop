@@ -207,8 +207,10 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   assert.equal(saved.chat.allowed_usernames['e2e-wechat'].length, 45);
   assert.equal(Object.keys(saved.chat.initial_ranges['e2e-wechat']).length, 45, 'ranges persist beyond the current page');
   assert.ok(Object.values(saved.chat.initial_ranges['e2e-wechat']).every(x => x.since !== null && x.until === null));
+  assert.ok(await page.evaluate(() => Boolean(document.querySelector('.wizard-shared-plan-summary'))), 'wizard initially confirms the current shared schedule');
+  await click('修改统一设置');
   await page.evaluate(() => { window.__E2E__.saveDelay = 500; });
-  await page.click('loc=role:switch[name="微信自动备份"]');
+  await page.click('loc=role:switch[name="所有平台自动备份"]');
   assert.equal(await page.evaluate(() => document.querySelector('.wizard-backup-page .primary').disabled), true, 'pending saves block Next');
   await ready('下一步');
   await page.evaluate(() => { window.__E2E__.saveDelay = 0; });
@@ -236,13 +238,16 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   await page.click('loc=css:[aria-label="导入范围"] button:nth-child(2)');
   await click('最近 7 天'); await click('保存并继续');
   await page.waitForSelector('.wizard-backup-page');
-  await page.click('loc=role:switch[name="WhatsApp 自动备份"]'); await ready('下一步');
-  await click('下一步');
+  await ready('沿用当前设置并继续');
+  const sharedBefore = await page.evaluate(() => ({ backup: window.__E2E__.settings.backup, enabled: window.__E2E__.settings.sync.enabled, interval: window.__E2E__.settings.chat.sync_interval_seconds, writes: window.__E2E__.writes.length }));
+  await click('沿用当前设置并继续');
   await page.waitForSelector('loc=role:heading[name="WhatsApp 已连接"]');
   saved = (await state()).settings;
   assert.equal(saved.active_account_id, '10000000000@s.whatsapp.net');
   assert.equal(saved.chat.allowed_usernames[saved.active_account_id].length,45);
-  assert.equal(saved.sync.enabled, true, 'WA completes the same automatic backup handoff');
+  const sharedAfter = await page.evaluate(() => ({ backup: window.__E2E__.settings.backup, enabled: window.__E2E__.settings.sync.enabled, interval: window.__E2E__.settings.chat.sync_interval_seconds, writes: window.__E2E__.writes.length }));
+  assert.deepEqual(sharedAfter, sharedBefore, 'continuing another platform preserves the shared backup settings without a redundant save');
+  assert.ok(await page.evaluate(() => window.__E2E__.runtime.sources.some(source => source.platform === 'whatsapp' && source.setup_complete && source.backup_enabled)), 'WA completes its source setup without changing the global backup switch');
   assert.ok(!(await state()).calls.slice(waStart).some(x => /^wechat_(capture|decrypt|import|scan|key)/.test(x)), 'WA never runs WeChat connection operations');
   await clean();
   console.log('PASS WhatsApp: intro → system check → activation → private + group selection → ranges → persisted completion, without WeChat key/capture operations');
@@ -259,9 +264,11 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   console.log('PASS WeChat permission: restart instruction, no focus polling or automatic navigation, explicit retry');
 
   await start('');
-  await click('备份周期'); await page.waitForSelector('[aria-label="微信自动备份"]');
-  await page.click('loc=role:switch[name="微信自动备份"]');
-  await page.waitForFunction(() => window.__E2E__.settings.sync.enabled);
+  await click('备份周期'); await page.waitForSelector('[aria-label="后台备份"]');
+  await page.click('loc=role:switch[name="后台备份"]');
+  await page.waitForFunction(() => window.__E2E__.runtime.paused && !document.querySelector('.backup-runtime-switch').disabled);
+  await page.click('loc=role:switch[name="后台备份"]');
+  await page.waitForFunction(() => !window.__E2E__.runtime.paused && !document.querySelector('.backup-runtime-switch').disabled);
   await page.evaluate(() => { window.__E2E__.failNextSave = true; });
   await click('5 分钟'); await page.waitForSelector('[role="alert"]');
   await page.snapshot({ scope: 'full_page' });
@@ -270,7 +277,7 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   await page.waitForFunction(() => !document.querySelector('fieldset').disabled);
   assert.equal((await state()).settings.chat.sync_interval_seconds,1800);
   assert.ok(await page.evaluate(() => !document.querySelector('.backup-page').textContent.includes('邮件')));
-  assert.ok(await page.evaluate(() => document.querySelector('.plan-plat-title').textContent.includes('WhatsApp')));
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.backup-runtime-switch').length), 1, 'all platforms share one runtime pause control');
   await clean();
   console.log('PASS schedule: conflict blocks edits, explicit reload recovers confirmed revision, both platforms share the automatic schedule, email is hidden');
   await start('?untrusted');
@@ -300,7 +307,7 @@ export async function runConnectorEnglishSmoke(task, base = 'http://localhost:14
   await click('Backup');
   await page.waitForSelector('.backup-v7');
   await page.snapshot({ scope: 'full_page' });
-  assert.ok(await page.evaluate(() => document.querySelector('.backup-v7').textContent.includes('WhatsApp')));
+  assert.ok(await page.evaluate(() => document.querySelector('.backup-v7').textContent.includes('Connected platforms share one automatic backup schedule.')));
   await click('Import');
   await page.waitForSelector('.import-history-range');
   assert.ok(await page.evaluate(() => document.querySelector('.import-history-range').textContent.includes('Chat history for the first backup')));
