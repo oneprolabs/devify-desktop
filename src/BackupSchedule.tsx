@@ -6,7 +6,8 @@ import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import { createSettingsSaveQueue, settingsUserRevision, type SettingsSaveQueue } from './settingsSaveQueue';
 import { WizardActionButton } from './WizardActionButton';
-import { useTaskRuntime, refreshTaskRuntime } from './taskRuntime';
+import { useTaskRuntime } from './taskRuntime';
+import { BackupRuntimeSwitch } from './BackupRuntimeSwitch';
 import './backup-schedule.css';
 
 type ChatAccount = { id: string; source: string };
@@ -76,8 +77,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
   const [whatsappConnected, setWhatsappConnected] = useState(false);
   const [wechatConnected, setWechatConnected] = useState(false);
   const [customInterval, setCustomInterval] = useState(false);
-  const [pausePending, setPausePending] = useState(false);
-  const pauseLock = useRef(false);
+  const [editingSharedPlan, setEditingSharedPlan] = useState(false);
   const [unitPref, setUnitPref] = useState<'auto' | '分钟' | '小时'>('auto');
   const [newTime, setNewTime] = useState('12:00');
   const [error, setError] = useState('');
@@ -134,20 +134,6 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
   const plan = settings.backup;
   const intervalSeconds = settings.chat.sync_interval_seconds;
   const showCustomInterval = customInterval || !QUICK_INTERVALS.some(item => item.seconds === intervalSeconds);
-  const togglePaused = async (enabled: boolean) => {
-    if (pauseLock.current) return;
-    pauseLock.current = true;
-    setPausePending(true); setError('');
-    try {
-      await invoke('task_runtime_pause', { paused: !enabled });
-      await refreshTaskRuntime();
-    } catch (reason) {
-      if (active.current) setError(tf("操作未完成：{0}", String(reason)));
-    } finally {
-      pauseLock.current = false;
-      if (active.current) setPausePending(false);
-    }
-  };
 
   /** Every control saves its explicit change against the last confirmed revision. */
   const update = useCallback((change: (current: AppSettings) => AppSettings) => {
@@ -180,23 +166,38 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
   const windowRule = plan.window_mode === 'deny'
     ? t("，该时段暂停上传，结束后自动补传")
     : t("，其余时间攒着，到点集中上传");
+  const scheduleSummary = plan.mode === 'manual' ? t("仅手动") : plan.mode === 'times'
+    ? tf("每天 {0}", plan.times.join('、'))
+    : intervalSeconds % 3600 === 0 ? tf("每 {0} 小时", intervalSeconds / 3600) : tf("每 {0} 分钟", intervalSeconds / 60);
 
   if (!ready) return <div className="settings-page backup-page backup-v7"><h2>{t("备份周期")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{error}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
 
   return <div className={`settings-page backup-page backup-v7${wizard ? ' wizard-backup-page' : ''}`}>
     <header className="page-head">
-      <h2>{wizard ? t("设置备份周期") : t("备份周期")}</h2>
-      <p className="help">{wizard ? t("设置备份时间与上传内容，之后可以在「备份周期」里修改。") : t("选择聊天记录自动备份的时间与范围，只上传已导入会话的新增消息。")}</p>
+      <h2>{wizard ? t("确认备份周期") : t("备份周期")}</h2>
+      <p className="help">{wizard ? t("所有平台共用一套备份设置，默认沿用当前设置，无需重复修改。") : t("选择聊天记录自动备份的时间与范围，只上传已导入会话的新增消息。")}</p>
     </header>
 
     <fieldset disabled={blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
     {wizard && !connected && <div role="alert"><p>{t("未能确认当前账号的连接状态，请重新检查或返回连接步骤。")}</p><button type="button" onClick={() => void load()}>{t("重新检查")}</button><button type="button" onClick={onOpenConnectors}>{t("返回连接步骤")}</button></div>}
+    {wizard && connected && <div className="wizard-shared-plan">
+      <div className="wizard-shared-plan-head"><strong>{t("当前备份设置")}</strong><button type="button" className="wxv-btn" aria-expanded={editingSharedPlan} aria-controls="wizard-shared-plan-editor" disabled={savePending} onClick={() => setEditingSharedPlan(value => !value)}>{editingSharedPlan ? t("收起设置") : t("修改统一设置")}</button></div>
+      {!editingSharedPlan && <dl className="wizard-shared-plan-summary">
+        <div><dt>{t("备份周期")}</dt><dd>{scheduleSummary}</dd></div>
+        <div><dt>{t("上传内容")}</dt><dd>{t(ATTACHMENTS.find(item => item.id === plan.attachments)?.label ?? '仅文本')}</dd></div>
+        {plan.wifi_only && <div><dt>{t("网络条件")}</dt><dd>{t("仅在 Wi-Fi 下上传")}</dd></div>}
+        {plan.window_enabled && <div><dt>{t("限制上传时间")}</dt><dd>{windowHint}{windowRule}</dd></div>}
+      </dl>}
+      {(!settings.sync.enabled || runtime.paused) && <p className="help">{!settings.sync.enabled ? t("自动备份已关闭。") : t("后台备份已暂停，重启后仍保持暂停。")}</p>}
+      {editingSharedPlan && <p className="wizard-shared-plan-notice">{t("以下修改会立即保存，并应用于所有已连接的平台。")}</p>}
+    </div>}
+    {(!wizard || editingSharedPlan) && <div id={wizard ? 'wizard-shared-plan-editor' : undefined}>
     <div className="backup-list">
       {connected && <section className="plan-plat">
         <div className="plan-rows plan-master">
-        {wizard ? <Row label={t("自动备份")} desc={t("关闭后，暂停自动生成备份任务")}><Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label={t(settings.active_account_id.endsWith('@s.whatsapp.net') ? "WhatsApp 自动备份" : "微信自动备份")} /></Row> :
-          <Row label={t("后台备份")} desc={runtime.paused ? t("后台备份已暂停，重启后仍保持暂停。") : t("微信与 WhatsApp 按统一周期自动备份。") }>
-            <Switch checked={!runtime.paused} onChange={next => void togglePaused(next)} label={t("后台备份")} busy={pausePending}/>
+        {wizard ? <Row label={t("自动备份")} desc={t("关闭后，所有平台暂停自动生成备份任务")}><Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label={t("所有平台自动备份")} /></Row> :
+          <Row label={t("后台备份")} desc={runtime.paused ? t("后台备份已暂停，重启后仍保持暂停。") : t("已连接的平台按统一周期自动备份。") }>
+            <BackupRuntimeSwitch onError={setError}/>
           </Row>}
         </div>
         <fieldset disabled={wizard && !settings.sync.enabled} className="plan-rows" style={{ border: 0, margin: 0, minWidth: 0 }}>
@@ -297,9 +298,10 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
       </div>}
       </>}
     </div>
+    </div>}
 
     </fieldset>
-    {onContinue && <div className="page-actions">{wizard && onBack && <button type="button" className="wxv-btn" disabled={savePending} onClick={onBack}>{t("上一步")}</button>}<WizardActionButton className="primary" loading={savePending} busyLabel={t("正在保存…")} disabled={!connected || (!wizard && (!settings.sync.enabled || plan.mode === 'manual')) || blocked || savePending} onAction={onContinue}>{wizard ? t("下一步") : t("保存并继续")}</WizardActionButton>{!wizard && (!settings.sync.enabled || plan.mode === 'manual') && <span>{t("请开启自动备份并选择备份周期。")}</span>}</div>}
+    {onContinue && <div className="page-actions">{wizard && onBack && <button type="button" className="wxv-btn" disabled={savePending} onClick={onBack}>{t("上一步")}</button>}<WizardActionButton className="primary" loading={savePending} busyLabel={t("正在保存…")} disabled={!connected || (!wizard && (!settings.sync.enabled || plan.mode === 'manual')) || blocked || savePending} onAction={onContinue}>{wizard ? editingSharedPlan ? t("下一步") : t("沿用当前设置并继续") : t("保存并继续")}</WizardActionButton>{!wizard && (!settings.sync.enabled || plan.mode === 'manual') && <span>{t("请开启自动备份并选择备份周期。")}</span>}</div>}
     {error && <div className="error" role="alert">{error}</div>}
     {blocked && <div><p>{t("当前修改未确认保存；重新加载会放弃这些修改。")}</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? t("正在加载…") : t("放弃未保存修改并重新加载")}</button></div>}
   </div>;

@@ -24,6 +24,7 @@ new Function('require','module','exports',output)(id=>{
  if(id==='./desktopInvoke')return {desktopInvoke:invoke};
  if(id==='./taskRuntime')return {useTaskRuntime:()=>runtime,refreshTaskRuntime:async()=>{}};
  if(id==='./WizardActionButton')return {WizardActionButton:()=>null};
+ if(id==='./BackupRuntimeSwitch')return {BackupRuntimeSwitch:()=>null};
  throw Error(id);
 },module,module.exports);
 instance={hooks:[]};
@@ -33,6 +34,12 @@ function text(node){return Array.isArray(node)?node.map(text).join(''):node&&typ
 const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 let tree=render();
 assert.deepEqual(calls,[],'mount only consumes the shared local snapshot');
+runtime={...runtime,sources:[{account_id:'wa',platform:'whatsapp',setup_complete:false,backup_enabled:true}]};
+tree=render();
+assert.ok(text(tree).includes('WhatsApp 配置未完成，备份已暂停。'),'unfinished sources are visible even without current jobs');
+runtime={...runtime,sources:[{account_id:'wa',platform:'whatsapp',setup_complete:true,backup_enabled:true}]};
+tree=render();
+assert.ok(!text(tree).includes('配置未完成'),'the notice clears when configuration finishes');
 const button=all(tree).find(n=>n.props?.children==='查看云端历史');
 const pending=button.props.onAction();await flush();assert.equal(typeof finishCloud,'function');
 runtime={...runtime,context:'two'};render();

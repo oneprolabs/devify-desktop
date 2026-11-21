@@ -1,11 +1,11 @@
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LoadingPage, LoadingSkeleton } from './LoadingSkeleton';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import { reportPresentation } from './reportPresentation';
-import { exportNotSupported } from './toast';
+import { renderAgentMarkdown } from './summary';
 import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from './pageSnapshots';
 
 type Kind = 'events' | 'reports';
@@ -42,12 +42,6 @@ function shortDate(value?: string | null): string {
   if (!value) return '';
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-function eventDateGroup(value?: string | null): string {
-  const parsed = value ? new Date(value) : null;
-  return parsed && Number.isFinite(parsed.getTime())
-    ? parsed.toLocaleDateString(dateLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
-    : t("时间未知");
 }
 function clockDate(value?: string | null): string {
   if (!value) return '—';
@@ -202,6 +196,9 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     let active = true;
     let cacheKey = '';
     const generation = pageSnapshotGeneration();
+    const initialSelection = (list: Array<EventItem | ReportItem>) => focusId
+      ?? (kind === 'events' ? list.find(item => !isDone((item as EventItem).status))?.id : list[0]?.id)
+      ?? null;
     setItems([]); setSelectedId(null); setDetail(null); setError(''); setListError(''); setQuery(''); setFilter(kind === 'events' && focusId == null ? 'open' : 'all');
     setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
     if (!isTauri()) { setLoading(false); return; }
@@ -218,7 +215,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
         if (cached) {
           setItems(cached.list);
           setTotal(cached.total);
-          setSelectedId(focusId ?? cached.list[0]?.id ?? null);
+          setSelectedId(initialSelection(cached.list));
           setLoading(false);
         }
         return invoke<Page<EventItem> | Page<ReportItem>>('devify_analysis_list', { kind, spaceId: id, page: 1 });
@@ -234,7 +231,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
         setSelectedId(current => pending && list.some(item => item.id === pending)
           ? pending
           : focusId && (kind === 'events' || list.some(item => item.id === focusId)) ? focusId
-          : current && list.some(item => item.id === current) ? current : list[0]?.id ?? null);
+          : current && list.some(item => item.id === current) ? current : initialSelection(list));
       })
       .catch(reason => { if (active) setListError(String(reason)); })
       .finally(() => { if (active) setLoading(false); });
@@ -258,16 +255,18 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     return true;
   }), [items, kind, query, filter]);
   useEffect(() => {
-    if (kind === 'events' && items.length && selectedId !== focusId && !filteredItems.some(item => item.id === selectedId)) {
+    const focused = focusId != null && selectedId === focusId;
+    if (kind === 'events' && items.length && !focused && !filteredItems.some(item => item.id === selectedId)) {
       setSelectedId(filteredItems[0]?.id ?? null);
     }
   }, [filteredItems, selectedId, kind, items.length, focusId]);
   const selected = useMemo(() => items.find(item => item.id === selectedId) ?? null, [items, selectedId]);
 
   useEffect(() => {
-    if (!isTauri() || !spaceId || selectedId == null) { setDetail(null); setEventNotes([]); return; }
+    if (!isTauri() || !spaceId || selectedId == null) { setDetail(null); setEventNotes([]); setDetailLoading(false); setError(''); return; }
     let active = true;
     setDetailLoading(true);
+    setError('');
     setOpenNotes({});
     setEventTab('overview');
     setEditing(false);
@@ -532,7 +531,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
   if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>{t("请在桌面应用中查看")}</h2><p>{t("事件和报告在上传处理后生成，桌面端负责同步并展示。")}</p></div></div>;
   if (loading) return <LoadingPage title={pageTitle} />;
   if (error || (listError && !items.length)) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>{t("同步失败")}</h2><p>{error || listError}</p></div></div>;
-  if (!items.length) return <div className="analysis-page"><div className="analysis-empty"><h2>{pageEmpty}</h2><p>{t("完成聊天采集并等待处理完成后，结果会出现在这里。")}</p></div></div>;
+  if (!items.length && kind==='events') return <div className="analysis-page"><div className="analysis-empty"><h2>{pageEmpty}</h2><p>{t("完成聊天采集并等待处理完成后，结果会出现在这里。")}</p></div></div>;
 
   return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
     <aside className="analysis-side" aria-label={tf("{0}列表", pageTitle)}>
@@ -562,14 +561,10 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
       </div>
 
       <div className="analysis-items">
-        {filteredItems.map((item, index) => {
+        {filteredItems.map(item => {
           const status = kind === 'events' ? (item as EventItem).status : (item as ReportItem).status;
           const when = kind === 'events' ? (item as EventItem).last_activity_at : (item as ReportItem).generated_at;
-          const group = kind === 'events' ? eventDateGroup(when) : '';
-          const previousGroup = index > 0 && kind === 'events' ? eventDateGroup((filteredItems[index - 1] as EventItem).last_activity_at) : '';
-          return <Fragment key={item.id}>
-            {group && group !== previousGroup && <h2 className="event-list-date">{group}</h2>}
-            <button
+          return <button key={item.id}
             type="button"
             aria-current={item.id === selectedId ? 'true' : undefined}
             className={item.id === selectedId ? 'on' : ''}
@@ -577,14 +572,13 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
           >
             {kind === 'reports'
               ? <span className="report-mini-badge">{reportBadge(item as ReportItem)}</span>
-              : <span className="event-list-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span>}
+              : <span className="event-list-icon" aria-hidden="true"><DoneDot done={isDone(status)}/></span>}
             <span>
               <strong>{item.title || `${pageTitle} #${item.id}`}</strong>
-              {kind === 'events' ? <small className="event-list-meta"><span><DoneDot done={isDone(status)}/>{status === 'open' ? t("待跟进") : statusLabel(status)}</span>{when && <time dateTime={when}>{shortDate(when)}</time>}</small>
+              {kind === 'events' ? <small className="event-list-meta"><span>{status === 'open' ? t("待跟进") : statusLabel(status)}</span>{when && <time dateTime={when}>{shortDate(when)}</time>}</small>
                 : <small>{reportType(item as ReportItem)}{when ? ` · ${shortDate(when)}` : ''}</small>}
             </span>
-            </button>
-          </Fragment>;
+            </button>;
         })}
         {!filteredItems.length && <p className="analysis-list-empty">{t("没有符合筛选条件的")}{pageTitle}</p>}
       </div>
@@ -595,10 +589,6 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
       <header className="analysis-top">
         <div className="analysis-crumbs"><span className="analysis-crumb-root">{pageTitle}</span><span className="analysis-crumb-sep">/</span><span className="analysis-crumb-current">{filterLabel}</span></div>
         <div className="analysis-top-actions">
-          {kind === 'reports' && report && <>
-            <button type="button" onClick={exportNotSupported}>{t("导出 Markdown")}</button>
-            <button type="button" className="primary" onClick={exportNotSupported}>{t("导出 PDF")}</button>
-          </>}
           {kind === 'events' && event && <>
             <button type="button" disabled={!!actionBusy} onClick={startEdit}>{t("编辑")}</button>
             <button type="button" disabled={!!actionBusy} onClick={() => { setActionError(''); setPickerQuery(''); setPickerOpen(true); }}>{t("关联事件")}</button>
@@ -615,6 +605,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
       </header>
 
       <div className="analysis-doc-wrap">
+        {kind==='reports'&&!creating&&!report&&!detailLoading&&<div className="analysis-empty"><h2>{t('还没有报告')}</h2><p>{t('可以按需生成第一份报告，也可以在智能分析中设置定期生成。')}</p><button type="button" className="report-create-submit" onClick={()=>setCreating(true)}>{t('生成报告')}</button></div>}
         {kind === 'reports' && creating && <div className="report-create">
           <header>
             <h2>{t("生成报告")}</h2>
@@ -642,6 +633,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
 
         {!(kind === 'reports' && creating) && <>
         {detailLoading && <LoadingSkeleton label={t("正在加载详情")} kind="detail" />}
+        {kind === 'events' && selectedId == null && !detailLoading && <div className="analysis-empty" role="status"><h2>{t("当前筛选下没有记录。")}</h2><p>{t("可切换筛选查看其他事件。")}</p><button type="button" className="report-create-submit" onClick={() => setFilter('all')}>{t("查看全部事件")}</button></div>}
 
         {event && <article className="analysis-doc">
           {editing ? <div className="analysis-edit">
@@ -773,7 +765,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
             <span className="report-badge">{reportBadge(report)}</span>
             <div>
               <h1>{report.title}</h1>
-              <p>{reportType(report)} · {report.generated_at ? tf("{0} 生成", date(report.generated_at)) : t("正在生成")}</p>
+              <p>{reportType(report)} · {report.generated_at ? tf("{0} 生成", date(report.generated_at)) : statusLabel(report.status)}</p>
             </div>
           </header>
 
@@ -783,7 +775,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
               <span>{report.sections?.length ?? 0} {t("个分类 ·")} {sectionItems(report).length} {t("项")}</span>
             </div>
             {reportView.notice && <p role={report.status === 'failed' ? 'alert' : 'status'}>{reportView.notice}</p>}
-            {reportView.content ? <p>{reportView.content}</p> : !reportView.notice && <p>{t("尚未返回正文。")}</p>}
+            {reportView.content ? <div className="report-markdown wxv-ai-body">{renderAgentMarkdown(reportView.content)}</div> : !reportView.notice && <p>{t("尚未返回正文。")}</p>}
           </div>
 
           {(report.sections ?? []).map(section => <section className="report-section" key={section.id}>

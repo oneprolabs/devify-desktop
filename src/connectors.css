@@ -95,6 +95,7 @@
 .connector-page.connector-catalog .connector-developer .connector-notify { border-color: #a3279a; color: #a3279a; }
 .connector-page.connector-catalog .connector-confirm { margin: 0; }
 .connector-page.connector-catalog .connector-error { margin: 0; }
+.connector-page.connector-catalog .connector-setup-state { margin: 0; color: #815b22; font-size: 13px; line-height: 1.6; }
 .connector-page.connector-catalog .connector-install-check { margin: 0; }
 .connector-page.connector-catalog .connector-install-check p { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 1050px) {

@@ -31,9 +31,11 @@ type VoiceStatus = {
 const MAX_TIMEOUT = 900;
 const MIN_TIMEOUT = 30;
 
-export function AgentSettings() {
+export function AgentSettings({ summaryOnly = false }: { summaryOnly?: boolean } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
+  const [advanced,setAdvanced] = useState(false);
+  const testLock=useRef(false);
   const saveLock = useRef(false);
   const confirmedRevision = useRef<number | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -48,6 +50,7 @@ export function AgentSettings() {
   const [error, setError] = useState('');
   const [saveError, setSaveError] = useState('');
   const [voiceState, setVoiceState] = useState<VoiceStatus | null>(null);
+  const [voiceOpen,setVoiceOpen] = useState(false);
   const [voiceSaving, setVoiceSaving] = useState(false);
   const [voiceNotice, setVoiceNotice] = useState('');
   const [voiceError, setVoiceError] = useState('');
@@ -88,8 +91,8 @@ export function AgentSettings() {
   }, [scanAgents]);
 
   useEffect(() => {
-    void loadVoice();
-  }, [loadVoice]);
+    if(voiceOpen)void loadVoice();
+  }, [loadVoice,voiceOpen]);
 
   const saveVoice = async () => {
     if (!voiceState) return;
@@ -112,7 +115,8 @@ export function AgentSettings() {
   };
 
   const agent = settings.agent;
-  const selected = agents.find(item => item.id === agent.provider_id) ?? null;
+  const automatic = agents.find(item=>item.id==='codex'&&item.available) ?? agents.find(item=>item.available) ?? null;
+  const selected = agent.provider_id ? agents.find(item => item.id === agent.provider_id) ?? null : automatic;
 
   const loadModels = useCallback(async (value: AppSettings['agent']) => {
     if (!value.provider_id.trim()) {
@@ -133,13 +137,13 @@ export function AgentSettings() {
   }, []);
 
   useEffect(() => {
-    if (!agent.provider_id.trim()) {
+    if (!advanced || !agent.provider_id.trim()) {
       setModels([]);
       return;
     }
     void loadModels(agent);
     // Only a different agent (or executable) changes what can be listed.
-  }, [agent.provider_id, agent.command, loadModels]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agent.provider_id, agent.command, loadModels, advanced]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const patchAgent = (patch: Partial<AppSettings['agent']>) => {
     setSettings(current => ({ ...current, agent: { ...current.agent, ...patch } }));
@@ -158,7 +162,7 @@ export function AgentSettings() {
       const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: { ...settings, user_settings_revision: confirmedRevision.current } })));
       confirmedRevision.current = saved.user_settings_revision;
       setSettings(current => mergeSavedSettings(saved, settings, current));
-      setNotice(t("Agent 配置已保存。聊天记录页的「AI 总结」会立即使用该配置。"));
+      setNotice(t(summaryOnly ? '本地总结设置已保存。' : "Agent 配置已保存。聊天记录页的「AI 总结」会立即使用该配置。"));
       await scanAgents();
     } catch (e) {
       setSaveError(settingsSaveError(e));
@@ -169,13 +173,14 @@ export function AgentSettings() {
   };
 
   const test = async () => {
+    if(testLock.current)return;testLock.current=true;
     setTesting(true);
     setError('');
     setNotice('');
     setTestResult(null);
     try {
       const result = await invoke<{ output: string; elapsed_ms: number; command: string }>('agent_test', {
-        value: agent,
+        value: agent.provider_id ? agent : {...agent,provider_id:automatic?.id??''},
       });
       const seconds = (result.elapsed_ms / 1000).toFixed(1);
       const preview = result.output.length > 160 ? `${result.output.slice(0, 160)}…` : result.output;
@@ -186,6 +191,7 @@ export function AgentSettings() {
     } catch (e) {
       setTestResult({ ok: false, text: tf("测试失败：{0}", String(e)) });
     } finally {
+      testLock.current=false;
       setTesting(false);
     }
   };
@@ -197,9 +203,9 @@ export function AgentSettings() {
   return (
     <div className="agent-page">
       <section className="panel">
-        <h2>{t("本地总结 Agent")}</h2>
+        {!summaryOnly && <h2>{t("本地工具总结")}</h2>}
         <p className="help">
-          {t("扫描本机已安装的命令行 Agent，选择一个用于聊天记录总结。应用只负责把整理好的原文交给它，\n          登录状态、模型和额度仍由该 Agent 自己管理。")}
+          {t("自动识别本机工具，沿用已有的登录状态和默认模型，无需填写密钥。优先使用 Codex，也可以手动选择。")}
         </p>
         <div className="config warn">
           {t("聊天内容会通过所选 Agent 及其模型服务处理，可能离开本机。只在确认原文范围后再生成。")}
@@ -212,7 +218,8 @@ export function AgentSettings() {
         <div className="agent-picker">
           <fieldset className="agent-options">
             <legend>{t("选择本地 Agent")}</legend>
-            {agents.map(item => <label key={item.id} className={`agent-option${agent.provider_id === item.id ? ' selected' : ''}${item.available ? '' : ' unavailable'}`}>
+            <label className={`agent-option${!agent.provider_id?' selected':''}`}><input type="radio" name="local-agent" checked={!agent.provider_id} disabled={scanning} onChange={()=>patchAgent({provider_id:'',command:'',model:''})}/><span><strong>{t('自动选择（推荐）')}</strong><small>{automatic?tf('当前可用：{0}',automatic.name):t('安装并登录 Codex 后，点击重新检测。')}</small></span></label>
+            {agents.filter(item=>item.available||item.id===agent.provider_id).map(item => <label key={item.id} className={`agent-option${agent.provider_id === item.id ? ' selected' : ''}${item.available ? '' : ' unavailable'}`}>
               <input type="radio" name="local-agent" value={item.id} checked={agent.provider_id === item.id} disabled={scanning || !item.available} onChange={() => patchAgent({ provider_id: item.id })}/>
               <span><strong>{item.name}</strong><small>{item.available ? t("已检测到") : t("未检测到")}{item.version ? ` · ${item.version}` : ''}</small></span>
             </label>)}
@@ -222,8 +229,7 @@ export function AgentSettings() {
               <span className={`agent-state ${selected.available ? 'ok' : 'warn'}`}>
                 {selected.available ? t("可用") : t("未检测到")}
               </span>
-              <span className="agent-detail-path mono">{selected.command ?? '—'}</span>
-              <span className="agent-detail-note">{selected.version ? `${selected.version} · ${selected.note}` : selected.note}</span>
+              <span>{selected.name}{selected.version?` · ${selected.version}`:''}</span>
             </div>
           )}
           {!agents.length && !scanning && <p className="help">{t("没有检测到受支持的 Agent。")}</p>}
@@ -231,7 +237,7 @@ export function AgentSettings() {
             <button type="button" className="secondary" onClick={() => void scanAgents()} disabled={scanning}>
               {scanning ? t("扫描中…") : t("重新扫描")}
             </button>
-            <button type="button" className="primary" onClick={() => void test()} disabled={testing || !agent.provider_id}>
+            <button type="button" className="primary" onClick={() => void test()} disabled={testing || !selected?.available}>
               {testing ? t("测试中…") : t("测试连接")}
             </button>
           </div>
@@ -244,8 +250,8 @@ export function AgentSettings() {
         )}
       </section>
 
-      <section className="panel">
-        <h2>{t("生成参数")}</h2>
+      <details className="panel agent-advanced" open={advanced} onToggle={event=>setAdvanced(event.currentTarget.open)}>
+        <summary>{t("高级设置")}<span>{t('通常无需修改')}</span></summary>
         <div className="grid">
           <label>{t("可执行文件路径（可选）")}
             <input
@@ -306,10 +312,10 @@ export function AgentSettings() {
           {t("不填模型时使用该 Agent 的默认模型；如果默认模型的凭据已失效（例如 OpenCode 的默认模型指向未登录的服务），\n          在这里选一个它已配置的模型即可。补充要求会追加到内置总结提示词，不能覆盖“只依据原文、不编造”的约束。超时时间限制在")}
           {MIN_TIMEOUT}–{MAX_TIMEOUT} {t("秒；超时或失败不会写入任何总结结果。")}
         </p>
-      </section>
+      </details>
 
-      <section className="panel">
-        <h2>{t("语音转写")}</h2>
+      {!summaryOnly && <details className="panel agent-advanced" onToggle={event=>setVoiceOpen(event.currentTarget.open)}>
+        <summary>{t("语音转写")}<span>{t('可选')}</span></summary>
         <p className="help">
           {t("微信语音是 SILK v3，应用内置解码器把它转成 24 kHz WAV，再交给本机的转写命令行工具。\n          转写在本机执行，结果按账号和消息缓存，不会重复计算；开启上传后只提交转写文本，不上传原始语音。")}
         </p>
@@ -407,14 +413,14 @@ export function AgentSettings() {
         )}
         {voiceNotice && <div className="config ok">{voiceNotice}</div>}
         {voiceError && voiceState && <div className="config warn">{voiceError}</div>}
-      </section>
+      </details>}
 
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error">{t(error)}</div>}
       {saveError && <div className="error" role="alert">{saveError}</div>}
       <div className="page-actions">
         <button className="primary" disabled={saving} onClick={() => void save()}>
-          {saving ? t("正在保存…") : t("保存 Agent 配置")}
+          {saving ? t("正在保存…") : t(summaryOnly ? '保存本地总结设置' : "保存 Agent 配置")}
         </button>
       </div>
     </div>

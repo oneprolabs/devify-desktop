@@ -1,3 +1,4 @@
+import { isSummaryText } from './summaryInput';
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { RemoteChatFallback } from './RemoteChatFallback';
 import { LoadingSkeleton } from './LoadingSkeleton';
@@ -21,7 +22,6 @@ import {
   type SummaryRecord,
 } from './summary';
 import { classifyWorkText, extractWorkTerms, type InsightCategory } from './workInsights';
-import { exportNotSupported } from './toast';
 import { useCapability, useInternalAccount } from './entitlements';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError, type AppSettings } from './Settings';
 
@@ -606,6 +606,7 @@ export default function WeChatLocal({
   sessionRevision = 0,
   accountId: pinnedAccountId,
   onChatState,
+  onSummarySelection,
 }: {
   mode?: 'chat' | 'settings';
   onOpenChat?: () => void;
@@ -632,8 +633,9 @@ export default function WeChatLocal({
   sessionRevision?: number;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
-  /** Reports whether the page-level 整理/导出 actions may be shown at all. */
+  /** Reports loaded and selected messages to the page-level actions. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean }) => void;
+  onSummarySelection?: (messages: import('./summaryInput').SummaryMessage[]) => void;
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
   const { internal: internalAccount } = useInternalAccount();
@@ -2381,6 +2383,10 @@ export default function WeChatLocal({
     });
   }, [active?.username, messages.length, selectedMessages.length, agentCurrent?.configured, agentCurrent?.available, onChatState]);
 
+  useEffect(()=>{
+    onSummarySelection?.(selectedMessages.filter(item=>isSummaryText(item.message)).map(({session,message})=>({username:session.username,display:session.display,is_group:session.is_group,sender:message.sender_name||message.sender||'',time:message.time,text:message.text,local_id:message.local_id,source_shard:message.source_shard})));
+  },[selectedMessages,onSummarySelection]);
+
   const groups = sessions.filter(session => session.is_group);
   const needle = query.trim().toLowerCase();
   const filteredSessions = useMemo(() => {
@@ -3443,7 +3449,7 @@ const checkMark = (value: boolean | undefined) =>
               )}
               <div className="wxv-msg-body">
                 {(onChatState || (active?.is_group && !message.is_self)) && (
-                  <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || message.sender || t("未知成员"))}</span>
+                  <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || message.sender || t("未知成员"))}{onChatState && <time className="wxv-message-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}</span>
                 )}
                 <div className={`wxv-bubble ${imageMessage || videoMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
                   {imageMessage || voiceMessage || videoMessage ? null : placeholder ? (
@@ -3570,9 +3576,6 @@ const checkMark = (value: boolean | undefined) =>
                 {t("整理工作内容")}
               </button>
             )}
-            <button type="button" className="wxv-btn" onClick={exportNotSupported}>
-              {t("导出")}
-            </button>
           </div>
         </header>
 
@@ -3597,7 +3600,7 @@ const checkMark = (value: boolean | undefined) =>
 
         {renderMessages()}
 
-        {!localMissing && <footer className="wxv-chat-foot">
+        {!localMissing && <footer className={`wxv-chat-foot${selectedMessages.length ? ' has-selection' : ''}`}>
           <span>
             {t("已加载最近")} {messages.length} {t("条")}
             {hasMore ? t("，可继续向前加载") : t("，已到本地记录起点")}

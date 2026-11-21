@@ -6,7 +6,7 @@ use std::{collections::HashSet, fs, path::Path, time::Duration};
 
 const FILE: &str = "client-tasks.sqlite";
 
-fn open(data: &Path) -> Result<Connection, String> {
+pub(crate) fn open(data: &Path) -> Result<Connection, String> {
     fs::create_dir_all(data).map_err(|e| format!("创建任务目录失败：{e}"))?;
     let connection =
         Connection::open(data.join(FILE)).map_err(|e| format!("打开任务数据库失败：{e}"))?;
@@ -179,6 +179,7 @@ pub fn idle_maintenance(data: &Path) -> Result<(), String> {
     {
         return Ok(());
     }
+    crate::summary_jobs::cleanup(data)?;
     let mut terminal: Vec<_> = state
         .upload_queue
         .iter()

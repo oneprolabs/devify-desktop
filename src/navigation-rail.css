@@ -68,11 +68,11 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 6px;
   width: 60px;
-  height: auto;
+  height: 66px;
   margin: 0;
-  padding: 9px 0 8px;
+  padding: 0;
   border: 0;
   border-radius: 10px;
   background: transparent;
@@ -84,15 +84,18 @@
 
 .prototype-nav-item:hover { background: var(--rail-selected); color: #fff; }
 .prototype-nav-item.active { background: var(--rail-selected); color: var(--rail-accent); }
-.prototype-nav-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 26px; height: 26px; }
-.prototype-nav-item-tasks .prototype-nav-icon { width: 44px; height: 44px; }
+.prototype-nav-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 44px; height: 36px; }
 .prototype-nav-icon svg { display: block; flex: none; width: 26px; height: 26px; }
-.prototype-nav-item small { font: inherit; font-size: 12px; line-height: 1; }
+.prototype-nav-item small { flex: none; font: inherit; font-size: 12px; line-height: 14px; }
 .prototype-spacer { flex: 1; min-height: 0; }
 .prototype-rail button:focus-visible { outline: 1px solid #b8b8c2; outline-offset: -3px; }
 .prototype-rail-brand { display: flex; flex: none; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 40px; padding-top: 8px; border-top: 1px solid #303034; }
 .prototype-rail-brand img { display: block; width: 32px; height: 26px; object-fit: contain; }
-.prototype-rail-update { margin-top: 2px; padding: 2px 6px; border: 0; border-radius: 999px; background: #a3279a; color: #fff; font: 600 10px/1.2 var(--font); cursor: pointer; white-space: nowrap; }
+.prototype-rail-version { display: block; max-width: 64px; color: #fff; background: transparent; font: 400 11px/1.3 var(--font); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prototype-rail-update { display: flex; flex: none; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 60px; min-height: 44px; margin: 0; padding: 6px 4px; border: 0; border-radius: 8px; background: #a3279a; color: #fff; font: 500 11px/1.3 var(--font); cursor: pointer; white-space: nowrap; }
+.prototype-rail-update-label { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.prototype-rail-update-version { max-width: 100%; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; font-weight: 400; }
+.prototype-rail-update svg { flex: none; }
 .prototype-rail-update:hover { background: #8e2187; }
 
 /* The updated prototype reserves 48px for the native macOS traffic lights. */
@@ -109,18 +112,29 @@
 }
 .prototype-shell-macos .prototype-rail { padding-top: 54px; }
 
-/* Keep the version visible at the desktop window's 640px minimum height. */
-@media (max-height: 680px) {
+/* Reserve room for the installed version and optional update action on short windows. */
+@media (max-height: 820px) {
   .prototype-rail { gap: 4px; }
-  .prototype-rail-mark { margin-bottom: 10px; }
+  .prototype-rail-mark { margin-bottom: 4px; }
+  .prototype-nav { gap: 4px; }
+  .prototype-nav-item { height: 58px; }
+}
+@media (max-height: 680px) {
+  .prototype-rail { gap: 2px; padding-bottom: 8px; }
+  .prototype-rail-mark { margin-bottom: 0; }
+  .prototype-nav { gap: 2px; }
+  .prototype-rail-brand { gap: 2px; }
+  .prototype-rail-update { min-height: 40px; padding-top: 4px; padding-bottom: 4px; }
 }
 .prototype-nav-item-tasks .prototype-nav-icon { position: relative; }
-.prototype-nav-icon svg.task-runtime-ring { position: absolute; top: 0; left: 0; width: 44px; height: 44px; color: #e85bc4; pointer-events: none; }
+.prototype-nav-icon svg.task-runtime-ring { position: absolute; top: -4px; left: 0; width: 44px; height: 44px; color: #e85bc4; pointer-events: none; }
 .task-runtime-ring-arc { transform-origin: 22px 22px; animation: task-runtime-ring 1s linear infinite; }
 @keyframes task-runtime-ring { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .task-runtime-ring-arc { animation: none; } }
 .task-runtime-header, .task-runtime-job { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 .task-runtime-header { margin-bottom: 24px; }
+.task-setup-notice { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #e9e9e6; border-radius: 10px; background: #f5f5f3; }
+.task-setup-notice p { margin: 0; color: #5f5f5a; font-size: 13px; line-height: 1.6; }
 .task-runtime-header h2 { margin: 0; }
 .task-runtime-header p, .task-runtime-job p { color: #686865; font-size: 14px; }
 .task-runtime-job { padding: 20px 0; border-bottom: 1px solid #ececea; }

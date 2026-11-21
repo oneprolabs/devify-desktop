@@ -1,4 +1,6 @@
 import { t, tf, ctf } from './locale';
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useTaskRuntime } from './taskRuntime';
 import { RailIcons } from './icons';
 import brandMark from './assets/app-mark-transparent.png';
@@ -38,6 +40,15 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
   onUpdate?: () => void;
 }) {
   const tasks = useTaskRuntime();
+  const [currentVersion, setCurrentVersion] = useState('');
+  useEffect(() => {
+    if (!showBrand) return;
+    let active = true;
+    void invoke<{version:string}>('app_info').then(info => {
+      if (active) setCurrentVersion(info.version.trim());
+    }).catch(() => { if (active) setCurrentVersion(''); });
+    return () => { active = false; };
+  }, [showBrand]);
   const avatar = accountAvatar(accountName);
   const navButton = (item: (typeof primaryItems)[number] | (typeof utilityItems)[number]) => <button
     key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : ''}` : ''}${section === item.id ? ' active' : ''}`}
@@ -53,7 +64,13 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
     </button>
     <nav className="prototype-nav" aria-label={t("工作区")}>{primaryItems.map(navButton)}</nav>
     <div className="prototype-spacer" />
-    <nav className="prototype-nav" aria-label={t("应用")}>{utilityItems.map(navButton)}</nav>
-    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" />{updateVersion && <button type="button" className="prototype-rail-update" onClick={onUpdate} title={tf("发现新版本 {0}，查看更新", updateVersion)}>{updateVersion}</button>}</div>}
+    <nav className="prototype-nav" aria-label={t("应用")}>
+      {updateVersion && <button type="button" className="prototype-rail-update" onClick={onUpdate} title={tf("发现新版本 {0}，查看更新", updateVersion)} aria-label={tf("发现新版本 {0}，查看更新", updateVersion)}>
+        <span className="prototype-rail-update-label"><svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 14V4m-4 4 4-4 4 4M4 15v2h12v-2"/></svg>{t('更新')}</span>
+        <span className="prototype-rail-update-version">v{updateVersion.replace(/^v/, '')}</span>
+      </button>}
+      {utilityItems.map(navButton)}
+    </nav>
+    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" /><span className="prototype-rail-version" title={currentVersion ? `${t('当前版本')} ${currentVersion}` : t('版本读取失败')}>{currentVersion ? `v${currentVersion.replace(/^v/, '')}` : '—'}</span></div>}
   </aside>;
 }

@@ -102,6 +102,16 @@ pub struct LanguageSettings {
     pub ask: String,
 }
 
+impl LanguageSettings {
+    pub fn summary_language(&self) -> &str {
+        if self.summary == "跟随界面" {
+            &self.ui
+        } else {
+            &self.summary
+        }
+    }
+}
+
 impl Default for LanguageSettings {
     fn default() -> Self {
         Self {
@@ -1444,5 +1454,19 @@ mod tests {
         settings.agent.instructions = "重点看交付风险".to_string();
         settings.agent.provider_id = "codex".to_string();
         assert!(validate(&settings).is_ok());
+    }
+
+    #[test]
+    fn local_summary_language_respects_explicit_and_follow_interface_choices() {
+        let mut language = LanguageSettings::default();
+        assert_eq!(language.summary_language(), "中文");
+        language.ui = "English".into();
+        assert_eq!(language.summary_language(), "English");
+        for choice in ["中文", "English", "按原文语言"] {
+            language.summary = choice.into();
+            assert_eq!(language.summary_language(), choice);
+            language.ui = "中文".into();
+            assert_eq!(language.summary_language(), choice);
+        }
     }
 }

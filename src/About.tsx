@@ -2,6 +2,7 @@ import { t, tf, ctf } from './locale';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import appIcon from './assets/app-icon.png';
+import appMark from './assets/app-mark-transparent.png';
 import { checkForUpdates, dismissInstallBlockers, downloadUpdate, installUpdate, RELEASE_URL, useUpdater } from './updater';
 
 type AppInfo = {
@@ -59,7 +60,7 @@ function updateNoteLines(notes?: string): string[] {
   return notes.split(/\n+/).map(line => line.replace(/^[-*]\s+/, '').replace(/[`#]/g, '').trim()).filter(Boolean);
 }
 
-export function UpdatePanel({ onClose }: { onClose?: () => void } = {}) {
+export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void; compact?: boolean } = {}) {
   const update = useUpdater();
   const [error, setError] = useState('');
   const busy = ['checking', 'downloading', 'installing'].includes(update.status);
@@ -74,12 +75,12 @@ export function UpdatePanel({ onClose }: { onClose?: () => void } = {}) {
     : update.status === 'error' ? t("检查更新失败")
     : t("检查软件更新");
 
-  return <div className="update-panel">
+  return <div className={`update-panel${compact ? ' update-panel-compact' : ''}`}>
     <div className="update-panel-identity" role="status">
-      <img src={appIcon} alt="" width={46} height={46} />
+      {!compact && <img src={appIcon} alt="" width={46} height={46} />}
       <div>
         <strong>{status}</strong>
-        {update.currentVersion && <span>{t("当前版本")} {update.currentVersion}</span>}
+        {!compact && update.currentVersion && <span>{t("当前版本")} {update.currentVersion}</span>}
       </div>
       <div className="about-update-actions">
         {update.status === 'available' && onClose && <button type="button" onClick={onClose}>{t("稍后")}</button>}
@@ -132,28 +133,15 @@ export function About() {
   }, []);
 
 
-  return <div className="settings-page about-page">
+  return <div className="settings-page settings-refreshed about-page">
     <header className="page-head"><h2>{t("关于")}</h2><p className="help">{t("了解 AIMyChats 应用和版本信息。")}</p></header>
     {error && <div className="error" role="alert">{t(error)}</div>}
 
     <div className="about-details">
-    {!hideOffer && <section className="panel"><UpdatePanel onClose={() => setUpdateLater(true)} /></section>}
-    <section className="panel">
-      <h2>{t("版本信息")}</h2>
-      <dl className="about-meta">
-        <div>
-          <dt>{t("版本")}</dt>
-          <dd>{info ? info.version : '—'}</dd>
-        </div>
-        <div>
-          <dt>{t("运行平台")}</dt>
-          <dd>{info ? platformLabel(info.platform, info.arch) : '—'}</dd>
-        </div>
-        <div>
-          <dt>{t("应用标识")}</dt>
-          <dd><code>local.wechat.devifybridge</code></dd>
-        </div>
-      </dl>
+    <section className="panel about-product-panel">
+      <div className="about-product-identity"><img src={appMark} alt="" width={52} height={52}/><div><strong>AIMyChats</strong><p>{info ? tf('版本 {0}', info.version) : t('正在读取版本…')}{info && ` · ${platformLabel(info.platform, info.arch)}`}</p></div></div>
+      {!hideOffer && <UpdatePanel compact onClose={() => setUpdateLater(true)} />}
+      <details className="about-app-details"><summary>{t('应用信息')}</summary><dl className="about-meta"><div><dt>{t('应用标识')}</dt><dd><code>local.wechat.devifybridge</code></dd></div></dl></details>
     </section>
 
     <section className="panel">
@@ -168,15 +156,15 @@ export function About() {
       </ul>}
     </section>
 
-    <section className="panel">
-      <h2>{t("版本说明")}</h2>
+    <details className="panel about-usage-notes">
+      <summary>{t("版本说明")}</summary>
       <ul className="about-checklist">
         <li>{t("功能、配置字段和本地缓存格式仍可能调整；升级前建议保留自己的密钥与备份。")}</li>
         <li>{t("聊天记录可以按设置上传到所连接的服务，事件等结果由服务端处理。")}</li>
         <li>{t("聊天记录以只读方式访问；应用不提供发送消息或群操作能力。")}</li>
         <li>{t("可在连接器中检查微信连接状态与配置。")}</li>
       </ul>
-    </section>
+    </details>
     </div>
   </div>;
 }

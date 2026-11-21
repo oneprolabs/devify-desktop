@@ -1,10 +1,16 @@
 import { t } from './locale';
 export type DailyPlan = { id: number; title: string; period: string; enabled: boolean; time_local: string | null; timezone: string; last_run_at?: string | null; last_error?: string | null };
+// Plan titles are persisted on the server; changing the UI language must not hide them.
+const reportTitles = ['每日报告', 'Daily report'];
+const legacyTitles = ['微信工作日报', 'WeChat daily'];
+export function isDailyPlanTitle(title: unknown): boolean {
+  return typeof title === 'string' && [...reportTitles, ...legacyTitles].includes(title);
+}
 export function findDailyPlan(value: unknown): DailyPlan | null {
   if (!Array.isArray(value)) throw new Error(t("服务端日报计划格式不正确。"));
-  const candidates = value.filter((item): item is DailyPlan => [t("每日报告"), t("微信工作日报")].includes(item?.title) && item?.period === 'day');
-  const preferredTitle = candidates.some(item => item.title === '每日报告') ? t("每日报告") : t("微信工作日报");
-  const matches = candidates.filter(item => item.title === preferredTitle);
+  const candidates = value.filter((item): item is DailyPlan => isDailyPlanTitle(item?.title) && item?.period === 'day');
+  const preferredTitles = candidates.some(item => reportTitles.includes(item.title)) ? reportTitles : legacyTitles;
+  const matches = candidates.filter(item => preferredTitles.includes(item.title));
   if (matches.length > 1) throw new Error(t("发现多个同名日报计划，请先在服务端核对。"));
   const plan = matches[0];
   if (!plan) return null;

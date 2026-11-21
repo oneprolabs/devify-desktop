@@ -25,6 +25,7 @@ pub struct Source {
     pub draft: bool,
     pub backup_enabled: Option<bool>,
     pub completed: bool,
+    pub wizard_step: Option<String>,
     pub acknowledged: Option<serde_json::Value>,
     pub active: Option<serde_json::Value>,
     pub last_run_at: Option<String>,

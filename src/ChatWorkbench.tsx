@@ -1,6 +1,7 @@
 import { t, tf, ctf, dateLocale, sortLocale } from './locale';
 import { LocalChatAvatar } from './LocalChatAvatar';
 import { LoadingSkeleton } from './LoadingSkeleton';
+import { ChatPlatformBar } from './ChatPlatformBar';
 import { eventViewState, syncErrorMessage } from './chatPresentation';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -8,16 +9,15 @@ import { isTauri } from '@tauri-apps/api/core';
 import { desktopInvoke as invoke } from './desktopInvoke';
 import { EvidenceDrawer, type EvidenceTarget } from './EvidenceDrawer';
 import WeChatLocal from './WeChatLocal';
-import { ChatSummary } from './ChatSummary';
-import type { SummaryRecord } from './summary';
-import { exportNotSupported } from './toast';
+import { ConversationSummary } from './ConversationSummary';
+import type { SummaryMessage } from './summaryInput';
 import { WhitelistSettings } from './Settings';
 import wechatIcon from './assets/connectors/wechat.svg';
 import whatsappIcon from './assets/connectors/whatsapp.svg';
 import { syncFeedback, type SyncBatchStatus } from './syncFeedback';
 import { requestFeedback } from './desktopInvoke';
-import { useCapability, useInternalAccount } from './entitlements';
 import { currentAccount as pickAccount, type ChatAccount } from './connectorDetect';
+import { useTaskRuntime } from './taskRuntime';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null; community?: { id: string; name: string; is_parent: boolean } | null };
 type OwnedSession = Session & { accountId: string; source: string };
@@ -32,7 +32,9 @@ type Avatar = { username: string; data_url: string };
 type UploadState = { username: string; state: 'pending' | 'local' | 'synced' | 'processing' | 'failed' | 'history_failed' | 'unknown'; new_messages: number };
 
 type View = 'events' | 'raw' | 'summary';
-type Filter = 'all' | 'pending' | 'local';
+type Filter = 'all' | 'pending';
+type PlatformMemory = { session: OwnedSession | null; scrollTop: number; query: string; filter: Filter };
+const needsBackup = (item: UploadState) => ['pending', 'local', 'failed', 'history_failed'].includes(item.state);
 const sessionKey = (accountId: string, username: string) => JSON.stringify([accountId, username]);
 
 const dateLabel = (value?: string | number | null) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("时间未知");
@@ -63,27 +65,29 @@ function StateDot({ done }: { done: boolean }) {
   </svg>;
 }
 
-export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void }) {
+export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent, onAddPlatform }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void; onAddPlatform?: () => void }) {
+  const runtime = useTaskRuntime();
+  const configuredKey = JSON.stringify(runtime.sources?.filter(source => source.setup_complete).map(source => source.account_id).sort() ?? null);
   const [view, setView] = useState<View>('raw');
-  // Local summaries are an internal-account feature: without the entitlement the summary tab
-  // and its 整理工作内容 entry point disappear, leaving only records and cloud events.
-  const { internal: internalAccount } = useInternalAccount();
-  const { allowed: workDigestGranted } = useCapability('ai.work_digest');
-  const canOrganize = internalAccount && workDigestGranted;
-  useEffect(() => {
-    if (!internalAccount) setView(current => (current === 'summary' ? 'raw' : current));
-  }, [internalAccount]);
   const [addingSession, setAddingSession] = useState(false);
   const [sessionRevision, setSessionRevision] = useState(0);
   const [filter, setFilter] = useState<Filter>('all');
-  const [collapsedSources, setCollapsedSources] = useState<Record<string, boolean>>({});
+  const [connectedAccounts, setConnectedAccounts] = useState<ChatAccount[]>([]);
+  const [activeSource, setActiveSource] = useState('');
+  const activeSourceRef = useRef(activeSource);
+  activeSourceRef.current = activeSource;
+  const platformMemory = useRef(new Map<string, PlatformMemory>());
+  const sessionList = useRef<HTMLDivElement>(null);
+  const pageAnchor = useRef<{ source: string; key: string; top: number } | null>(null);
+  const [seenActivity, setSeenActivity] = useState<Record<string, number>>({});
   const [query, setQuery] = useState('');
   const [sessions, setSessions] = useState<OwnedSession[]>([]);
   const [selectedSession, setSelectedSession] = useState<OwnedSession | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [eventsScope, setEventsScope] = useState('');
-  const [summaries, setSummaries] = useState<SummaryRecord[]>([]);
-  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryStatus, setSummaryStatus] = useState({count:0,busy:false});
+  const [summarySelection,setSummarySelection] = useState<SummaryMessage[]>([]);
+  const [summaryPickRequest,setSummaryPickRequest] = useState(0);
   const [settings, setSettings] = useState<Settings | null>(null);
   const accountId = selectedSession?.accountId ?? null;
   const sourceLabel = selectedSession?.source === 'whatsapp' ? 'WhatsApp' : t("微信");
@@ -100,30 +104,31 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [eventRefresh, setEventRefresh] = useState(0);
   const [error, setError] = useState('');
   const [eventsError, setEventsError] = useState('');
-  const [openSummaryRequest, setOpenSummaryRequest] = useState(false);
   const [rawFocus, setRawFocus] = useState<{ conversationId: string; messageId?: string | number } | null>(null);
   const [rawMounted, setRawMounted] = useState(false);
   const loadGeneration = useRef(0);
-  // The raw pane owns the message list, so it reports back whether 整理/导出 can act.
+  // The raw pane reports loaded and selected messages to the conversation header.
   const [chatState, setChatState] = useState({ active: false, messages: 0, selected: 0, agentReady: false });
-  const [workRequest, setWorkRequest] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
   // Read messages only for the selected conversation, including the initial first chat.
   useEffect(() => { if (selectedSession && view === 'raw') setRawMounted(true); }, [selectedSession, view]);
   const [hasMoreSessions, setHasMoreSessions] = useState(false);
-  const [moreSessionsError, setMoreSessionsError] = useState<{ source: string; message: string } | null>(null);
+  const [moreSessionsErrors, setMoreSessionsErrors] = useState<Record<string, string>>({});
   const [loadingSource, setLoadingSource] = useState<string | null>(null);
   const sessionOffsets = useRef(new Map<string, { account: ChatAccount; offset: number }>());
   const moreLock = useRef(false);
 
   const load = useCallback(async () => {
     if (!isTauri()) return;
+    const configured: string[] | null = JSON.parse(configuredKey);
+    if (!configured) return;
     const generation = ++loadGeneration.current;
-    setLoading(true); setError(''); setMoreSessionsError(null); setLoadingSource(null);
+    setLoading(true); setError(''); setMoreSessionsErrors({}); setLoadingSource(null);
     try {
       const [stored, found] = await Promise.all([invoke<Settings>('app_settings_get'), invoke<ChatAccount[]>('chat_accounts')]);
+      if (generation !== loadGeneration.current) return;
       const connections = stored.connectors ?? {};
-      const accounts = (found ?? []).filter(account => account.source === 'whatsapp'
+      const accounts = (found ?? []).filter(account => configured.includes(account.id)).filter(account => account.source === 'whatsapp'
         ? connections.whatsapp_enabled !== false
         : connections.wechat_enabled !== false);
 
@@ -134,26 +139,48 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       list.sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0));
       const failed = results.flatMap((result, index) => result.status === 'rejected' ? [accounts[index].source === 'whatsapp' ? 'WhatsApp' : t("微信")] : []);
       setSettings(stored);
-      setSessions(list.slice(0, 200));
+      setConnectedAccounts(accounts);
+      const sourceCounts = new Map<string, number>();
+      setSessions(list.filter(item => {
+        const count = sourceCounts.get(item.source) ?? 0;
+        sourceCounts.set(item.source, count + 1);
+        return count < 200;
+      }));
+      const available = [...new Set(accounts.map(item => item.source ?? 'wechat'))];
+      const source = available.includes(activeSourceRef.current) ? activeSourceRef.current : list[0]?.source ?? available[0] ?? '';
+      activeSourceRef.current = source;
+      setActiveSource(source);
       sessionOffsets.current = new Map(results.flatMap(result => result.status === 'fulfilled' && result.value.sessions.length === 50 ? [[result.value.account.id, { account: result.value.account, offset: 50 }] as const] : []));
       setHasMoreSessions(sessionOffsets.current.size > 0);
-      setSelectedSession(current => list.find(item => item.accountId === current?.accountId && item.username === current?.username)
+      setSelectedSession(current => {
+        const remembered = current?.source === source ? current : platformMemory.current.get(source)?.session;
         // A refreshed first page does not prove a previously selected chat was deleted.
-        ?? (current && accounts.some(account => account.id === current.accountId) ? current : list[0] ?? null));
+        return list.find(item => item.accountId === remembered?.accountId && item.username === remembered?.username)
+          ?? (remembered && accounts.some(account => account.id === remembered.accountId)
+            && stored.chat?.allowed_usernames?.[remembered.accountId]?.includes(remembered.username)
+            ? remembered : list.find(item => item.source === source) ?? null);
+      });
       if (failed.length) setError(tf("{0}会话读取失败，请刷新重试。", [...new Set(failed)].join('、')));
       setEventRefresh(value => value + 1);
 
     } catch (reason) { if (generation === loadGeneration.current) setError(String(reason)); }
     finally { if (generation === loadGeneration.current) setLoading(false); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-  useEffect(() => { if (view === 'summary' && visible) void invoke<SummaryRecord[]>('summary_history_list').then(setSummaries).catch(() => setSummaries([])); }, [view, visible]);
+  }, [configuredKey]);
+  useEffect(() => {
+    const configured: string[] = JSON.parse(configuredKey) ?? [];
+    setConnectedAccounts(current => current.filter(account => configured.includes(account.id)));
+    setSessions(current => current.filter(session => configured.includes(session.accountId)));
+    setSelectedSession(current => current && configured.includes(current.accountId) ? current : null);
+    for (const id of sessionOffsets.current.keys()) if (!configured.includes(id)) sessionOffsets.current.delete(id);
+    if (visible) void load();
+    return () => { loadGeneration.current += 1; };
+  }, [load, visible]);
   const loadMoreSessions = async (source: string) => {
     if (moreLock.current) return;
-    moreLock.current = true; setLoading(true); setMoreSessionsError(null); setLoadingSource(source);
+    moreLock.current = true; setLoading(true); setMoreSessionsErrors(current => ({ ...current, [source]: '' })); setLoadingSource(source);
     const generation = loadGeneration.current;
     try {
-      // At most two independent source reads in flight, bounded to 50 each.
+      // Page only this platform, reading at most 50 rows per account in sequence.
       const added: OwnedSession[] = [];
       const pages: Array<{ id: string; entry: { account: ChatAccount; offset: number }; count: number }> = [];
       for (const [id, entry] of sessionOffsets.current) {
@@ -167,22 +194,23 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       for (const { id, entry, count } of pages) {
         if (count < 50) sessionOffsets.current.delete(id); else entry.offset += 50;
       }
+      if (activeSourceRef.current === source && sessionList.current) {
+        const top = sessionList.current.getBoundingClientRect().top;
+        const anchor = [...sessionList.current.querySelectorAll<HTMLElement>('[data-session-key]')].find(node => node.getBoundingClientRect().bottom > top);
+        if (anchor) pageAnchor.current = { source, key: anchor.dataset.sessionKey!, top: anchor.getBoundingClientRect().top };
+      }
       setSessions(current => {
         const merged = [...new Map([...current, ...added].map(row => [sessionKey(row.accountId, row.username), row])).values()];
-        const other = merged.filter(row => row.source !== source).slice(-150);
-        const own = merged.filter(row => row.source === source).slice(-(200 - other.length));
-        const keep = new Set([...other, ...own].map(row => sessionKey(row.accountId, row.username)));
-        return merged.filter(row => keep.has(sessionKey(row.accountId, row.username)));
+        // Keep each platform's paging window independent; loading one never evicts
+        // another platform's rows while leaving its offset advanced.
+        const other = merged.filter(row => row.source !== source);
+        const own = merged.filter(row => row.source === source).slice(-200);
+        return [...other, ...own];
       });
       setHasMoreSessions(sessionOffsets.current.size > 0);
-    } catch (reason) { if (generation === loadGeneration.current) setMoreSessionsError({ source, message: String(reason) }); }
+    } catch (reason) { if (generation === loadGeneration.current) setMoreSessionsErrors(current => ({ ...current, [source]: String(reason) })); }
     finally { moreLock.current = false; if (generation === loadGeneration.current) { setLoading(false); setLoadingSource(null); } }
   };
-  const wasVisible = useRef(visible);
-  useEffect(() => {
-    if (visible && !wasVisible.current) void load();
-    wasVisible.current = visible;
-  }, [visible, load]);
 
   useEffect(() => {
     let cancelled = false;
@@ -220,57 +248,89 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     return () => { window.clearTimeout(timer); window.removeEventListener('online', retry); };
   }, [eventsError]);
 
-  const reloadSummaries = useCallback(async () => {
-    try { setSummaries(await invoke<SummaryRecord[]>('summary_history_list')); } catch { /* keep the last list */ }
-  }, []);
+  useEffect(()=>{setSummarySelection([]);setSummaryPickRequest(0);},[accountId]);
 
-  const scopedSummaries = useMemo(() => selectedSession
-    ? summaries.filter(record => record.account_id === accountId && record.sessions.some(item => item.username === selectedSession.username))
-    : summaries, [summaries, selectedSession, accountId]);
-
-  const uploadState = useMemo(() => {
-    const pending = new Set<string>(); const local = new Set<string>();
-    Object.entries(uploadStates).forEach(([key, item]) => {
-      if (item.state === 'pending') pending.add(key);
-      else if (item.state === 'local') local.add(key);
-    });
-    return { pending, local };
-  }, [uploadStates]);
-  const pendingCount = uploadState.pending.size;
-  const localCount = uploadState.local.size;
-  const activeAccountId = settings?.active_account_id ?? '';
-  const selectedChats = new Set(settings?.chat?.allowed_usernames?.[activeAccountId] ?? []);
-  const selectedPending = Object.values(uploadStates).filter(item => item.state === 'pending' && selectedChats.has(item.username));
-  const selectedPendingMessages = selectedPending.reduce((sum, item) => sum + item.new_messages, 0);
+  const platformSessions = useMemo(() => sessions.filter(session => session.source === activeSource), [sessions, activeSource]);
+  useEffect(() => {
+    const anchor = pageAnchor.current;
+    pageAnchor.current = null;
+    if (!anchor || anchor.source !== activeSource || !sessionList.current) return;
+    const node = [...sessionList.current.querySelectorAll<HTMLElement>('[data-session-key]')].find(item => item.dataset.sessionKey === anchor.key);
+    if (node) sessionList.current.scrollTop += node.getBoundingClientRect().top - anchor.top;
+  }, [sessions, activeSource]);
+  const pendingSessions = useMemo(() => new Set(platformSessions.filter(session => {
+    const state = uploadStates[sessionKey(session.accountId, session.username)];
+    return state && needsBackup(state);
+  }).map(session => sessionKey(session.accountId, session.username))), [platformSessions, uploadStates]);
+  const pendingCount = pendingSessions.size;
   const activeUploads = useMemo(() => (settings?.upload_queue ?? []).filter(job => job.status != null && ['queued', 'running', 'processing', 'uploading'].includes(job.status)), [settings]);
 
-  useEffect(() => { setUploadStates({}); }, [settings?.devify?.base_url, settings?.devify?.active_space_id, activeAccountId]);
+  useEffect(() => { setUploadStates({}); }, [settings?.devify?.base_url, settings?.devify?.active_space_id]);
 
-  // A local badge scan can outlast its refresh interval on a large history. Keep
-  // one in flight and stop scheduling while this retained pane is hidden.
+  // Read badges only for the displayed platform. A slow scan cannot overlap another
+  // scan or commit after a platform/account/space change.
   const uploadStateReading = useRef(false);
-  const uploadStateScope = JSON.stringify([visible, settings?.devify?.base_url, settings?.devify?.active_space_id, activeAccountId, sessions.map(item => sessionKey(item.accountId, item.username))]);
+  const [badgeRetry, setBadgeRetry] = useState(0);
+  const uploadStateScope = JSON.stringify([visible, settings?.devify?.base_url, settings?.devify?.active_space_id, activeSource, platformSessions.map(item => sessionKey(item.accountId, item.username))]);
   const currentUploadStateScope = useRef(uploadStateScope);
   currentUploadStateScope.current = uploadStateScope;
   const refreshUploadState = useCallback(async () => {
-    if (!visible || !isTauri() || !activeAccountId || !sessions.length) return;
-    if (uploadStateReading.current) return;
+    if (!visible || !isTauri() || !platformSessions.length || uploadStateReading.current) return;
     uploadStateReading.current = true;
     const scope = uploadStateScope;
     try {
-      const items = await invoke<UploadState[]>('wechat_upload_state', { accountId: activeAccountId, usernames: sessions.filter(session => session.accountId === activeAccountId).map(session => session.username) });
-      if (currentUploadStateScope.current === scope) setUploadStates(Object.fromEntries(items.map(item => [sessionKey(activeAccountId, item.username), item])));
-    } catch { /* keep the last known badges rather than claiming everything is synced */ }
-    finally { uploadStateReading.current = false; }
-  }, [visible, activeAccountId, sessions, uploadStateScope]);
+      const next: Record<string, UploadState> = {};
+      for (const id of new Set(platformSessions.map(item => item.accountId))) {
+        const usernames = platformSessions.filter(session => session.accountId === id).map(session => session.username);
+        const items = await invoke<UploadState[]>('wechat_upload_state', { accountId: id, usernames });
+        if (currentUploadStateScope.current !== scope) return;
+        for (const item of items) next[sessionKey(id, item.username)] = item;
+      }
+      if (currentUploadStateScope.current === scope) setUploadStates(current => {
+        const retained = new Set(sessions.map(session => sessionKey(session.accountId, session.username)));
+        const merged = Object.fromEntries(Object.entries(current).filter(([key]) => retained.has(key)));
+        for (const session of platformSessions) delete merged[sessionKey(session.accountId, session.username)];
+        return { ...merged, ...next };
+      });
+    } catch { /* retain last-confirmed badges on read failure */ }
+    finally {
+      uploadStateReading.current = false;
+      // A new platform may have become visible while this scan was in flight.
+      if (currentUploadStateScope.current !== scope) setBadgeRetry(value => value + 1);
+    }
+  }, [visible, sessions, platformSessions, uploadStateScope]);
   useEffect(() => {
     if (!visible) return;
     void refreshUploadState();
-    // Upload badges are rebuilt from the local database, so refresh them on a fixed short
-    // cadence: tying this to the (now 30-minute) backup interval would leave status stale.
     const timer = window.setInterval(() => void refreshUploadState(), activeUploads.length || syncNoticePending ? 5000 : 60000);
     return () => window.clearInterval(timer);
-  }, [visible, refreshUploadState, activeUploads.length, syncNoticePending]);
+  }, [visible, refreshUploadState, activeUploads.length, syncNoticePending, badgeRetry]);
+
+  const selectPlatform = (source: string) => {
+    if (source === activeSource) return;
+    platformMemory.current.set(activeSource, { session: selectedSession, scrollTop: sessionList.current?.scrollTop ?? 0, query, filter });
+    const previous = platformMemory.current.get(source);
+    const remembered = previous?.session;
+    activeSourceRef.current = source;
+    setActiveSource(source);
+    setSelectedSession(remembered && connectedAccounts.some(account => account.id === remembered.accountId)
+      && settings?.chat?.allowed_usernames?.[remembered.accountId]?.includes(remembered.username)
+      ? sessions.find(item => item.accountId === remembered.accountId && item.username === remembered.username) ?? remembered
+      : sessions.find(item => item.source === source) ?? null);
+    setQuery(previous?.query ?? ''); setFilter(previous?.filter ?? 'all'); setRawFocus(null);
+  };
+  useEffect(() => {
+    if (sessionList.current) sessionList.current.scrollTop = platformMemory.current.get(activeSource)?.scrollTop ?? 0;
+  }, [activeSource]);
+  const latestActivity = Math.max(0, ...platformSessions.map(session => session.last_time ?? 0));
+  useEffect(() => {
+    if (visible && activeSource) setSeenActivity(current => (current[activeSource] ?? 0) >= latestActivity ? current : { ...current, [activeSource]: latestActivity });
+  }, [activeSource, latestActivity, visible]);
+  const wechatLabel = t('微信');
+  const platforms = useMemo(() => [...new Set(connectedAccounts.map(account => account.source ?? 'wechat'))].sort().map(source => ({
+    id: source, label: source === 'whatsapp' ? 'WhatsApp' : wechatLabel, icon: source === 'whatsapp' ? whatsappIcon : wechatIcon,
+    updated: source !== activeSource && sessions.some(session => session.source === source && (session.last_time ?? 0) > (seenActivity[source] ?? 0)),
+  })), [connectedAccounts, activeSource, sessions, seenActivity, wechatLabel]);
 
   const syncNow = async (scopeConfirmation?: string) => {
     if (syncing) return;
@@ -347,8 +407,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     // In the raw tab the header search targets message content, so the conversation list
     // must not collapse to sessions whose names happen to contain the keyword.
     const keyword = view === 'raw' ? '' : query.trim().toLowerCase();
-    return sessions.filter(session => (!keyword || `${session.display} ${session.username}`.toLowerCase().includes(keyword)) && (filter === 'all' || (filter === 'pending' ? uploadState.pending.has(sessionKey(session.accountId, session.username)) : uploadState.local.has(sessionKey(session.accountId, session.username)))));
-  }, [sessions, query, filter, uploadState, view]);
+    return platformSessions.filter(session => (!keyword || `${session.display} ${session.username}`.toLowerCase().includes(keyword)) && (filter === 'all' || pendingSessions.has(sessionKey(session.accountId, session.username))));
+  }, [platformSessions, query, filter, pendingSessions, view]);
   /** Community grouping inside one source; the newest-activity order is preserved. */
   const groupSessions = (list: OwnedSession[]) => {
     const groups: Array<{ key: string; name?: string; sessions: OwnedSession[] }> = [];
@@ -370,23 +430,6 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     }
     return groups;
   };
-  // Sessions arrive sorted by last activity, so a source first shows up at the moment it
-  // moved to the top — that order carries the groups. One visible source needs no header.
-  const sourceGroups = useMemo(() => {
-    const order: string[] = [];
-    const bySource = new Map<string, OwnedSession[]>();
-    for (const session of sessions) {
-      const source = session.source || 'wechat';
-      if (!bySource.has(source)) { bySource.set(source, []); order.push(source); }
-    }
-    for (const session of visibleSessions) {
-      const source = session.source || 'wechat';
-      if (!bySource.has(source)) { bySource.set(source, []); order.push(source); }
-      bySource.get(source)!.push(session);
-    }
-    return order.map(source => ({ source, sessions: bySource.get(source)! }));
-  }, [sessions, visibleSessions]);
-  const multiSource = sourceGroups.length > 1;
   const scopedEvents = eventsScope === JSON.stringify([settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username]) ? events : [];
   const visibleEvents = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -417,19 +460,13 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     setView('raw');
   };
 
-  // These actions live in the page header so they stay reachable from every tab; the raw
-  // pane still owns the messages and the work drawer, so the request is a counter it watches.
-  const openWorkPanel = () => {
-    setView('raw');
-    setWorkRequest(value => value + 1);
-  };
   if (!isTauri()) return null;
 
-  const conversation = selectedSession?.display ?? t("全部会话");
+  const conversation = selectedSession?.display ?? platforms.find(platform => platform.id === activeSource)?.label ?? t("聊天");
   const sessionMeta = (session: OwnedSession) => {
     const state = uploadStates[sessionKey(session.accountId, session.username)];
     if (state?.state === 'pending') return { text: state.new_messages ? tf("本机新增待上传 · {0} 条", state.new_messages) : t("本机新增待上传"), tone: 'pending' };
-    if (state?.state === 'local') return { text: t("仅本机 · 未纳入上传"), tone: 'local' };
+    if (state?.state === 'local') return { text: t("待首次备份"), tone: 'pending' };
     if (state?.state === 'processing') return { text: t("已提交 · 等待服务端处理"), tone: 'pending' };
     if (state?.state === 'failed') return { text: t("上传失败 · 请检查任务"), tone: 'pending' };
     if (state?.state === 'history_failed') return { text: t("历史任务未完成 · 请检查任务"), tone: 'pending' };
@@ -442,44 +479,33 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       <header className="chat-workbench-sidebar-head">
         <h1>{t("聊天")}</h1>
         <div className="chat-workbench-header-actions"><button type="button" className="chat-workbench-add" onClick={() => setAddingSession(true)} aria-label={t("添加会话")} title={t("添加会话")}><span aria-hidden="true">＋</span></button></div>
-        <p>{loading && !sessions.length ? t("正在读取会话…") : tf("{0} 个会话 · {1} 个有新增待上传", sessions.length, pendingCount)}</p>
+        <p>{loading && !sessions.length ? t("正在读取会话…") : tf("{0} 个会话 · {1} 个待传", platformSessions.length, pendingCount)}</p>
       </header>
+      <ChatPlatformBar platforms={platforms} selected={activeSource} onSelect={selectPlatform} onAddPlatform={onAddPlatform} visible={visible}/>
       <input className="chat-workbench-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索会话与聊天记录")}/>
       <div className="chat-workbench-filters">
-        <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>{t("全部")} <small>{sessions.length}</small></button>
+        <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>{t("全部")} <small>{platformSessions.length}</small></button>
         <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>{t("待传")} <small>{pendingCount}</small></button>
-        <button type="button" className={filter === 'local' ? 'active' : ''} onClick={() => setFilter('local')}>{t("只在本机")} <small>{localCount}</small></button>
       </div>
       <div className="chat-workbench-session-label"><span>{t("会话 ·")} {visibleSessions.length}</span><span className="chat-workbench-list-tools">{t("按最后更新")} <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label={t("刷新会话")} title={t("刷新会话")}>↻</button></span></div>
-      <div className="chat-workbench-sessions" aria-busy={loading} onScroll={event => {
+      <div className="chat-workbench-sessions" ref={sessionList} aria-busy={loading} onScroll={event => {
         const list = event.currentTarget;
         if (!visible || !hasMoreSessions || loading) return;
         const viewport = list.getBoundingClientRect();
         for (const marker of list.querySelectorAll<HTMLElement>('[data-more-source]')) {
           const source = marker.dataset.moreSource!;
           const bounds = marker.getBoundingClientRect();
-          if (moreSessionsError?.source !== source && bounds.top <= viewport.bottom + 160 && bounds.bottom >= viewport.top) { void loadMoreSessions(source); break; }
+          if (source === activeSource && !moreSessionsErrors[source] && bounds.top <= viewport.bottom + 160 && bounds.bottom >= viewport.top) { void loadMoreSessions(source); break; }
         }
       }}>
         {loading && !sessions.length && <LoadingSkeleton label={t("正在加载会话")} />}
         {error && <p className="chat-workbench-load-error" role="alert">{t(error)} <button type="button" onClick={() => void load()}>{t("重试")}</button></p>}
-        {sourceGroups.map(group => {
-          const collapsed = multiSource && Boolean(collapsedSources[group.source]);
-          const label = group.source === 'whatsapp' ? 'WhatsApp' : t("微信");
-          const hasMore = [...sessionOffsets.current.values()].some(entry => (entry.account.source ?? 'wechat') === group.source);
-          const readError = moreSessionsError?.source === group.source ? moreSessionsError.message : '';
-          return <div className="chat-workbench-source-section" key={group.source}>
-            {multiSource && <button type="button" className="chat-workbench-source-group" aria-expanded={!collapsed} onClick={() => setCollapsedSources(current => ({ ...current, [group.source]: !current[group.source] }))}>
-              <img src={group.source === 'whatsapp' ? whatsappIcon : wechatIcon} alt=""/>
-              <span>{t(label)}</span>
-              <small>{group.sessions.length}</small>
-              <i aria-hidden="true">{collapsed ? '▸' : '▾'}</i>
-            </button>}
-            {!collapsed && groupSessions(group.sessions).map(item => <Fragment key={item.key}>
+        <div className="chat-workbench-source-section" key={activeSource}>
+            {groupSessions(visibleSessions).map(item => <Fragment key={item.key}>
               {item.name && <div className="chat-workbench-community-label">{item.name} {t("· 社区")}</div>}
               {item.sessions.map(session => {
                 const meta = sessionMeta(session);
-                return <button type="button" key={sessionKey(session.accountId, session.username)} className={`chat-workbench-session${selectedSession?.accountId === session.accountId && selectedSession?.username === session.username ? ' selected' : ''}`} onClick={() => { setRawFocus(null); setSelectedSession(session); }}>
+                return <button type="button" key={sessionKey(session.accountId, session.username)} data-session-key={sessionKey(session.accountId, session.username)} className={`chat-workbench-session${selectedSession?.accountId === session.accountId && selectedSession?.username === session.username ? ' selected' : ''}`} onClick={() => { setRawFocus(null); setSelectedSession(session); }}>
                   <span className="chat-workbench-avatar">
                     <LocalChatAvatar key={sessionKey(session.accountId, session.username)} accountId={session.accountId} username={session.username} label={session.display} />
                     <i className="chat-workbench-avatar-badge" aria-hidden="true"><img src={session.source === 'whatsapp' ? whatsappIcon : wechatIcon} alt="" /></i>
@@ -492,13 +518,12 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                 </button>;
               })}
             </Fragment>)}
-            {!collapsed && hasMore && <div className="chat-workbench-source-more" data-more-source={group.source}>
-              {loadingSource === group.source && <p className="chat-workbench-empty" role="status">{t('正在读取会话…')}</p>}
-              {readError && <p className="chat-workbench-load-error" role="alert">{t(readError)} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(group.source)}>{t('重试')}</button></p>}
-              {!loading && !readError && (query.trim() || filter !== 'all') && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions(group.source)}>{t('加载更多会话')}</button>}
+            {[...sessionOffsets.current.values()].some(entry => (entry.account.source ?? 'wechat') === activeSource) && <div className="chat-workbench-source-more" data-more-source={activeSource}>
+              {loadingSource === activeSource && <p className="chat-workbench-empty" role="status">{t('正在读取会话…')}</p>}
+              {moreSessionsErrors[activeSource] && <p className="chat-workbench-load-error" role="alert">{t(moreSessionsErrors[activeSource])} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(activeSource)}>{t('重试')}</button></p>}
+              {!loading && !moreSessionsErrors[activeSource] && (query.trim() || filter !== 'all') && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions(activeSource)}>{t('加载更多会话')}</button>}
             </div>}
-          </div>;
-        })}
+          </div>
         {!loading && !visibleSessions.length && <p className="chat-workbench-empty">{t("没有符合条件的会话。")}</p>}
       </div>
       <SidebarResizeHandle/>
@@ -507,26 +532,26 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     <main className="chat-workbench-main">
       <header className="chat-workbench-head">
         <div className="chat-workbench-title">
-          {selectedSession && <span className="chat-workbench-title-avatar" aria-hidden="true"><LocalChatAvatar key={sessionKey(selectedSession.accountId, selectedSession.username)} accountId={selectedSession.accountId} username={selectedSession.username} label={selectedSession.display} /></span>}
-          <div className="chat-workbench-title-text"><h2>{conversation}</h2>{selectedSession && <p>{sourceLabel}{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}</p>}</div>
+          {selectedSession && <span className="chat-workbench-source-icon" title={sourceLabel}><img src={selectedSession.source==='whatsapp'?whatsappIcon:wechatIcon} alt={sourceLabel}/></span>}
+          <div className="chat-workbench-title-text"><h2 title={conversation}>{conversation}</h2></div>
         </div>
         <div className="chat-workbench-head-right">
           <div className="chat-workbench-tabs" role="tablist" aria-label={t("聊天视图")}>
-            <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>{t("原始记录")}</button>
+            <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>{t("原始记录")}{view === 'raw' && chatState.active && <small>{chatState.messages}</small>}</button>
             <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>{t("事件")} <small>{scopedEvents.length}</small></button>
-            {internalAccount && <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
+            <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
               {t("聊天总结")}
-              {summaryBusy
+              {summaryStatus.busy
                 ? <i className="chat-workbench-tab-spinner" aria-label={t("正在生成")}/>
-                : scopedSummaries.length > 0 && <small>{scopedSummaries.length}</small>}
-            </button>}
+                : summaryStatus.count > 0 && <small>{summaryStatus.count}</small>}
+            </button>
           </div>
           <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")} value={query} onChange={event => setQuery(event.target.value)} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")}/>
-          {chatState.active && <div className="chat-workbench-head-actions">
-            {canOrganize && chatState.selected > 0 && <button type="button" className="selected" onClick={openWorkPanel}>{t("已选")} {chatState.selected} {t("条")}</button>}
-            <button type="button" onClick={exportNotSupported}>{t("导出")}</button>
+          {view === 'raw' && chatState.active && summarySelection.length > 0 && <div className="chat-workbench-head-actions">
+            <button type="button" className="selected" onClick={()=>{setSummaryPickRequest(value=>value+1);setView('summary');}}>{tf('总结所选 {0} 条',summarySelection.length)}</button>
           </div>}</div>
         </div>
+        {selectedSession && <p className="chat-workbench-conversation-meta"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">{selectedSession.is_group?<><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></>:<><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></>}</svg>{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}{view === 'raw' && chatState.active ? ` · ${tf('已加载 {0} 条消息', chatState.messages)}` : ''}</p>}
       </header>
 
       <div className={`chat-workbench-pane${view === 'events' ? '' : ' is-hidden'}`}>
@@ -566,15 +591,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         </div>
       </div>
 
-      {!rawMounted && view === 'raw' && <div className="chat-workbench-empty" role="status">{t("选择一个会话开始查看")}</div>}
-      {rawMounted && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
-        {accountId === activeAccountId && selectedPending.length > 0 && <div className="chat-workbench-banner">
-          <span><i/>{t("已选择的聊天中有")} {selectedPending.length} {t("个会话")}{selectedPendingMessages ? tf("、{0} 条", selectedPendingMessages) : ''}{t("新增记录待上传，")}{settings?.sync?.enabled && settings?.backup?.mode !== 'manual' ? t("将在满足条件时自动备份。") : t("自动备份未开启，可以在备份周期中设置。")}</span>
-          <div>
-            <button type="button" disabled={syncing} onClick={onOpenTasks}>{t("查看任务")}</button>
-            <button type="button" className="primary" onClick={onSchedule}>{t("备份周期")}</button>
-          </div>
-        </div>}
+      {(!rawMounted || !accountId) && view === 'raw' && <div className="chat-workbench-empty" role="status">{platformSessions.length ? t("选择一个会话开始查看") : t("该平台暂无已导入的会话。")}</div>}
+      {rawMounted && accountId && <div className={`chat-workbench-pane chat-workbench-raw-content chat-workbench-embedded${view === 'raw' ? '' : ' is-hidden'}`}>
         {syncToastVisible && (syncing || syncNotice) && <div className={`sync-feedback-toast${syncNoticeError ? ' is-error' : ''}${syncScopeConfirmation ? ' is-confirmation' : ''}`} role={syncNoticeError ? 'alert' : 'status'}>
           <span className={`sync-feedback-icon${syncing || syncNoticePending ? ' is-loading' : ''}`} aria-hidden="true">{syncing || syncNoticePending ? '' : syncNoticeError ? '!' : '✓'}</span>
           <span className="sync-feedback-text">{syncing ? t("正在提交记录…") : syncNotice}</span>
@@ -591,29 +609,30 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           key={accountId}
           accountId={accountId}
           sessionRevision={sessionRevision}
-          openSummary={openSummaryRequest}
-          onSummaryRequestHandled={() => setOpenSummaryRequest(false)}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
           focusMessageId={rawFocus?.messageId}
           searchKeyword={view === 'raw' ? query : ''}
           onClearSearch={() => setQuery('')}
-          workRequest={workRequest}
           onChatState={setChatState}
+          onSummarySelection={setSummarySelection}
           onOpenData={onOpenData}
           onOpenWhitelist={onOpenWhitelist}
         />}
       </div>}
 
       <div className={`chat-workbench-pane${view === 'summary' ? '' : ' is-hidden'}`}>
-        <ChatSummary
+        <ConversationSummary
+          visible={visible&&view==='summary'}
+          spaceId={settings?.devify?.active_space_id??null}
           accountId={accountId}
           sessions={sessions.filter(session => session.accountId === accountId)}
           session={selectedSession}
-          summaries={summaries}
+          selection={summarySelection}
+          pickRequest={summaryPickRequest}
           query={query}
-          onReload={reloadSummaries}
-          onOpenRaw={openRaw}
-          onBusyChange={setSummaryBusy}
+          onPick={()=>setView('raw')}
+          onOpenTasks={onOpenTasks}
+          onStatus={setSummaryStatus}
         />
       </div>
     </main>

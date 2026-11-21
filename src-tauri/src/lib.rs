@@ -44,6 +44,9 @@ mod upload_archive;
 mod instance_lock;
 mod task_runtime;
 mod runtime_commands;
+mod report_plan;
+mod cloud_summary;
+mod summary_jobs;
 use runtime_commands::{flush_config_outbox,emit_task_runtime};
 #[cfg(test)]
 use task_runtime::plan_automatic_batch;
@@ -1564,18 +1567,15 @@ async fn devify_topic_update(
 async fn devify_daily_plan_update(
     app: AppHandle, space_id: String, topic_id: i64, enabled: Option<bool>, time_local: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    if enabled.is_none() && time_local.is_none() { return Err("没有要修改的日报设置。".into()); }
+    devify_report_plan_update(app, space_id, topic_id, "day".into(), enabled, time_local).await
+}
+
+#[tauri::command]
+async fn devify_report_plan_update(
+    app: AppHandle, space_id: String, topic_id: i64, period: String, enabled: Option<bool>, time_local: Option<String>,
+) -> Result<serde_json::Value, String> {
     let topic = devify_topic_detail(app.clone(), space_id.clone(), topic_id).await?;
-    if !matches!(topic.get("title").and_then(|v| v.as_str()), Some(DAILY_TOPIC_TITLE | "每日报告"))
-        || topic.get("period").and_then(|v| v.as_str()) != Some("day") {
-        return Err("无法确认日报计划，请刷新后重试。".into());
-    }
-    let mut body = serde_json::json!({});
-    if let Some(enabled) = enabled { body["enabled"] = enabled.into(); }
-    if let Some(time) = time_local {
-        if !settings::is_valid_time(&time) { return Err("日报时间必须使用 HH:MM 格式。".into()); }
-        body["time_local"] = time.into();
-    }
+    let body = report_plan::update_body(&topic, &period, enabled, time_local.as_deref())?;
     let current = settings::load(&app_data(&app))?;
     validate_devify_space(&current, &space_id)?;
     devify_json_request(&app, reqwest::Method::PATCH, format!("/api/v1/topics/{topic_id}"), Some(body)).await
@@ -8578,13 +8578,7 @@ async fn agent_summarize(
         input.truncated,
     );
     let agent_settings = value.agent.clone();
-    let language = if value.language.summary == "跟随界面" && value.language.ui == "English" {
-        "English".to_string()
-    } else if value.language.summary == "跟随界面" {
-        "中文".to_string()
-    } else {
-        value.language.summary.clone()
-    };
+    let language = value.language.summary_language().to_string();
     let run = tauri::async_runtime::spawn_blocking(move || {
         agent::summarize(&agent_settings, &input, &language, &data)
     })
@@ -8646,6 +8640,7 @@ pub fn run() {
             });
             let _=recover_local_logout(&app_data(app.handle()));
             let _=local_scope::root(&app_data(app.handle()));
+            let _=summary_jobs::recover(&app_data(app.handle()));
             // Configuration acknowledgements and read-only remote reconciliation must
             // keep progressing while the sole upload executor prepares a slow local
             // database/voice batch. This monitor never plans or sends an archive.
@@ -8661,6 +8656,7 @@ pub fn run() {
             let sync_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
+                    summary_jobs::tick(&sync_handle).await;
                     task_runtime::backup_tick(&sync_handle).await;
                     emit_task_runtime(&sync_handle);
                     let idle=sync_handle.state::<UploadState>().syncing.uploading_accounts().is_ok_and(|v|v.is_empty());
@@ -8692,6 +8688,11 @@ pub fn run() {
             devify_auth_status,
             devify_current_user,
             devify_analysis_preferences_get,
+            cloud_summary::cloud_summary_list,
+            cloud_summary::cloud_summary_action,
+            summary_jobs::summary_task_enqueue,
+            summary_jobs::summary_task_retry,
+            summary_jobs::summary_task_delete,
             devify_analysis_preferences_save,
             devify_analysis_manual_start,
             capabilities_list,
@@ -8723,6 +8724,7 @@ pub fn run() {
             devify_topic_detail,
             devify_topic_update,
             devify_daily_plan_update,
+            devify_report_plan_update,
             devify_topic_delete,
             devify_questions,
             devify_question_detail,

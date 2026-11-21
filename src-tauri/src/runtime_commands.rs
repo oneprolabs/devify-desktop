@@ -106,9 +106,13 @@ pub(super) async fn connector_setup_state(
     account_id: String,
     completed: bool,
     skip_backup: Option<bool>,
+    wizard_step: Option<String>,
 ) -> Result<settings::AppSettings, String> {
     if account_id.trim().is_empty() {
         return Err("请先选择本机账号。".into());
+    }
+    if wizard_step.as_deref().is_some_and(|step| !matches!(step, "sessions" | "backup")) {
+        return Err("无效的连接向导步骤。".into());
     }
     let data = app_data(&app);
     settings::update(&data, |s| {
@@ -128,6 +132,7 @@ pub(super) async fn connector_setup_state(
         source.owner = Some(owner.clone());
         source.draft = !completed;
         source.completed = completed;
+        source.wizard_step = if completed { None } else { Some(wizard_step.clone().unwrap_or_else(|| "sessions".into())) };
         source.backup_enabled = Some(!skip_backup.unwrap_or(false));
         if completed && !skip_backup.unwrap_or(false) {
             let names = s
@@ -150,8 +155,10 @@ pub(super) async fn connector_setup_state(
         }
         config_runtime::enqueue(s, owner)
     })?;
+    emit_task_runtime(&app);
     flush_config_outbox(&app).await?;
     TASK_WAKE.notify_one();
+    emit_task_runtime(&app);
     settings::load(&data)
 }
 
@@ -252,9 +259,73 @@ pub(super) fn task_runtime_status(app: AppHandle) -> Result<serde_json::Value, S
         .uploading_accounts()
         .map(|v| !v.is_empty())
         .unwrap_or(false);
+    let summaries=summary_jobs::snapshots(&app);
+    let running=running || summaries.iter().any(|j|matches!(j["status"].as_str(),Some("queued"|"running"|"processing")));
+    let mut jobs=serde_json::to_value(&jobs).map_err(|e|e.to_string())?.as_array().cloned().unwrap_or_default();
+    jobs.extend(summaries);
+    let sources = source_snapshots(&s, &owners);
     Ok(
-        serde_json::json!({"context":context,"revision":s.settings_revision,"paused":s.runtime.paused,"running":running,"pending_config":s.runtime.pending.iter().filter(|m|config_runtime::local_owner(&data,&s,&m.owner.account_id).is_ok_and(|o|config_runtime::same_principal(&o,&m.owner))).count(),"error":error,"jobs":jobs}),
+        serde_json::json!({"context":context,"revision":s.settings_revision,"sources":sources,"paused":s.runtime.paused,"running":running,"pending_config":s.runtime.pending.iter().filter(|m|config_runtime::local_owner(&data,&s,&m.owner.account_id).is_ok_and(|o|config_runtime::same_principal(&o,&m.owner))).count(),"error":error,"jobs":jobs}),
     )
+}
+
+fn source_snapshots(s: &settings::AppSettings, owners: &HashMap<String, settings::UploadOwner>) -> Vec<serde_json::Value> {
+    s.runtime.sources.iter().filter(|(account, source)| {
+        owners.get(*account).is_some_and(|owner| source.owner.as_ref()
+            .is_some_and(|old| config_runtime::same_principal(old, owner)))
+    }).map(|(account, source)| serde_json::json!({
+        "account_id": account,
+        "platform": crate::expected_source_type(account),
+        "setup_complete": source.completed && !source.draft,
+        "backup_enabled": source.backup_enabled != Some(false),
+        "wizard_step": if source.completed && !source.draft { None } else { Some(resume_step(source)) },
+    })).collect()
+}
+
+fn resume_step(source: &config_runtime::Source) -> &str {
+    source.wizard_step.as_deref().filter(|step| matches!(*step, "sessions" | "backup")).unwrap_or_else(|| {
+        // Older clients did not persist a step. Only a confirmed selection can
+        // advance that legacy draft to the shared-schedule confirmation.
+        if source.acknowledged.as_ref().is_some_and(|body| {
+            body["usernames"].as_array().is_some_and(|names| !names.is_empty())
+                && body["initial_ranges"].as_object().is_some_and(|ranges| !ranges.is_empty())
+        }) { "backup" } else { "sessions" }
+    })
+}
+
+#[cfg(test)]
+mod source_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn resume_uses_saved_step_and_only_migrates_confirmed_legacy_selections() {
+        let mut source = config_runtime::Source { draft: true, ..Default::default() };
+        assert_eq!(resume_step(&source), "sessions");
+        source.acknowledged = Some(serde_json::json!({"usernames":["chat"],"initial_ranges":{"chat":{"since":1}}}));
+        assert_eq!(resume_step(&source), "backup");
+        source.wizard_step = Some("sessions".into());
+        assert_eq!(resume_step(&source), "sessions");
+        source.wizard_step = Some("backup".into());
+        let restored: config_runtime::Source = serde_json::from_value(serde_json::to_value(source).unwrap()).unwrap();
+        assert_eq!(resume_step(&restored), "backup");
+    }
+
+    #[test]
+    fn unfinished_setup_survives_restart_and_is_hidden_from_another_login() {
+        let account = "123@s.whatsapp.net".to_string();
+        let owner = settings::UploadOwner { account_id: account.clone(), user_id: 1, device_id: "device".into(), space_id: "space".into(), base_url: "https://example.invalid".into() };
+        let mut s = settings::AppSettings::default();
+        s.runtime.sources.insert(account.clone(), config_runtime::Source { owner: Some(owner.clone()), draft: true, completed: false, ..Default::default() });
+        let owners = HashMap::from([(account.clone(), owner.clone())]);
+        let restored = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert_eq!(source_snapshots(&restored, &owners)[0]["setup_complete"], false);
+        let source = s.runtime.sources.get_mut(&account).unwrap();
+        source.draft = false;
+        source.completed = true;
+        assert_eq!(source_snapshots(&s, &owners)[0]["setup_complete"], true);
+        let other = settings::UploadOwner { user_id: 2, ..owner };
+        assert!(source_snapshots(&s, &HashMap::from([(account, other)])).is_empty());
+    }
 }
 pub(super) fn emit_task_runtime(app: &AppHandle) {
     if let Ok(value) = task_runtime_status(app.clone()) {

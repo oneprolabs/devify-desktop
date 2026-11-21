@@ -45,6 +45,15 @@
 .wechat-wizard .backup-v7.wizard-backup-page .plan-plat { border: 0; border-radius: 0; background: #fff; overflow: visible; }
 .wechat-wizard .backup-v7.wizard-backup-page .backup-list { border-top: 1px solid #f0f0ee; }
 .wechat-wizard .backup-v7.wizard-backup-page .plan-rows { padding: 0; background: #fff; }
+.wizard-shared-plan { padding: 18px 0; border-top: 1px solid #f0f0ee; }
+.wizard-shared-plan-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.wizard-shared-plan-head strong { color: #1a1a19; font-size: 14px; font-weight: 500; }
+.wizard-shared-plan-summary { display: grid; gap: 14px; margin: 20px 0 0; font-size: 13px; line-height: 1.6; }
+.wizard-shared-plan-summary > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 20px; }
+.wizard-shared-plan-summary dt { color: #5f5f5a; }
+.wizard-shared-plan-summary dd { margin: 0; color: #1a1a19; overflow-wrap: anywhere; }
+.backup-page.backup-v7 .wizard-shared-plan > .help { margin: 16px 0 0; }
+.backup-page.backup-v7 .wizard-shared-plan-notice { margin: 14px 0 0; color: #5f5f5a; font-size: 13px; line-height: 1.6; }
 @media (max-width: 760px) {
   .backup-page.backup-v7 .plan-row { flex-wrap: wrap; gap: 10px; }
   .backup-page.backup-v7 .plan-row-label { flex-basis: 100%; }

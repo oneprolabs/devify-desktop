@@ -1,0 +1,26 @@
+.chat-platform-bar { flex: none; min-width: 0; margin: 0 14px 12px; }
+.chat-platform-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 18px; margin-bottom: 8px; color: #686862; font-size: 11px; line-height: 1.6; }
+.chat-platform-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-platform-updates { flex-shrink: 0; max-width: 58%; color: #882281; font-size: 10px; text-align: right; }
+.chat-platform-rail { display: grid; grid-template-columns: 18px minmax(0, 1fr) 18px; align-items: center; gap: 2px; }
+.chat-platform-track { display: flex; gap: 8px; min-width: 0; overflow-x: auto; padding: 2px 0; scrollbar-width: none; overscroll-behavior-x: contain; }
+.chat-platform-track::-webkit-scrollbar { display: none; }
+.chat-platform-tab { position: relative; display: flex; align-items: center; justify-content: center; gap: 7px; flex: 1 0 110px; min-width: 0; height: 40px; padding: 7px 10px; border: 1px solid #deded9; border-radius: 999px; background: #fff; color: #55554f; font: inherit; font-size: 12px; cursor: pointer; }
+.chat-platform-tab:hover { background: #f3f3f0; }
+.chat-platform-tab.active { border-color: #a3279a; background: #f6edf5; color: #882281; }
+.chat-platform-tab img { display: block; flex-shrink: 0; width: 24px; height: 24px; object-fit: contain; }
+.chat-platform-tab > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-platform-dot { position: absolute; top: 0; right: 0; width: 8px; height: 8px; box-sizing: content-box; border: 2px solid #fafafa; border-radius: 50%; background: #a3279a; }
+.chat-platform-arrow { display: grid; place-items: center; align-self: stretch; width: 18px; min-height: 40px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #686862; cursor: pointer; }
+.chat-platform-arrow svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.chat-platform-arrow:hover:not(:disabled) { background: #eee7ed; color: #882281; }
+.chat-platform-arrow:disabled { opacity: .3; cursor: default; }
+.chat-platform-tab:focus-visible, .chat-platform-arrow:focus-visible { outline: 2px solid #a3279a; outline-offset: -3px; }
+.chat-platform-bar.is-single .chat-platform-rail { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.chat-platform-bar.is-single .chat-platform-arrow { display: none; }
+.chat-platform-bar.is-single .chat-platform-tab { flex-basis: 0; }
+.chat-platform-add { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; height: 40px; padding: 7px 10px; border: 1px solid #deded9; border-radius: 999px; background: transparent; color: #55554f; font: inherit; font-size: 12px; cursor: pointer; }
+.chat-platform-add svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.chat-platform-add span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-platform-add:hover { border-color: #a3279a; background: #f6edf5; color: #882281; }
+.chat-platform-add:focus-visible { outline: 2px solid #a3279a; outline-offset: -3px; }

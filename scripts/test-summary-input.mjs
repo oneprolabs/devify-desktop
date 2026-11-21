@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import {readSummaryRange,validateSummaryMessages,validateCloudSummaryInput,summaryBounds,isSummaryText} from '../src/summaryInput.ts';
+
+const chat={username:'group',display:'Group',is_group:true,last_time:null};
+const messages=Array.from({length:140},(_,i)=>({local_id:140-i,time:1000-Math.floor(i/3),source_shard:'message_0.db',kind:1,text:`text ${i}`,sender_name:'member'}));
+const calls=[];
+const result=await readSummaryRange(async args=>{calls.push(args);return messages.filter(m=>!args.before||m.time<args.before||(m.time===args.before&&m.local_id<args.beforeId)).slice(0,args.limit);},'account',chat,0,2000,()=>true);
+assert.equal(result.length,140,'A native page of 100 is not EOF');
+assert.equal(calls.length,2);assert.equal(calls[0].limit,100);assert.equal(calls[1].beforeShard,'message_0.db');
+assert.equal(new Set(result.map(m=>m.local_id)).size,140,'Same-second messages remain distinct');
+let reads=0;
+await assert.rejects(()=>readSummaryRange(async()=>{reads++;return [];},'account',chat,0,2000,()=>false),/SUMMARY_SCOPE_CHANGED/);
+assert.equal(reads,0,'A changed account cannot start another read');
+assert.throws(()=>validateSummaryMessages([],chat.username),/没有/);
+assert.throws(()=>validateSummaryMessages([{username:'other',time:1,text:'message'}],chat.username),/当前会话/);
+assert.throws(()=>validateSummaryMessages([{username:'group',time:1,text:'a'},{username:'group',time:7*86400+2,text:'b'}],chat.username),/一周/);
+assert.throws(()=>validateSummaryMessages([{username:'group',time:1,text:'a'.repeat(120001)}],chat.username),/内容过多/);
+assert.deepEqual(validateSummaryMessages([{username:'group',time:1,text:'a'}],chat.username),{since:1,until:1});
+const now=new Date(2026,10,20,12);
+assert.equal(summaryBounds('yesterday',now).until-summaryBounds('yesterday',now).since,86399);
+assert.ok(summaryBounds('week',now).until-summaryBounds('week',now).since<=7*86400);
+console.log('Summary cursor paging, limits, time range and changed-account cancellation passed');
+
+assert.equal(isSummaryText({kind:0,source_shard:'whatsapp',text:'WA text'}),true);
+assert.equal(isSummaryText({kind:1,source_shard:'whatsapp',text:'[图片]'}),false);
+assert.equal(isSummaryText({kind:65537,source_shard:'message_0.db',text:'WeChat text'}),true);
+const wa=await readSummaryRange(async()=>[{local_id:1,time:1000,kind:0,source_shard:'whatsapp',text:'WA text'}],'account',chat,0,2000,()=>true);
+assert.equal(wa.length,1,'WhatsApp native type 0 is a text message');
+
+const cloudInput = (text, extra={}) => ({title:'Group',range_label:'今天',language:'中文',messages:[{username:'group',display:'Group',sender:'member',time:1000,text,...extra}]});
+assert.doesNotThrow(()=>validateCloudSummaryInput(cloudInput('中'.repeat(3000))),'Chinese text at the character boundary fits the reserved budget');
+assert.throws(()=>validateCloudSummaryInput(cloudInput('a'.repeat(3001))),/超过单次总结范围/,'Long ASCII is blocked too');
+assert.throws(()=>validateCloudSummaryInput(cloudInput('😀'.repeat(3000))),/超过单次总结范围/,'UTF-8 size is checked independently of character count');
+assert.throws(()=>validateCloudSummaryInput(cloudInput('short',{display:'群'.repeat(4000)})),/超过单次总结范围/,'Metadata consumes the input budget');
+const manyShort=cloudInput('a');
+manyShort.messages=Array.from({length:300},()=>({...manyShort.messages[0]}));
+assert.throws(()=>validateCloudSummaryInput(manyShort),/超过单次总结范围/,'Many short messages can exceed the budget through timestamp/framing overhead');
+const repeatedNames=cloudInput('消息',{display:'群'.repeat(100),sender:'人'.repeat(100)});
+repeatedNames.messages=Array.from({length:68},()=>({...repeatedNames.messages[0]}));
+assert.doesNotThrow(()=>validateCloudSummaryInput(repeatedNames),'Repeated names are compacted, avoiding the old transport-JSON false rejection');
+assert.doesNotThrow(()=>validateSummaryMessages(cloudInput('a'.repeat(3001)).messages,'group'),'Local tools keep their own limits');
+console.log('Cloud pre-submit character, UTF-8, metadata and many-message admission checks passed');

@@ -198,6 +198,13 @@ pub const CAPABILITIES: &[Capability] = &[
     ),
     // ── 本机智能：成本在本机，按功能开关而不是计量 ───────────────────────────
     cap(
+        "cloud.chat_summary",
+        "cloud",
+        "聊天总结",
+        "由控制端异步生成按会话保存的独立聊天总结。",
+        true,
+    ),
+    cap(
         "ai.local_digest",
         "ai",
         "本地快速整理",
