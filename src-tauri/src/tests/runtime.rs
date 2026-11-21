@@ -596,3 +596,57 @@ fn missing_wechat_transcript_does_not_block_other_selected_chats_or_advance_its_
     fs::write(&db, b"not a sqlite database").unwrap();
     assert!(plan_automatic_batch(data, &value, &owner, &["missing".into(), "present".into()]).is_err());
 }
+
+#[test]
+fn backup_changes_only_invalidate_affected_accounts() {
+    let wechat = "wxid_desktop";
+    let whatsapp = "123@s.whatsapp.net";
+    let before = settings::AppSettings::default();
+    let mut after = before.clone();
+    after
+        .chat
+        .allowed_usernames
+        .insert(whatsapp.into(), vec!["chat".into()]);
+    assert!(!shared_backup_changed(&before, &after));
+    assert!(account_backup_changed(&before, &after, whatsapp));
+    assert!(!account_backup_changed(&before, &after, wechat));
+    after.upload_queue = vec![
+        settings::UploadJob {
+            account_id: wechat.into(),
+            status: "queued".into(),
+            create_started: Some(false),
+            ..Default::default()
+        },
+        settings::UploadJob {
+            account_id: whatsapp.into(),
+            status: "queued".into(),
+            create_started: Some(false),
+            ..Default::default()
+        },
+        settings::UploadJob {
+            account_id: whatsapp.into(),
+            status: "uploading".into(),
+            create_started: Some(true),
+            batch_id: Some(2),
+            ..Default::default()
+        },
+    ];
+    invalidate_unsent_backups(&before, &mut after);
+    assert_eq!(after.upload_queue[0].status, "queued");
+    assert_eq!(after.upload_queue[1].status, "cancelled");
+    assert_eq!(after.upload_queue[2].status, "uploading");
+
+    after = before.clone();
+    after.connectors.waitlist.push("Slack".into());
+    assert!(!account_backup_changed(&before, &after, whatsapp));
+    assert!(!account_backup_changed(&before, &after, wechat));
+    after.backup.attachments = if before.backup.attachments == "text" {
+        "all"
+    } else {
+        "text"
+    }
+    .into();
+    assert!(shared_backup_changed(&before, &after));
+    assert!(account_backup_changed(&before, &after, whatsapp));
+    assert!(account_backup_changed(&before, &after, wechat));
+}
