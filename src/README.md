@@ -18,6 +18,7 @@ src/
       collections/            # Existing collection/message views
     connectors/               # Source detection, account picker, disk access
       wizard/                 # WeChat/WhatsApp setup and import scope controls
+      wechat/                 # WeChat connection state/actions, native types, connection views
     backup/                   # Shared backup schedule, switch, submission feedback
     tasks/                    # Task page, runtime, cloud jobs, snapshots, status
     analysis/                 # Events, topics, reports, Q&A, analysis settings
@@ -52,9 +53,18 @@ src/
   `features/settings/settingsModel.ts`. Import `Settings.tsx` only to render its editors.
   The model does not import page components, native IPC, or lifecycle hooks; saves remain
   owned by the existing callers and serialized save queue.
-- Local-reader native response types live in `features/chat/local-reader/nativeTypes.ts`.
-  Consumers use `import type`; the module has no runtime dependencies. UI state types stay
-  beside their component, and existing IPC response fields remain unchanged.
+- Reader response types live in `features/chat/local-reader/nativeTypes.ts`; WeChat
+  account, key, capture and decryption responses belong to
+  `features/connectors/wechat/nativeTypes.ts`. Both are type-only, without forwarding exports
+  or duplicate declarations. Existing IPC response fields remain unchanged.
+- `connectors/wechat/useWeChatConnection.ts` composes key import, native capture/recovery,
+  and decryption hooks. Each owns its state, actions and effects; connection views consume
+  those owners rather than a large set of reader setters. The reader retains account
+  selection/revision saves and chat data; it supplies session refresh, snapshot invalidation
+  and its existing live-sync guard. Connection code does not import the reader component.
+  The current V7 checklist and standalone connection panel share these actions.
+- Shared byte/age/key-date formatting lives in `shared/content/localDataFormat.ts`;
+  connection UI does not import chat presentation code.
 - `local-reader/MediaThumb.tsx` owns the lazy image thumbnail and its existing shared
   preview queue. The queue remains module-scoped, capped at three active previews;
   observers and cancellation remain owned by each thumbnail instance.
@@ -63,9 +73,10 @@ src/
 
 `features/settings/Settings.tsx` still combines import, account, and legacy automation
 editors; its shared model has been extracted without changing the declarations.
-`features/chat/local-reader/WeChatLocal.tsx` still combines the legacy reader and WeChat
-setup UI; its native response types and lazy media thumbnail are now separate.
-Review setup and reader lifecycle boundaries independently. `shared/content/summary.tsx` still combines
+`features/chat/local-reader/WeChatLocal.tsx` retains account selection, chat browsing and
+legacy work organization. Connection state/actions and views, native response types and
+lazy media thumbnails are separate. Review account lifecycle, message browsing and work
+organization as separate future batches. `shared/content/summary.tsx` still combines
 legacy record types and rendering.
 Review each remaining internal boundary independently before further extraction. The native
 Rust modules under `src-tauri/src/` are a separate refactoring scope.

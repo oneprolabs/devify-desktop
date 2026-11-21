@@ -242,12 +242,13 @@ const wxSource = fs.readFileSync(new URL('../src/features/chat/local-reader/WeCh
 const start = wxSource.indexOf('  const rememberAccount = useCallback(');
 const end = wxSource.indexOf('  /** Fetch the avatars', start);
 const switchStart = wxSource.indexOf('  const switchAccount = useCallback(');
-const switchEnd = wxSource.indexOf('  const applyImportResult', switchStart);
+const switchEnd = wxSource.indexOf('  const openSession', switchStart);
 assert.ok(start >= 0 && end > start && switchStart >= 0 && switchEnd > switchStart);
 const wxBody = wxSource.slice(start, end) + wxSource.slice(switchStart, switchEnd) + '\nreturn { switchAccount };';
 const wxCode = ts.transpileModule(wxBody, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
 const wxContext = { settingsRef: { current: { ...defaultSettings(), active_account_id: 'old', user_settings_revision: 4 } }, accountSwitchLock: { current: false }, accountId: 'old', avatarAsked: { current: new Set() } };
-for (const name of ['setAccountSwitching','setError','setAccountId','setSessions','setSessionsLoaded','setActive','setMessages','setOutcomes','setSelectedMessages','setSelectionAnchor','setWorkGroups','setWorkInsights','setKeyImport','setAvatars']) wxContext[name] = value => { wxContext[name + 'Value'] = value; };
+for (const name of ['setAccountSwitching','setError','setAccountId','setSessions','setSessionsLoaded','setActive','setMessages','setSelectedMessages','setSelectionAnchor','setWorkGroups','setWorkInsights','setAvatars']) wxContext[name] = value => { wxContext[name + 'Value'] = value; };
+wxContext.resetAccountResult = () => { wxContext.connectionResultsReset = true; };
 wxContext.loadSessions = async () => [];
 wxContext.requireSettingsRevision = requireSettingsRevision;
 wxContext.settingsSaveError = settingsSaveError;
@@ -262,6 +263,7 @@ assert.equal(wxContext.setAccountIdValue, undefined);
 assert.equal(wxContext.sent.user_settings_revision, 4);
 wxSave.reject('SETTINGS_CONFLICT: switched'); await switching;
 assert.equal(wxContext.setAccountIdValue, undefined);
+assert.equal(wxContext.connectionResultsReset, undefined);
 assert.match(wxContext.setErrorValue, /账号未切换/);
 assert.equal(wxContext.settingsRef.current, null);
 // Reopening the page establishes a new context before retrying.
@@ -270,6 +272,7 @@ wxSave = deferred();
 switching = wx.switchAccount('new');
 wxSave.resolve({ ...wxContext.sent, user_settings_revision: 5 }); await switching;
 assert.equal(wxContext.setAccountIdValue, 'new');
+assert.equal(wxContext.connectionResultsReset, true);
 assert.equal(wxContext.settingsRef.current.user_settings_revision, 5);
 // Waitlist writes are ordered and distinguish unsaved drafts after a conflict.
 const { Connectors } = loadModule('../src/features/connectors/Connectors.tsx');

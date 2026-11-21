@@ -1,9 +1,10 @@
+import { formatSize } from '../../../shared/content/localDataFormat';
+import type { Account, ScanResult, DecryptOutcome } from '../../connectors/wechat/nativeTypes';
+import { useWeChatConnection } from '../../connectors/wechat/useWeChatConnection';
+import { WeChatConnectionPanel } from '../../connectors/wechat/WeChatConnectionPanel';
+import { WeChatConnectionWizard } from '../../connectors/wechat/WeChatConnectionWizard';
 import { MediaThumb } from './MediaThumb';
 import type {
-  Account,
-  ScanResult,
-  KeyStatus,
-  DecryptOutcome,
   SessionItem,
   MessageItem,
   MediaItem,
@@ -11,22 +12,10 @@ import type {
   VoiceResult,
   SearchHit,
   SearchReport,
-  PlatformCapabilities,
-  WechatEnv,
-  SavedKeySource,
-  CaptureStatus,
-  PrepareResult,
-  LaunchDiagnosis,
-  LaunchAttempt,
-  LaunchCheck,
-  PreflightResult,
-  CaptureImport,
-  RestoreResult,
-  KeyImportResult,
   AgentCurrent,
   AgentSummary,
 } from './nativeTypes';
-import { formatSize, toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, Highlight, formatAge, formatKeyDate } from './presentation';
+import { toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, Highlight } from './presentation';
 import { isSummaryText } from '../summary/summaryInput';
 import { t, tf, dateLocale } from '../../../shared/i18n/locale';
 import { RemoteChatFallback } from '../RemoteChatFallback';
@@ -37,9 +26,6 @@ import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import './wechat.css';
 import { Icons } from '../../../shared/ui/icons';
-import { DiskAccessCard } from '../../connectors/Permission';
-import { WeChatSetupChecklist } from '../../connectors/wizard/WeChatSetupChecklist';
-import { capturePrerequisiteFailure, checkWeChatStep, type WeChatAction, type StepContext } from '../../connectors/wizard/wechatStepGuard';
 import {
   HISTORY_KIND_LABEL,
   renderAgentMarkdown,
@@ -196,24 +182,12 @@ export default function WeChatLocal({
   const { allowed: canConfigureAgent } = useCapability('ai.local_agent');
   const canOrganize = internalAccount && workDigestGranted;
   const canUseAi = internalAccount && aiSummaryGranted;
-  const [env, setEnv] = useState<WechatEnv | null>(null);
-  const [platform] = useState<PlatformCapabilities | null>(null);
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [accountId, setAccountId] = useState('');
   const settingsRef = useRef<AppSettings | null>(null);
   const accountSwitchLock = useRef(false);
   const [accountSwitching, setAccountSwitching] = useState(false);
-  const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
-  const [savedKeySource, setSavedKeySource] = useState<SavedKeySource | null>(null);
-  const [keyText, setKeyText] = useState('');
-  const [applyWal, setApplyWal] = useState(true);
-  const [onlyChat, setOnlyChat] = useState(true);
-
   const [busy, setBusy] = useState<'scan' | 'import' | 'messages' | 'search' | 'work' | 'explore' | 'ai' | null>(null);
-  const [decrypting, setDecrypting] = useState(false);
-  const [outcomes, setOutcomes] = useState<DecryptOutcome[]>([]);
-  const [showLog, setShowLog] = useState(false);
-
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [active, setActive] = useState<SessionItem | null>(null);
@@ -258,30 +232,6 @@ export default function WeChatLocal({
   const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'ready' | 'error'>('idle');
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [whitelistConfigured, setWhitelistConfigured] = useState<boolean | null>(null);
-  const [showKeyGuide, setShowKeyGuide] = useState(false);
-  const [windowsScanBusy, setWindowsScanBusy] = useState(false);
-  useEffect(() => { if (wizard) setShowKeyGuide(true); }, [wizard]);
-  const [keyImport, setKeyImport] = useState<KeyImportResult | null>(null);
-  const [freshSource, setFreshSource] = useState(false);
-  const [fixingPermissions, setFixingPermissions] = useState(false);
-  /** In-app capture: environment/state from the backend plus the step currently running. */
-  const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null);
-  const [captureStatusChecking, setCaptureStatusChecking] = useState(false);
-  const [captureStatusError, setCaptureStatusError] = useState('');
-  const [recoveryNotice, setRecoveryNotice] = useState('');
-  const [recoveryError, setRecoveryError] = useState('');
-  const captureStatusRequest = useRef(0);
-  const [captureBusy, setCaptureBusy] = useState<
-    'prepare' | 'open' | 'confirm' | 'preflight' | 'start' | 'restore' | 'accept-official' | null
-  >(null);
-  const [captureOutcome, setCaptureOutcome] = useState<CaptureImport | null>(null);
-  /** The user has to acknowledge that WeChat will be re-signed and re-logged-in. */
-  const [captureRiskAccepted, setCaptureRiskAccepted] = useState(false);
-  /** Set when the temporary WeChat did not start, so the guide can explain Gatekeeper rules. */
-  const [launchDiagnosis, setLaunchDiagnosis] = useState<LaunchDiagnosis | null>(null);
-  /** Force the unlock panel so the capture guide stays reachable once keys exist. */
-  const [forceUnlock, setForceUnlock] = useState(mode === 'settings');
-
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [mobilePane, setMobilePane] = useState<'list' | 'chat'>('list');
@@ -296,7 +246,6 @@ export default function WeChatLocal({
   const pendingFocusMessage = useRef<string>('');
   const syncLock = useRef(false);
   const clearingRef = useRef(false);
-  const sourceSeen = useRef<{ exists: boolean; modifiedAt: number | null } | null>(null);
   const [loadSeq, setLoadSeq] = useState(0);
 
   /** Attachment manifest for the loaded message window, keyed by `local_id`. */
@@ -347,47 +296,9 @@ export default function WeChatLocal({
   }, [pinnedAccountId]);
 
   const account = useMemo(() => scan?.accounts.find(a => a.id === accountId) ?? null, [scan, accountId]);
-  const encryptedDbs = useMemo(() => account?.dbs.filter(db => db.encrypted) ?? [], [account]);
-  const keyedCount = useMemo(
-    () => encryptedDbs.filter(db => keyStatus?.keys.some(k => k.account === account?.id && k.rel === db.rel)).length,
-    [encryptedDbs, keyStatus, account],
-  );
-  const accountMissingKeys = Boolean(account && encryptedDbs.length > 0 && keyedCount < encryptedDbs.length);
-  const noKeysYet = Boolean(account && encryptedDbs.length > 0 && keyedCount === 0);
-  const keyVerifiedSecs = useMemo(() => {
-    if (!account) return null;
-    const stamps = (keyStatus?.keys ?? [])
-      .filter(key => key.account === account.id && key.verified_secs)
-      .map(key => key.verified_secs as number);
-    return stamps.length ? Math.max(...stamps) : null;
-  }, [keyStatus, account]);
-  const keyAgeDays = keyVerifiedSecs
-    ? Math.max(0, Math.floor((Date.now() / 1000 - keyVerifiedSecs) / 86400))
-    : null;
   const ready = sessionsLoaded && sessions.length > 0;
   const locked = sessionsLoaded && sessions.length === 0;
   const needsWhitelist = sessionsLoaded && whitelistConfigured === false;
-
-  const refreshKeys = useCallback(async () => {
-    setKeyStatus(await invoke<KeyStatus>('wechat_key_status'));
-  }, []);
-
-  const refreshSavedKeySource = useCallback(async () => {
-    try {
-      const next = await invoke<SavedKeySource>('wechat_key_source_status');
-      const seen = sourceSeen.current;
-      if (seen && next.exists && (!seen.exists || (next.modified_at ?? 0) > (seen.modifiedAt ?? 0))) {
-        setFreshSource(true);
-        setNotice(t("检测到新的口令文件，可以导入并校验。"));
-      }
-      sourceSeen.current = { exists: next.exists, modifiedAt: next.modified_at ?? null };
-      setSavedKeySource(next);
-      return next;
-    } catch {
-      /* The probe is advisory: a missing home directory must not block the page. */
-      return null;
-    }
-  }, []);
 
   const focusLookup = useRef('');
   const focusConversationRef = useRef(focusConversation);
@@ -422,6 +333,33 @@ export default function WeChatLocal({
     },
     [],
   );
+
+  /** Drop every view derived from the decrypted snapshot (used when that snapshot is deleted). */
+  const resetDecryptedView = useCallback(() => {
+    setSessions([]);
+    // With no decrypted copy left, the page must fall back to the unlock panel instead of
+    // the "正在准备…" placeholder. `locked` is derived from sessionsLoaded + an empty list.
+    setSessionsLoaded(true);
+    setActive(null);
+    setMessages([]);
+    setSelectedMessages([]);
+    setSelectionAnchor(null);
+    setWorkGroups([]);
+    setWorkInsights(null);
+    setWorkOpen(false);
+    setWorkPhase('select');
+    setSearch(null);
+    setQuery('');
+    setWhitelistConfigured(null);
+  }, []);
+
+  const connection = useWeChatConnection({
+    account, accountId, accountSwitching, mode, wizard, wizardStep, wizardManual, onWizardStep,
+    setNotice, setError, setBusy, loadSessions, resetReader: resetDecryptedView,
+    clearMessageCache: () => recentMessages.current.clear(), clearing: clearingRef,
+  });
+  const { forceUnlock, resetAccountResult, initialize: initializeConnection } = connection;
+  const { encryptedDbs, keyedCount, refreshKeys } = connection.keys;
 
   useEffect(() => {
     if (sessionRevision > 0 && accountId) void loadSessions(accountId);
@@ -562,12 +500,7 @@ export default function WeChatLocal({
 
   useEffect(() => {
     void (async () => {
-      try {
-        setEnv(await invoke<WechatEnv>('wechat_env'));
-        await refreshSavedKeySource();
-      } catch {
-        /* not fatal */
-      }
+      await initializeConnection();
       // WhatsApp has no key, no capture and no database scan: the embedding page already
       // resolved the account, so pin it and read the whitelisted sessions directly.
       if (pinnedAccountId && pinnedAccountId.endsWith('@s.whatsapp.net')) {
@@ -608,19 +541,6 @@ export default function WeChatLocal({
     ensureAvatars(accountId, messages.map(message => message.sender));
   }, [accountId, messages, ensureAvatars]);
 
-  useEffect(() => {
-    if (noKeysYet) setShowKeyGuide(true);
-  }, [accountId, noKeysYet]);
-
-  // While the guide is open (or before any key exists) watch the extractor's well-known
-  // output file. It is a cheap local stat; no chat data and no passphrase is read here.
-  useEffect(() => {
-    if (wizard || (!showKeyGuide && !noKeysYet)) return;
-    void refreshSavedKeySource();
-    const timer = window.setInterval(() => void refreshSavedKeySource(), 3000);
-    return () => window.clearInterval(timer);
-  }, [wizard, showKeyGuide, noKeysYet, refreshSavedKeySource]);
-
   const switchAccount = useCallback(
     async (nextId: string) => {
       if (accountSwitchLock.current || nextId === accountId) return;
@@ -634,12 +554,11 @@ export default function WeChatLocal({
         setSessionsLoaded(false);
         setActive(null);
         setMessages([]);
-        setOutcomes([]);
+        resetAccountResult();
         setSelectedMessages([]);
         setSelectionAnchor(null);
         setWorkGroups([]);
         setWorkInsights(null);
-        setKeyImport(null);
         avatarAsked.current.clear();
         setAvatars({});
         await loadSessions(nextId);
@@ -650,410 +569,8 @@ export default function WeChatLocal({
         setAccountSwitching(false);
       }
     },
-    [accountId, loadSessions, rememberAccount],
+    [accountId, loadSessions, rememberAccount, resetAccountResult],
   );
-
-  const applyImportResult = async (result: KeyImportResult) => {
-    setKeyImport(result);
-    setFreshSource(false);
-    setNotice(result.message);
-    // Only wipe the box when the pasted material actually stored something; a rejected paste
-    // stays visible so it can be corrected instead of retyped from memory.
-    if (result.matched > 0) setKeyText('');
-    if (result.unmatched.length) {
-      setError(tf("有 {0} 个数据库没有匹配到密钥（微信可能从未打开过它们）。", result.unmatched.length));
-    }
-    await refreshKeys();
-  };
-
-  const importKeys = async (file?: File) => {
-    setError('');
-    setNotice('');
-    let text = keyText;
-    if (file) {
-      if (file.size > 2_000_000) {
-        setError(t("密钥文件过大，请确认选择的是口令或密钥 JSON。"));
-        return;
-      }
-      text = await file.text();
-      setKeyText(text);
-    }
-    if (!text.trim()) {
-      setError(t("请粘贴密钥或口令，或选择口令 JSON 文件。"));
-      return;
-    }
-    setBusy('import');
-    try {
-      const result = await invoke<KeyImportResult>('wechat_import_keys', {
-        text,
-        accountId: account?.id ?? null,
-      });
-      await applyImportResult(result);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const scanWindowsKeys = async () => {
-    setWindowsScanBusy(true); setError(''); setNotice('');
-    try {
-      const result = await invoke<KeyImportResult>('wechat_windows_key_scan', { accountId: account?.id ?? null });
-      setKeyImport(result); await refreshKeys();
-      setNotice(result.message || t("Windows 密钥已校验并导入。"));
-    } catch (reason) { setError(String(reason)); }
-    finally { setWindowsScanBusy(false); }
-  };
-
-  const importSavedKey = async () => {
-    setError('');
-    setNotice('');
-    setBusy('import');
-    try {
-      const result = await invoke<KeyImportResult>('wechat_import_saved_key', {
-        accountId: account?.id ?? null,
-      });
-      await applyImportResult(result);
-      await refreshSavedKeySource();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const fixKeyPermissions = async () => {
-    setError('');
-    setFixingPermissions(true);
-    try {
-      const next = await invoke<SavedKeySource>('wechat_fix_key_permissions');
-      setSavedKeySource(next);
-      setNotice(tf("口令文件权限已改为 {0}，只有当前用户可读。", next.mode ?? '600'));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setFixingPermissions(false);
-    }
-  };
-
-  /* ── in-app capture ───────────────────────────────────────────────────── */
-
-  /** Backend errors are structured; show the message, not a JSON blob. */
-  const captureErrorText = (e: unknown): string => {
-    if (typeof e === 'string') return e;
-    if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message);
-    return String(e);
-  };
-
-  const refreshCaptureStatus = useCallback(async () => {
-    const request = ++captureStatusRequest.current;
-    setCaptureStatusChecking(true);
-    try {
-      const status = await invoke<CaptureStatus>('wechat_capture_status');
-      if (request !== captureStatusRequest.current) return status;
-      setCaptureStatus(status);
-      setCaptureStatusError('');
-      return status;
-    } catch (reason) {
-      if (request === captureStatusRequest.current) setCaptureStatusError(String(reason));
-    } finally {
-      if (request === captureStatusRequest.current) setCaptureStatusChecking(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (wizard || (!showKeyGuide && !noKeysYet)) return;
-    void refreshCaptureStatus();
-    const timer = window.setInterval(() => void refreshCaptureStatus(), 1500);
-    return () => window.clearInterval(timer);
-  }, [wizard, showKeyGuide, noKeysYet, refreshCaptureStatus]);
-
-  useEffect(() => {
-    if (wizard && wizardStep === 'wizard-permission') void refreshCaptureStatus();
-  }, [wizard, wizardStep, refreshCaptureStatus]);
-
-  const captureRunning = captureBusy === 'start' || captureStatus?.stage === 'capturing';
-  useEffect(() => {
-    if (!wizard || !captureRunning) return;
-    const timer = window.setInterval(() => void refreshCaptureStatus(), 1500);
-    return () => window.clearInterval(timer);
-  }, [wizard, captureRunning, refreshCaptureStatus]);
-
-  /** Verify, back up and temporarily re-sign WeChat. Nothing is launched here. */
-  const prepareCapture = async () => {
-    setError('');
-    setRecoveryNotice('');
-    setLaunchDiagnosis(null);
-    setNotice(t("正在校验微信签名并建立原版备份，可能需要几分钟，请不要关闭窗口…"));
-    setCaptureBusy('prepare');
-    try {
-      const result = await invoke<PrepareResult>('wechat_capture_prepare');
-      const sanitized =
-        result.entitlement_mode === 'deep'
-          ? t(" 本次临时副本及内部组件会被重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复原版。")
-          : result.entitlement_mode === 'sanitized'
-          ? tf(" 这台 Mac 会拒绝 ad-hoc 签名携带腾讯团队的受限权限，本次临时副本已剔除 {0} 项受限权限（{1}），否则微信在启动前就会被系统拒绝；结束或取消时会换回腾讯原版。", result.dropped_entitlements.length, result.dropped_entitlements.join('、'))
-          : '';
-      setNotice(
-        tf("已备份微信 {0}（{1}）并完成临时重签。{2}下一步：打开微信并完整登录要读取的账号。", result.version, result.build, sanitized),
-      );
-    } catch (e) {
-      setError(captureErrorText(e));
-      return capturePrerequisiteFailure(e);
-    } finally {
-      setCaptureBusy(null);
-      await refreshCaptureStatus();
-    }
-  };
-
-  const openCaptureWeChat = async () => {
-    setError('');
-    setCaptureBusy('open');
-    try {
-      const result = await invoke<LaunchAttempt>('wechat_capture_open');
-      setLaunchDiagnosis(result.launched ? null : result.diagnosis);
-      if (result.launched) {
-        setNotice(t("已打开临时微信。请等登录界面出现并完整登录，然后点「我已登录，检查启动」。"));
-      } else {
-        // The card carries the `open` stderr and the fix, so no error toast that could cover it.
-        setNotice(
-          result.diagnosis.amfi_rejected
-            ? t("这台 Mac 在启动前就拒绝了本次临时签名，无法通过放行解决，请按下面的说明恢复微信。")
-            : t("系统没有确认微信启动，请按下面的步骤放行后再试。"),
-        );
-      }
-    } catch (e) {
-      setError(captureErrorText(e));
-    } finally {
-      setCaptureBusy(null);
-    }
-  };
-
-  const openPrivacySecuritySettings = async () => {
-    try {
-      await invoke('wechat_open_privacy_security_settings');
-      setNotice(t("已打开「隐私与安全性」。请在「安全性」区域找到被阻止的微信，点「仍要打开」。"));
-    } catch (e) {
-      setError(captureErrorText(e));
-    }
-  };
-
-  const confirmCaptureLaunch = async () => {
-    const transaction = captureStatus?.transaction_id;
-    if (!transaction) {
-      setError(t("没有找到本次捕获事务，请先点「准备并临时重签」。"));
-      return;
-    }
-    setError('');
-    setCaptureBusy('confirm');
-    try {
-      const check = await invoke<LaunchCheck>('wechat_capture_confirm_launch', { transactionId: transaction });
-      if (check.ready_for_preflight) {
-        setLaunchDiagnosis(null);
-        setNotice(t("已检测到临时微信进程。下一步检查捕获断点。"));
-      } else {
-        setLaunchDiagnosis(check.diagnosis);
-        setNotice(t("还没有检测到稳定的微信进程，原因见下方说明。"));
-      }
-    } catch (e) {
-      setError(captureErrorText(e));
-      return capturePrerequisiteFailure(e);
-    } finally {
-      setCaptureBusy(null);
-      await refreshCaptureStatus();
-    }
-  };
-
-  /** Brief attach with one administrator prompt; the user still logs out *after* this. */
-  const runCapturePreflight = async () => {
-    setError('');
-    setNotice(t("即将弹出管理员授权对话框：请输入本机密码，密码只交给 macOS，本应用不会读取或保存。"));
-    setCaptureBusy('preflight');
-    try {
-      const result = await invoke<PreflightResult>('wechat_capture_preflight');
-      setNotice(tf("断点可用（{0} 处）。现在请在微信里退出账号，然后启动监测。", result.pbkdf_locations));
-    } catch (e) {
-      setError(captureErrorText(e));
-      return capturePrerequisiteFailure(e);
-    } finally {
-      setCaptureBusy(null);
-      await refreshCaptureStatus();
-    }
-  };
-
-  /** Long-running: attach LLDB, wait for the next login, validate, restore and import. */
-  const startCapture = async () => {
-    if (!account) return;
-    setError('');
-    setNotice(
-      captureStatus?.resume_available
-        ? t("正在校验上次已捕获的密钥，随后恢复腾讯原版微信并导入。")
-        : t("即将弹出管理员授权对话框：请输入本机密码。授权后保持微信窗口打开，等待界面显示「监测已就绪」再登录。"),
-    );
-    setCaptureBusy('start');
-    try {
-      const result = await invoke<CaptureImport>('wechat_capture_start', {
-        accountId: account.id,
-        timeoutSecs: 300,
-      });
-      setCaptureOutcome(result);
-      setKeyImport({
-        matched: result.matched,
-        already: result.already,
-        unmatched: [],
-        accounts: result.accounts,
-        message: result.message,
-      });
-      setNotice(result.message);
-      await refreshKeys();
-      await refreshSavedKeySource();
-    } catch (e) {
-      setError(captureErrorText(e));
-      return capturePrerequisiteFailure(e);
-    } finally {
-      setCaptureBusy(null);
-      await refreshCaptureStatus();
-    }
-  };
-
-  /** Cancel an in-flight capture or recover from a failed one. */
-  const restoreWeChat = async () => {
-    setError('');
-    setRecoveryError('');
-    setLaunchDiagnosis(null);
-    setCaptureBusy('restore');
-    try {
-      const result = await invoke<RestoreResult>('wechat_capture_restore');
-      setNotice(
-        result.restored
-          ? tf("已恢复腾讯原版微信 {0}（{1}），可以重新打开微信。", result.version, result.build)
-          : tf("当前微信已经是腾讯原版 {0}，无需恢复。", result.version),
-      );
-      await refreshCaptureStatus();
-    } catch (e) {
-      setError(captureErrorText(e)); setRecoveryError(captureErrorText(e));
-      await refreshCaptureStatus();
-    } finally {
-      setCaptureBusy(null);
-    }
-  };
-
-  /** Resolve an official update without overwriting it with an old backup. */
-  const acceptOfficialWeChat = async () => {
-    if (captureBusy) return;
-    setError(''); setRecoveryError(''); setRecoveryNotice(''); setLaunchDiagnosis(null); setCaptureBusy('accept-official');
-    try {
-      await invoke('wechat_capture_accept_official');
-      setNotice('已保留当前官方微信和原备份，可以重新连接。');
-      setRecoveryNotice('已校验并保留当前官方微信，原备份已保留。请完成系统检查后继续连接。');
-      await refreshCaptureStatus();
-      onWizardStep?.('wizard-permission');
-    } catch (e) { setError(captureErrorText(e)); setRecoveryError(captureErrorText(e)); }
-    finally { setCaptureBusy(null); }
-  };
-
-  /** Drop every view derived from the decrypted snapshot (used when that snapshot is deleted). */
-  const resetDecryptedView = () => {
-    setSessions([]);
-    // With no decrypted copy left, the page must fall back to the unlock panel instead of
-    // the "正在准备…" placeholder. `locked` is derived from sessionsLoaded + an empty list.
-    setSessionsLoaded(true);
-    setActive(null);
-    setMessages([]);
-    setOutcomes([]);
-    setSelectedMessages([]);
-    setSelectionAnchor(null);
-    setWorkGroups([]);
-    setWorkInsights(null);
-    setWorkOpen(false);
-    setWorkPhase('select');
-    setSearch(null);
-    setQuery('');
-    setWhitelistConfigured(null);
-  };
-
-  // `window.confirm` is not surfaced by the macOS webview (it silently returns false), so a
-  // destructive action needs its own confirmation step in the page instead of a native dialog.
-  const [clearConfirm, setClearConfirm] = useState(false);
-
-  const clearKeys = async () => {
-    if (!account) return;
-    setClearConfirm(false);
-    setError('');
-    setBusy('import');
-    // Same guard as `clearCache`: live sync must not re-create the copy mid-request.
-    clearingRef.current = true;
-    try {
-      const text = await invoke<string>('wechat_clear_keys', { accountId: account.id });
-      setNotice(text);
-      setKeyImport(null);
-      setFreshSource(false);
-      resetDecryptedView();
-      await refreshKeys();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      window.setTimeout(() => {
-        clearingRef.current = false;
-      }, 0);
-      setBusy(null);
-    }
-  };
-
-  const clearCache = async () => {
-    if (!account) return;
-    setError('');
-    // Live sync runs on an interval; without this guard it can re-create the copy while the
-    // clear request is in flight, making the action look like a no-op.
-    clearingRef.current = true;
-    try {
-      const text = await invoke<string>('wechat_clear_cache', { accountId: account.id });
-      recentMessages.current.clear();
-      setNotice(text);
-      resetDecryptedView();
-      await refreshKeys();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      // Release after the state updates have been committed so the next interval tick does
-      // not race the switch back to the onboarding view.
-      window.setTimeout(() => {
-        clearingRef.current = false;
-      }, 0);
-    }
-  };
-
-  const decrypt = async () => {
-    if (!account || accountSwitching || decrypting) return;
-    setError('');
-    setNotice('');
-    setDecrypting(true);
-    try {
-      const result = await invoke<DecryptOutcome[]>('wechat_decrypt', {
-        accountId: account.id,
-        applyWal,
-        onlyChat,
-      });
-      setOutcomes(result);
-      const ok = result.filter(o => o.status === 'ok' || o.status === 'cached').length;
-      const failed = result.length - ok;
-      setNotice(tf("解密完成：{0} 个数据库可用{1}。", ok, failed ? `，${failed} 个失败或缺少密钥` : ''));
-      if (ok > 0) {
-        await loadSessions(account.id);
-      } else if (result.length > 0) {
-        // Nothing decrypted at all: the most likely cause is a key for another account or a
-        // rotated passphrase, so surface the acquisition guide instead of a silent failure.
-        setForceUnlock(true);
-        setShowKeyGuide(true);
-        setError(t("没有任何数据库解密成功，通常是密钥与当前账号不匹配或已轮换。请重新捕获口令后再导入。"));
-      }
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setDecrypting(false);
-    }
-  };
 
   const openSession = useCallback(
     async (session: SessionItem, keyword = '', focusMessageId?: string | number) => {
@@ -2056,11 +1573,6 @@ export default function WeChatLocal({
     );
   };
 
-/** Null status means the first probe has not returned yet: stay neutral instead of alarming. */
-const checkTone = (value: boolean | undefined) => (value === undefined ? 'pending' : value ? 'ok' : 'bad');
-const checkMark = (value: boolean | undefined) =>
-  value === undefined ? Icons.minus : value ? Icons.check : Icons.close;
-
   /* ── unlock panel ─────────────────────────────────────────────────────────── */
 
   const renderWhitelistRequired = () => (
@@ -2089,790 +1601,6 @@ const checkMark = (value: boolean | undefined) =>
       </div>
     </div>
   );
-
-  const importedForOther = keyImport && account
-    ? keyImport.accounts.find(entry => !entry.selected && entry.matched + entry.already > 0)
-    : undefined;
-  const importedForCurrent = keyImport && account
-    ? keyImport.accounts.find(entry => entry.selected && entry.matched + entry.already > 0)
-    : undefined;
-
-  const renderUnlock = (step = wizardStep) => {
-    const usableDb = (rel: string) => outcomes.some(outcome =>
-      outcome.rel === rel && (outcome.status === 'ok' || outcome.status === 'cached'));
-    const decryptedForWizard = usableDb('session/session.db') && outcomes.some(outcome =>
-      /^message\/message_\d+\.db$/.test(outcome.rel) && (outcome.status === 'ok' || outcome.status === 'cached'));
-    const wizardCanNext = !wizard || (step === 'wizard-permission' || step === 'wizard-account'
-      ? Boolean(account)
-      : step === 'wizard-key'
-        ? Boolean(savedKeySource?.exists || captureOutcome?.matched || keyedCount > 0)
-        : step === 'wizard-import'
-          ? keyedCount > 0
-          : step === 'wx-connect-decrypt'
-            ? !decrypting && (ready || decryptedForWizard)
-            : true);
-    return (
-    <div className="wxv-onboard">
-      <div className="wxv-onboard-head">
-        {ready && (
-          <button
-            type="button"
-            className="wxv-link"
-            onClick={() => (onOpenChat ? onOpenChat() : setForceUnlock(false))}
-          >
-            {t("← 返回聊天记录")}
-          </button>
-        )}
-        {mode !== 'settings' && <p className="wxv-eyebrow">{t("只读 · 本地解密")}</p>}
-        <h2>{t("连接微信")}</h2>
-        <p>
-          {t("程序读取微信 4.x 的数据库副本，用你的密钥逐库校验第 1 页 HMAC 后解密到应用数据目录。原始数据库不会被修改。")}
-        </p>
-      </div>
-
-      <nav className="wxv-connection-progress" aria-label={t("微信连接步骤")}>
-        {[
-          { id: 'wx-connect-account', label: t("查找账号"), done: Boolean(account) },
-          { id: 'wx-connect-key', label: t("获取密钥"), done: keyedCount > 0 },
-          { id: 'wx-connect-decrypt', label: t("解密记录"), done: ready },
-        ].map((step, index) => <button key={step.id} type="button" onClick={() => document.getElementById(step.id)?.scrollIntoView({ block: 'start' })}>
-          <span className={step.done ? 'complete' : ''}>{step.done ? Icons.check : index + 1}</span>{t(step.label)}
-        </button>)}
-      </nav>
-
-      <ol className="wxv-steps">
-        <li id="wx-connect-account" className={account ? 'done' : ''}>
-          <span className="wxv-step-no">{account ? Icons.check : '1'}</span>
-          <div>
-            <strong>{wizard && step === 'wizard-permission' ? t("系统授权") : wizard && step === 'wizard-account' ? t("账号扫描") : scan && scan.accounts.length > 1 ? t("选择账号") : t("当前账号")}</strong>
-            {wizard && step === 'wizard-permission' ? (
-              <>
-                <p className="wxv-muted">{t("先确认 AIMyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。")}</p>
-                <DiskAccessCard onRescan={() => void doScan()} />
-                {account && <div className="wxv-wizard-state">{t("系统授权已完成，可以继续扫描微信账号。")}</div>}
-              </>
-            ) : scan?.accounts.length ? (
-              scan.accounts.length > 1 ? (
-                <div className="wxv-accounts">
-                  {scan.accounts.map(item => (
-                    <label key={item.id} className={`wxv-account ${item.id === accountId ? 'on' : ''}`}>
-                      <input
-                        type="radio"
-                        name="wx-account"
-                        checked={item.id === accountId}
-                        disabled={accountSwitching}
-                        onChange={() => void switchAccount(item.id)}
-                      />
-                      <span>
-                        <strong>{item.id}</strong>
-                        <small>
-                          {item.db_count} {t("个库 ·")} {formatSize(item.total_bytes)} {t("· 加密")} {item.encrypted_count}
-                        </small>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <p className="wxv-muted">
-                  {accountId ? <>{t("已自动使用本机微信账号")} <span className="mono">{accountId}</span>。</> : t("尚未确认本机微信账号。")}
-                  {account
-                    ? tf(" {0} 个库 · {1} · 加密 {2}", account.db_count, formatSize(account.total_bytes), account.encrypted_count)
-                    : ''}
-                </p>
-              )
-            ) : (
-              <>
-                <p className="wxv-muted">
-                  {busy === 'scan' ? t("正在定位微信目录…") : t("没有发现账号目录，请确认微信已登录过。")}
-                </p>
-                {!wizard && busy !== 'scan' && <DiskAccessCard onRescan={() => void doScan()} />}
-              </>
-            )}
-          </div>
-        </li>
-
-        <li id="wx-connect-key" className={keyedCount > 0 ? 'done' : ''}>
-          <span className="wxv-step-no">{keyedCount > 0 ? Icons.check : '2'}</span>
-          <div>
-            <strong>{wizard && step === 'wizard-import' ? t("导入校验") : t("获取密钥")}</strong>
-            <p className="wxv-muted">
-              {t("支持账号口令（64 位十六进制，逐库 PBKDF2 派生）、内存密钥")} <code>x'&lt;hex&gt;'</code>{t("、或口令 JSON")}
-              <code>{'{"passphrase":"…"}'}</code>{t("。导入时只保留通过第 1 页 HMAC 校验的内容。")}
-            </p>
-
-            <div className={`wxv-keyguide ${noKeysYet || freshSource ? 'attention' : ''} ${platform?.platform === 'windows' ? 'windows' : ''}`}>
-              <div className="wxv-keyguide-head">
-                <div>
-                  <strong>{platform?.platform === 'windows' ? t("使用 Windows 方式获取密钥") : t("没有密钥？在本应用里直接获取")}</strong>
-                  <p className="wxv-muted">
-                    {platform?.platform === 'windows'
-                      ? t("Windows 通过读取已登录 Weixin.exe 的可读内存寻找候选密钥，并用本地数据库第 1 页 HMAC 逐库校验；找不到时可导入可信工具导出的密钥 JSON。")
-                      : savedKeySource?.exists
-                        ? tf("已检测到口令文件（{0}），可以导入并逐库校验。", formatAge(savedKeySource.age_seconds))
-                        : captureStatus?.pending
-                          ? t("正在进行密钥捕获：按下面的步骤完成即可，中途不要手动改动微信。")
-                          : t("按下面四步在本机完成捕获：环境检查 → 安全准备并启动捕获 → 登录时读取口令 → 自动恢复并逐库校验。全程不需要修改系统完整性保护，也不需要另装工具。")}
-                  </p>
-                </div>
-                <div className="wxv-keyguide-head-actions">
-                  {freshSource && <span className="wxv-keyguide-fresh">{t("新口令")}</span>}
-                  <button type="button" className="wxv-btn" onClick={() => setShowKeyGuide(value => !value)}>
-                    {showKeyGuide ? t("收起步骤") : t("查看获取步骤")}
-                  </button>
-                </div>
-              </div>
-
-{platform?.platform === 'windows' && (
-                <div className="wxv-windows-keyguide">
-                  <strong>{t("Windows 密钥扫描")}</strong>
-                  <p className="wxv-muted">{t("请先启动微信并登录目标账号。扫描只读取本机 Weixin.exe 的内存，不上传密钥；候选结果必须通过数据库 HMAC 校验才会保存。")}</p>
-                  <div className="wxv-row"><button type="button" className="wxv-btn primary" onClick={() => void scanWindowsKeys()} disabled={windowsScanBusy || !account}>{windowsScanBusy ? t("扫描并校验中…") : t("扫描微信内存并校验")}</button><span className="wxv-muted">{t("支持旧版 x'&lt;key&gt;&lt;salt&gt;' 格式；新版本可导入可信 JSON。")}</span></div>
-                  {platform.key_acquisition && <p className="wxv-keyguide-path">{t("当前策略：")}<code>{platform.key_acquisition}</code></p>}
-                </div>
-              )}
-
-              {showKeyGuide && (
-                <>
-                  {/* Environment: the reference flow refuses to touch WeChat unless every
-                      one of these checks passes, so they are shown before the first action. */}
-                  <div id="wizard-detail-key-env" className="wxv-keyguide-step">
-                    <strong>{t("1 · 环境检查")}</strong>
-                    <ul className="wxv-keyguide-checks">
-                      <li>
-                        <span className={`wxv-keyguide-check ${checkTone(captureStatus?.platform_supported)}`}>
-                          {checkMark(captureStatus?.platform_supported)}
-                        </span>
-                        {t("Apple Silicon Mac（应用内捕获目前只验证了这一架构）")}
-                      </li>
-                      <li>
-                        <span className={`wxv-keyguide-check ${checkTone(captureStatus?.lldb_available)}`}>
-                          {checkMark(captureStatus?.lldb_available)}
-                        </span>
-                        LLDB{captureStatus?.lldb_available ? t(" 已就绪") : t(" 或 Python 运行环境无法启动：请修复 Xcode Command Line Tools")}
-                      </li>
-                      <li>
-                        {/* A running transaction re-signs WeChat on purpose: showing that as a
-                            failure would tell the user to undo the step they just took. */}
-                        <span
-                          className={`wxv-keyguide-check ${checkTone(
-                            captureStatus?.wechat_official ||
-                              (Boolean(captureStatus?.pending) && Boolean(captureStatus?.wechat_ad_hoc))
-                          )}`}
-                        >
-                          {checkMark(
-                            captureStatus?.wechat_official ||
-                              (Boolean(captureStatus?.pending) && Boolean(captureStatus?.wechat_ad_hoc))
-                          )}
-                        </span>
-                        {t("微信")} {captureStatus?.wechat_version ?? t("未找到")}
-                        {captureStatus?.wechat_build ? `（${captureStatus.wechat_build}）` : ''}
-                        {captureStatus?.wechat_official
-                          ? t(" · 腾讯原签名")
-                          : captureStatus?.wechat_ad_hoc
-                            ? captureStatus?.pending
-                              ? t(" · 本次捕获的临时签名（结束后自动换回原版）")
-                              : t(" · 当前是临时签名，请先恢复原版")
-                            : t(" · 不是可验证的腾讯签名")}
-                      </li>
-                      <li>
-                        <span className={`wxv-keyguide-check ${checkTone(captureStatus?.user_can_write)}`}>
-                          {checkMark(captureStatus?.user_can_write)}
-                        </span>
-                        {t("当前用户可写入微信与「应用程序」（保证异常退出后也能恢复原版）")}
-                      </li>
-                    </ul>
-                    <p className="wxv-keyguide-path">
-                      {t("备份目录：")}<span className="mono">{captureStatus?.backup_root ?? '~'}</span>
-                    </p>
-                    {captureStatus?.message && <p className="wxv-keyguide-note">{t(captureStatus.message)}</p>}
-                  </div>
-
-                  {!captureStatus?.pending && (
-                    <div id="wizard-detail-key-capture" className="wxv-keyguide-step">
-                      <strong>{t("2 · 备份并临时重签微信")}</strong>
-                      <p className="wxv-muted">
-                        {t("程序会先用")} <code>ditto</code> {t("建立腾讯原版压缩备份和同卷写时复制保护，再把「副本」临时\n                        ad-hoc 签名，最后原子替换安装位置。部分系统使用无沙箱的深度重签，微信可能使用不同的数据目录。")}
-                      </p>
-                      <div className="wxv-keyguide-confirm">
-                        <strong>{t("开始前请确认")}</strong>
-                        <span>
-                          {t("微信会被退出并需要重新扫码登录；请先处理未保存的内容。若微信或其安装目录不可写，程序会直接停止。")}
-                        </span>
-                        <p>
-                          {t("捕获期间微信会以临时签名运行。结束、取消或失败时程序会自动换回腾讯原版并校验\n                          TeamIdentifier / 版本 / CDHash；无法证明安全时不会覆盖，而是保留恢复资产并报错。")}
-                        </p>
-                        {captureStatus?.wechat_quarantined && (
-                          <p className="wxv-keyguide-note">
-                            {t("这台 Mac 的微信仍带")} <code>com.apple.quarantine</code> {t("隔离属性：临时副本是 ad-hoc\n                            签名，腾讯的公证票据随之失效，首次启动会被 Gatekeeper 拦下。macOS 15\n                            起没有右键「打开」入口，需要在「系统设置 → 隐私与安全性 → 安全性」里点一次\n                            「仍要打开」（被拦下后 1 小时内有效）；15.1 还可能连提示都不弹。")}
-                          </p>
-                        )}
-                        <label className="wxv-keyguide-accept">
-                          <input
-                            type="checkbox"
-                            checked={captureRiskAccepted}
-                            onChange={event => setCaptureRiskAccepted(event.target.checked)}
-                          />
-                          {t("我了解上述风险，并确认这台 Mac 与微信数据归我本人所有")}
-                        </label>
-                        <div className="wxv-row">
-                          <button
-                            type="button"
-                            className="wxv-btn primary"
-                            onClick={() => void prepareCapture()}
-                            disabled={
-                              !captureRiskAccepted ||
-                              captureBusy !== null ||
-                              !captureStatus?.platform_supported ||
-                              !captureStatus?.lldb_available ||
-                              !captureStatus?.wechat_official ||
-                              !captureStatus?.user_can_write
-                            }
-                          >
-                            {captureBusy === 'prepare' ? t("正在备份并重签…") : t("备份并临时重签")}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Step 3 only becomes actionable after step 2, but its existence has to be
-                      visible beforehand — otherwise the checklist reads 1, 2, 4 and looks broken. */}
-                  {!captureStatus?.pending && (
-                    <div id="wizard-detail-key-login" className="wxv-keyguide-step">
-                      <strong>{t("3 · 打开微信、登录并完成捕获")}</strong>
-                      <p className="wxv-muted">
-                        {t("完成第 2 步后这里会出现具体操作：打开微信 → 检查启动 → 检查捕获断点（一次管理员授权）→\n                        在微信里退出账号 → 启动监测（再一次授权）→ 重新登录同一账号，程序随后自动恢复并导入。")}
-                      </p>
-                    </div>
-                  )}
-
-                  {captureStatus?.pending && (
-                    <div className="wxv-keyguide-step">
-                      <strong>{t("3 · 打开微信、登录并完成捕获")}</strong>
-                      {captureStatus.entitlement_mode === 'deep' && (
-                        <p className="wxv-keyguide-note">{t("临时微信及其内部组件已重签，并以无沙箱模式运行，可能使用不同的数据目录。结束或取消时会恢复官方微信。")}</p>
-                      )}
-                      {captureStatus.entitlement_mode === 'sanitized' && (
-                        <p className="wxv-keyguide-note">
-                          {t("本次临时副本已剔除腾讯团队的受限权限（application-identifier / team-identifier /\n                          application-groups / temporary-exception）。这台 Mac 的签名校验不允许 ad-hoc\n                          签名携带它们，保留就会在启动前被系统拒绝（launchd 153）。结束或取消时仍会换回腾讯原版。")}
-                        </p>
-                      )}
-                      <ol className="wxv-keyguide-steps">
-                        <li>
-                          <strong>{t("打开微信并完整登录")}</strong>{t("：点下面的「打开微信」；如果 macOS\n                          提示无法验证或双击没有反应，按下方说明放行一次。登录后进入要读取的聊天，让本地数据库生成。")}
-                        </li>
-                        <li>
-                          <strong>{t("检查启动")}</strong>{t("：程序确认运行的是本次临时副本后，再检查捕获断点（这一步会弹管理员\n                          授权，密码只交给 macOS）。")}
-                        </li>
-                        <li>
-                          <strong>{t("在微信里退出账号")}</strong>{t("：断点可用后再退出；不要提前退出，否则这次捕获作废。")}
-                        </li>
-                        <li>
-                          <strong>{t("启动监测并授权")}</strong>{t("：再次输入管理员密码。看到「监测已就绪」之前不要重新登录。")}
-                        </li>
-                        <li>
-                          <strong>{t("重新登录同一账号")}</strong>{t("：捕获成功后程序自动逐库校验、恢复腾讯原版微信并导入密钥。")}
-                        </li>
-                      </ol>
-
-                      {launchDiagnosis && (
-                        <div className="wxv-launch-diag">
-                          <strong>
-                            {launchDiagnosis.amfi_rejected
-                              ? t("系统在启动前拒绝了这次临时签名（AMFI）")
-                              : t("系统没有启动临时微信")}
-                          </strong>
-                          <p className="wxv-muted">{t(launchDiagnosis.hint)}</p>
-                          <ul className="wxv-launch-diag-facts">
-                            <li>
-                              {t("隔离属性")} <code>com.apple.quarantine</code>：
-                              {launchDiagnosis.quarantined ? t("存在（Gatekeeper 会评估这个副本）") : t("不存在")}
-                            </li>
-                            <li>
-                              {t("签名：")}
-                              {launchDiagnosis.resigned
-                                ? t("本次临时 ad-hoc 副本")
-                                : t("不是本次调试副本，请先检查是否在「本地数据」重新开始")}
-                            </li>
-                            <li>
-                              {t("Gatekeeper 评估：")}
-                              {launchDiagnosis.gatekeeper_accepted === null
-                                ? t("无法评估")
-                                : launchDiagnosis.gatekeeper_accepted
-                                  ? t("已通过")
-                                  : t("被拒绝")}
-                              {launchDiagnosis.gatekeeper_reason
-                                ? `（${launchDiagnosis.gatekeeper_reason}）`
-                                : ''}
-                            </li>
-                            {launchDiagnosis.amfi_rejected && (
-                              <li>{t("受限权限检查：被拒绝（launchd 153，进程在创建阶段就被杀死）")}</li>
-                            )}
-                            <li>{t("当前微信进程数：")}{launchDiagnosis.processes}</li>
-                          </ul>
-                          {launchDiagnosis.open_error && (
-                            <p className="wxv-launch-diag-error">{t("open 返回：")}{launchDiagnosis.open_error}</p>
-                          )}
-                          {!launchDiagnosis.amfi_rejected && (
-                            <ol className="wxv-keyguide-steps">
-                              <li>
-                                {t("在 Finder 里双击")} <code>/Applications/WeChat.app</code>
-                                {t("。如果弹出「无法打开 / 无法验证」，点「完成」，不要点「移到废纸篓」。")}
-                              </li>
-                              <li>
-                                {t("1 小时内打开")} <strong>{t("系统设置 → 隐私与安全性 → 安全性")}</strong>
-                                {t("，看到「“WeChat” 已被阻止…」就点「仍要打开」→ 输入管理员密码 → 再点「打开」。\n                                macOS 15 起没有右键「打开」入口；15.1 可能完全不弹窗，只能走这里。")}
-                              </li>
-                              <li>
-                                {t("放行后微信会正常启动；扫码登录完成后回到这里点「我已登录，检查启动」。")}
-                              </li>
-                              <li>
-                                {t("如果系统设置里根本没有「仍要打开」，说明不是 Gatekeeper：先用「控制台」查看微信是否启动即退出，\n                                或直接点「取消并恢复微信」结束本次捕获，稍后再排查崩溃原因。")}
-                              </li>
-                            </ol>
-                          )}
-                          <div className="wxv-keyguide-actions">
-                            {!launchDiagnosis.amfi_rejected && (
-                              <>
-                                <button
-                                  type="button"
-                                  className="wxv-btn primary"
-                                  onClick={() => void openPrivacySecuritySettings()}
-                                >
-                                  {t("打开隐私与安全性设置")}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="wxv-btn"
-                                  onClick={() => void openCaptureWeChat()}
-                                  disabled={captureBusy !== null}
-                                >
-                                  {captureBusy === 'open' ? t("正在打开…") : t("再打开一次微信")}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="wxv-btn"
-                                  onClick={() => void confirmCaptureLaunch()}
-                                  disabled={captureBusy !== null}
-                                >
-                                  {captureBusy === 'confirm' ? t("正在检查…") : t("重新检查启动")}
-                                </button>
-                              </>
-                            )}
-                            <button
-                              type="button"
-                              className={`wxv-btn ${launchDiagnosis.amfi_rejected ? 'primary' : ''}`}
-                              onClick={() => void restoreWeChat()}
-                              disabled={captureBusy !== null}
-                            >
-                              {captureBusy === 'restore' ? t("正在恢复…") : t("取消并恢复微信")}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="wxv-keyguide-actions">
-                        {(captureStatus.stage === 'awaiting_manual_launch' ||
-                          captureStatus.stage === 'resigned' ||
-                          captureStatus.stage === 'debug_prepared' ||
-                          captureStatus.stage === 'backup_verified') && (
-                          <>
-                            <button
-                              type="button"
-                              className="wxv-btn primary"
-                              onClick={() => void openCaptureWeChat()}
-                              disabled={captureBusy !== null}
-                            >
-                              {captureBusy === 'open' ? t("正在打开…") : t("打开微信")}
-                            </button>
-                            <button
-                              type="button"
-                              className="wxv-btn"
-                              onClick={() => void confirmCaptureLaunch()}
-                              disabled={captureBusy !== null}
-                            >
-                              {captureBusy === 'confirm' ? t("正在检查…") : t("我已登录，检查启动")}
-                            </button>
-                          </>
-                        )}
-                        {captureStatus.stage === 'launched' && (
-                          <button
-                            type="button"
-                            className="wxv-btn primary"
-                            onClick={() => void runCapturePreflight()}
-                            disabled={captureBusy !== null}
-                          >
-                            {captureBusy === 'preflight' ? t("正在检查断点…") : t("检查捕获断点（需管理员授权）")}
-                          </button>
-                        )}
-                        {captureStatus.stage === 'preflight_passed' && (
-                          <button
-                            type="button"
-                            className="wxv-btn primary"
-                            onClick={() => void startCapture()}
-                            disabled={captureBusy !== null}
-                          >
-                            {captureBusy === 'start' ? t("监测中，等待登录…") : t("我已退出账号，启动监测（需管理员授权）")}
-                          </button>
-                        )}
-                        {captureStatus.stage === 'capturing' && (
-                          <>
-                            {captureStatus.resume_available ? (
-                              // The monitor finished after an app restart: the result is on disk
-                              // and only needs validating + restoring, so no second login.
-                              <button
-                                type="button"
-                                className="wxv-btn primary"
-                                onClick={() => void startCapture()}
-                                disabled={captureBusy !== null}
-                              >
-                                {captureBusy === 'start'
-                                  ? t("正在校验并恢复…")
-                                  : t("校验并恢复已捕获的密钥")}
-                              </button>
-                            ) : (
-                              <span className="wxv-keyguide-progress">
-                                {captureStatus.capture_phase === 'waiting_authorization'
-                                  ? t("等待管理员授权…")
-                                  : captureStatus.capture_phase === 'monitoring'
-                                    ? t("监测已就绪：现在重新登录同一账号")
-                                    : captureStatus.capture_phase === 'captured'
-                                      ? t("已捕获密钥，正在结束调试会话，随后校验并恢复微信")
-                                      : captureStatus.capture_phase === 'validating'
-                                        ? t("正在逐库校验…")
-                                        : t("正在恢复腾讯原版微信…")}
-                              </span>
-                            )}
-                          </>
-                        )}
-                        <button
-                          type="button"
-                          className="wxv-btn danger"
-                          onClick={() => void restoreWeChat()}
-                          disabled={captureBusy !== null}
-                          title={captureBusy === 'start' ? t("监测进行中：请等它超时或完成后再恢复") : undefined}
-                        >
-                          {captureBusy === 'restore' ? t("正在恢复…") : t("取消并恢复官方微信")}
-                        </button>
-                      </div>
-
-                      {captureStatus.prepared_process_exited && captureStatus.stage !== 'capturing' && (
-                        <p className="wxv-keyguide-warn">
-                          {t("临时微信进程已退出。请点「取消并恢复官方微信」换回腾讯原版后重新开始，不要自行改签名。")}
-                        </p>
-                      )}
-                      {captureStatus.recovery_error_code && (
-                        <p className="wxv-keyguide-warn">
-                          {t("恢复被安全策略拦下（")}{captureStatus.recovery_error_code}{t("）。程序保留了应用、备份和恢复记录；\n                          请先点「取消并恢复官方微信」，按提示处理后再重新开始。")}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  <div id="wizard-detail-key-import" className="wxv-keyguide-step">
-                    <strong>{wizard && step === 'wizard-import' ? t("导入校验") : t("4 · 导入并校验")}</strong>
-                    <p className="wxv-muted">
-                      {captureOutcome?.matched
-                        ? t("本次捕获的口令已通过消息库与会话库校验，并已逐库导入保存。")
-                        : savedKeySource?.exists
-                          ? t("已检测到口令文件：点「导入已提取的口令」逐库用第 1 页 HMAC 校验。口令不会显示在界面、不会写日志、不会上传。")
-                          : t("捕获成功后口令会写入本机文件并自动导入；也可以手动粘贴或选择文件导入。")}
-                    </p>
-                    <div className="wxv-keyguide-actions">
-                      <button
-                        type="button"
-                        className="wxv-btn"
-                        onClick={() => void importSavedKey()}
-                        disabled={!savedKeySource?.exists || busy === 'import'}
-                      >
-                        {busy === 'import' ? t("校验中…") : t("导入已提取的口令")}
-                      </button>
-                      <button
-                        type="button"
-                        className="wxv-btn"
-                        onClick={() => void refreshSavedKeySource()}
-                      >
-                        {t("重新检测文件")}
-                      </button>
-                      {savedKeySource?.exists && !savedKeySource.secure && (
-                        <button
-                          type="button"
-                          className="wxv-btn"
-                          onClick={() => void fixKeyPermissions()}
-                          disabled={fixingPermissions}
-                        >
-                          {fixingPermissions ? t("正在修改…") : t("修复口令文件权限")}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="wxv-btn"
-                        onClick={() => {
-                          setShowKeyGuide(false);
-                          void doScan(accountId);
-                        }}
-                        disabled={busy === 'scan'}
-                      >
-                        {busy === 'scan' ? t("扫描中…") : t("重新扫描账号")}
-                      </button>
-                      {keyedCount > 0 && (
-                        <button
-                          type="button"
-                          className="wxv-btn danger"
-                          onClick={() => setClearConfirm(true)}
-                          disabled={busy === 'import' || clearConfirm}
-                        >
-                          {t("清除本账号密钥")}
-                        </button>
-                      )}
-                      {!savedKeySource?.exists && (
-                        <span className="wxv-keyguide-missing">{t("尚未找到口令文件，导入按钮保持禁用。")}</span>
-                      )}
-                    </div>
-
-                    {clearConfirm && (
-                      <div className="wxv-keyguide-danger">
-                        <p>
-                          {t("确定清除账号")} <span className="mono">{accountId}</span> {t("已保存的")} {keyedCount}{' '}
-                          {t("个密钥？这会同时删除该账号已解密的本地副本，之后必须重新捕获或导入口令才能查看。\n                          微信原始数据库不受影响。")}
-                        </p>
-                        <div className="wxv-row">
-                          <button
-                            type="button"
-                            className="wxv-btn danger"
-                            onClick={() => void clearKeys()}
-                            disabled={busy === 'import'}
-                          >
-                            {busy === 'import' ? t("正在清除…") : t("确认清除密钥与解密副本")}
-                          </button>
-                          <button
-                            type="button"
-                            className="wxv-btn"
-                            onClick={() => setClearConfirm(false)}
-                            disabled={busy === 'import'}
-                          >
-                            {t("取消")}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {freshSource && (
-                      <p className="wxv-keyguide-fresh-note">
-                        {t("检测到新写入的口令，导入会替换当前账号里已失效的密钥。")}
-                      </p>
-                    )}
-
-                    {importedForOther && !importedForCurrent && (
-                      <p className="wxv-keyguide-partial">
-                        {t("该口令解锁的是账号")} <strong>{importedForOther.account}</strong>（{importedForOther.matched} {t("个新密钥），\n                        当前选择的是")} {account?.id}。
-                        <button
-                          type="button"
-                          className="wxv-link"
-                          disabled={accountSwitching}
-                          onClick={() => void switchAccount(importedForOther.account)}
-                        >
-                          {t("切换到")} {importedForOther.account}
-                        </button>
-                      </p>
-                    )}
-
-                    <p className="wxv-keyguide-path">
-                      {t("口令文件：")}<span className="mono">{savedKeySource?.path ?? '~/.wcdb-key-tool/wechat-passphrase.json'}</span>
-                      {savedKeySource?.exists
-                        ? tf("（{0}，权限 {1}）", formatAge(savedKeySource.age_seconds), savedKeySource.mode ?? t("未知"))
-                        : t("（尚未生成）")}
-                    </p>
-                    {savedKeySource?.exists && !savedKeySource.secure && (
-                      <p className="wxv-keyguide-warn">
-                        {t("口令文件权限是")} {savedKeySource.mode ?? t("未知")}{t("，其他本机用户可能读取它。点「修复口令文件权限」改成 600。")}
-                      </p>
-                    )}
-                    <p className="wxv-keyguide-path">
-                      {t("需要新增微信号时：在微信登录新账号 → 点「重新扫描账号」→ 从第 1 步重新捕获一次。\n                      每个账号单独捕获、单独校验，口令不通用。")}
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Capture already writes the passphrase file and imports it automatically, so this
-                box is only for keys obtained elsewhere — keep it available, not mandatory. */}
-            <details className="wxv-keyguide-manual">
-              <summary>{t("手动导入（可选）：粘贴或选择密钥文件")}</summary>
-              <textarea
-                className="wxv-textarea"
-                rows={3}
-                value={keyText}
-                onChange={e => setKeyText(e.target.value)}
-                placeholder={t("粘贴 64 位十六进制口令，或 x'<key><salt>'，或口令 JSON")}
-                spellCheck={false}
-              />
-              <div className="wxv-row">
-                <label className="wxv-file">
-                  {t("选择文件")}
-                  <input
-                    type="file"
-                    accept=".json,application/json,text/plain"
-                    onChange={e => void importKeys(e.target.files?.[0])}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="wxv-btn"
-                  onClick={() => void importKeys()}
-                  disabled={busy === 'import'}
-                >
-                  {busy === 'import' ? t("校验中…") : t("导入并校验")}
-                </button>
-              </div>
-            </details>
-            <div className="wxv-row">
-              <span className="wxv-key-state">
-                {encryptedDbs.length ? tf("已就绪 {0}/{1} 个加密库", keyedCount, encryptedDbs.length) : t("等待发现账号")}
-              </span>
-            </div>
-            {keyedCount > 0 && keyVerifiedSecs && (
-              <p className="wxv-keyguide-path">
-                {t("密钥最近校验：")}{formatKeyDate(keyVerifiedSecs)}（{keyAgeDays} {t("天前）。微信更新或重新登录后口令会轮换，需要重新提取并导入。")}
-              </p>
-            )}
-            {accountMissingKeys && keyedCount > 0 && (
-              <p className="wxv-keyguide-partial">
-                {t("还有")} {encryptedDbs.length - keyedCount} {t("个加密库没有匹配到密钥，通常是微信从未打开过的库，不影响已就绪的聊天记录。")}
-              </p>
-            )}
-          </div>
-        </li>
-
-        <li id="wx-connect-decrypt" className={ready ? 'done' : ''}>
-          <span className="wxv-step-no">{ready ? Icons.check : '3'}</span>
-          <div>
-            <strong>{wizard && step === 'wx-connect-decrypt' ? t("解密记录") : t("解密并打开")}</strong>
-            <p className="wxv-muted">
-              {t("解密会逐页校验，任一页失败即整体失败，不会产出半成品。已解密过的库直接复用缓存。")}
-            </p>
-            <div className="wxv-row">
-              <button
-                type="button"
-                className="wxv-btn primary"
-                onClick={() => void decrypt()}
-                disabled={!account || accountSwitching || decrypting || keyedCount === 0}
-              >
-                {decrypting ? t("解密中…") : t("解密当前账号")}
-              </button>
-              <label className="wxv-check">
-                <input type="checkbox" checked={onlyChat} onChange={e => setOnlyChat(e.target.checked)} />
-                {t("只处理聊天相关库")}
-              </label>
-              <label className="wxv-check">
-                <input type="checkbox" checked={applyWal} onChange={e => setApplyWal(e.target.checked)} />
-                {t("尝试回填 WAL")}
-              </label>
-              <button type="button" className="wxv-btn" disabled={decrypting} onClick={() => void clearCache()}>
-                {t("清理解密缓存")}
-              </button>
-            </div>
-            {wizard && notice && <div className="wxv-wizard-state">{notice}</div>}
-            <p className="wxv-muted">
-              {t("解密副本保存在应用数据目录；清理后会回到未解密状态，聊天记录页在重新解密前不显示内容。")}
-            </p>
-            {!!outcomes.length && (
-              <>
-                <button type="button" className="wxv-link" onClick={() => setShowLog(v => !v)}>
-                  {showLog ? t("收起") : t("查看")}{t("解密详情（")}{outcomes.length} {t("个库）")}
-                </button>
-                {showLog && (
-                  <table className="wxv-table">
-                    <thead>
-                      <tr>
-                        <th>{t("数据库")}</th>
-                        <th>{t("状态")}</th>
-                        <th>{t("页数")}</th>
-                        <th>{t("说明")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {outcomes.map(outcome => (
-                        <tr key={`${outcome.account}-${outcome.rel}`}>
-                          <td className="mono">{outcome.rel}</td>
-                          <td className={`wxv-status ${outcome.status}`}>{t(outcome.status)}</td>
-                          <td>{outcome.pages || '—'}</td>
-                          <td className="wxv-note">
-                            {outcome.error ?? outcome.wal?.status ?? (outcome.status === 'cached' ? t("命中缓存") : '')}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </>
-            )}
-          </div>
-        </li>
-      </ol>
-
-      {wizard && step !== 'wizard-method' && (
-        <div className="wizard-detail-actions">
-          <button type="button" className="wxv-btn" onClick={onWizardBack}>{t("上一步")}</button>
-          <button type="button" className="wxv-btn primary" onClick={onWizardNext} disabled={!wizardCanNext}>
-            {step === 'wizard-permission' ? t("下一步：账号扫描") : step === 'wizard-account' ? t("下一步：获取密钥") : step === 'wizard-key' ? t("下一步：导入校验") : step === 'wizard-import' ? t("下一步：解密记录") : t("下一步：完成")}
-          </button>
-        </div>
-      )}
-
-      <details className="wxv-warn">
-        <summary>{t("密钥获取与安全说明")}</summary>
-        <p>
-          {t("官方微信启用了 Hardened Runtime 和沙盒，直接附加调试器可能被系统拒绝。\n          应用内获取流程会先备份官方微信，再经你确认后使用临时签名捕获，完成或取消时恢复并校验原版。")}
-        </p>
-        <p>
-          <strong>{t("不要自行重签微信。")}</strong>{t("签名或权限处理不当可能导致微信无法启动。\n          如不希望使用应用内捕获，也可以手动导入可信来源的密钥文件。")}
-        </p>
-        {env && (
-          <p className="wxv-muted mono">
-            {t("密钥文件：")}{env.keys_path}
-            <br />
-            {t("解密缓存：")}{env.cache_root}
-          </p>
-        )}
-      </details>
-    </div>
-  );
-  };
-
-  const renderSetupChecklist = () => <WeChatSetupChecklist
-    accountId={accountId} accounts={scan?.accounts ?? []} scanLoaded={scan !== null}
-    busy={busy} switching={accountSwitching} keyedCount={keyedCount} keyStatusLoaded={keyStatus !== null}
-    savedKey={savedKeySource} freshKey={freshSource} decrypted={ready || (
-      outcomes.some(item => item.rel === 'session/session.db' && (item.status === 'ok' || item.status === 'cached')) &&
-      outcomes.some(item => /^message\/message_\d+\.db$/.test(item.rel) && (item.status === 'ok' || item.status === 'cached'))
-    )}
-    capture={captureStatus} captureChecking={captureStatusChecking} captureError={captureStatusError} captureBusy={captureBusy} windowsBusy={windowsScanBusy}
-    install={wizardInstall} onInstallRecheck={() => onWizardInstallRecheck?.()}
-    launchDiagnosis={launchDiagnosis} error={error} recoveryError={recoveryError} recoveryNotice={recoveryNotice} manual={wizardManual} permissionPhase={wizardStep === 'wizard-permission'} finishing={wizardFinishing}
-    onPermissionNext={() => onWizardStep?.('wizard-connect')} onFixPermissions={fixKeyPermissions}
-    onSystemBack={() => onWizardStep?.('wizard-permission')}
-    onScan={() => doScan(accountId)} onChooseAccount={id => void switchAccount(id)}
-    onCaptureRefresh={refreshCaptureStatus} onPrepare={prepareCapture}
-    onOpen={openCaptureWeChat} onConfirmLogin={confirmCaptureLaunch}
-    onPreflight={runCapturePreflight} onCapture={startCapture}
-    onCheckStep={(action: WeChatAction, context: StepContext) => checkWeChatStep(action, {
-      ...context, accountId, transactionId: captureStatus?.transaction_id ?? null,
-      manual: wizardManual, reuseConnection: keyedCount > 0 || Boolean(savedKeySource?.exists),
-      capture: async () => { const status = await refreshCaptureStatus(); if (!status) throw new Error('连接状态检查未完成'); return status; },
-      accountExists: async () => { const result = await invoke<ScanResult>('wechat_scan'); setScan(result); return result.accounts.some(item => item.id === accountId); },
-      keys: async () => { const result = await invoke<KeyStatus>('wechat_key_status'); setKeyStatus(result); return result.keys.filter(key => key.account === accountId).length; },
-      source: async () => { const result = await refreshSavedKeySource(); if (!result) throw new Error('连接文件检查未完成'); return result; },
-      chats: async () => { await invoke<SessionItem[]>('chat_sessions', { accountId }); },
-    })}
-    onRestartConnection={async () => { setError(''); setLaunchDiagnosis(null); await refreshCaptureStatus(); }}
-    onCheckConnectionResult={async () => { await Promise.all([refreshCaptureStatus(), refreshKeys(), refreshSavedKeySource()]); }}
-    onRestore={restoreWeChat} onAcceptOfficial={acceptOfficialWeChat} onOpenSecurity={openPrivacySecuritySettings}
-    onWindowsScan={scanWindowsKeys} onImportSaved={importSavedKey}
-    onImport={file => importKeys(file)} onDecrypt={decrypt}
-    onComplete={() => onWizardStep?.('wizard-sessions')} onBack={() => onWizardStep?.(wizardStep === 'wizard-permission' ? 'wizard-method' : 'wizard-permission')}
-  />;
 
   /* ── chat pane ───────────────────────────────────────────────────────────── */
 
@@ -3431,6 +2159,14 @@ const checkMark = (value: boolean | undefined) =>
     </aside>
   );
 
+  const checkAccountExists = async () => { const result = await invoke<ScanResult>('wechat_scan'); setScan(result); return result.accounts.some(item => item.id === accountId); };
+  const accountSelection = { accountId, scan, accountSwitching, busy, doScan, switchAccount };
+  const connectionWizard = {
+    enabled: wizard, step: wizardStep, manual: wizardManual, finishing: wizardFinishing,
+    install: wizardInstall, onInstallRecheck: onWizardInstallRecheck, onStep: onWizardStep,
+    onBack: onWizardBack, onNext: onWizardNext,
+  };
+
   /* ── shell ───────────────────────────────────────────────────────────────── */
 
   return (
@@ -3519,13 +2255,13 @@ const checkMark = (value: boolean | undefined) =>
 
       <section className="wxv-main">
         {mode === 'settings' ? (
-          wizard && wizardStep !== 'wizard-method' ? renderSetupChecklist() : renderUnlock()
+          wizard && wizardStep !== 'wizard-method' ? <WeChatConnectionWizard connection={connection} selection={accountSelection} wizard={connectionWizard} ready={ready} error={error} checkAccountExists={checkAccountExists} /> : <WeChatConnectionPanel connection={connection} selection={accountSelection} wizard={connectionWizard} mode={mode} ready={ready} notice={notice} onOpenChat={onOpenChat} />
         ) : ready ? (
           renderChat()
         ) : !account && busy !== 'scan' ? (
           // Nothing to read yet. Show the unlock panel instead of an endless "正在准备…" —
           // that panel is where the Full Disk Access instructions live.
-          renderUnlock()
+          <WeChatConnectionPanel connection={connection} selection={accountSelection} wizard={connectionWizard} mode={mode} ready={ready} notice={notice} onOpenChat={onOpenChat} />
         ) : needsWhitelist ? (
           renderWhitelistRequired()
         ) : locked ? (
