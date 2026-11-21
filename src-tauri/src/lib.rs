@@ -9273,6 +9273,22 @@ mod key_flow_tests {
     }
 
     #[test]
+    fn duplicate_server_ids_still_stop_upload() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("session")).unwrap();
+        std::fs::create_dir_all(dir.path().join("message")).unwrap();
+        let sessions = rusqlite::Connection::open(dir.path().join("session/session.db")).unwrap();
+        sessions.execute_batch("CREATE TABLE Session (username TEXT, display_name TEXT); INSERT INTO Session VALUES ('person','test');").unwrap();
+        let table = format!("Msg_{}", hex::encode(md5::Md5::digest(b"person")));
+        for (shard, timestamp) in [(0, 100), (1, 200)] {
+            let db = rusqlite::Connection::open(dir.path().join(format!("message/message_{shard}.db"))).unwrap();
+            db.execute_batch(&format!("CREATE TABLE {table} (local_id INTEGER, server_id INTEGER, create_time INTEGER, message_content TEXT); INSERT INTO {table} VALUES (1,101,{timestamp},'test');")).unwrap();
+        }
+        let result = prepare_upload(dir.path(), "account", "7", "https://example.test", &["person".into()], None, None, &BTreeMap::new());
+        assert!(matches!(result, Err(error) if error.contains("服务端消息编号存在重复")));
+    }
+
+    #[test]
     fn ambiguous_legacy_message_is_rejected_instead_of_misidentified() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("session")).unwrap();
