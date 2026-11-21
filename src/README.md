@@ -19,6 +19,8 @@ src/
       RemoteChatFallback.tsx  # Missing-local-record fallback
       chatPresentation.ts     # Chat presentation helpers
       *.css                   # Chat workspace and platform styles
+      local-reader/
+        presentation.tsx      # Pure date/size/avatar formatting and search highlighting
       summary/
         ConversationSummary.tsx
         summaryInput.ts       # Input admission and bounded message reads
@@ -54,7 +56,7 @@ Subsequent batches can group connectors/wizards, tasks/backup, analysis workspac
 and settings. The large native `src-tauri/src/lib.rs` requires a separate Rust refactor;
 frontend organization does not require changes to native commands or server contracts.
 
-The first batch establishes the chat directory and extracts only its event presentation.
-Event loading, request cancellation, retry timing, conversation ownership, and task
-scheduling remain in their existing modules. Larger stateful modules are later batches,
-not part of this change.
+Extracted presentation is limited to the chat event pane and the local reader's pure
+formatting/highlighting functions. Event loading, request cancellation, retry timing,
+conversation ownership, media queues, and task scheduling remain in their existing
+modules. Review larger stateful extractions as separate batches.
