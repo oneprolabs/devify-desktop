@@ -54,7 +54,7 @@ Thumbs.db
 # Local design review artifacts
 .impeccable/
 docs/
-mcp/
+/mcp/
 
 # Local design reference (not part of the product)
 /protype.html

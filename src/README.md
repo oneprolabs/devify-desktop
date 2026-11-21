@@ -99,6 +99,11 @@ grouped under `src-tauri/src/commands/`; that directory's README describes owner
 and IPC compatibility. When a private production owner moves, register its tests
 under that owner rather than widening helper visibility.
 
+Local Agent adapters and summary history are separate command owners. The native
+MCP desktop lifecycle lives in `src-tauri/src/mcp/runtime.rs`, alongside the existing
+listener module. Startup and login/settings callbacks share its single managed
+state; command extraction must not create additional service tasks or state locks.
+
 ## Safe migration and extraction
 
 1. Change one bounded set of file locations and update production, preview, and test paths.
