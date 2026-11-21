@@ -1,28 +1,21 @@
 import { t, tf } from '../../../shared/i18n/locale';
 import { Icons } from '../../../shared/ui/icons';
 import type { WeChatConnection } from './useWeChatConnection';
-import type { WeChatAccountSelection, WeChatWizard } from './connectionTypes';
+import type { WeChatAccountSelection } from './connectionTypes';
 import { DiskAccessCard } from '../Permission';
 import { formatSize } from '../../../shared/content/localDataFormat';
 
-export function WeChatAccountStep({ connection, selection, wizard: wizardOptions }: {
-  connection: WeChatConnection; selection: WeChatAccountSelection; wizard: WeChatWizard;
+export function WeChatAccountStep({ connection, selection }: {
+  connection: WeChatConnection; selection: WeChatAccountSelection;
 }) {
   const { account } = connection;
   const { accountId, scan, accountSwitching, busy, doScan, switchAccount } = selection;
-  const { enabled: wizard, step } = wizardOptions;
   return (
     <li id="wx-connect-account" className={account ? 'done' : ''}>
       <span className="wxv-step-no">{account ? Icons.check : '1'}</span>
       <div>
-        <strong>{wizard && step === 'wizard-permission' ? t("系统授权") : wizard && step === 'wizard-account' ? t("账号扫描") : scan && scan.accounts.length > 1 ? t("选择账号") : t("当前账号")}</strong>
-        {wizard && step === 'wizard-permission' ? (
-          <>
-            <p className="wxv-muted">{t("先确认 AIMyChats 可以读取微信本机数据；授权完成后进入下一步扫描账号。")}</p>
-            <DiskAccessCard onRescan={() => void doScan()} />
-            {account && <div className="wxv-wizard-state">{t("系统授权已完成，可以继续扫描微信账号。")}</div>}
-          </>
-        ) : scan?.accounts.length ? (
+        <strong>{scan && scan.accounts.length > 1 ? t("选择账号") : t("当前账号")}</strong>
+        {scan?.accounts.length ? (
           scan.accounts.length > 1 ? (
             <div className="wxv-accounts">
               {scan.accounts.map(item => (
@@ -56,7 +49,7 @@ export function WeChatAccountStep({ connection, selection, wizard: wizardOptions
             <p className="wxv-muted">
               {busy === 'scan' ? t("正在定位微信目录…") : t("没有发现账号目录，请确认微信已登录过。")}
             </p>
-            {!wizard && busy !== 'scan' && <DiskAccessCard onRescan={() => void doScan()} />}
+            {busy !== 'scan' && <DiskAccessCard onRescan={() => void doScan()} />}
           </>
         )}
       </div>

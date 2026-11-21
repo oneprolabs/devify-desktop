@@ -139,8 +139,6 @@ export default function WeChatLocal({
   wizardInstall = { ready: null, message: '' },
   onWizardInstallRecheck,
   onWizardStep,
-  onWizardBack,
-  onWizardNext,
   focusConversation,
   focusMessageId,
   searchKeyword = '',
@@ -161,8 +159,6 @@ export default function WeChatLocal({
   wizardInstall?: { ready: boolean | null; message: string };
   onWizardInstallRecheck?: () => void;
   onWizardStep?: (step: string) => void;
-  onWizardBack?: () => void;
-  onWizardNext?: () => void;
   focusConversation?: string | null;
   focusMessageId?: string | number | null;
   /** Keyword typed in the embedding page's header. Highlights matches in the open chat. */
@@ -2164,7 +2160,6 @@ export default function WeChatLocal({
   const connectionWizard = {
     enabled: wizard, step: wizardStep, manual: wizardManual, finishing: wizardFinishing,
     install: wizardInstall, onInstallRecheck: onWizardInstallRecheck, onStep: onWizardStep,
-    onBack: onWizardBack, onNext: onWizardNext,
   };
 
   /* ── shell ───────────────────────────────────────────────────────────────── */
@@ -2255,13 +2250,13 @@ export default function WeChatLocal({
 
       <section className="wxv-main">
         {mode === 'settings' ? (
-          wizard && wizardStep !== 'wizard-method' ? <WeChatConnectionWizard connection={connection} selection={accountSelection} wizard={connectionWizard} ready={ready} error={error} checkAccountExists={checkAccountExists} /> : <WeChatConnectionPanel connection={connection} selection={accountSelection} wizard={connectionWizard} mode={mode} ready={ready} notice={notice} onOpenChat={onOpenChat} />
+          wizard && wizardStep !== 'wizard-method' ? <WeChatConnectionWizard connection={connection} selection={accountSelection} wizard={connectionWizard} ready={ready} error={error} checkAccountExists={checkAccountExists} /> : <WeChatConnectionPanel connection={connection} selection={accountSelection} mode={mode} ready={ready} onOpenChat={onOpenChat} />
         ) : ready ? (
           renderChat()
         ) : !account && busy !== 'scan' ? (
           // Nothing to read yet. Show the unlock panel instead of an endless "正在准备…" —
           // that panel is where the Full Disk Access instructions live.
-          <WeChatConnectionPanel connection={connection} selection={accountSelection} wizard={connectionWizard} mode={mode} ready={ready} notice={notice} onOpenChat={onOpenChat} />
+          <WeChatConnectionPanel connection={connection} selection={accountSelection} mode={mode} ready={ready} onOpenChat={onOpenChat} />
         ) : needsWhitelist ? (
           renderWhitelistRequired()
         ) : locked ? (

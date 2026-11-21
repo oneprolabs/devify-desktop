@@ -3,43 +3,37 @@ import { WeChatKeyImport } from './WeChatKeyImport';
 import { t, tf } from '../../../shared/i18n/locale';
 import { Icons } from '../../../shared/ui/icons';
 import type { WeChatConnection } from './useWeChatConnection';
-import type { WeChatAccountSelection, WeChatWizard } from './connectionTypes';
+import type { WeChatAccountSelection } from './connectionTypes';
 import { formatAge, formatKeyDate } from '../../../shared/content/localDataFormat';
-import type { PlatformCapabilities } from './nativeTypes';
 
-export function WeChatKeyStep({ connection, selection, wizard: wizardOptions }: {
-  connection: WeChatConnection; selection: WeChatAccountSelection; wizard: WeChatWizard;
+export function WeChatKeyStep({ connection, selection }: {
+  connection: WeChatConnection; selection: WeChatAccountSelection;
 }) {
-  const { account } = connection;
   const { busy } = selection;
   const { keyedCount } = connection.keys;
-  const { enabled: wizard, step } = wizardOptions;
-  const { savedKeySource, noKeysYet, freshSource, showKeyGuide, setShowKeyGuide, scanWindowsKeys, windowsScanBusy, keyText, setKeyText, importKeys, encryptedDbs, keyVerifiedSecs, keyAgeDays, accountMissingKeys } = connection.keys;
+  const { savedKeySource, noKeysYet, freshSource, showKeyGuide, setShowKeyGuide, keyText, setKeyText, importKeys, encryptedDbs, keyVerifiedSecs, keyAgeDays, accountMissingKeys } = connection.keys;
   const { captureStatus } = connection.capture;
-  const platform: PlatformCapabilities | null = null as PlatformCapabilities | null;
 
   return (
     <li id="wx-connect-key" className={keyedCount > 0 ? 'done' : ''}>
       <span className="wxv-step-no">{keyedCount > 0 ? Icons.check : '2'}</span>
       <div>
-        <strong>{wizard && step === 'wizard-import' ? t("导入校验") : t("获取密钥")}</strong>
+        <strong>{t("获取密钥")}</strong>
         <p className="wxv-muted">
           {t("支持账号口令（64 位十六进制，逐库 PBKDF2 派生）、内存密钥")} <code>x'&lt;hex&gt;'</code>{t("、或口令 JSON")}
           <code>{'{"passphrase":"…"}'}</code>{t("。导入时只保留通过第 1 页 HMAC 校验的内容。")}
         </p>
 
-        <div className={`wxv-keyguide ${noKeysYet || freshSource ? 'attention' : ''} ${platform?.platform === 'windows' ? 'windows' : ''}`}>
+        <div className={`wxv-keyguide ${noKeysYet || freshSource ? 'attention' : ''}`}>
           <div className="wxv-keyguide-head">
             <div>
-              <strong>{platform?.platform === 'windows' ? t("使用 Windows 方式获取密钥") : t("没有密钥？在本应用里直接获取")}</strong>
+              <strong>{t("没有密钥？在本应用里直接获取")}</strong>
               <p className="wxv-muted">
-                {platform?.platform === 'windows'
-                  ? t("Windows 通过读取已登录 Weixin.exe 的可读内存寻找候选密钥，并用本地数据库第 1 页 HMAC 逐库校验；找不到时可导入可信工具导出的密钥 JSON。")
-                  : savedKeySource?.exists
-                    ? tf("已检测到口令文件（{0}），可以导入并逐库校验。", formatAge(savedKeySource.age_seconds))
-                    : captureStatus?.pending
-                      ? t("正在进行密钥捕获：按下面的步骤完成即可，中途不要手动改动微信。")
-                      : t("按下面四步在本机完成捕获：环境检查 → 安全准备并启动捕获 → 登录时读取口令 → 自动恢复并逐库校验。全程不需要修改系统完整性保护，也不需要另装工具。")}
+                {savedKeySource?.exists
+                  ? tf("已检测到口令文件（{0}），可以导入并逐库校验。", formatAge(savedKeySource.age_seconds))
+                  : captureStatus?.pending
+                    ? t("正在进行密钥捕获：按下面的步骤完成即可，中途不要手动改动微信。")
+                    : t("按下面四步在本机完成捕获：环境检查 → 安全准备并启动捕获 → 登录时读取口令 → 自动恢复并逐库校验。全程不需要修改系统完整性保护，也不需要另装工具。")}
               </p>
             </div>
             <div className="wxv-keyguide-head-actions">
@@ -50,20 +44,11 @@ export function WeChatKeyStep({ connection, selection, wizard: wizardOptions }: 
             </div>
           </div>
 
-          {platform?.platform === 'windows' && (
-            <div className="wxv-windows-keyguide">
-              <strong>{t("Windows 密钥扫描")}</strong>
-              <p className="wxv-muted">{t("请先启动微信并登录目标账号。扫描只读取本机 Weixin.exe 的内存，不上传密钥；候选结果必须通过数据库 HMAC 校验才会保存。")}</p>
-              <div className="wxv-row"><button type="button" className="wxv-btn primary" onClick={() => void scanWindowsKeys()} disabled={windowsScanBusy || !account}>{windowsScanBusy ? t("扫描并校验中…") : t("扫描微信内存并校验")}</button><span className="wxv-muted">{t("支持旧版 x'&lt;key&gt;&lt;salt&gt;' 格式；新版本可导入可信 JSON。")}</span></div>
-              {platform.key_acquisition && <p className="wxv-keyguide-path">{t("当前策略：")}<code>{platform.key_acquisition}</code></p>}
-            </div>
-          )}
-
           {showKeyGuide && (
             <>
               <WeChatCaptureGuide capture={connection.capture} />
 
-              <WeChatKeyImport connection={connection} selection={selection} wizard={wizardOptions} />
+              <WeChatKeyImport connection={connection} selection={selection} />
             </>
           )}
         </div>

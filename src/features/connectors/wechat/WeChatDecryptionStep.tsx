@@ -1,22 +1,21 @@
 import { t } from '../../../shared/i18n/locale';
 import { Icons } from '../../../shared/ui/icons';
 import type { WeChatConnection } from './useWeChatConnection';
-import type { WeChatAccountSelection, WeChatWizard } from './connectionTypes';
+import type { WeChatAccountSelection } from './connectionTypes';
 
-export function WeChatDecryptionStep({ connection, selection, wizard: wizardOptions, ready, notice }: {
-  connection: WeChatConnection; selection: WeChatAccountSelection; wizard: WeChatWizard;
-  ready: boolean; notice: string;
+export function WeChatDecryptionStep({ connection, selection, ready }: {
+  connection: WeChatConnection; selection: WeChatAccountSelection;
+  ready: boolean;
 }) {
   const { account } = connection;
   const { accountSwitching } = selection;
   const { keyedCount } = connection.keys;
-  const { enabled: wizard, step } = wizardOptions;
   const { outcomes, decrypting, decrypt, onlyChat, setOnlyChat, applyWal, setApplyWal, clearCache, showLog, setShowLog } = connection.decryption;
   return (
     <li id="wx-connect-decrypt" className={ready ? 'done' : ''}>
       <span className="wxv-step-no">{ready ? Icons.check : '3'}</span>
       <div>
-        <strong>{wizard && step === 'wx-connect-decrypt' ? t("解密记录") : t("解密并打开")}</strong>
+        <strong>{t("解密并打开")}</strong>
         <p className="wxv-muted">
           {t("解密会逐页校验，任一页失败即整体失败，不会产出半成品。已解密过的库直接复用缓存。")}
         </p>
@@ -41,7 +40,6 @@ export function WeChatDecryptionStep({ connection, selection, wizard: wizardOpti
             {t("清理解密缓存")}
           </button>
         </div>
-        {wizard && notice && <div className="wxv-wizard-state">{notice}</div>}
         <p className="wxv-muted">
           {t("解密副本保存在应用数据目录；清理后会回到未解密状态，聊天记录页在重新解密前不显示内容。")}
         </p>

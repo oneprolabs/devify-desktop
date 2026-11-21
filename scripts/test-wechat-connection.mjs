@@ -107,6 +107,16 @@ const beforeOversize = calls.length;
 await connection.keys.importKeys({ size: 2_000_001, text: () => { throw Error('must not read'); } });
 assert.equal(calls.length, beforeOversize); assert.match(state.error, /过大/);
 
+// The supported V7 Windows path still uses native memory scanning, independently of
+// the removed standalone branch whose platform state was permanently null.
+handlers.wechat_windows_key_scan = async args => {
+  assert.deepEqual(args, { accountId: 'A' });
+  return { matched: 2, already: 0, unmatched: [], accounts: [], message: 'Windows keys verified' };
+};
+await connection.keys.scanWindowsKeys(); connection = render();
+assert.equal(connection.keys.windowsScanBusy, false);
+assert.equal(state.notice, 'Windows keys verified');
+
 // Capturing is the only wizard phase with a repeating status read, cleaned up on completion.
 const captured = deferred();
 handlers.wechat_capture_start = args => { assert.deepEqual(args, { accountId: 'A', timeoutSecs: 300 }); return captured.promise; };

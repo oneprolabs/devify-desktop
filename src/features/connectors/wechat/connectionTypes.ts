@@ -24,6 +24,4 @@ export type WeChatWizard = {
   install: { ready: boolean | null; message: string };
   onInstallRecheck?: () => void;
   onStep?: (step: string) => void;
-  onBack?: () => void;
-  onNext?: () => void;
 };

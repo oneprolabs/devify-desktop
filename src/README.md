@@ -63,6 +63,8 @@ src/
   selection/revision saves and chat data; it supplies session refresh, snapshot invalidation
   and its existing live-sync guard. Connection code does not import the reader component.
   The current V7 checklist and standalone connection panel share these actions.
+  V7 alone owns wizard navigation; the standalone panel has no parallel wizard steps.
+  Native platform detection and Windows memory scanning remain in the current checklist.
 - Shared byte/age/key-date formatting lives in `shared/content/localDataFormat.ts`;
   connection UI does not import chat presentation code.
 - `local-reader/MediaThumb.tsx` owns the lazy image thumbnail and its existing shared

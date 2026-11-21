@@ -1,15 +1,14 @@
 import { t, tf } from '../../../shared/i18n/locale';
 import type { WeChatConnection } from './useWeChatConnection';
-import type { WeChatAccountSelection, WeChatWizard } from './connectionTypes';
+import type { WeChatAccountSelection } from './connectionTypes';
 import { formatAge } from '../../../shared/content/localDataFormat';
 
-export function WeChatKeyImport({ connection, selection, wizard: wizardOptions }: {
-  connection: WeChatConnection; selection: WeChatAccountSelection; wizard: WeChatWizard;
+export function WeChatKeyImport({ connection, selection }: {
+  connection: WeChatConnection; selection: WeChatAccountSelection;
 }) {
   const { account } = connection;
   const { accountId, accountSwitching, busy, doScan, switchAccount } = selection;
   const { keyedCount } = connection.keys;
-  const { enabled: wizard, step } = wizardOptions;
   const { keyImport, savedKeySource, freshSource, setShowKeyGuide, fixKeyPermissions, fixingPermissions, importSavedKey, refreshSavedKeySource } = connection.keys;
   const { captureOutcome } = connection.capture;
   const { clearKeys, clearConfirm, setClearConfirm } = connection.decryption;
@@ -23,7 +22,7 @@ export function WeChatKeyImport({ connection, selection, wizard: wizardOptions }
 
   return (
     <div id="wizard-detail-key-import" className="wxv-keyguide-step">
-      <strong>{wizard && step === 'wizard-import' ? t("导入校验") : t("4 · 导入并校验")}</strong>
+      <strong>{t("4 · 导入并校验")}</strong>
       <p className="wxv-muted">
         {captureOutcome?.matched
           ? t("本次捕获的口令已通过消息库与会话库校验，并已逐库导入保存。")

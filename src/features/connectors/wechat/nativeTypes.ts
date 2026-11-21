@@ -55,8 +55,6 @@ export type DecryptOutcome = {
   output: string | null;
 };
 
-export type PlatformCapabilities = { platform: 'macos' | 'windows' | 'linux' | string; key_acquisition: string; supports_memory_scan: boolean; supports_macos_capture: boolean; supports_key_import: boolean };
-
 export type WechatEnv = {
   app_data_dir: string;
   cache_root: string;

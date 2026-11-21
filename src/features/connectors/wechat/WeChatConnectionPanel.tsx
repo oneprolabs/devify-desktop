@@ -4,33 +4,17 @@ import { WeChatDecryptionStep } from './WeChatDecryptionStep';
 import { t } from '../../../shared/i18n/locale';
 import { Icons } from '../../../shared/ui/icons';
 import type { WeChatConnection } from './useWeChatConnection';
-import type { WeChatAccountSelection, WeChatWizard } from './connectionTypes';
+import type { WeChatAccountSelection } from './connectionTypes';
 
 export type WeChatConnectionPanelProps = {
-  connection: WeChatConnection; selection: WeChatAccountSelection; wizard: WeChatWizard;
-  mode: 'chat' | 'settings'; ready: boolean; notice: string; onOpenChat?: () => void;
+  connection: WeChatConnection; selection: WeChatAccountSelection;
+  mode: 'chat' | 'settings'; ready: boolean; onOpenChat?: () => void;
 };
 
 /** Existing standalone connection view; the embedded wizard uses its own checklist. */
-export function WeChatConnectionPanel({ connection, selection, wizard: wizardOptions, mode, ready, notice, onOpenChat }: WeChatConnectionPanelProps) {
+export function WeChatConnectionPanel({ connection, selection, mode, ready, onOpenChat }: WeChatConnectionPanelProps) {
   const { account, env, setForceUnlock } = connection;
-  const { enabled: wizard, step, onBack: onWizardBack, onNext: onWizardNext } = wizardOptions;
-  const { keyedCount, savedKeySource } = connection.keys;
-  const { captureOutcome } = connection.capture;
-  const { outcomes, decrypting } = connection.decryption;
-  const usableDb = (rel: string) => outcomes.some(outcome =>
-    outcome.rel === rel && (outcome.status === 'ok' || outcome.status === 'cached'));
-  const decryptedForWizard = usableDb('session/session.db') && outcomes.some(outcome =>
-    /^message\/message_\d+\.db$/.test(outcome.rel) && (outcome.status === 'ok' || outcome.status === 'cached'));
-  const wizardCanNext = !wizard || (step === 'wizard-permission' || step === 'wizard-account'
-    ? Boolean(account)
-    : step === 'wizard-key'
-      ? Boolean(savedKeySource?.exists || captureOutcome?.matched || keyedCount > 0)
-      : step === 'wizard-import'
-        ? keyedCount > 0
-        : step === 'wx-connect-decrypt'
-          ? !decrypting && (ready || decryptedForWizard)
-          : true);
+  const { keyedCount } = connection.keys;
   return (
     <div className="wxv-onboard">
       <div className="wxv-onboard-head">
@@ -61,21 +45,12 @@ export function WeChatConnectionPanel({ connection, selection, wizard: wizardOpt
       </nav>
 
       <ol className="wxv-steps">
-        <WeChatAccountStep connection={connection} selection={selection} wizard={wizardOptions} />
+        <WeChatAccountStep connection={connection} selection={selection} />
 
-        <WeChatKeyStep connection={connection} selection={selection} wizard={wizardOptions} />
+        <WeChatKeyStep connection={connection} selection={selection} />
 
-        <WeChatDecryptionStep connection={connection} selection={selection} wizard={wizardOptions} ready={ready} notice={notice} />
+        <WeChatDecryptionStep connection={connection} selection={selection} ready={ready} />
       </ol>
-
-      {wizard && step !== 'wizard-method' && (
-        <div className="wizard-detail-actions">
-          <button type="button" className="wxv-btn" onClick={onWizardBack}>{t("上一步")}</button>
-          <button type="button" className="wxv-btn primary" onClick={onWizardNext} disabled={!wizardCanNext}>
-            {step === 'wizard-permission' ? t("下一步：账号扫描") : step === 'wizard-account' ? t("下一步：获取密钥") : step === 'wizard-key' ? t("下一步：导入校验") : step === 'wizard-import' ? t("下一步：解密记录") : t("下一步：完成")}
-          </button>
-        </div>
-      )}
 
       <details className="wxv-warn">
         <summary>{t("密钥获取与安全说明")}</summary>
