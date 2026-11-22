@@ -63,8 +63,10 @@
 }
 @media (prefers-reduced-motion: reduce) { .analysis-simple .analysis-toggle > span { transition: none; } }
 
-.analysis-summary-instructions { padding-top:18px; border-top:1px solid #e9e9e6; margin-top:18px; }
+.analysis-summary-instructions { padding:18px 0 20px; border-top:1px solid #e9e9e6; margin-top:18px; }
 .analysis-summary-instructions label { display:block; font-size:14px; font-weight:500; }
 .analysis-summary-instructions label small { color:#6b6b65; font-weight:400; margin-left:5px; }
 .analysis-summary-instructions textarea { display:block; margin-top:9px; width:100%; box-sizing:border-box; }
 .analysis-summary-instructions .help { margin:9px 0 14px; }
+.analysis-summary-instructions-actions { display:flex; justify-content:flex-end; }
+.analysis-simple .analysis-summary-instructions-actions .wizard-action { min-height:34px; height:auto; padding:7px 16px; border-radius:999px; box-shadow:none; }

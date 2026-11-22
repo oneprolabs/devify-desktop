@@ -5015,7 +5015,7 @@ dependencies = [
 
 [[package]]
 name = "wechat-devify-bridge"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "aes",
  "axum",
