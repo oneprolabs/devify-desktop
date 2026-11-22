@@ -22,4 +22,13 @@ assert.equal(reconcileSummaryPage(page([], [pending])).rows.length,1,'Local queu
 assert.equal(reconcileSummaryPage(page([], [{...remote,status:'running'}])).rows.length,1,'Pending tasks outside the current server page remain visible');
 assert.equal(mergeSummaryRecords([pending],[{...pending,id:'task:request-2',request_key:'request-2'}]).length,2,'Different requests are never merged by title or range');
 assert.equal(mergeSummaryRecords([pending],[{...pending,engine:'local'}]).length,2,'Local and cloud execution stay distinct');
+const earlierCloud={...ready,created_at:'2026-11-22T08:33:26.364316+08:00'};
+const laterCli={...pending,id:'task:cli',request_key:'cli',engine:'local',status:'ready',created_at:'2026-11-22T00:34:30.944686+00:00'};
+assert.deepEqual(mergeSummaryRecords([earlierCloud],[laterCli]).map(row=>row.engine),['local','cloud'],'A later CLI summary precedes cloud results despite different offsets');
+assert.equal(reconcileSummaryPage(page([earlierCloud],[laterCli])).rows[0].request_key,'cli','Reconciliation uses the same chronological order');
+assert.equal(mergeSummaryRecords([laterCli],[{...earlierCloud,created_at:'2026-11-22T08:35:00+08:00'}])[0].engine,'cloud','Newer cloud summaries also come first');
+const sameInstant={...earlierCloud,created_at:'2026-11-22T08:34:30.944+08:00'};
+assert.deepEqual(mergeSummaryRecords([sameInstant,laterCli]),mergeSummaryRecords([laterCli,sameInstant]),'Equivalent instants have a stable order regardless of response order');
+const undated={...pending,id:'task:undated',request_key:'undated',created_at:'invalid'};
+assert.equal(mergeSummaryRecords([undated],[laterCli])[1].request_key,'undated','Invalid dates stay below dated summaries');
 console.log('Summary local/server handoff, stable identity, paging, offline and distinct-request regressions passed');

@@ -5,6 +5,11 @@ export function summaryRecordKey(row: CloudSummary): string {
   return JSON.stringify([row.engine ?? 'cloud', row.request_key || `id:${row.id}`]);
 }
 
+function createdTime(row: CloudSummary): number {
+  const time = Date.parse(row.created_at);
+  return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+}
+
 export function mergeSummaryRecords(...groups: CloudSummary[][]): CloudSummary[] {
   const merged = new Map<string, CloudSummary>();
   for (const row of groups.flat()) {
@@ -18,7 +23,12 @@ export function mergeSummaryRecords(...groups: CloudSummary[][]): CloudSummary[]
       task_id: row.task_id ?? previous.task_id,
     } : row);
   }
-  return [...merged.values()].sort((a,b)=>b.created_at.localeCompare(a.created_at));
+  // Server and CLI timestamps can describe different offsets (+08:00 / UTC).
+  // Compare instants, then use request identity for a stable order at equal times.
+  return [...merged.values()].sort((a,b)=> {
+    const left = createdTime(a), right = createdTime(b);
+    return left === right ? summaryRecordKey(a).localeCompare(summaryRecordKey(b)) : left > right ? -1 : 1;
+  });
 }
 
 export function reconcileSummaryPage(result: SummaryPage) {
