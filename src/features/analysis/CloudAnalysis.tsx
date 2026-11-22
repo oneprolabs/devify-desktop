@@ -633,7 +633,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
 
         {!(kind === 'reports' && creating) && <>
         {detailLoading && <LoadingSkeleton label={t("正在加载详情")} kind="detail" />}
-        {kind === 'events' && selectedId == null && !detailLoading && <div className="analysis-empty" role="status"><h2>{t("当前筛选下没有记录。")}</h2><p>{t("可切换筛选查看其他事件。")}</p><button type="button" className="report-create-submit" onClick={() => setFilter('all')}>{t("查看全部事件")}</button></div>}
+        {kind === 'events' && selectedId == null && !detailLoading && <div className="analysis-empty event-empty" role="status"><h2>{t("当前筛选下没有记录。")}</h2><p>{t("可切换筛选查看其他事件。")}</p><button type="button" className="event-empty-action" onClick={() => setFilter('all')}>{t("查看全部事件")}</button></div>}
 
         {event && <article className="analysis-doc">
           {editing ? <div className="analysis-edit">
