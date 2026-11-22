@@ -2694,6 +2694,7 @@ export const en: Record<string, string> = {
   "描述希望从聊天记录中得到什么，自定关注点和输出结构。": "Describe what you need from the conversation and choose your focus and structure.",
   "我的要求": "My requirements",
   "输出语言": "Output language",
+  "原文语言": "Original language",
   "默认 · {0}": "Default · {0}",
   "可选，仅用于本次总结。待办以文字展示，不自动创建任务。": "Optional, for this summary only. Action items are text; no tasks are created.",
   "例如：重点关注项目结论、负责人和截止时间。": "For example: focus on project decisions, owners and deadlines.",

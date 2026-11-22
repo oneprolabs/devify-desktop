@@ -6,6 +6,11 @@ export type SummaryDraft = { scenario: string; language: string; instructions: s
 export const summaryScenarioLabel = (id: string | null | undefined): string =>
   ({ three_part: '综合分析', summary: '总结', action_items: '待办', timeline: '时间线', custom: '自定义' } as Record<string, string>)[id ?? ''] ?? '';
 
+export function summaryOutputLanguage(view: SummaryOptionsView, draft: SummaryDraft) {
+  const language = draft.language || view.language;
+  return language === '跟随界面' ? view.ui_language : language;
+}
+
 export function summaryOptionFields(view: SummaryOptionsView | null, draft: SummaryDraft) {
   if (!view) throw Error('总结方式尚未初始化，请联网后点击「重新初始化」。');
   const selected = view.config.scenarios.find(item => item.id === draft.scenario);
@@ -13,6 +18,6 @@ export function summaryOptionFields(view: SummaryOptionsView | null, draft: Summ
   const instructions = draft.instructions.trim();
   if (Array.from(instructions).length > view.config.max_instructions_chars) throw Error('我的要求过长，请缩短后重试。');
   if ((selected.requires_instructions || selected.id === 'custom') && !instructions) throw Error('请填写自定义总结的目标或要求。');
-  const language = draft.language === '跟随界面' ? view.ui_language : draft.language || view.language;
+  const language = summaryOutputLanguage(view, draft);
   return { scenario: selected.id, language, instructions, prompt_version: view.config.version, prompt_digest: selected.sha256 };
 }

@@ -1,5 +1,5 @@
-import { t, tf } from '../../../shared/i18n/locale';
-import type { SummaryDraft, SummaryOptionsView } from './summaryOptions';
+import { t } from '../../../shared/i18n/locale';
+import { summaryOutputLanguage, type SummaryDraft, type SummaryOptionsView } from './summaryOptions';
 
 export function SummaryRequestOptions({ view, draft, loading, error, disabled, onChange, onInitialize, onReload }: {
   view: SummaryOptionsView | null; draft: SummaryDraft; loading: boolean; error: string; disabled: boolean;
@@ -16,8 +16,8 @@ export function SummaryRequestOptions({ view, draft, loading, error, disabled, o
         <p className="chat-summary-note">{selected ? t(selected.description) : t('请选择总结方式。')}</p>
       </div></div>
       <div className="chat-summary-row"><label className="chat-summary-label" htmlFor="summary-output-language">{t('输出语言')}</label>
-        <select id="summary-output-language" className="summary-output-language" value={draft.language} disabled={disabled || loading} onChange={event => onChange({ language: event.target.value })}>
-          <option value="">{tf('默认 · {0}', t(view.language))}</option>{['跟随界面', '中文', 'English', '按原文语言'].map(language => <option key={language} value={language}>{t(language)}</option>)}
+        <select id="summary-output-language" className="summary-output-language" value={summaryOutputLanguage(view, draft)} disabled={disabled || loading} onChange={event => onChange({ language: event.target.value })}>
+          <option value="中文">{t('中文')}</option><option value="English">English</option><option value="按原文语言">{t('原文语言')}</option>
         </select></div>
       <div className="chat-summary-row summary-instructions-row"><label className="chat-summary-label" htmlFor="summary-user-instructions">{t('我的要求')}</label><div className="summary-option-field">
         <textarea id="summary-user-instructions" rows={3} value={draft.instructions} disabled={disabled || loading} aria-invalid={count > view.config.max_instructions_chars || undefined} aria-describedby="summary-instructions-hint" onChange={event => onChange({ instructions: event.target.value })}
