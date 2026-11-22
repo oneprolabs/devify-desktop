@@ -6,6 +6,7 @@ export type CloudSummary = {
   period_start: string; period_end: string; created_at: string; model: string;
   sessions: Array<{username:string;display:string;messages:number}>;
   task_id?:string;engine?:'cloud'|'local';caller?:string;initiator_id?:number;
+  scenario?:string|null;language?:string;instructions?:string;prompt_version?:string;prompt_digest?:string;
 };
 export type SummaryPage = { offline?: boolean;list:CloudSummary[];local?:CloudSummary[];pagination:{total:number;page:number;next:string|null}};
 
@@ -16,8 +17,8 @@ export type SummaryRange = 'today'|'yesterday'|'three'|'week';
 const CLOUD_SUMMARY_MAX_CHARACTERS = 3000;
 const CLOUD_SUMMARY_MAX_INPUT_BYTES = 10000;
 export function validateCloudSummaryInput(input: {
-  title:string; range_label:string; language:string; messages:SummaryMessage[];
-}) {
+  title:string; range_label:string; language:string; messages:SummaryMessage[]; instructions?:string;
+}, budget?: {max_content_bytes:number}) {
   const tooLong = () => { throw Error('所选内容超过单次总结范围，请缩小时间范围或减少消息后重试。'); };
   let characters = 0;
   const speakers:string[] = [];
@@ -25,7 +26,7 @@ export function validateCloudSummaryInput(input: {
   const chats = new Map<string,{name:string;messages:Array<[string,number,string]>}>();
   for (const message of input.messages) {
     characters += Array.from(message.text).length;
-    if (characters > CLOUD_SUMMARY_MAX_CHARACTERS) tooLong();
+    if (characters > (budget ? 120000 : CLOUD_SUMMARY_MAX_CHARACTERS)) tooLong();
     if (!speakerIds.has(message.sender)) {
       speakerIds.set(message.sender,speakers.length);
       speakers.push(message.sender);
@@ -36,8 +37,8 @@ export function validateCloudSummaryInput(input: {
     chat.messages.push(['2000-01-01T00:00:00+00:00',speakerIds.get(message.sender)!,message.text]);
   }
   // Mirror the compact model view, not the much larger transport JSON. Names occur once.
-  const content = JSON.stringify({title:input.title,range:input.range_label,language:input.language,speakers,chats:[...chats.values()]});
-  if (new TextEncoder().encode(content).length > CLOUD_SUMMARY_MAX_INPUT_BYTES) tooLong();
+  const content = JSON.stringify({title:input.title,range:input.range_label,language:input.language,speakers,chats:[...chats.values()],...(input.instructions ? {instructions:input.instructions} : {})});
+  if (new TextEncoder().encode(content).length > (budget?.max_content_bytes ?? CLOUD_SUMMARY_MAX_INPUT_BYTES)) tooLong();
 }
 
 export function summaryBounds(range: SummaryRange, now = new Date()) {

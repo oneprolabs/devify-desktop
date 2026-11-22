@@ -6,6 +6,9 @@ import { renderAgentMarkdown } from '../../../shared/content/summary';
 import { readSummaryRange, summaryBounds, validateSummaryMessages, validateCloudSummaryInput, type CloudSummary, type SummaryChat, type SummaryMessage, type SummaryPage, type SummaryRange } from './summaryInput';
 import { refreshTaskRuntime } from '../../tasks/taskRuntime';
 import { mergeSummaryRecords, reconcileSummaryPage, summaryRecordKey } from './summaryRecords';
+import { SummaryRequestOptions } from './SummaryRequestOptions';
+import { useSummaryOptions } from './useSummaryOptions';
+import { summaryOptionFields, summaryScenarioLabel } from './summaryOptions';
 import './conversation-summary.css';
 
 const RANGES: Array<[SummaryRange,string]> = [['today','今天'],['yesterday','昨天'],['three','近 3 天'],['week','本周']];
@@ -54,6 +57,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   const [phase,setPhase]=useState('');
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState('');
+  const [formError,setFormError]=useState('');
   const [notice,setNotice]=useState('');
   const [page,setPage]=useState(1);
   const [more,setMore]=useState(false);
@@ -66,6 +70,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   const alive=useRef(true);
   const submission=useRef<{scope:string;engine:string;body:Record<string,unknown>}|null>(null);
   const request=useRef(0);
+  const options = useSummaryOptions(scope, visible && open);
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;request.current++;};},[]);
   const current=(owner:string)=>alive.current&&currentScope.current===owner;
 
@@ -84,7 +89,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   },[spaceId,accountId,session?.username,scope]);
 
   useEffect(()=>{
-    request.current++;setRows([]);setOpen(false);setExtras([]);setExcluded([]);setError('');setNotice('');setPhase('');setTotal(0);setMore(false);submission.current=null;
+    request.current++;setRows([]);setOpen(false);setExtras([]);setExcluded([]);setError('');setFormError('');setNotice('');setPhase('');setTotal(0);setMore(false);submission.current=null;
     // The synchronous lock belongs to an in-flight submission, never to the current tab.
   },[scope]);
   useEffect(()=>{if(visible)void load();return()=>{request.current++;};},[visible,load]);
@@ -102,17 +107,18 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   useEffect(()=>{if(pickRequest){setMode('pick');setOpen(true);setExcluded([]);submission.current=null;}},[pickRequest]);
   useEffect(()=>{if(!canUseLocal)setEngine('cloud');},[canUseLocal]);
   useEffect(()=>{submission.current=null;setExcluded([]);},[selection]);
-  const change=()=>{submission.current=null;setError('');setNotice('');};
+  const change=()=>{submission.current=null;setError('');setFormError('');setNotice('');};
   const selected=selection.filter(item=>!excluded.includes(keyOf(item)));
 
   const generate=async()=>{
     if(lock.current||!spaceId||!accountId||!session)return;
-    if(engine==='local'&&!canUseLocal){setError(t('请先在智能体集成中开启可用的本地智能体。'));return;}
+    if(engine==='local'&&!canUseLocal){setFormError(t('请先在智能体集成中开启可用的本地智能体。'));return;}
     lock.current=true;const owner=scope;request.current++;setLoading(false);
-    setError('');setNotice('');setPhase(t('正在读取所选消息…'));
+    setError('');setFormError('');setNotice('');setPhase(t('正在读取所选消息…'));
     try {
       let body=submission.current?.scope===owner&&submission.current.engine===engine?submission.current.body:null;
       if(!body){
+        const fields = summaryOptionFields(options.view, options.draft);
         let messages:SummaryMessage[]=[];
         const bounds=summaryBounds(range);
         if(mode==='pick')messages=selected;
@@ -126,8 +132,8 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
         }
         const times=validateSummaryMessages(messages,session.username);
         if(engine==='local'&&(messages.length>400||messages.reduce((sum,item)=>sum+item.text.length,0)>40000))throw Error(t('本地单次总结内容过多，请缩小时间范围或减少选择。'));
-        const input={title:session.display,range_label:mode==='pick'?tf('所选 {0} 条消息',messages.length):t(RANGES.find(item=>item[0]===range)![1]),language:document.documentElement.lang?.startsWith('en')?'English':'中文',messages};
-        if(engine==='cloud')validateCloudSummaryInput(input);
+        const input={title:session.display,range_label:mode==='pick'?tf('所选 {0} 条消息',messages.length):t(RANGES.find(item=>item[0]===range)![1]),...fields,messages};
+        if(engine==='cloud')validateCloudSummaryInput(input,options.view!.config.scenarios.find(item=>item.id===fields.scenario)!.budgets.cloud);
         body={request_key:crypto.randomUUID(),...input,mode,period_start:new Date((mode==='time'?bounds.since:times.since)*1000).toISOString(),period_end:new Date((mode==='time'?bounds.until:times.until)*1000).toISOString()};
         submission.current={scope:owner,engine,body};
       }
@@ -136,7 +142,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
       const record=await invoke<CloudSummary>('summary_task_enqueue',{spaceId,accountId,username:session.username,engine,body});
       if(!current(owner))return;
       request.current++;submission.current=null;setRows(old=>mergeSummaryRecords(old,[record]));setOpen(false);setNotice(t('总结任务已创建，可以继续使用应用。'));void refreshTaskRuntime();void load(1,true);
-    }catch(reason){if(current(owner)&&String(reason)!=='Error: SUMMARY_SCOPE_CHANGED')setError(String(reason));}
+    }catch(reason){if(current(owner)&&String(reason)!=='Error: SUMMARY_SCOPE_CHANGED')setFormError(String(reason));}
     finally{lock.current=false;if(current(owner))setPhase('');}
   };
   const action=async(row:CloudSummary,kind:'retry'|'delete')=>{
@@ -159,6 +165,8 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
         <div className="chat-summary-row"><span className="chat-summary-label">{t('聊天')}</span><div className="summary-chat-scope"><div className="summary-chat-chips"><span>{session?.display}</span>{extras.map(username=><span key={username}>{sessions.find(item=>item.username===username)?.display}<button type="button" aria-label={tf('移除 {0}',username)} disabled={Boolean(phase)} onClick={()=>{setExtras(old=>old.filter(item=>item!==username));change();}}>×</button></span>)}<button type="button" disabled={Boolean(phase)} onClick={()=>setPicker(value=>!value)}>{picker?t('完成选择'):t('添加聊天')}</button></div>
         {picker&&<div className="summary-chat-picker"><input aria-label={t('搜索聊天名称')} placeholder={t('搜索聊天名称')} value={chatQuery} onChange={event=>setChatQuery(event.target.value)}/><div>{sessions.filter(chat=>chat.username!==session?.username&&chat.display.toLowerCase().includes(chatQuery.toLowerCase())).slice(0,80).map(chat=><label key={chat.username}><input type="checkbox" checked={extras.includes(chat.username)} disabled={Boolean(phase)||(!extras.includes(chat.username)&&extras.length>=7)} onChange={event=>{setExtras(old=>event.target.checked?[...old,chat.username]:old.filter(item=>item!==chat.username));change();}}/><span>{chat.display}</span><small>{chat.is_group?t('群聊'):t('单聊')}</small></label>)}</div><small>{t('最多 8 个聊天，仅列出当前平台已加载的会话。')}</small></div>}</div></div>
       </>:<div className="summary-message-picker"><div className="summary-message-picker-head"><strong>{tf('已选 {0} 条文字消息',selected.length)}</strong><button type="button" onClick={onPick}>{t('去原始记录选择')}</button></div>{selection.length?selection.slice(0,100).map(message=><label key={keyOf(message)}><input type="checkbox" checked={!excluded.includes(keyOf(message))} onChange={event=>{setExcluded(old=>event.target.checked?old.filter(key=>key!==keyOf(message)):[...old,keyOf(message)]);change();}}/><span><small>{message.display} · {message.sender} · {new Date(message.time*1000).toLocaleString(dateLocale(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><span>{message.text}</span></span></label>):<p>{t('在原始记录中点击消息进行选择，再回来生成总结。')}</p>}{selection.length>100&&<p>{tf('预览前 100 条，共选择 {0} 条。',selection.length)}</p>}</div>}
+      <SummaryRequestOptions view={options.view} draft={options.draft} loading={options.loading} error={options.error} disabled={Boolean(phase)}
+        onChange={patch=>{options.setDraft(old=>({...old,...patch}));change();}} onInitialize={()=>{change();void options.initialize();}} onReload={()=>{change();void options.reload();}}/>
       <div className="chat-summary-row"><span className="chat-summary-label">{t('智能体')}</span>
         <div className="summary-segments summary-agent-options" role="group" aria-label={t('智能体')}>
           <button type="button" aria-pressed={engine==='cloud'} disabled={Boolean(phase)} onClick={()=>{setEngine('cloud');change();}}>
@@ -171,7 +179,8 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
       </div>
       <p className="chat-summary-note">{engine==='cloud'?t('由云端处理文字内容，完成后自动保存。图片、语音和视频不参与此次总结。'):tf('模型：{0}。沿用智能体已有的登录状态。',localAgentModel.trim()||t('沿用智能体默认模型'))}</p>
       {engine==='local'&&<p className="chat-summary-note">{t('本地工具可能使用在线模型服务；所选文字会交给该工具处理。')}</p>}
-      <div className="chat-summary-actions"><button type="button" disabled={Boolean(phase)} onClick={()=>setOpen(false)}>{t('取消')}</button><button type="button" className="primary" disabled={Boolean(phase)||!session||(mode==='pick'&&!selected.length)} onClick={()=>void generate()}>{phase||t('开始生成')}</button></div>
+      {formError&&<div className="summary-feedback error" role="alert"><span>{t(formError.replace(/^Error: /,''))}</span></div>}
+      <div className="chat-summary-actions"><button type="button" disabled={Boolean(phase)} onClick={()=>setOpen(false)}>{t('取消')}</button><button type="button" className="primary" disabled={Boolean(phase)||!session||!options.view||options.loading||(mode==='pick'&&!selected.length)} onClick={()=>void generate()}>{phase||t('开始生成')}</button></div>
     </section>}
     {error&&<div className="summary-feedback error" role="alert"><span>{t(error.replace(/^Error: /,''))}</span><button type="button" disabled={loading} onClick={()=>void load()}>{t('重试读取')}</button></div>}
     {notice&&<div className="summary-feedback" role="status"><span>{notice}</span><button type="button" onClick={onOpenTasks}>{t('查看任务')}</button></div>}
@@ -179,7 +188,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
     {visibleRows.map(row=><article className={`chat-summary-card${waiting(row)?' doing':''}`} key={summaryRecordKey(row)}>
       <header className="chat-summary-card-head"><strong>{row.range_label}</strong><span className="chat-summary-kind">{row.engine==='local'?(row.caller||t('本地工具')):t('云端总结')}</span><span className="chat-summary-card-meta">{tf('{0} 条消息',row.message_count)} · {new Date(row.created_at).toLocaleString(dateLocale(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></header>
       {waiting(row)?<div className="summary-progress" role="status"><i className="chat-summary-spinner"/>{row.status==='queued'?t('等待处理，可在任务中查看。'):t('正在生成总结，可以继续使用应用。')}</div>:row.status==='failed'?<div className="summary-feedback error"><span>{row.error||t('总结生成失败，请重试。')}</span><button type="button" onClick={()=>void action(row,'retry')}>{t('重试')}</button></div>:<SummaryBody body={row.body}/>}
-      <footer className="chat-summary-card-foot"><span>{tf('{0} 个聊天',row.sessions?.length??1)}</span><span className="grow"/>{!waiting(row)&&(deleting===row.id?<><button type="button" onClick={()=>setDeleting(null)}>{t('取消')}</button><button type="button" onClick={()=>void action(row,'delete')}>{t('确认删除')}</button></>:<button type="button" onClick={()=>setDeleting(row.id)}>{t('删除')}</button>)}</footer>
+      <footer className="chat-summary-card-foot"><span>{tf('{0} 个聊天',row.sessions?.length??1)}</span>{summaryScenarioLabel(row.scenario)&&<span>{t(summaryScenarioLabel(row.scenario))}{row.language?` · ${t(row.language)}`:''}</span>}<span className="grow"/>{!waiting(row)&&(deleting===row.id?<><button type="button" onClick={()=>setDeleting(null)}>{t('取消')}</button><button type="button" onClick={()=>void action(row,'delete')}>{t('确认删除')}</button></>:<button type="button" onClick={()=>setDeleting(row.id)}>{t('删除')}</button>)}</footer>
     </article>)}
     {!loading&&!error&&!visibleRows.length&&<div className="chat-summary-empty">{query.trim()?t('没有匹配的总结。'):t('还没有为这个会话生成过总结。选择时间范围或具体消息后开始。')}</div>}
     {more&&<button type="button" className="summary-load-more" disabled={loading} onClick={()=>void load(page+1)}>{loading?t('正在读取…'):t('加载更多总结')}</button>}

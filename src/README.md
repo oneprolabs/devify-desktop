@@ -103,6 +103,22 @@ readers, uses `config_runtime::browse_names` for the completed configuration, an
 each connector independently. WhatsApp reads also verify the current source login. Skills
 call the same API for every platform, retaining account IDs rather than merging names.
 
+## Per-request chat summaries
+
+`features/chat/summary/SummaryRequestOptions.tsx` renders the server-provided purposes,
+per-request output language and user requirements. `useSummaryOptions.ts` reads the native
+cache when the form opens; only explicit initialization requests network access. Shared
+`agent.instructions` initializes a draft without overwriting later edits. Request options
+remain separate from the existing Agent selector and are frozen with the durable task.
+
+`src-tauri/src/summary_config/` owns schema/scope/digest validation, atomic conditional
+cache updates and chat-summary-only prompt/budget assembly. Catalogs are scoped to service,
+Devify user, space and capability snapshot. Login initialization and the existing device
+heartbeat trigger throttled refreshes; opening chats and executing local tasks do not fetch
+templates. Other Agent uses retain their existing prompt builder. `summary_jobs.rs` owns
+admission, snapshots and execution; only the documented no-task-created configuration 409
+permits one refreshed resubmission with the original request key.
+
 ## Boundaries reserved for later extraction
 
 `features/settings/Settings.tsx` still combines import, account, and legacy automation

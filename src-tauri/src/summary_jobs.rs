@@ -22,6 +22,10 @@ pub(crate) struct Job {
     pub body: serde_json::Value,
     pub remote_id: Option<i64>,
     pub result: Option<serde_json::Value>,
+    #[serde(default)]
+    pub prompt: Option<crate::summary_config::prompt::Frozen>,
+    #[serde(default)]
+    pub config_retried: bool,
 }
 
 fn owner_key(owner: &settings::UploadOwner) -> String {
@@ -104,6 +108,8 @@ fn record(job: &Job) -> serde_json::Value {
             "range_label":job.body["range_label"],"mode":job.body["mode"],
             "period_start":job.body["period_start"],"period_end":job.body["period_end"],
             "message_count":job.body["message_count"],"sessions":job.body["sessions"],
+            "scenario":job.body["scenario"],"language":job.body["language"],"instructions":job.body["instructions"],
+            "prompt_version":job.body["prompt_version"],"prompt_digest":job.body["prompt_digest"],
             "body":"","created_at":job.created_at,"model":""
         })
     });
@@ -140,6 +146,7 @@ pub(crate) async fn summary_task_enqueue(
     engine: String,
     mut body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    if !body.is_object() { return Err("总结请求格式无效。".into()); }
     crate::cloud_summary::validate_source(&app, &space_id, &account_id, &username)?;
     if !matches!(engine.as_str(), "cloud" | "local") {
         return Err("无效的总结方式。".into());
@@ -147,10 +154,9 @@ pub(crate) async fn summary_task_enqueue(
     let data = app_data(&app);
     let value = settings::load(&data)?;
     let owner = config_runtime::local_owner(&data, &value, &account_id)?;
-    // Freeze the configured local output language with the durable intent.
-    if engine == "local" {
-        body["language"] = value.language.summary_language().into();
-    }
+    // An explicit per-request choice wins for both engines.
+    body["language"] = crate::summary_config::prompt::language(body["language"].as_str(), &value.language)?.into();
+    body["instructions"] = body["instructions"].as_str().unwrap_or("").trim().to_string().into();
     let id = body["request_key"]
         .as_str()
         .ok_or("缺少总结请求标识。")?
@@ -216,6 +222,9 @@ pub(crate) async fn summary_task_enqueue(
         }
         return Ok(record(&existing));
     }
+    let config = crate::summary_config::catalog(&data)?;
+    validate_catalog_owner(&config, &owner)?;
+    let prompt = crate::summary_config::prompt::freeze(&config, &mut body, &value.language, &engine, true)?;
     let count = body["messages"].as_array().map_or(0, Vec::len);
     body["message_count"] = count.into();
     let mut sessions = BTreeMap::<String, serde_json::Value>::new();
@@ -241,6 +250,8 @@ pub(crate) async fn summary_task_enqueue(
         body,
         remote_id: None,
         result: None,
+        prompt: Some(prompt),
+        config_retried: false,
     };
     if current(&app)?
         .iter()
@@ -250,7 +261,10 @@ pub(crate) async fn summary_task_enqueue(
     {
         return Err("已有 3 个总结正在处理，请稍后再试。".into());
     }
-    if !store(&data, &job, None)? {
+    let _identity = UPLOAD_IDENTITY_LOCK.try_read().map_err(|_| "登录状态正在切换，请稍后重试。")?;
+    if config_runtime::local_owner(&data, &settings::load(&data)?, &account_id)? != job.owner { return Err("总结任务所属登录状态已改变。".into()); }
+    let stored = store(&data, &job, None)?;
+    if !stored {
         return Err("总结已提交，请刷新查看。".into());
     }
     TASK_WAKE.notify_one();
@@ -335,7 +349,7 @@ pub(crate) async fn tick(app: &AppHandle) {
         let result = cloud_request(app, &job, reqwest::Method::GET, job.remote_id, None).await;
         match result {
             Ok(result) => update_remote(&data, &mut job, result, "processing"),
-            Err(error) if error.contains("HTTP 404") || error.contains("HTTP 403") => {
+            Err(error) if error.message.contains("HTTP 404") || error.message.contains("HTTP 403") => {
                 job.status = "failed".into();
                 job.message = "云端总结已不存在或访问权限已改变，请重新生成。".into();
                 job.updated_at = Utc::now().to_rfc3339();
@@ -348,19 +362,12 @@ pub(crate) async fn tick(app: &AppHandle) {
         return;
     };
     if job.engine == "cloud" {
-        let result = cloud_request(
-            app,
-            &job,
-            reqwest::Method::POST,
-            job.remote_id,
-            job.remote_id.is_none().then_some(&job.body),
-        )
-        .await;
+        let result = submit_cloud(app, &mut job).await;
         match result {
             Ok(result) => update_remote(&data, &mut job, result, "queued"),
             Err(error) => {
                 job.status = "failed".into();
-                job.message = error;
+                job.message = error.message;
                 job.updated_at = Utc::now().to_rfc3339();
                 let _ = store(&data, &job, Some("queued"));
             }
@@ -395,7 +402,8 @@ pub(crate) async fn tick(app: &AppHandle) {
         {
             return Err("登录状态或本地工具权限已改变，请重新操作。".into());
         }
-        let input = query::summarize_messages(input.map_err(|_| "总结消息格式无效。")?);
+        let input = if job.prompt.is_some() { crate::summary_config::prompt::local_input(&job.body)? }
+            else { query::summarize_messages(input.map_err(|_| "总结消息格式无效。")?) };
         if input.truncated {
             return Err("本地工具的单次处理范围已超限，请减少选择后重试。".into());
         }
@@ -403,8 +411,10 @@ pub(crate) async fn tick(app: &AppHandle) {
         entitlements::require(&data, &job.owner.base_url, capabilities::AI_AGENT_SUMMARY)?;
         let root = data.join("summary-runs").join(owner_key(&job.owner));
         let language = job.body["language"].as_str().unwrap_or("中文").to_string();
+        let prompt = job.prompt.as_ref().map(|snapshot| crate::summary_config::prompt::local_prompt(snapshot, &job.body, &input)).transpose()?;
         tauri::async_runtime::spawn_blocking(move || {
-            agent::summarize(&selected, &input, &language, &root)
+            if let Some(prompt) = prompt { agent::summarize_chat(&selected, &prompt, &root) }
+            else { agent::summarize(&selected, &input, &language, &root) }
         })
         .await
         .map_err(|e| format!("本地总结任务失败：{e}"))?
@@ -430,20 +440,48 @@ pub(crate) async fn tick(app: &AppHandle) {
     emit_task_runtime(app);
 }
 
+async fn submit_cloud(app: &AppHandle, job: &mut Job) -> Result<serde_json::Value, crate::summary_config::CloudError> {
+    let first = cloud_request(app, job, reqwest::Method::POST, job.remote_id, job.remote_id.is_none().then_some(&job.body)).await;
+    match first {
+        Err(error) if error.config_changed && job.remote_id.is_none() && !job.config_retried => {
+            crate::summary_config::refresh(app, true).await?;
+            let data = app_data(app);
+            let value = settings::load(&data)?;
+            let config = crate::summary_config::catalog(&data)?;
+            validate_catalog_owner(&config, &job.owner)?;
+            // This precise 409 guarantees no remote task exists. Keep the request key
+            // and user choices; persist the replacement snapshot before sending again.
+            let prompt = crate::summary_config::prompt::freeze(&config, &mut job.body, &value.language, &job.engine, false)?;
+            job.prompt = Some(prompt); job.config_retried = true;
+            job.updated_at = Utc::now().to_rfc3339();
+            if !store(&data, job, Some("queued"))? { return Err("总结任务状态已改变。".into()); }
+            cloud_request(app, job, reqwest::Method::POST, None, Some(&job.body)).await
+        }
+        result => result,
+    }
+}
+
+fn validate_catalog_owner(config: &crate::summary_config::Catalog, owner: &settings::UploadOwner) -> Result<(), String> {
+    if config.scope.server != owner.base_url || config.scope.account_id != owner.user_id.to_string() || config.scope.space_id != owner.space_id {
+        return Err("总结配置所属登录账号或空间已改变。".into());
+    }
+    Ok(())
+}
+
 async fn cloud_request(
     app: &AppHandle,
     job: &Job,
     method: reqwest::Method,
     id: Option<i64>,
     body: Option<&serde_json::Value>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, crate::summary_config::CloudError> {
     let data = app_data(app);
     let settings = settings::load(&data)?;
-    let token = devify_access_token_async(&data, &job.owner.base_url).await?;
+    let token = devify_access_token_async(&data, &job.owner.base_url).await.map_err(|e| e.to_string())?;
     validate_owner_state(&settings, &job.owner, &token)?;
     let suffix = id.map(|id| format!("/{id}")).unwrap_or_default();
-    fixed_identity_json(
-        &data,
+    crate::summary_config::cloud_request(
+        app,
         &job.owner.base_url,
         &token,
         method,
@@ -557,6 +595,8 @@ mod tests {
             body: serde_json::json!({"messages":[]}),
             remote_id: None,
             result: None,
+            prompt: None,
+            config_retried: false,
         }
     }
     #[test]

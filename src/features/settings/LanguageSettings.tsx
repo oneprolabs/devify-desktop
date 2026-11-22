@@ -92,7 +92,7 @@ export function LanguageSettings() {
   return <div className="settings-page settings-refreshed language-settings">
     <header className="page-head">
       <h2>{t("语言")}</h2>
-      <p className="help">{t("设置界面和本机总结的语言。聊天原文保持不变。")}</p>
+      <p className="help">{t("设置界面和聊天总结的默认语言。聊天原文保持不变。")}</p>
     </header>
 
     <fieldset disabled={blocked} className="settings-fields">
@@ -104,8 +104,8 @@ export function LanguageSettings() {
     </section>
     <section className="settings-group" aria-label={t('内容语言')}>
       <div className="settings-row">
-        <div className="settings-row-label"><span>{t('本机总结语言')}</span><small>{t('用于本机生成的聊天总结，可跟随界面或原文语言。')}</small></div>
-        <Pills label="本机总结语言" options={SUMMARY_OPTIONS} value={settings.language.summary} onChange={summary => setLanguage({ summary })}/>
+        <div className="settings-row-label"><span>{t('聊天总结语言')}</span><small>{t('云端与本地聊天总结共用，生成时可以单独选择。')}</small></div>
+        <Pills label="聊天总结语言" options={SUMMARY_OPTIONS} value={settings.language.summary} onChange={summary => setLanguage({ summary })}/>
       </div>
       <div className="settings-row">
         <div className="settings-row-label"><span>{t('服务端内容语言')}</span><small>{t('事件、报告与问答由服务端生成，使用服务端的语言设置。')}</small></div>

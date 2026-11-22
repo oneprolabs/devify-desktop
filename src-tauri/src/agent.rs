@@ -721,6 +721,11 @@ pub fn summarize(
     run_agent(settings, &prompt, app_data, timeout_of(settings))
 }
 
+/// A versioned chat-summary task already owns its complete immutable prompt.
+pub(crate) fn summarize_chat(settings: &AgentSettings, prompt: &str, app_data: &Path) -> Result<AgentRun, String> {
+    run_agent(settings, prompt, app_data, timeout_of(settings))
+}
+
 /// Prompt shared by the interactive summary and the daily automation. The structure is
 /// deliberately explicit: these agents happily invent detail when asked to "summarise".
 pub fn build_prompt(input: &SummaryInput, instructions: &str, language: &str) -> String {

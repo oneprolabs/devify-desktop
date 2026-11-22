@@ -510,6 +510,9 @@ fn sensitive(key: &str) -> bool {
                 | "question"
                 | "answer"
                 | "prompt"
+                | "instructions"
+                | "user_instructions"
+                | "messages"
                 | "input"
                 | "output"
                 | "summary"
@@ -580,6 +583,8 @@ mod tests {
                     "refresh": "r-1",
                     "title": "private note",
                     "content": "chat text that must not travel",
+                    "instructions": "private custom summary requirements",
+                    "messages": [{"sender":"private sender","text":"private transcript"}],
                     "nested": {"access_token": "a-1", "note": "x".repeat(400)},
                     "items": (0..80).collect::<Vec<_>>(),
                 })),
@@ -602,6 +607,8 @@ mod tests {
         assert!(body.contains(r#""content":"***""#));
         assert!(!body.contains("private note"));
         assert!(!body.contains("chat text that must not travel"));
+        assert!(!body.contains("private custom summary requirements"));
+        assert!(!body.contains("private sender") && !body.contains("private transcript"));
         assert!(body.chars().count() <= BODY_MAX + 1);
     }
 

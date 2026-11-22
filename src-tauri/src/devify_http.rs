@@ -171,7 +171,7 @@ async fn traced_send(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| RequestId::try_from(v.to_owned()).ok())
                 .filter(|v| *v != id);
-            if response.status().is_success() {
+            if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_MODIFIED {
                 // Only a failure needs the body; successful requests stay small.
                 completed.request = completed
                     .request
