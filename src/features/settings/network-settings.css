@@ -106,67 +106,106 @@
   text-align: left;
 }
 
-.auth-connection-panel .auth-gate-server {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.auth-connection-panel .auth-gate-server > label {
-  color: #3a3a37;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.auth-connection-address {
-  display: flex;
-  gap: 6px;
-}
-
-.auth-connection-address > input,
-.auth-connection-address > button {
-  min-height: 32px;
-  padding: 4px 8px;
-  border: 1px solid #dedbdd;
-  border-radius: 6px;
-  background: #fff;
-  color: #3a3a37;
-  font: inherit;
-  font-size: 12.5px;
-  line-height: 1.4;
-}
-
-.auth-connection-address > input {
-  flex: 1;
-  min-width: 0;
-}
-
-.auth-connection-address > button {
-  flex: none;
-  font-weight: 500;
-}
-
-.auth-connection-address > button:hover:not(:disabled) {
-  border-color: #c9c4c9;
-  background: #fbfafb;
-}
-
-.auth-connection-address > button:disabled {
-  color: #716d72;
-  cursor: default;
-}
-
-.auth-connection-panel .auth-gate-server + .network-connection {
-  padding-top: 10px;
-  border-top: 1px solid #eae7ea;
-}
-
 .auth-gate .auth-connection-panel p {
   margin: 0;
   font-size: 12px;
 }
 
-.auth-connection :is(button, input, select):focus-visible {
+.auth-connection :is(button, select):focus-visible,
+.auth-connection-link:focus-visible {
   outline: 2px solid #a3279a;
   outline-offset: 2px;
+}
+
+.auth-login-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 14px;
+}
+
+.auth-connection-link {
+  min-height: 28px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: #625d63;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.auth-connection-link:hover:not(:disabled) {
+  color: #83167e;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-connection-link:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.auth-connection-server {
+  display: grid;
+  gap: 6px;
+  color: #3a3a37;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.auth-connection-form .auth-connection-server input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #dedbdd;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+.auth-connection-form .auth-connection-server input:focus {
+  border-color: #a3279a;
+  outline: 2px solid #a3279a;
+  outline-offset: 0;
+  box-shadow: none;
+}
+
+.auth-connection-form .auth-connection-note {
+  color: #5f5f5a;
+  font-size: 12px;
+}
+
+.auth-connection-form .network-connection {
+  padding: 13px 0 0;
+  border-top: 1px solid #eceaec;
+}
+
+.auth-login-modal .auth-error > p {
+  color: inherit;
+}
+
+.auth-connection-recovery {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #ead5d5;
+}
+
+.auth-connection-recovery > p {
+  color: #625358;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.auth-login-modal:has(.auth-browser-option .auth-error) .auth-modal-body {
+  gap: 12px;
+  padding-block: 18px;
+}
+
+.auth-login-modal:has(.auth-browser-option .auth-error) .auth-login-fields {
+  gap: 10px;
 }

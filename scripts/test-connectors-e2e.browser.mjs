@@ -19,13 +19,16 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   };
   await page.cdp('Emulation.setDeviceMetricsOverride', {width:1100,height:690,deviceScaleFactor:1,mobile:false});
   await start();
-  assert.ok(await page.evaluate(() => !document.querySelector('.auth-gate-card select')));
-  await click('连接设置');
-  await page.waitForSelector('.auth-gate-card .network-connection select:not(:disabled)');
-  assert.equal(await page.evaluate(() => document.querySelector('.auth-gate-card select').value), 'auto');
-  await page.selectOption('.auth-gate-card .network-connection select', 'direct');
-  await page.waitForFunction(() => window.__E2E__.networkMode === 'direct');
+  assert.ok(await page.evaluate(() => !document.querySelector('.auth-gate-card .auth-connection-trigger, .auth-gate-card select')));
   await click('登录…');
+  await page.evaluate(() => { window.__loginDialog = document.querySelector('.auth-login-modal'); });
+  await click('连接设置');
+  await page.waitForSelector('.auth-connection-form select:not(:disabled)');
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-connection-form select').value), 'auto');
+  await page.selectOption('.auth-connection-form select', 'system_proxy');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'system_proxy');
+  await click('返回登录');
+  assert.ok(await page.evaluate(() => window.__loginDialog === document.querySelector('.auth-login-modal')));
   assert.equal(await page.evaluate(() => document.querySelectorAll('.auth-login-gate select').length), 0, 'sign-in has no repeated connection control');
   await fits();
   assert.equal(await page.evaluate(() => document.querySelector('.auth-login-modal').getBoundingClientRect().width), 420);
@@ -49,25 +52,31 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.waitForFunction(() => window.__E2E__.externalUrls.some(url => url.endsWith('/register')));
   await page.screenshot({path:'/tmp/aimychats-login-v7-register.png'});
   await page.click('loc=role:tab[name="登录"]');
+  await page.evaluate(() => { window.__E2E__.authStartError = '读取服务端登录配置失败：503 Service Unavailable'; });
+  await click('通过浏览器登录');
+  await page.waitForFunction(() => document.querySelector('.auth-error')?.textContent.includes('503'));
+  assert.ok(await page.evaluate(() => !document.querySelector('.auth-connection-recovery')), 'an HTTP error does not suggest bypassing the proxy');
   await page.evaluate(() => {
     window.__E2E__.authStartError = '读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
   });
   await click('通过浏览器登录');
-  await page.waitForSelector('loc=role:button[name="前往连接设置"]');
-  await click('前往连接设置');
-  await page.waitForFunction(() => !document.querySelector('.auth-login-modal') && document.querySelector('.auth-connection-trigger')?.getAttribute('aria-expanded') === 'true');
-  await page.waitForFunction(() => document.activeElement === document.querySelector('.auth-connection-trigger'));
-  await page.waitForFunction(() => document.querySelector('.auth-gate-card select')?.value === 'direct');
-  await page.selectOption('.auth-gate-card .network-connection select', 'system_proxy');
-  await page.waitForFunction(() => window.__E2E__.networkMode === 'system_proxy');
-  await click('登录…');
+  await page.waitForSelector('.auth-connection-recovery select:not(:disabled)');
+  assert.ok(await page.evaluate(() =>
+    window.__loginDialog === document.querySelector('.auth-login-modal') &&
+    !document.querySelector('.auth-connection-form, .auth-connection-link') &&
+    document.querySelector('.auth-connection-recovery').textContent.includes('如果本机开启了代理')
+  ), 'a connection timeout reveals a single inline recovery control');
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-connection-recovery select').value), 'system_proxy');
+  await page.selectOption('.auth-connection-recovery select', 'direct');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'direct');
   assert.equal(await page.evaluate(() => document.querySelector('input[name="username"]').value), 'tester', 'changing the connection keeps the form draft');
+  assert.equal(await page.evaluate(() => document.querySelector('input[name="password"]').value), 'example-password');
   await page.evaluate(() => {
     window.__E2E__.authStartError = '';
     window.__E2E__.authStartPaused = true;
     window.__E2E__.browserOpenPaused = true;
   });
-  await click('通过浏览器登录');
+  await click('重试浏览器登录');
   await page.waitForFunction(() => window.__E2E__.authStartResolvers.length === 1);
   assert.ok(await page.evaluate(() => document.querySelector('.auth-alt').disabled && document.querySelector('.auth-alt .auth-button-spinner') && document.querySelector('.auth-alt').textContent.includes('正在读取登录配置')));
   await page.evaluate(() => { window.__E2E__.authStartPaused = false; window.__E2E__.authStartResolvers.splice(0).forEach(resolve => resolve()); });
@@ -94,7 +103,7 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.evaluate(() => { window.__E2E__.authStartError = ''; });
   await page.focus('.auth-modal-head button');
   await page.keyboard.press('Shift+Tab');
-  assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-switch button')), 'focus wraps within the dialog');
+  assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-connection-link')), 'focus wraps within the dialog');
   await page.keyboard.press('Tab');
   assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-modal-head button')));
   await page.keyboard.press('Escape');
@@ -115,21 +124,22 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.waitForFunction(() => !document.querySelector('.auth-gate'));
   await click('设置');
   await click('网络连接');
-  await page.waitForFunction(() => document.querySelector('.settings-page .network-connection select')?.value === 'system_proxy');
+  await page.waitForFunction(() => document.querySelector('.settings-page .network-connection select')?.value === 'direct');
   await page.selectOption('.settings-page .network-connection select', 'auto');
   await page.waitForFunction(() => window.__E2E__.networkMode === 'auto');
   await clean();
 
   await start('&no-server');
-  await page.waitForSelector('.auth-connection-panel');
-  await page.fill('.auth-gate-server input', 'not-a-url');
-  await click('保存');
-  await page.waitForFunction(() => document.querySelector('.auth-gate [role="status"]')?.textContent.includes('完整'));
-  assert.equal(await page.evaluate(() => window.__E2E__.writes.length), 0);
-  await page.fill('.auth-gate-server input', 'https://example.invalid');
-  await click('保存');
-  await page.waitForFunction(() => window.__E2E__.writes.length === 1);
   await click('登录…');
+  await page.waitForSelector('.auth-connection-form');
+  await page.fill('.auth-connection-form input', 'not-a-url');
+  await click('保存并返回登录');
+  await page.waitForFunction(() => document.querySelector('.auth-connection-form [role="alert"]')?.textContent.includes('完整'));
+  assert.equal(await page.evaluate(() => window.__E2E__.writes.length), 0);
+  await page.fill('.auth-connection-form input', 'https://example.invalid');
+  await click('保存并返回登录');
+  await page.waitForFunction(() => window.__E2E__.writes.length === 1);
+  await page.waitForSelector('.auth-alt');
   await fits();
   await clean();
 
@@ -140,7 +150,7 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   assert.equal(await page.evaluate(() => document.querySelector('.auth-divider').textContent), 'or');
   await page.screenshot({path:'/tmp/aimychats-login-v7-english-small.png'});
   await clean();
-  console.log('PASS V7 login UI: connection modes across login and settings, browser stages, password and browser retry, keyboard focus, server setup, English and 940×640 layout');
+  console.log('PASS V7 login UI: inline proxy recovery, shared settings, browser stages, password and browser retry, keyboard focus, first-use setup, English and 940×640 layout');
   console.log(await page.snapshot());
 }
 
