@@ -463,3 +463,38 @@ export async function runConnectorEnglishSmoke(task, base = 'http://localhost:14
   assert.ok(await page.evaluate(() => document.querySelector('.wechat-account-avatar img')?.getAttribute('src').includes('/wechat.svg')));
   return { scenarios: 1, errors: await page.evaluate(() => window.__E2E__.errors) };
 }
+
+// Real React UI with synthetic native IPC; native runtime tests cover durable state.
+export async function runBackupSwitchUiE2E(task, base = 'http://localhost:1434', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const master = 'button[role="switch"][aria-label="后台备份"]';
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat&backup-disabled`);
+  await page.click('loc=role:button[name="任务"]');
+  await page.waitForSelector(master);
+  assert.equal(await page.evaluate(selector => document.querySelector(selector).getAttribute('aria-checked'), master), 'false');
+  await page.click(master);
+  await page.waitForFunction(() => window.__E2E__.settings.sync.enabled && !window.__E2E__.runtime.paused);
+  await page.click('loc=role:button[name="设置"]');
+  await page.click('loc=role:button[name="备份周期"]');
+  await page.waitForSelector(`.backup-page ${master}`);
+  assert.equal(await page.evaluate(selector => document.querySelector(selector).getAttribute('aria-checked'), master), 'true');
+  await page.click(master);
+  await page.waitForFunction(() => !window.__E2E__.settings.sync.enabled && window.__E2E__.runtime.paused && !document.querySelector('.backup-page fieldset').disabled);
+  const revision = await page.evaluate(() => window.__E2E__.settings.user_settings_revision);
+  await page.click('loc=role:button[name="5 分钟"]');
+  await page.waitForFunction(revision => window.__E2E__.settings.user_settings_revision > revision, revision);
+  assert.equal(await page.evaluate(() => window.__E2E__.settings.sync.enabled), false, 'schedule edits cannot restore the stale enabled flag');
+  assert.equal(await page.evaluate(() => window.__E2E__.settings.chat.sync_interval_seconds), 300);
+  await page.click(master);
+  await page.waitForFunction(() => window.__E2E__.settings.sync.enabled && !document.querySelector('.backup-page fieldset').disabled);
+  await page.evaluate(() => { window.__E2E__.saveDelay = 500; });
+  await page.click('loc=role:button[name="15 分钟"]');
+  assert.equal(await page.evaluate(selector => document.querySelector(selector).disabled, master), true, 'the master cannot race a pending schedule save');
+  await page.waitForFunction(() => window.__E2E__.settings.chat.sync_interval_seconds === 900 && !document.querySelector('[aria-label="后台备份"]').disabled);
+  await page.click('loc=role:button[name="任务"]');
+  await page.waitForSelector(master);
+  assert.equal(await page.evaluate(selector => document.querySelector(selector).getAttribute('aria-checked'), master), 'true');
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  console.log('PASS backup switch: disabled legacy view, tasks/settings agreement, fresh revisions, schedule preservation and pending-save exclusion (synthetic IPC)');
+  return { scenarios: 5 };
+}

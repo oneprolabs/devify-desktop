@@ -167,7 +167,7 @@ pub(super) async fn backup_tick(app: &AppHandle) {
     let Ok(value) = settings::load(&data) else {
         return;
     };
-    if value.runtime.paused {
+    if !config_runtime::backup_enabled(&value) {
         return;
     }
     let accounts: Vec<_> = value.runtime.sources.keys().cloned().collect();

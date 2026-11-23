@@ -41,6 +41,31 @@ pub struct Mutation {
     pub body: serde_json::Value,
 }
 
+/// Legacy clients stored two switches. Reading either disabled value must keep
+/// backup off; only an explicit user edit enables it and repairs both fields.
+pub fn backup_enabled(value: &AppSettings) -> bool {
+    value.sync.enabled && !value.runtime.paused
+}
+
+pub fn set_backup_enabled(value: &mut AppSettings, enabled: bool) {
+    value.sync.enabled = enabled;
+    value.runtime.paused = !enabled;
+}
+
+pub fn enqueue_current_sources(data: &Path, value: &mut AppSettings, allow_pause_overflow: bool) -> Result<(), String> {
+    let accounts: std::collections::BTreeSet<_> = value.chat.allowed_usernames.keys()
+        .chain(value.runtime.sources.keys()).cloned().collect();
+    for account in accounts {
+        if let Ok(owner) = local_owner(data, value, &account) {
+            if value.runtime.sources.get(&account).and_then(|s| s.owner.as_ref())
+                .is_none_or(|old| same_principal(old, &owner)) {
+                enqueue_with_pause_reserve(value, owner, allow_pause_overflow)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn payload(value: &AppSettings, account: &str, draft: bool) -> serde_json::Value {
     let names = value
         .chat
@@ -61,7 +86,7 @@ pub fn payload(value: &AppSettings, account: &str, draft: bool) -> serde_json::V
         .sources
         .get(account)
         .is_none_or(|s| s.backup_enabled != Some(false))
-        && value.sync.enabled
+        && backup_enabled(value)
         && if crate::whatsapp::is_account(account) {
             value.connectors.whatsapp_enabled
         } else {
@@ -101,6 +126,10 @@ pub fn same_principal(a: &UploadOwner, b: &UploadOwner) -> bool {
 }
 
 pub fn enqueue(value: &mut AppSettings, owner: UploadOwner) -> Result<(), String> {
+    enqueue_with_pause_reserve(value, owner, false)
+}
+
+fn enqueue_with_pause_reserve(value: &mut AppSettings, owner: UploadOwner, allow_pause_overflow: bool) -> Result<(), String> {
     let account = owner.account_id.clone();
     let source = value.runtime.sources.entry(account.clone()).or_default();
     if source
@@ -145,7 +174,11 @@ pub fn enqueue(value: &mut AppSettings, owner: UploadOwner) -> Result<(), String
     if last == Some(&desired) {
         return Ok(());
     }
-    if value.runtime.pending.len() >= 128 {
+    // A stop intent must fit even when normal edits have filled the outbox.
+    // Do not discard or rewrite frozen requests. Repeated pauses deduplicate
+    // above; enabling and other edits retain the normal capacity limit.
+    let pause_reserve = allow_pause_overflow && value.runtime.paused && !value.sync.enabled;
+    if value.runtime.pending.len() >= 128 && !pause_reserve {
         return Err("待提交的设置较多，请恢复连接后重试。".into());
     }
     let mut nonce = [0u8; 16];

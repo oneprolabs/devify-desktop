@@ -4998,7 +4998,12 @@ static TASK_WAKE:tokio::sync::Notify=tokio::sync::Notify::const_new();
 
 #[tauri::command]
 fn app_settings_get(app: AppHandle) -> Result<settings::AppSettings, String> {
-    settings::load(&app_data(&app))
+    let mut value = settings::load(&app_data(&app))?;
+    // Present the same effective state as the task switch, without silently
+    // enabling a legacy profile or mutating it merely by opening settings.
+    let enabled = config_runtime::backup_enabled(&value);
+    config_runtime::set_backup_enabled(&mut value, enabled);
+    Ok(value)
 }
 
 #[tauri::command]
@@ -5006,6 +5011,7 @@ async fn app_settings_save(
     app: AppHandle,
     mut value: settings::AppSettings,
 ) -> Result<settings::AppSettings, String> {
+    let mut stopped_backup = false;
     let saved = settings::update(&app_data(&app), |stored| {
         if value.user_settings_revision != stored.user_settings_revision {
             return Err("SETTINGS_CONFLICT: 设置已在其他位置更改，请重新加载后重试。".into());
@@ -5023,8 +5029,9 @@ async fn app_settings_save(
         value.upload_queue = stored.upload_queue.clone();
         value.runtime = stored.runtime.clone();
         let sync_enabled = value.sync.enabled;
+        stopped_backup = config_runtime::backup_enabled(stored) && !sync_enabled;
         value.sync = stored.sync.clone();
-        value.sync.enabled = sync_enabled;
+        config_runtime::set_backup_enabled(&mut value, sync_enabled);
         for (account,ranges) in &value.chat.initial_ranges {
             if let Some(progress)=value.sync.initial_progress.get_mut(account) {
                 progress.retain(|name,_|serde_json::to_value(ranges.get(name)).ok()==serde_json::to_value(stored.chat.initial_ranges.get(account).and_then(|r|r.get(name))).ok());
@@ -5040,14 +5047,11 @@ async fn app_settings_save(
         value.automation.last_schedule_signature = stored.automation.last_schedule_signature.clone();
         value.automation.last_schedule_error = stored.automation.last_schedule_error.clone();
         *stored = value;
-        let accounts: Vec<_>=stored.chat.allowed_usernames.keys().cloned().collect();
-        for account in accounts {
-            if let Ok(owner)=config_runtime::local_owner(&app_data(&app),stored,&account) {
-                if stored.runtime.sources.get(&account).and_then(|s|s.owner.as_ref()).is_none_or(|old|config_runtime::same_principal(old,&owner)) {config_runtime::enqueue(stored,owner)?;}
-            }
-        }
+        config_runtime::enqueue_current_sources(&app_data(&app), stored, stopped_backup)?;
         Ok(())
     })?;
+    if stopped_backup { abort_in_flight_uploads(); }
+    emit_task_runtime(&app);
     if build_flavor::DEVELOPMENT { let _ = app.emit("development-service-changed", saved.devify.base_url.clone()); }
     if let Err(error)=flush_config_outbox(&app).await {return Err(format!("设置已在本地保存，等待同步：{error}"));}
     config_runtime::activate_profile(&app_data(&app))?;
