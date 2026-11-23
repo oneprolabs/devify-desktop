@@ -85,14 +85,15 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
   const [loading, setLoading] = useState(true);
   const [blocked, setBlocked] = useState(false);
   const [savePending, setSavePending] = useState(false);
+  const [switchPending, setSwitchPending] = useState(false);
   const queue = useRef<SettingsSaveQueue<AppSettings> | null>(null);
   const unsubscribe = useRef<(() => void) | null>(null);
   const active = useRef(false);
   const loadId = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (showLoading = true) => {
     const request = ++loadId.current;
-    setLoading(true);
+    if (showLoading) setLoading(true);
     try {
       const [stored, scan] = await Promise.all([
         invoke<AppSettings>('app_settings_get'),
@@ -119,7 +120,10 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
       setError('');
       setReady(true);
     } catch (e) {
-      if (active.current && request === loadId.current) setError(tf("无法加载设置：{0}", String(e)));
+      if (active.current && request === loadId.current) {
+        setBlocked(true);
+        setError(tf("无法加载设置：{0}", String(e)));
+      }
     } finally {
       if (active.current && request === loadId.current) setLoading(false);
     }
@@ -178,7 +182,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
       <p className="help">{wizard ? t("所有平台共用一套备份设置，默认沿用当前设置，无需重复修改。") : t("选择聊天记录自动备份的时间与范围，只上传已导入会话的新增消息。")}</p>
     </header>
 
-    <fieldset disabled={blocked} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+    <fieldset disabled={blocked || switchPending} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
     {wizard && !connected && <div role="alert"><p>{t("未能确认当前账号的连接状态，请重新检查或返回连接步骤。")}</p><button type="button" onClick={() => void load()}>{t("重新检查")}</button><button type="button" onClick={onOpenConnectors}>{t("返回连接步骤")}</button></div>}
     {wizard && connected && <div className="wizard-shared-plan">
       <div className="wizard-shared-plan-head"><strong>{t("当前备份设置")}</strong><button type="button" className="wxv-btn" aria-expanded={editingSharedPlan} aria-controls="wizard-shared-plan-editor" disabled={savePending} onClick={() => setEditingSharedPlan(value => !value)}>{editingSharedPlan ? t("收起设置") : t("修改统一设置")}</button></div>
@@ -197,7 +201,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
         <div className="plan-rows plan-master">
         {wizard ? <Row label={t("自动备份")} desc={t("关闭后，所有平台暂停自动生成备份任务")}><Switch checked={settings.sync.enabled} onChange={next => update(current => ({ ...current, sync: { ...current.sync, enabled: next } }))} label={t("所有平台自动备份")} /></Row> :
           <Row label={t("后台备份")} desc={runtime.paused ? t("后台备份已暂停，重启后仍保持暂停。") : t("已连接的平台按统一周期自动备份。") }>
-            <BackupRuntimeSwitch onError={setError}/>
+            <BackupRuntimeSwitch onError={setError} disabled={savePending} onBusy={setSwitchPending} onSaved={() => load(false)}/>
           </Row>}
         </div>
         <fieldset disabled={wizard && !settings.sync.enabled} className="plan-rows" style={{ border: 0, margin: 0, minWidth: 0 }}>

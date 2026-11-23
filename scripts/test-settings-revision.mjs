@@ -811,11 +811,21 @@ assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
 for (const hook of backupView.hooks) hook?.cleanup?.();
 const scheduleView = { hooks: [] }, scheduleCalls = [];
 let finishPause, failPause = false;
+let scheduleSettings = { ...backupInitial, chat: { ...backupInitial.chat, sync_interval_seconds: 60 } };
 invoke = (command, args) => {
   scheduleCalls.push({ command, args });
-  if (command === 'app_settings_get') return Promise.resolve({ ...backupInitial, chat: { ...backupInitial.chat, sync_interval_seconds: 60 } });
+  if (command === 'app_settings_get') return Promise.resolve(scheduleSettings);
   if (command === 'chat_accounts') return Promise.resolve([{ id: 'A', source: 'wechat' }]);
-  if (command === 'task_runtime_pause') return new Promise((resolve, reject) => { finishPause = () => { if (failPause) reject('pause failed'); else { backupRuntime = { ...backupRuntime, paused: args.paused }; resolve(); } }; });
+  if (command === 'task_runtime_pause') return new Promise((resolve, reject) => { finishPause = () => { if (failPause) reject('pause failed'); else {
+    backupRuntime = { ...backupRuntime, paused: args.paused };
+    scheduleSettings = { ...scheduleSettings, user_settings_revision: scheduleSettings.user_settings_revision + 1, sync: { ...scheduleSettings.sync, enabled: !args.paused } };
+    resolve();
+  } }; });
+  if (command === 'app_settings_save') {
+    assert.equal(args.value.user_settings_revision, scheduleSettings.user_settings_revision, 'the settings queue must reload the revision committed by the task switch');
+    scheduleSettings = { ...args.value, user_settings_revision: args.value.user_settings_revision + 1 };
+    return Promise.resolve(scheduleSettings);
+  }
   throw Error(command);
 };
 render(scheduleView, () => BackupSchedule({})); await flush();
@@ -834,6 +844,8 @@ assert.deepEqual(scheduleCalls.filter(call => call.command === 'task_runtime_pau
 controlTree = renderControl();
 assert.equal(find(controlTree, node => node.props?.role === 'switch').props['aria-busy'], true);
 assert.equal(find(controlTree, node => node.props?.role === 'switch').props.disabled, true);
+tree = render(scheduleView, () => BackupSchedule({}));
+assert.ok(elements(tree).some(node => node.type === 'fieldset' && node.props.disabled), 'configuration edits cannot race the task switch');
 assert.ok(!elements(controlTree).some(node => node.props?.children === '正在保存…'), 'a fast toggle does not flash loading copy');
 finishPause(); await flush();
 controlTree = renderControl();
@@ -851,6 +863,10 @@ assert.equal(find(controlTree, node => node.props?.role === 'switch').props.disa
 tree = render(scheduleView, () => BackupSchedule({}));
 assert.ok(elements(tree).some(node => String(node.props?.children).includes('pause failed')));
 assert.ok(!scheduleCalls.some(call => call.command === 'app_settings_save'), 'pause uses the task action without rewriting backup configuration');
+find(tree, node => node.type?.name === 'Pills' && node.props.label === '常用间隔').props.onChange(300); await flush();
+assert.equal(scheduleSettings.chat.sync_interval_seconds, 300);
+assert.equal(scheduleSettings.sync.enabled, false, 'editing the schedule must not resurrect the old enabled value');
+assert.equal(scheduleCalls.find(call => call.command === 'app_settings_save').args.value.user_settings_revision, 101);
 for (const hook of controlView.hooks) hook?.cleanup?.();
 for (const hook of scheduleView.hooks) hook?.cleanup?.();
 const { WizardSessionPicker } = loadModule('../src/features/connectors/wizard/WizardSessionPicker.tsx');

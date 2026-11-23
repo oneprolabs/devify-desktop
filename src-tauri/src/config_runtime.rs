@@ -41,6 +41,31 @@ pub struct Mutation {
     pub body: serde_json::Value,
 }
 
+/// Legacy clients stored two switches. Reading either disabled value must keep
+/// backup off; only an explicit user edit enables it and repairs both fields.
+pub fn backup_enabled(value: &AppSettings) -> bool {
+    value.sync.enabled && !value.runtime.paused
+}
+
+pub fn set_backup_enabled(value: &mut AppSettings, enabled: bool) {
+    value.sync.enabled = enabled;
+    value.runtime.paused = !enabled;
+}
+
+pub fn enqueue_current_sources(data: &Path, value: &mut AppSettings) -> Result<(), String> {
+    let accounts: std::collections::BTreeSet<_> = value.chat.allowed_usernames.keys()
+        .chain(value.runtime.sources.keys()).cloned().collect();
+    for account in accounts {
+        if let Ok(owner) = local_owner(data, value, &account) {
+            if value.runtime.sources.get(&account).and_then(|s| s.owner.as_ref())
+                .is_none_or(|old| same_principal(old, &owner)) {
+                enqueue(value, owner)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn payload(value: &AppSettings, account: &str, draft: bool) -> serde_json::Value {
     let names = value
         .chat
@@ -61,7 +86,7 @@ pub fn payload(value: &AppSettings, account: &str, draft: bool) -> serde_json::V
         .sources
         .get(account)
         .is_none_or(|s| s.backup_enabled != Some(false))
-        && value.sync.enabled
+        && backup_enabled(value)
         && if crate::whatsapp::is_account(account) {
             value.connectors.whatsapp_enabled
         } else {

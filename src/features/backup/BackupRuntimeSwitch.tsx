@@ -4,7 +4,13 @@ import { useTaskRuntime, refreshTaskRuntime } from '../tasks/taskRuntime';
 import { t, tf } from '../../shared/i18n/locale';
 import './backup-runtime-switch.css';
 
-export function BackupRuntimeSwitch({ showLabel = false, onError }: { showLabel?: boolean; onError: (message: string) => void }) {
+export function BackupRuntimeSwitch({ showLabel = false, onError, disabled = false, onBusy, onSaved }: {
+  showLabel?: boolean;
+  onError: (message: string) => void;
+  disabled?: boolean;
+  onBusy?: (busy: boolean) => void;
+  onSaved?: () => Promise<void>;
+}) {
   const runtime = useTaskRuntime();
   const [pending, setPending] = useState(false);
   const locked = useRef(false);
@@ -13,23 +19,24 @@ export function BackupRuntimeSwitch({ showLabel = false, onError }: { showLabel?
   context.current = runtime.context;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const toggle = async () => {
-    if (locked.current) return;
+    if (locked.current || disabled) return;
     locked.current = true;
     const owner = context.current;
-    setPending(true); onError('');
+    setPending(true); onBusy?.(true); onError('');
     try {
       await invoke('task_runtime_pause', { paused: !runtime.paused });
       await refreshTaskRuntime();
+      if (mounted.current && owner === context.current) await onSaved?.();
     } catch (reason) {
       if (mounted.current && owner === context.current) onError(tf('操作未完成：{0}', String(reason)));
     } finally {
       locked.current = false;
-      if (mounted.current) setPending(false);
+      if (mounted.current) { setPending(false); onBusy?.(false); }
     }
   };
   return <div className="backup-runtime-control">
     {showLabel && <span>{t('后台备份')}</span>}
-    <button type="button" role="switch" aria-label={t('后台备份')} aria-checked={!runtime.paused} aria-busy={pending} disabled={pending}
+    <button type="button" role="switch" aria-label={t('后台备份')} aria-checked={!runtime.paused} aria-busy={pending} disabled={pending || disabled}
       className={`backup-runtime-switch${runtime.paused ? '' : ' on'}`} onClick={() => void toggle()}><span /></button>
   </div>;
 }

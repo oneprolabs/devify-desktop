@@ -164,15 +164,27 @@ pub(super) async fn connector_setup_state(
 
 #[tauri::command]
 pub(super) fn task_runtime_pause(app: AppHandle, paused: bool) -> Result<(), String> {
-    settings::update(&app_data(&app), |s| {
-        s.runtime.paused = paused;
-        Ok(())
-    })?;
+    set_backup_paused(&app_data(&app), paused)?;
     if paused {
         abort_in_flight_uploads();
     }
     TASK_WAKE.notify_one();
     emit_task_runtime(&app);
+    // The durable local switch takes effect immediately, including while offline.
+    // Scheduling waits for this same transaction's configuration acknowledgement.
+    tauri::async_runtime::spawn(async move {
+        let _ = flush_config_outbox(&app).await;
+        TASK_WAKE.notify_one();
+        emit_task_runtime(&app);
+    });
+    Ok(())
+}
+
+pub(super) fn set_backup_paused(data: &Path, paused: bool) -> Result<(), String> {
+    settings::update(data, |s| {
+        config_runtime::set_backup_enabled(s, !paused);
+        config_runtime::enqueue_current_sources(data, s)
+    })?;
     Ok(())
 }
 
@@ -265,7 +277,7 @@ pub(super) fn task_runtime_status(app: AppHandle) -> Result<serde_json::Value, S
     jobs.extend(summaries);
     let sources = source_snapshots(&s, &owners);
     Ok(
-        serde_json::json!({"context":context,"revision":s.settings_revision,"sources":sources,"paused":s.runtime.paused,"running":running,"pending_config":s.runtime.pending.iter().filter(|m|config_runtime::local_owner(&data,&s,&m.owner.account_id).is_ok_and(|o|config_runtime::same_principal(&o,&m.owner))).count(),"error":error,"jobs":jobs}),
+        serde_json::json!({"context":context,"revision":s.settings_revision,"sources":sources,"paused":!config_runtime::backup_enabled(&s),"running":running,"pending_config":s.runtime.pending.iter().filter(|m|config_runtime::local_owner(&data,&s,&m.owner.account_id).is_ok_and(|o|config_runtime::same_principal(&o,&m.owner))).count(),"error":error,"jobs":jobs}),
     )
 }
 

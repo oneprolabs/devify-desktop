@@ -650,3 +650,125 @@ fn backup_changes_only_invalidate_affected_accounts() {
     assert!(account_backup_changed(&before, &after, whatsapp));
     assert!(account_backup_changed(&before, &after, wechat));
 }
+
+
+#[test]
+fn backup_switch_legacy_states_never_silently_enable_uploads() {
+    for enabled in [false, true] {
+        for paused in [false, true] {
+            let mut value = settings::AppSettings::default();
+            value.sync.enabled = enabled;
+            value.runtime.paused = paused;
+            let effective = config_runtime::backup_enabled(&value);
+            assert_eq!(effective, enabled && !paused);
+            assert_eq!(config_runtime::payload(&value, "local", false)["enabled"], effective);
+            config_runtime::set_backup_enabled(&mut value, effective);
+            assert_eq!(value.sync.enabled, effective);
+            assert_eq!(value.runtime.paused, !effective);
+        }
+    }
+}
+
+#[test]
+fn backup_switch_repairs_real_state_and_durably_submits_each_owned_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let owner = identity(data, 1);
+    let mut foreign = owner.clone();
+    foreign.account_id = "foreign".into();
+    foreign.user_id = 2;
+    settings::update(data, |s| {
+        // This is the production failure: UI unpaused, real switch disabled.
+        s.sync.enabled = false;
+        s.runtime.paused = false;
+        s.chat.allowed_usernames.insert(owner.account_id.clone(), vec!["chosen".into()]);
+        s.runtime.sources.insert(owner.account_id.clone(), config_runtime::Source {
+            owner: Some(owner.clone()), completed: true,
+            acknowledged: Some(config_runtime::payload(s, &owner.account_id, false)),
+            ..Default::default()
+        });
+        s.runtime.sources.insert("wa@s.whatsapp.net".into(), config_runtime::Source {
+            owner: Some(settings::UploadOwner { account_id: "wa@s.whatsapp.net".into(), ..owner.clone() }),
+            draft: true, wizard_step: Some("sessions".into()), ..Default::default()
+        });
+        s.runtime.sources.insert("foreign".into(), config_runtime::Source {
+            owner: Some(foreign.clone()), completed: true, ..Default::default()
+        });
+        Ok(())
+    }).unwrap();
+    let revision = settings::load(data).unwrap().user_settings_revision;
+    runtime_commands::set_backup_paused(data, false).unwrap();
+    let opened = settings::load(data).unwrap();
+    assert!(config_runtime::backup_enabled(&opened));
+    assert!(opened.user_settings_revision > revision);
+    assert_eq!(opened.runtime.pending.len(), 2);
+    assert!(opened.runtime.pending.iter().all(|m| m.owner.user_id == 1));
+    let request = opened.runtime.pending.iter().find(|m| m.owner.account_id == owner.account_id).unwrap();
+    assert_eq!(request.body["payload"]["enabled"], true);
+    assert_eq!(request.body["payload"]["usernames"], serde_json::json!(["chosen"]));
+    assert!(!config_runtime::ready(&opened, &owner), "no execution before configuration acknowledgement");
+    assert!(opened.runtime.sources["wa@s.whatsapp.net"].draft);
+    assert!(!opened.runtime.sources["wa@s.whatsapp.net"].completed);
+    runtime_commands::set_backup_paused(data, false).unwrap();
+    assert_eq!(settings::load(data).unwrap().runtime.pending.len(), 2, "repeated enabling does not duplicate configuration tasks");
+    // Acknowledge exactly the immutable requests the service would confirm.
+    settings::update(data, |s| {
+        for m in s.runtime.pending.drain(..) {
+            let source = s.runtime.sources.get_mut(&m.owner.account_id).unwrap();
+            source.acknowledged = Some(m.body["payload"].clone());
+        }
+        Ok(())
+    }).unwrap();
+    let ready = settings::load(data).unwrap();
+    assert!(config_runtime::ready(&ready, &owner));
+    assert!(task_runtime::source_needs_execution(&ready, &owner, Local::now()));
+    runtime_commands::set_backup_paused(data, true).unwrap();
+    let paused = settings::load(data).unwrap();
+    assert!(!config_runtime::backup_enabled(&paused));
+    assert!(!paused.sync.enabled);
+    assert!(paused.runtime.paused);
+    assert!(!config_runtime::ready(&paused, &owner));
+    assert!(paused.runtime.pending.iter().all(|m| m.body["payload"]["enabled"] == false));
+}
+
+#[test]
+fn backup_switch_submission_failure_rolls_back_the_switch_with_its_outbox() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let owner = identity(data, 1);
+    settings::update(data, |s| {
+        s.chat.allowed_usernames.insert(owner.account_id.clone(), vec!["chosen".into()]);
+        s.runtime.sources.insert(owner.account_id.clone(), config_runtime::Source {
+            owner: Some(owner.clone()), completed: true, ..Default::default()
+        });
+        for n in 0..128 {
+            s.runtime.pending.push(config_runtime::Mutation {
+                owner: owner.clone(), body: serde_json::json!({"mutation_id":n,"payload":{"enabled":false}})
+            });
+        }
+        Ok(())
+    }).unwrap();
+    let before = settings::load(data).unwrap();
+    assert!(runtime_commands::set_backup_paused(data, false).is_err());
+    let after = settings::load(data).unwrap();
+    assert_eq!(after.settings_revision, before.settings_revision);
+    assert!(!after.sync.enabled);
+    assert_eq!(after.runtime.pending.len(), 128);
+}
+
+#[test]
+fn backup_switch_is_restored_only_for_its_own_login_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    identity(data, 1);
+    config_runtime::activate_profile(data).unwrap();
+    runtime_commands::set_backup_paused(data, false).unwrap();
+    assert!(config_runtime::backup_enabled(&settings::load(data).unwrap()));
+    identity(data, 2);
+    config_runtime::activate_profile(data).unwrap();
+    assert!(!config_runtime::backup_enabled(&settings::load(data).unwrap()));
+    runtime_commands::set_backup_paused(data, true).unwrap();
+    identity(data, 1);
+    config_runtime::activate_profile(data).unwrap();
+    assert!(config_runtime::backup_enabled(&settings::load(data).unwrap()));
+}

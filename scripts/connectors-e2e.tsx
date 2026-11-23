@@ -30,8 +30,8 @@ const capture = {pending:false,needs_cleanup:false,stage:'idle',transaction_id:n
 const feedbackDraft = () => ({client_id:'00000000-0000-4000-8000-000000000001',environment:{app_version:'0.1.17',platform:'macos',arch:'aarch64',os_version:'macOS 15.7',wechat_version:'4.1.2'},related_batch_ids:[],receiver:'https://example.invalid',owner_id:1,category:'other',description:'',page:'settings',screenshots:[] as {data:string}[],diagnostics:null as any,attempted:false});
 const state = {
  summaryConfig:{schema_version:1,version:'fixture-v7',default_scenario:'three_part',max_instructions_chars:4000,scenarios:[['summary','总结','只概括主要内容、结论与当前结果。'],['action_items','待办','只列行动、负责人、期限及待确认项。'],['timeline','时间线','只按时间顺序整理事情经过。'],['three_part','综合分析','总结、时间线和待办三项都有。'],['custom','自定义','描述希望从聊天记录中得到什么，自定关注点和输出结构。']].map(([id,name,description])=>({id,name,description,requires_instructions:id==='custom',sha256:'fixture-'+id,budgets:{cloud:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:2000,reserved_overhead_bytes:64,max_content_bytes:9936},local_cli:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:1800,reserved_overhead_bytes:2048,max_content_bytes:8152}}}))},summaryConfigError:'',
- runtime:{context:'e2e',revision:1,paused:false,running:false,pending_config:0,jobs:[] as any[],sources:accounts.map(a=>({account_id:a.id,platform:a.source,setup_complete:true,backup_enabled:true,wizard_step:null as 'sessions'|'backup'|null}))},
- settings:{...defaultSettings(),user_settings_revision:1,active_account_id:wx,devify:{...defaultSettings().devify,...(query.has('anonymous')?{base_url:query.has('no-server')?'':'https://example.invalid'}:{})},language:{...defaultSettings().language,ui:query.has('english')?'English':'中文'}},
+ runtime:{context:'e2e',revision:1,paused:query.has('backup-disabled'),running:false,pending_config:0,jobs:[] as any[],sources:accounts.map(a=>({account_id:a.id,platform:a.source,setup_complete:true,backup_enabled:true,wizard_step:null as 'sessions'|'backup'|null}))},
+ settings:{...defaultSettings(),sync:{...defaultSettings().sync,enabled:!query.has('backup-disabled')},user_settings_revision:1,active_account_id:wx,devify:{...defaultSettings().devify,...(query.has('anonymous')?{base_url:query.has('no-server')?'':'https://example.invalid'}:{})},language:{...defaultSettings().language,ui:query.has('english')?'English':'中文'}},
  calls:[] as Array<{command:string;args:unknown}>, errors:[] as string[], writes:[] as unknown[],
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
@@ -64,7 +64,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
   const clone=<T,>(x:T):T=>structuredClone(x);
   switch(command){
    case 'plugin:resources|close':return null;
-   case 'app_settings_get':return clone(state.settings);
+   case 'app_settings_get':return clone({...state.settings,sync:{...state.settings.sync,enabled:state.settings.sync.enabled&&!state.runtime.paused}});
    case 'network_connection_get':return state.networkMode;
    case 'network_connection_set':state.networkMode=args.mode;return state.networkMode;
    case 'devify_spaces':return [{id:'e2e-space',name:'个人空间',kind:'personal',role:'owner'}];
@@ -116,14 +116,18 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
      (window as any).__TASK_EMIT__();
      return clone(state.settings);
    }
-   case 'task_runtime_status':return clone(state.runtime);
-   case 'task_runtime_pause':state.runtime.paused=args.paused;state.runtime.revision++;return null;
+   case 'task_runtime_status':return clone({...state.runtime,paused:state.runtime.paused||!state.settings.sync.enabled});
+   case 'task_runtime_pause':{
+    state.runtime.paused=args.paused;state.settings.sync.enabled=!args.paused;
+    state.settings.user_settings_revision++;state.runtime.revision++;(window as any).__TASK_EMIT__();return null;
+   }
    case 'task_runtime_retry':return null;
    case 'app_settings_save':{
     if(state.saveDelay) await new Promise(resolve=>setTimeout(resolve,state.saveDelay));
     if(state.failNextSave){state.failNextSave=false;throw 'SETTINGS_CONFLICT: E2E concurrent edit';}
     if(args.value.user_settings_revision!==state.settings.user_settings_revision)throw 'SETTINGS_CONFLICT: stale E2E revision';
     state.settings=clone({...args.value,user_settings_revision:state.settings.user_settings_revision+1});state.writes.push(clone(state.settings));
+    state.runtime.paused=!state.settings.sync.enabled;state.runtime.revision++;(window as any).__TASK_EMIT__();
     for(const id of eventHandlers.get('development-service-changed')??[]) callbacks.get(id)?.({event:'development-service-changed',id,payload:state.settings.devify.base_url});
     return clone(state.settings);
    }
