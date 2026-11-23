@@ -498,3 +498,65 @@ export async function runBackupSwitchUiE2E(task, base = 'http://localhost:1434',
   console.log('PASS backup switch: disabled legacy view, tasks/settings agreement, fresh revisions, schedule preservation and pending-save exclusion (synthetic IPC)');
   return { scenarios: 5 };
 }
+
+
+// Real React shell with synthetic IPC, not a server integration test.
+export async function runEventRelevanceUiE2E(task, base = 'http://localhost:1434', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  await page.goto(`${base}/scripts/connectors-e2e.html?analysis`);
+  await page.waitForFunction(() => Boolean(window.__E2E__));
+  await page.evaluate(() => {
+    window.__E2E__.analysisEvents = Array.from({length:101}, (_, i) => ({
+      id:i+1, title:i === 0 ? '确认上线窗口' : i === 60 ? '已完成的相关事项' : `分类测试事项 ${i+1}`,
+      content:'负责人已确认，等待下一步处理。', status:i === 60 ? 'done' : 'open',
+      viewer_relevance:i < 60 ? 'my_todo' : 'related', viewer_evidence_message_ids:[9001],
+      evidence:[
+        {id:9001,message_id:9002,sender_name:'李四',content:'普通原文：需要确认时间。'},
+        {id:9002,message_id:9001,sender_name:'张三',content:'个人依据：我来确认上线时间。'},
+      ],
+    }));
+  });
+  await page.snapshot();
+  await page.click('text="待办"');
+  await page.waitForSelector('.event-workspace .analysis-items button');
+  const tabs = () => page.evaluate(() => [...document.querySelectorAll('.analysis-pills button')].map(n => n.textContent));
+  const lastRequest = () => page.evaluate(() => window.__E2E__.calls.filter(c => c.command === 'devify_analysis_list').at(-1).args);
+  assert.deepEqual(await lastRequest(), {kind:'events',spaceId:'e2e-space',page:1,pageSize:50,viewerRelevance:'my_todo',includeRelevanceCounts:false});
+  assert.equal(await page.evaluate(() => document.querySelector('.analysis-pills button[aria-pressed="true"]').textContent), '我的待办60');
+  assert.deepEqual(await tabs(), ['我的待办60','与我有关41','其他0']);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.analysis-items button').length), 50);
+  await page.snapshot();
+  await page.click('text="进展与原文"');
+  await page.waitForSelector('.analysis-raw-item.event-personal-evidence');
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.analysis-raw-item.event-personal-evidence')].map(n => n.textContent)), ['张三 · 原文依据个人依据：我来确认上线时间。']);
+  await page.screenshot({path:'/tmp/aimychats-event-relevance-filters.png'});
+  await page.click('text="下一页"');
+  await page.waitForFunction(() => document.querySelector('.event-pagination')?.textContent.includes('第 2 / 2 页') && document.querySelector('.analysis-items button')?.textContent.includes('分类测试事项 51'));
+  assert.equal((await lastRequest()).page, 2);
+  assert.deepEqual(await tabs(), ['我的待办60','与我有关41','其他0']);
+  await page.snapshot();
+  await page.click('.analysis-pills button:nth-child(2)');
+  await page.waitForFunction(() => document.querySelector('.analysis-items button')?.textContent.includes('已完成的相关事项'));
+  assert.equal((await lastRequest()).page, 1);
+  assert.equal((await lastRequest()).viewerRelevance, 'related');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.analysis-items button').length), 41);
+  assert.ok(await page.evaluate(() => document.querySelector('.analysis-items button').textContent.includes('已完成 · 与我有关')));
+  await page.click('.analysis-pills button:nth-child(3)');
+  await page.waitForSelector('.event-empty');
+  assert.equal((await lastRequest()).viewerRelevance, 'other');
+  assert.ok(await page.evaluate(() => document.querySelector('.event-empty').textContent.includes('当前筛选下没有记录')));
+  await page.snapshot();
+  await page.click('.analysis-pills button:nth-child(1)');
+  await page.waitForFunction(() => document.querySelector('.analysis-items button')?.textContent.includes('确认上线窗口'));
+  assert.equal((await lastRequest()).page, 1);
+  assert.ok(await page.evaluate(() => [...document.querySelectorAll('.analysis-pills button')].every(n => n.scrollWidth <= n.clientWidth)), 'personal categories fit the sidebar');
+  await page.screenshot({path:'/tmp/aimychats-my-todos-preview.png'});
+  await page.snapshot();
+  await page.click('text="关联待办"');
+  await page.waitForSelector('.analysis-picker-row');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.analysis-picker-row').length), 100, 'linking retains candidates from other pages and categories');
+  assert.deepEqual(await lastRequest(), {kind:'events',spaceId:'e2e-space',page:1});
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  console.log('Three personal categories, default My to-dos, server counts, paging, independent status, source highlighting and space-wide linking passed in Ego.');
+  console.log(await page.snapshot());
+}

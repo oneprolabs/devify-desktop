@@ -336,7 +336,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
               : <div className="evidence-list">{event.evidence.map(row => <button
                 key={row.id}
                 type="button"
-                className="evidence-row"
+                className={`evidence-row${isViewerEvidence(event, row.message_id) ? ' event-personal-evidence' : ''}`}
                 onClick={() => openMessage(row)}
               >
                 <span className="evidence-row-main">

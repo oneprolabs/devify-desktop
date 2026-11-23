@@ -2814,4 +2814,9 @@ export const en: Record<string, string> = {
   "修改地址：在登录弹窗底部点击「连接设置」。": "To change the address, click Connection settings at the bottom of this dialog.",
   "修改地址：登录… → 连接设置": "Change address: Sign in… → Connection settings",
   "修改地址：设置 → 账户": "Change address: Settings → Account",
+  "服务端尚不支持个人分类，请更新服务端后重试。": "This server does not support personal categories yet. Update the server and retry.",
+  "搜索当前页待办": "Search this page of to-dos",
+  "{0} 个待办 · 跨全部会话": "{0} to-dos across all conversations",
+  "待办分页": "To-do pages",
+  "第 {0} / {1} 页": "Page {0} of {1}",
 };

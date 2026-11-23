@@ -5,6 +5,13 @@ export type ViewerEventRelevance = {
   viewer_evidence_message_ids?: number[];
 };
 
+export type RelevanceCounts = { my_todo: number; related: number; other: number };
+export function readRelevanceCounts(value: unknown): RelevanceCounts | null {
+  if (!value || typeof value !== 'object') return null;
+  const counts = value as RelevanceCounts;
+  return [counts.my_todo, counts.related, counts.other].every(count => Number.isSafeInteger(count) && count >= 0) ? counts : null;
+}
+
 export function viewerRelevanceLabel(event: ViewerEventRelevance): string {
   switch (event.viewer_relevance) {
     case 'my_todo': return t('我的待办');

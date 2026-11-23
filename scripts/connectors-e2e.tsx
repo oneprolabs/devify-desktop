@@ -87,7 +87,16 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     state.analysisPreferences=clone(args.preferences);return clone(state.analysisPreferences);
    }
    case 'devify_topics':if(state.reportReadError)throw state.reportReadError;return clone(state.dailyPlans);
-   case 'devify_analysis_list':{const list=args.kind==='events'?state.analysisEvents:state.analysisReports;return {list:clone(list),pagination:{total:list.length,page:1}};}
+   case 'devify_analysis_list':{
+    if(args.kind!=='events')return {list:clone(state.analysisReports),pagination:{total:state.analysisReports.length,page:1}};
+    const counts={my_todo:0,related:0,other:0};
+    for(const row of state.analysisEvents)counts[(row.viewer_relevance??'other') as keyof typeof counts]++;
+    const list=state.analysisEvents.filter(row=>!args.viewerRelevance||(row.viewer_relevance??'other')===args.viewerRelevance);
+    if(!args.pageSize)return {list:clone(list),pagination:{total:list.length,page:1,next:null}};
+    const page=args.page??1,size=args.pageSize??100,start=(page-1)*size;
+    return {list:clone(list.slice(start,start+size)),pagination:{total:list.length,page,page_size:size,next:start+size<list.length?'next':null},
+     ...((args.includeRelevanceCounts||args.viewerRelevance)?{relevance_counts:counts}:{})};
+   }
    case 'devify_analysis_detail':return clone((args.kind==='events'?state.analysisEvents:state.analysisReports).find(row=>row.id===args.itemId));
    case 'devify_event_notes':return clone(state.analysisNotes[args.eventId]??[]);
    case 'devify_event_relations':return [];
