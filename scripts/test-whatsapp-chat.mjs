@@ -115,6 +115,10 @@ const groupMessage = { ...incoming, sender: 'member@lid', sender_name: '陈成�
 assert.deepEqual(messageAvatar(groupMessage, { ...partner, is_group: true }, account), {
   username: groupMessage.sender, label: '陈', color: avatarColor(groupMessage.sender),
 });
+assert.deepEqual(messageAvatar({ ...outgoing, sender: 'group@g.us' }, { ...partner, is_group: true }, account, '林同学'), selfAvatar);
+assert.deepEqual(messageAvatar({ ...incoming, sender: 'group@g.us', sender_name: null }, { ...partner, is_group: true }, account), {
+  username: null, label: '未', color: avatarColor('whatsapp:unknown-member'),
+});
 const wechatMessage = { ...outgoing, source_shard: 'message_0', sender: wechat, sender_name: '周同学' };
 assert.deepEqual(messageAvatar(wechatMessage, wechatSession, account), {
   username: wechat, label: '周', color: avatarColor(wechat),

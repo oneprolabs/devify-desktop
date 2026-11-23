@@ -61,19 +61,22 @@ export function messageAvatar(
   accountId: string,
   accountDisplay?: string | null,
 ) {
-  if (message.source_shard === 'whatsapp' && !session?.is_group) {
+  if (message.source_shard === 'whatsapp') {
     if (message.is_self) {
       // Native account discovery uses the phone number when no profile name is available.
       const display = accountDisplay?.trim();
       const nickname = display && display !== accountId.split('@')[0] ? display : t("我");
       return { username: accountId, label: initial(nickname), color: avatarColor(accountId || 'whatsapp:self') };
     }
-    if (session) {
+    if (session && !session.is_group) {
       return {
         username: session.username,
         label: initial(session.display.trim() || message.sender_name || '?'),
         color: avatarColor(session.username),
       };
+    }
+    if (session?.is_group && (!message.sender || message.sender.endsWith('@g.us'))) {
+      return { username: null, label: initial(t("未知成员")), color: avatarColor('whatsapp:unknown-member') };
     }
   }
   return {

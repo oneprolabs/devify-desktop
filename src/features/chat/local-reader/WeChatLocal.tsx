@@ -1629,7 +1629,9 @@ export default function WeChatLocal({
       {orderedWithDates.map(({ message, divider, stamp }) => {
         const base = kindBase(message.kind);
         const isWhatsApp = message.source_shard === 'whatsapp';
-        const system = !isWhatsApp && (base === 10000 || base === 10002);
+        const system = isWhatsApp
+          ? active?.is_group && message.kind === 6
+          : base === 10000 || base === 10002;
         const placeholder = isPlaceholder(message.text);
         const media = !isWhatsApp && !placeholder && base !== 1;
         const imageMessage = !isWhatsApp && base === 3;
@@ -1671,6 +1673,7 @@ export default function WeChatLocal({
           );
         }
         const avatar = messageAvatar(message, active, accountId, accountDisplay);
+        const sender = isWhatsApp && active?.is_group ? avatar.username : message.sender;
         return (
           <div key={`${message.local_id}-${message.time}`}>
             {divider && <div className="wxv-divider">{divider}</div>}
@@ -1721,7 +1724,7 @@ export default function WeChatLocal({
               )}
               <div className="wxv-msg-body">
                 {(onChatState || (active?.is_group && !message.is_self)) && (
-                  <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || message.sender || t("未知成员"))}{onChatState && <time className="wxv-message-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}</span>
+                  <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || sender || t("未知成员"))}{onChatState && <time className="wxv-message-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}</span>
                 )}
                 <div className={`wxv-bubble ${imageMessage || videoMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
                   {imageMessage || voiceMessage || videoMessage ? null : placeholder ? (
