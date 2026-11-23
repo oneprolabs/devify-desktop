@@ -24,7 +24,7 @@ function steps(mode: HomeMode, source: string, sessions = 0, syncIntervalSeconds
     { number: '1', title: t("连接来源"), description: mode === 'new' ? t("选一个聊天来源，打开连接向导，按提示授权。会逐步检查权限。") : tf("已连接：{0}", source), state: step(0) },
     { number: '2', title: t("选择要备份的会话"), description: mode === 'new' ? t("在导入管理里勾选要备份的私聊和群聊，未勾选的不会导入。") : sessions ? tf("已选 {0} 个会话", sessions.toLocaleString()) : t("还没有选择会话，先去勾选要备份的聊天。"), state: step(1) },
     { number: '3', title: t("设置备份周期"), description: mode === 'new' ? t("所有平台共用一套备份设置，默认沿用当前设置。") : tf("每 {0} 分钟", minutes), state: step(2) },
-    { number: '4', title: t("第一次备份"), description: mode === 'new' ? t("把已选会话的记录加密上传，完成后就能看到事件、总结和报告。") : t("完成后就能看到事件、总结和报告"), state: step(3) },
+    { number: '4', title: t("第一次备份"), description: mode === 'new' ? t("把已选会话的记录加密上传，完成后就能看到待办、总结和报告。") : t("完成后就能看到待办、总结和报告"), state: step(3) },
   ];
 }
 
@@ -43,7 +43,7 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
       <header className="chat-landing-head">
         <p className="chat-landing-eyebrow">{isNew ? t("欢迎使用 AIMyChats") : t("还差最后一步")}</p>
         <h1>{isNew ? t("先连接一个聊天来源") : needsImport ? t("已连接，还没有选择要备份的会话") : t("已连接，还没有备份过任何内容")}</h1>
-        <p>{isNew ? t("AIMyChats 在你的电脑上只读取聊天记录，加密备份后，再帮你整理成事件、总结和报告。数据留在本机，随时可以断开。") : needsImport ? t("未勾选的聊天不会导入，也不会出现在备份里。") : t("备份完成前，这里还没有可看的内容。现在做第一次备份，之后会按你设置的周期自动进行。")}</p>
+        <p>{isNew ? t("AIMyChats 在你的电脑上只读取聊天记录，加密备份后，再帮你整理成待办、总结和报告。数据留在本机，随时可以断开。") : needsImport ? t("未勾选的聊天不会导入，也不会出现在备份里。") : t("备份完成前，这里还没有可看的内容。现在做第一次备份，之后会按你设置的周期自动进行。")}</p>
       </header>
 
       {isNew ? <section className="chat-landing-connectors" aria-label={t("连接聊天来源")}>

@@ -55,7 +55,7 @@ type DrawerMessage = {
 type Conversation = { id: number; title?: string | null; source_conversation_id?: string | null };
 type Page<T> = { list?: T[]; pagination?: { total?: number; page?: number; page_size?: number; previous?: string | null } };
 
-const KIND_LABEL: Record<EvidenceTarget['kind'], string> = { message: '原始对话', note: '整理信息', event: '事件' };
+const KIND_LABEL: Record<EvidenceTarget['kind'], string> = { message: '原始对话', note: '整理信息', event: '待办' };
 const STATUS_LABEL: Record<string, string> = { open: '未完成', in_progress: '进行中', done: '已完成' };
 
 function stamp(value?: string | null): string {
@@ -285,17 +285,17 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
           </section>
 
           <section className="evidence-section">
-            <div className="evidence-section-title">{t("关联事件")}<span className="evidence-count">{note.event_ids?.length ?? 0}</span></div>
+            <div className="evidence-section-title">{t("关联待办")}<span className="evidence-count">{note.event_ids?.length ?? 0}</span></div>
             {!note.event_ids?.length
-              ? <p className="evidence-hint">{t("这条整理还没有关联事件。")}</p>
+              ? <p className="evidence-hint">{t("这条整理还没有关联待办。")}</p>
               : <div className="evidence-list">{note.event_ids.map(id => <button
                 key={id}
                 type="button"
                 className="evidence-row"
                 onClick={() => onNavigate({ kind: 'event', id })}
               >
-                <span className="evidence-row-main"><span className="evidence-row-title">{t("事件 #")}{id}</span></span>
-                <span className="evidence-row-action">{t("查看事件 →")}</span>
+                <span className="evidence-row-main"><span className="evidence-row-title">{t("待办 #")}{id}</span></span>
+                <span className="evidence-row-action">{t("查看待办 →")}</span>
               </button>)}</div>}
           </section>
         </>}
@@ -311,7 +311,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
           <section className="evidence-section">
             <div className="evidence-section-title">{t("整理结论")}<span className="evidence-count">{notes.length}</span></div>
             {!notes.length
-              ? <p className="evidence-hint">{t("这个事件还没有关联的整理信息。")}</p>
+              ? <p className="evidence-hint">{t("这个待办还没有关联的整理信息。")}</p>
               : <div className="evidence-list">{notes.map(item => <button
                 key={item.id}
                 type="button"
@@ -329,7 +329,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
           <section className="evidence-section">
             <div className="evidence-section-title">{t("原文证据")}<span className="evidence-count">{event.evidence?.length ?? 0}</span></div>
             {!event.evidence?.length
-              ? <p className="evidence-hint">{t("这个事件还没有原文证据。")}</p>
+              ? <p className="evidence-hint">{t("这个待办还没有原文证据。")}</p>
               : <div className="evidence-list">{event.evidence.map(row => <button
                 key={row.id}
                 type="button"
@@ -354,7 +354,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
           type="button"
           className="evidence-btn"
           onClick={() => { onOpenDetail(target); onClose(); }}
-        >{t("打开事件详情")}</button>}
+        >{t("打开待办详情")}</button>}
       </footer>
     </div>
   </aside>, document.body);

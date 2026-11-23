@@ -108,7 +108,7 @@ export function LanguageSettings() {
         <Pills label="聊天总结语言" options={SUMMARY_OPTIONS} value={settings.language.summary} onChange={summary => setLanguage({ summary })}/>
       </div>
       <div className="settings-row">
-        <div className="settings-row-label"><span>{t('服务端内容语言')}</span><small>{t('事件、报告与问答由服务端生成，使用服务端的语言设置。')}</small></div>
+        <div className="settings-row-label"><span>{t('服务端内容语言')}</span><small>{t('待办、报告与问答由服务端生成，使用服务端的语言设置。')}</small></div>
         <span className="settings-value">{t('由服务端管理')}</span>
       </div>
     </section>

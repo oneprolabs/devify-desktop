@@ -19,7 +19,7 @@ export type Section = 'chat' | 'events' | 'topics' | 'reports' | 'ask' | 'tasks'
 
 const primaryItems = [
   { id: 'chat', label: '聊天', icon: RailIcons.chat },
-  { id: 'events', label: '事件', icon: RailIcons.events },
+  { id: 'events', label: '待办', icon: RailIcons.events },
   { id: 'topics', label: '主题', icon: RailIcons.topics },
   { id: 'reports', label: '报告', icon: RailIcons.reports },
   { id: 'ask', label: '问答', icon: RailIcons.ask },

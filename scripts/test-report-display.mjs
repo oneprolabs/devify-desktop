@@ -148,7 +148,7 @@ invoke = command => {
   if (command === 'app_settings_get') return new Promise(() => {});
   throw Error(`unexpected IPC: ${command}`);
 };
-for (const [kind, label] of [['events', '事件'], ['reports', '报告']]) {
+for (const [kind, label] of [['events', '待办'], ['reports', '报告']]) {
   const loading = render({ hooks: [] }, kind);
   assert.equal(loading.type, mocks['../../shared/ui/LoadingSkeleton'].LoadingPage);
   assert.equal(loading.props.title, label);
@@ -273,7 +273,7 @@ console.log('report presentation and CloudAnalysis rendering checks passed');
 
 // A completed event is excluded by the default filter. Cancelling a selected
 // event's in-flight detail must also end loading, even if that request is late.
-const completedEvent={id:601,title:'虚构已完成事件',status:'done',content:'虚构摘要'};
+const completedEvent={id:601,title:'虚构已完成待办',status:'done',content:'虚构摘要'};
 const eventCalls=[],detailResolvers=[];
 invoke=(command,args)=>{
   eventCalls.push({command,args});
@@ -305,10 +305,26 @@ assert.match(text(eventTree),/当前筛选下没有记录/);
 detailResolvers[0](completedEvent);await flush();eventTree=renderEvents();
 assert.equal(hasDetailLoading(eventTree),false,'Late detail completion must not restore the cancelled view');
 assert.ok(!elements(eventTree).some(node=>node.props?.className==='analysis-doc'));
-find(eventTree,node=>node.type==='button'&&text(node)==='查看全部事件').props.onClick();
+find(eventTree,node=>node.type==='button'&&text(node)==='查看全部待办').props.onClick();
 for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
 assert.equal(detailResolvers.length,2,'View all selects the visible event even when focusId is null');
 detailResolvers[1](completedEvent);await flush();eventTree=renderEvents();
 assert.ok(text(byClass(eventTree,'analysis-doc')).includes(completedEvent.title));
 assert.equal(hasDetailLoading(eventTree),false);
 console.log('Event empty-filter, null-focus selection and cancelled-detail loading regressions passed');
+
+// A true empty space directs users to analysis settings; a filtered-empty list
+// continues to offer View All, without implying that event analysis failed.
+invoke=command=>{
+  if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'empty-fixture'}});
+  if(command==='devify_analysis_list')return Promise.resolve({list:[]});
+  if(command==='devify_event_relations')return Promise.resolve([]);
+  throw Error(command);
+};
+const emptyInstance={hooks:[]};
+for(let i=0;i<4;i++){render(emptyInstance,'events');await flush();}
+const emptyTree=render(emptyInstance,'events');
+assert.ok(text(emptyTree).includes('大约每小时分析一次'));
+assert.ok(text(emptyTree).includes('智能分析 → 聊天待办分析'));
+assert.ok(!text(emptyTree).includes('查看全部待办'));
+console.log('Event empty-space analysis cadence and settings guidance passed');
