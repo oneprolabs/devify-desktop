@@ -5047,7 +5047,7 @@ async fn app_settings_save(
         value.automation.last_schedule_signature = stored.automation.last_schedule_signature.clone();
         value.automation.last_schedule_error = stored.automation.last_schedule_error.clone();
         *stored = value;
-        config_runtime::enqueue_current_sources(&app_data(&app), stored)?;
+        config_runtime::enqueue_current_sources(&app_data(&app), stored, stopped_backup)?;
         Ok(())
     })?;
     if stopped_backup { abort_in_flight_uploads(); }

@@ -183,7 +183,7 @@ pub(super) fn task_runtime_pause(app: AppHandle, paused: bool) -> Result<(), Str
 pub(super) fn set_backup_paused(data: &Path, paused: bool) -> Result<(), String> {
     settings::update(data, |s| {
         config_runtime::set_backup_enabled(s, !paused);
-        config_runtime::enqueue_current_sources(data, s)
+        config_runtime::enqueue_current_sources(data, s, paused)
     })?;
     Ok(())
 }

@@ -22,13 +22,18 @@ export function BackupRuntimeSwitch({ showLabel = false, onError, disabled = fal
     if (locked.current || disabled) return;
     locked.current = true;
     const owner = context.current;
+    let saved = false;
     setPending(true); onBusy?.(true); onError('');
     try {
       await invoke('task_runtime_pause', { paused: !runtime.paused });
-      await refreshTaskRuntime();
-      if (mounted.current && owner === context.current) await onSaved?.();
+      saved = true;
+      try {
+        await refreshTaskRuntime();
+      } finally {
+        if (mounted.current && owner === context.current) await onSaved?.();
+      }
     } catch (reason) {
-      if (mounted.current && owner === context.current) onError(tf('操作未完成：{0}', String(reason)));
+      if (mounted.current && owner === context.current) onError(tf(saved ? '设置已保存，但状态刷新失败：{0}' : '操作未完成：{0}', String(reason)));
     } finally {
       locked.current = false;
       if (mounted.current) { setPending(false); onBusy?.(false); }

@@ -69,6 +69,7 @@ let wizardActionModule;
 const installed = { detect: { state: 'installed', app_path: '/Applications/WeChat.app', version: '4.1.2', message: '' }, checking: false, usable: true, canProceed: true, recheck: async () => {} };
 let connectorInstall = installed;
 let backupRuntime = { paused: false };
+let failBackupRefresh = false;
 const mockedRequire = id => {
   if (id === 'react') return react;
   if (id === 'react/jsx-runtime') return jsx;
@@ -90,7 +91,7 @@ const mockedRequire = id => {
   if (id === '../../backup/BackupSchedule') return loadModule('../src/features/backup/BackupSchedule.tsx');
   if (id === './WeChatWizardComplete') return loadModule('../src/features/connectors/wizard/WeChatWizardComplete.tsx');
   if (id === '../../shared/state/settingsSaveQueue') return loadModule('../src/shared/state/settingsSaveQueue.ts');
-  if (id === '../tasks/taskRuntime') return { useTaskRuntime: () => backupRuntime, refreshTaskRuntime: async () => {} };
+  if (id === '../tasks/taskRuntime') return { useTaskRuntime: () => backupRuntime, refreshTaskRuntime: async () => { if (failBackupRefresh) throw Error('status read failed'); } };
   if (id === './BackupRuntimeSwitch') return loadModule('../src/features/backup/BackupRuntimeSwitch.tsx');
   if (['../../../shared/ui/icons', '../../shared/ui/icons'].includes(id)) return { Icons: { check: '✓', clock: '◷' } };
   if (id === '../connectors/AccountPicker') return loadModule('../src/features/connectors/AccountPicker.tsx');
@@ -847,11 +848,14 @@ assert.equal(find(controlTree, node => node.props?.role === 'switch').props.disa
 tree = render(scheduleView, () => BackupSchedule({}));
 assert.ok(elements(tree).some(node => node.type === 'fieldset' && node.props.disabled), 'configuration edits cannot race the task switch');
 assert.ok(!elements(controlTree).some(node => node.props?.children === '正在保存…'), 'a fast toggle does not flash loading copy');
+failBackupRefresh = true;
 finishPause(); await flush();
+failBackupRefresh = false;
 controlTree = renderControl();
 assert.equal(find(controlTree, node => node.props?.role === 'switch').props['aria-checked'], false);
 tree = render(scheduleView, () => BackupSchedule({}));
 assert.ok(!elements(tree).some(node => node.type === 'fieldset' && node.props.disabled), 'pausing must leave schedule settings editable');
+assert.ok(elements(tree).some(node => String(node.props?.children).includes('设置已保存，但状态刷新失败')), 'a failed status read must not misreport a committed switch as a failed save');
 backupRuntime = { paused: false };
 controlTree = renderControl();
 assert.equal(find(controlTree, node => node.props?.role === 'switch').props['aria-checked'], true, 'the task page runtime state is reflected without a separate settings toggle');

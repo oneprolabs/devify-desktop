@@ -772,3 +772,51 @@ fn backup_switch_is_restored_only_for_its_own_login_profile() {
     config_runtime::activate_profile(data).unwrap();
     assert!(config_runtime::backup_enabled(&settings::load(data).unwrap()));
 }
+
+
+#[test]
+fn backup_pause_reserves_a_stop_intent_without_rewriting_a_full_outbox() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let owner = identity(data, 1);
+    settings::update(data, |s| {
+        config_runtime::set_backup_enabled(s, true);
+        s.chat.allowed_usernames.insert(owner.account_id.clone(), vec!["chosen".into()]);
+        s.runtime.sources.insert(owner.account_id.clone(), config_runtime::Source {
+            owner: Some(owner.clone()), completed: true,
+            acknowledged: Some(config_runtime::payload(s, &owner.account_id, false)),
+            ..Default::default()
+        });
+        let mut old_owner = owner.clone();
+        old_owner.user_id = 2;
+        for n in 0..128 {
+            s.runtime.pending.push(config_runtime::Mutation {
+                owner: old_owner.clone(), body: serde_json::json!({"mutation_id":n,"payload":{"enabled":true}})
+            });
+        }
+        Ok(())
+    }).unwrap();
+    let before = settings::load(data).unwrap();
+    assert!(config_runtime::ready(&before, &owner));
+    runtime_commands::set_backup_paused(data, true).unwrap();
+    let after = settings::load(data).unwrap();
+    assert!(!config_runtime::backup_enabled(&after));
+    assert!(!config_runtime::ready(&after, &owner));
+    assert_eq!(after.runtime.pending.len(), 129);
+    assert_eq!(serde_json::to_value(&after.runtime.pending[..128]).unwrap(),
+        serde_json::to_value(&before.runtime.pending).unwrap(), "never discard or rewrite old requests");
+    assert!(config_runtime::same_principal(&after.runtime.pending[128].owner, &owner));
+    assert_eq!(after.runtime.pending[128].body["payload"]["enabled"], false);
+    runtime_commands::set_backup_paused(data, true).unwrap();
+    assert_eq!(settings::load(data).unwrap().runtime.pending.len(), 129, "repeated pauses deduplicate");
+    assert!(runtime_commands::set_backup_paused(data, false).is_err(), "normal enabling is still capacity-limited");
+    assert!(!config_runtime::backup_enabled(&settings::load(data).unwrap()));
+    // Other edits cannot use the stop reserve to grow the disabled queue forever.
+    assert!(settings::update(data, |s| {
+        s.backup.wifi_only = !s.backup.wifi_only;
+        config_runtime::enqueue_current_sources(data, s, false)
+    }).is_err());
+    let restored = settings::load(data).unwrap();
+    assert_eq!(restored.backup.wifi_only, after.backup.wifi_only);
+    assert_eq!(restored.runtime.pending.len(), 129);
+}

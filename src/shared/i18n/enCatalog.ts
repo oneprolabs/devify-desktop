@@ -2570,6 +2570,7 @@ export const en: Record<string, string> = {
   "配置已更新": "Configuration updated",
   "微信已配置完成": "WeChat is configured",
   "设置已保存并生效。": "Settings have been saved and applied.",
+  "设置已保存，但状态刷新失败：{0}": "Settings saved, but the status could not be refreshed: {0}",
   "之后可以随时回来重新配置。": "You can return here to reconfigure at any time.",
   "个会话导入": "conversations to import",
   "备份周期：": "Backup schedule:",
