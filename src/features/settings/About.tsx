@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import appIcon from '../../assets/app-icon.png';
 import appMark from '../../assets/app-mark-transparent.png';
+import { APP_IDENTIFIER } from '../../shared/api/buildFlavor';
 import { checkForUpdates, dismissInstallBlockers, downloadUpdate, installUpdate, RELEASE_URL, useUpdater } from '../updates/updater';
 
 type AppInfo = {
@@ -142,7 +143,7 @@ export function About() {
     <section className="panel about-product-panel">
       <div className="about-product-identity"><img src={appMark} alt="" width={52} height={52}/><div><strong>{info?.name || 'AIMyChats'}</strong><p>{info ? tf('版本 {0}', info.version) : t('正在读取版本…')}{info && ` · ${platformLabel(info.platform, info.arch)}`}</p></div></div>
       {!hideOffer && <UpdatePanel compact onClose={() => setUpdateLater(true)} />}
-      <details className="about-app-details"><summary>{t('应用信息')}</summary><dl className="about-meta"><div><dt>{t('应用标识')}</dt><dd><code>local.wechat.devifybridge</code></dd></div></dl></details>
+      <details className="about-app-details"><summary>{t('应用信息')}</summary><dl className="about-meta"><div><dt>{t('应用标识')}</dt><dd><code>{APP_IDENTIFIER}</code></dd></div></dl></details>
     </section>
 
     <section className="panel">
