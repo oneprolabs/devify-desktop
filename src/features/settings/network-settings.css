@@ -125,6 +125,10 @@
   gap: 4px 14px;
 }
 
+.auth-login-footer .auth-switch button {
+  margin-inline-start: 6px;
+}
+
 .auth-connection-link {
   min-height: 28px;
   padding: 4px 0;
@@ -187,18 +191,123 @@
   color: inherit;
 }
 
-.auth-connection-recovery {
+.auth-login-modal .auth-browser-option.auth-connection-recovery {
   display: grid;
-  gap: 6px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #ead5d5;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #eae7eb;
+  border-radius: 10px;
+  background: #f8f7f9;
 }
 
-.auth-connection-recovery > p {
-  color: #625358;
+.auth-connection-recovery-head {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 8px;
+}
+
+.auth-connection-recovery-head > p[role="alert"] {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: #a12824;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.auth-connection-recovery-head svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  transform: translateY(2px);
+}
+
+.auth-connection-feedback {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #605a62;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.auth-connection-feedback:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-connection-recovery .auth-connection-advice {
+  grid-column: 1 / -1;
+  color: #5f5a60;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.auth-connection-recovery .network-connection label {
+  position: relative;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.auth-connection-recovery .network-connection label::after {
+  position: absolute;
+  inset-inline-end: 11px;
+  bottom: 14px;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid #625d63;
+  border-bottom: 1px solid #625d63;
+  content: "";
+  pointer-events: none;
+  transform: rotate(45deg);
+}
+
+.auth-connection-recovery .network-connection select {
+  min-width: 0;
+  width: 100%;
+  padding-inline-end: 22px;
+  appearance: none;
+}
+
+.auth-connection-retry {
+  min-width: 60px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid #e2ccdf;
+  border-radius: 6px;
+  background: #f4e8f3;
+  color: #73256b;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-connection-retry:hover:not(:disabled) {
+  background: #ebd8e9;
+}
+
+.auth-connection-recovery button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.auth-connection-recovery button:focus-visible {
+  outline: 2px solid #a3279a;
+  outline-offset: 2px;
+}
+
+.auth-login-modal:has(.auth-connection-recovery) .auth-login-fields {
+  gap: 14px;
 }
 
 .auth-login-modal:has(.auth-browser-option .auth-error) .auth-modal-body {
@@ -208,4 +317,15 @@
 
 .auth-login-modal:has(.auth-browser-option .auth-error) .auth-login-fields {
   gap: 10px;
+}
+
+@media (max-width: 520px) {
+  .auth-connection-recovery .network-connection label {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .auth-connection-retry {
+    align-self: end;
+  }
 }

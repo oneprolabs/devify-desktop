@@ -7,6 +7,7 @@ import brandMark from '../../assets/app-mark-transparent.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from '../settings/settingsModel';
 import { apiBaseUrl, storedBaseUrl } from '../../shared/api/serviceUrl.ts';
 import { requestFeedback } from '../../shared/api/desktopInvoke';
+import { Icons } from '../../shared/ui/icons';
 import { NetworkConnectionControl } from '../settings/NetworkSettings';
 
 type GateSettings = {
@@ -337,14 +338,10 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     setInfo('');
   };
 
-  const signInError = error && <div className="auth-error">
-    <p role="alert">{configConnectionFailed ? t("无法连接服务，读取登录配置失败。") : t(error)}</p>
-    {configConnectionFailed && <div className="auth-connection-recovery">
-      <p>{t("如果本机开启了代理，可选择「直接连接」后重试。")}</p>
-      <NetworkConnectionControl compact onSavingChange={setConnectionSaving} />
-    </div>}
+  const signInError = error && !configConnectionFailed && <div className="auth-error">
+    <p role="alert">{t(error)}</p>
     <div className="auth-error-actions">
-      {configFailed && !configConnectionFailed && <button type="button" onClick={openConnectionSettings}>{t("连接设置")}</button>}
+      {configFailed && <button type="button" onClick={openConnectionSettings}>{t("连接设置")}</button>}
       <button type="button" disabled={connectionSaving} onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button>
     </div>
   </div>;
@@ -402,13 +399,24 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
           </div>
 
           {tab === 'login' && <div className="auth-login-fields" id="auth-login-panel" role="tabpanel" aria-labelledby="auth-login-tab">
-            <div className="auth-browser-option">
-              <button type="button" className="auth-alt" disabled={busy !== '' || connectionSaving} aria-busy={browserStarting} onClick={() => void startBrowserLogin()}>
-                {browserStarting ? <span className="auth-button-spinner" aria-hidden="true"/> : <svg className="auth-alt-mark" viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-4"/></svg>}
+            <div className={`auth-browser-option${configConnectionFailed ? ' auth-connection-recovery' : ''}`}>
+              {configConnectionFailed && <>
+                <div className="auth-connection-recovery-head">
+                  <p role="alert"><span aria-hidden="true">{Icons.warning}</span>{t("无法连接登录服务")}</p>
+                  <button type="button" className="auth-connection-feedback" disabled={connectionSaving}
+                    aria-label={t("反馈此问题")} onClick={() => requestFeedback('login', 'login')}>{t("问题反馈")}</button>
+                </div>
+                <p className="auth-connection-advice">{t("如果本机开启了代理，可选择「直接连接」后重试。")}</p>
+                <NetworkConnectionControl compact onSavingChange={setConnectionSaving} />
+              </>}
+              <button type="button" className={configConnectionFailed ? 'auth-connection-retry' : 'auth-alt'}
+                aria-label={configConnectionFailed ? t("重试浏览器登录") : undefined}
+                disabled={busy !== '' || connectionSaving} aria-busy={browserStarting} onClick={() => void startBrowserLogin()}>
+                {!configConnectionFailed && (browserStarting ? <span className="auth-button-spinner" aria-hidden="true"/> : <svg className="auth-alt-mark" viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-4"/></svg>)}
                 {busy === 'browser-config' ? t("正在读取登录配置…") : busy === 'browser-opening' ? t("正在打开浏览器…")
-                  : configConnectionFailed ? t("重试浏览器登录") : t("通过浏览器登录")}
+                  : configConnectionFailed ? t("重试") : t("通过浏览器登录")}
               </button>
-              <p className="auth-alt-help">{t("在浏览器完成登录后，将自动返回客户端。")}</p>
+              {!configConnectionFailed && <p className="auth-alt-help">{t("在浏览器完成登录后，将自动返回客户端。")}</p>}
               {configFailed && signInError}
             </div>
             <div className="auth-divider"><span>{t("或")}</span></div>

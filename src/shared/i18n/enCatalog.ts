@@ -2014,7 +2014,7 @@ export const en: Record<string, string> = {
   "正在读取登录配置…": "Reading sign-in configuration…",
   "连接设置": "Connection settings",
   "保存并返回登录": "Save and return to sign-in",
-  "无法连接服务，读取登录配置失败。": "Couldn’t connect to the service to read the sign-in configuration.",
+  "无法连接登录服务": "Can’t reach the sign-in service",
   "如果本机开启了代理，可选择「直接连接」后重试。": "If you’re using a proxy on this computer, choose Direct connection and try again.",
   "重试浏览器登录": "Retry browser sign-in",
   "网络连接": "Network connection",
