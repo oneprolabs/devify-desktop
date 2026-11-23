@@ -15,7 +15,7 @@ import type { AppSettings } from '../features/settings/settingsModel';
 import { BackupSchedule } from '../features/backup/BackupSchedule';
 import { AnalysisSettings } from '../features/analysis/AnalysisSettings';
 import { LanguageSettings } from '../features/settings/LanguageSettings';
-import { NetworkConnectionControl, NetworkSettings } from '../features/settings/NetworkSettings';
+import { ConnectionSettingsDisclosure, NetworkConnectionControl, NetworkSettings } from '../features/settings/NetworkSettings';
 import '../features/settings/settings-pages.css';
 import { Icons } from '../shared/ui/icons';
 import { NavigationRail, type Section } from './NavigationRail';
@@ -147,6 +147,7 @@ export default function PrototypeShell() {
   const [authNotice, setAuthNotice] = useState('');
   const [authError, setAuthError] = useState('');
   const [connectionSaving, setConnectionSaving] = useState(false);
+  const [connectionSettingsOpen, setConnectionSettingsOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState('');
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [authVersion, setAuthVersion] = useState(0);
@@ -386,10 +387,13 @@ export default function PrototypeShell() {
           <h1>{t("暂时无法验证登录")}</h1>
           <p>{authError || t("服务端暂不可用，请稍后重试。")}</p>
           <p className="auth-gate-hint">{t("已保存的登录状态会保留，请根据上方提示处理后重试。")}</p>
-          <NetworkConnectionControl compact disabled={authChecking} onSavingChange={setConnectionSaving} />
           <button type="button" className="auth-gate-primary" disabled={authChecking || connectionSaving} aria-busy={authChecking} onClick={checkAuth}>{authChecking ? t("正在检查…") : t("重试")}</button>
           <button type="button" className="auth-gate-secondary" disabled={connectionSaving} onClick={() => { authEpoch.current += 1; setAuthNotice(''); setAuthState('anonymous'); }}>{t("返回登录")}</button>
           <button type="button" className="auth-gate-secondary" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button>
+          <ConnectionSettingsDisclosure open={connectionSettingsOpen} disabled={authChecking || connectionSaving}
+            onToggle={() => setConnectionSettingsOpen(open => !open)}>
+            <NetworkConnectionControl compact disabled={authChecking} onSavingChange={setConnectionSaving} />
+          </ConnectionSettingsDisclosure>
         </div>
       </div>}
       {authState === 'anonymous' && <LoginGate notice={authNotice} onAuthenticated={handleAuthenticated}/>}

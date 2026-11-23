@@ -7,7 +7,7 @@ import brandMark from '../../assets/app-mark-transparent.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from '../settings/settingsModel';
 import { apiBaseUrl, storedBaseUrl } from '../../shared/api/serviceUrl.ts';
 import { requestFeedback } from '../../shared/api/desktopInvoke';
-import { NetworkConnectionControl } from '../settings/NetworkSettings';
+import { ConnectionSettingsDisclosure, NetworkConnectionControl } from '../settings/NetworkSettings';
 
 type GateSettings = {
   user_settings_revision: number;
@@ -46,6 +46,8 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [serverSaving, setServerSaving] = useState(false);
   const dialogRef = useRef<HTMLElement | null>(null);
   const loginButtonRef = useRef<HTMLButtonElement | null>(null);
+  const connectionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const returningToConnection = useRef(false);
 
   const finishBrowserLogin = useCallback(async (url: string) => {
     try {
@@ -117,8 +119,15 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   }, [popup, busy, connectionSaving]);
   useEffect(() => {
     if (!popup) return;
-    return () => loginButtonRef.current?.focus();
+    return () => { if (!returningToConnection.current) loginButtonRef.current?.focus(); };
   }, [popup]);
+
+  useEffect(() => {
+    if (!popup && serverOpen && returningToConnection.current) {
+      returningToConnection.current = false;
+      connectionTriggerRef.current?.focus();
+    }
+  }, [popup, serverOpen]);
 
   // The browser flow has no deadline of its own: when the server is unreachable the
   // callback never arrives, so stop waiting instead of leaving the modal spinning.
@@ -323,6 +332,25 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     setServerStatus(t("服务地址已保存。"));
   };
 
+  const toggleConnectionSettings = () => {
+    if (serverOpen) {
+      draftRef.current = baseUrl;
+      setServerDraft(baseUrl);
+    }
+    if (!conflict.current) setServerStatus('');
+    setServerOpen(!serverOpen);
+  };
+
+  const returnToConnectionSettings = () => {
+    returningToConnection.current = true;
+    setPopup(false);
+    setServerOpen(true);
+    setError('');
+    setInfo('');
+  };
+
+  const serverFeedback = serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>;
+
   return <div className="auth-gate auth-login-gate">
     <div className="auth-gate-card" aria-hidden={popup || undefined} {...(popup ? { inert: '' } : {})}>
       <span className="auth-gate-mark"><img src={brandMark} alt=""/></span>
@@ -343,30 +371,30 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       {busy === 'browser' && <button type="button" className="auth-gate-secondary" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button>}
       {busy !== 'browser' && <button type="button" className="auth-gate-secondary" disabled={!settingsLoaded || serverSaving || connectionSaving || busy !== ''} aria-busy={busy === 'session'} onClick={() => void retrySavedSession()}>{busy === 'session' ? t("正在检查…") : t("重新检查已有登录")}</button>}
       {error && !popup && <p className="auth-gate-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
-      <div className="auth-gate-server">
-        {serverOpen || !baseUrl
-          ? <>
-              <label>{baseUrl ? t("服务端地址") : t("服务端地址（首次使用请填写）")}
-                <input
-                  type="url"
-                  disabled={!settingsLoaded}
-                  value={serverDraft}
-                  autoFocus={!baseUrl}
-                  onChange={event => { draftRef.current = event.target.value; setServerDraft(event.target.value); }}
-                  onKeyDown={event => { if (event.key === 'Enter') void saveServer(); }}
-                  placeholder={SERVER_PLACEHOLDER}
-                />
-              </label>
-              {!baseUrl && <p className="auth-gate-hint">{t("服务端不随客户端分发，请填写你们部署的服务端地址。")}</p>}
-              <div className="auth-gate-server-actions">
-                <button type="button" disabled={!settingsLoaded || serverSaving} onClick={() => void saveServer()}>{t("保存")}</button>
-                {baseUrl && <button type="button" onClick={() => { setServerOpen(false); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>{t("取消")}</button>}
-              </div>
-            </>
-          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>{t("服务地址 ·")} {storedBaseUrl(baseUrl).replace(/^https?:\/\//, '').replace(/\/+$/, '')}</button>}
-      </div>
-      {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
-      {!popup && <NetworkConnectionControl compact disabled={busy !== ''} onSavingChange={setConnectionSaving} />}
+      {!popup && <ConnectionSettingsDisclosure open={serverOpen} onToggle={toggleConnectionSettings}
+        triggerRef={connectionTriggerRef} disabled={!settingsLoaded || busy !== '' || serverSaving || connectionSaving}>
+        <div className="auth-gate-server">
+          <label htmlFor="auth-service-address">{baseUrl ? t("服务端地址") : t("服务端地址（首次使用请填写）")}</label>
+          <div className="auth-connection-address">
+            <input
+              id="auth-service-address"
+              type="url"
+              disabled={!settingsLoaded || busy !== '' || serverSaving || connectionSaving}
+              value={serverDraft}
+              autoFocus={!baseUrl}
+              onChange={event => { draftRef.current = event.target.value; setServerDraft(event.target.value); }}
+              onKeyDown={event => { if (event.key === 'Enter') void saveServer(); }}
+              placeholder={SERVER_PLACEHOLDER}
+            />
+            <button type="button" disabled={!settingsLoaded || busy !== '' || serverSaving || connectionSaving}
+              onClick={() => void saveServer()}>{t("保存")}</button>
+          </div>
+          {!baseUrl && <p>{t("服务端不随客户端分发，请填写你们部署的服务端地址。")}</p>}
+          {serverFeedback}
+        </div>
+        <NetworkConnectionControl compact disabled={busy !== '' || serverSaving} onSavingChange={setConnectionSaving} />
+      </ConnectionSettingsDisclosure>}
+      {!serverOpen && serverFeedback}
     </div>
 
     {popup && <div className="auth-backdrop auth-login-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy && !connectionSaving) { setPopup(false); setError(''); setInfo(''); } }}>
@@ -390,8 +418,6 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
                 {busy === 'browser-config' ? t("正在读取登录配置…") : busy === 'browser-opening' ? t("正在打开浏览器…") : t("通过浏览器登录")}
               </button>
               <p className="auth-alt-help">{t("在浏览器完成登录后，将自动返回客户端。")}</p>
-              <NetworkConnectionControl compact disabled={busy !== ''} onSavingChange={setConnectionSaving} />
-              {configFailed && <p className="auth-alt-help">{t("可切换连接方式后重试。")}</p>}
             </div>
             <div className="auth-divider"><span>{t("或")}</span></div>
             <label className="auth-field">{t("AI 邮箱用户名")}
@@ -407,7 +433,13 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
               </span>
             </label>
             <div className="auth-forgot"><button type="button" disabled={busy !== '' || connectionSaving} onClick={() => void openExternal('/login?forgot=1')}>{t("忘记密码？")}</button></div>
-            {error && <p className="auth-error" role="alert">{t(error)} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
+            {error && <div className="auth-error" role="alert">
+              <p>{t(error)}</p>
+              <div className="auth-error-actions">
+                {configFailed && <button type="button" onClick={returnToConnectionSettings}>{t("前往连接设置")}</button>}
+                <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button>
+              </div>
+            </div>}
             {info && busy !== 'browser' && <p className="auth-info" role="status">{info}</p>}
             {busy === 'browser' && <div className="auth-waiting" role="status"><span className="auth-gate-pulse"/><span>{t("正在等待浏览器完成授权…")}</span><button type="button" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button></div>}
             <button type="submit" className="auth-submit" disabled={busy !== '' || connectionSaving} aria-busy={busy === 'password'}>{busy === 'password' && <span className="auth-button-spinner" aria-hidden="true"/>}{busy === 'password' ? t("正在登录…") : t("登录")}</button>

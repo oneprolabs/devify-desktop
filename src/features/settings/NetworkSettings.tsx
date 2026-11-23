@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from 'react';
 import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { t, tf } from '../../shared/i18n/locale';
+import { Icons } from '../../shared/ui/icons';
 import './network-settings.css';
 
 const MODES = {
@@ -19,6 +20,23 @@ const MODES = {
 } as const;
 
 type ConnectionMode = keyof typeof MODES;
+
+export function ConnectionSettingsDisclosure({ open, onToggle, disabled, triggerRef, children }: {
+  open: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  triggerRef?: Ref<HTMLButtonElement>;
+  children: ReactNode;
+}) {
+  const panelId = useId();
+  return <div className="auth-connection">
+    <button ref={triggerRef} className="auth-connection-trigger" type="button" disabled={disabled}
+      aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={onToggle}>
+      {t('连接设置')}<span aria-hidden="true">{Icons.chevronLeft}</span>
+    </button>
+    {open && <div id={panelId} className="auth-connection-panel">{children}</div>}
+  </div>;
+}
 
 export function NetworkConnectionControl({ disabled = false, compact = false, onSavingChange }: {
   disabled?: boolean;
