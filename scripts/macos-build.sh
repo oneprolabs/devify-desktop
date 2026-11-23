@@ -61,8 +61,10 @@ if [ ! -f "$KEYCHAIN" ] && [ -z "${AIMYCHATS_SIGNING_IDENTITY:-}" ]; then
   AVAILABLE=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p')
   if [ "$(printf '%s\n' "$AVAILABLE" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ]; then IDENTITY="$AVAILABLE"; fi
 fi
-if ! security find-identity -v -p codesigning ${IDENTITY_STORE_ARGS[@]+"${IDENTITY_STORE_ARGS[@]}"} | grep -Fq "$IDENTITY"; then
-  echo "找不到签名身份：$IDENTITY。请设置 AIMYCHATS_SIGNING_IDENTITY（以及可选的 AIMYCHATS_SIGNING_KEYCHAIN）。" >&2
+# The configured identity may be the repository's self-signed CI certificate.
+# `-v` filters that identity out; keep it only for automatic Developer ID selection.
+if ! security find-identity -p codesigning ${IDENTITY_STORE_ARGS[@]+"${IDENTITY_STORE_ARGS[@]}"} | grep -Fq "$IDENTITY"; then
+  echo "找不到签名身份：${IDENTITY}。请设置 AIMYCHATS_SIGNING_IDENTITY（以及可选的 AIMYCHATS_SIGNING_KEYCHAIN）。" >&2
   exit 1
 fi
 SIGN_ARGS=(--sign "$IDENTITY" ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"})
