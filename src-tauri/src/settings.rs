@@ -712,7 +712,7 @@ pub fn resolved_device_label(settings: &DevifySettings) -> String {
 impl Default for DevifySettings {
     fn default() -> Self {
         Self {
-            base_url: "https://aimychats.com/".to_string(),
+            base_url: crate::build_flavor::DEFAULT_SERVICE.to_string(),
             device_label: device_default_label(),
             device_id: String::new(),
             platform: default_platform(),
@@ -1240,7 +1240,7 @@ mod tests {
 
     #[test]
     fn default_server_preserves_saved_server() {
-        assert_eq!(DevifySettings::default().base_url, "https://aimychats.com/");
+        assert_eq!(DevifySettings::default().base_url, crate::build_flavor::DEFAULT_SERVICE);
         let saved: DevifySettings = serde_json::from_str(r#"{"base_url":"https://custom.example"}"#).unwrap();
         assert_eq!(saved.base_url, "https://custom.example");
     }
@@ -1301,7 +1301,7 @@ mod tests {
         assert_eq!(stored_base_url("https://aimychats.com/"), "https://aimychats.com/");
         assert_eq!(
             AppSettings::default().devify.resolved_base_url().unwrap(),
-            "https://app.aimychats.com"
+            canonical_api_base(crate::build_flavor::DEFAULT_SERVICE).unwrap()
         );
         assert!(same_service_url("", ""));
         let data = tempfile::tempdir().unwrap();

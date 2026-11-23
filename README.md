@@ -431,7 +431,7 @@ The WAV decoder lives in `src-tauri/vendor/silk` (Skype's SILK reference impleme
 
 ```bash
 npm install
-npm run tauri dev
+npm run desktop:dev
 ```
 
 Build a desktop bundle:
@@ -440,11 +440,61 @@ Build a desktop bundle:
 # The CLI is data, not a sidecar executable: `beforeBuildCommand` runs
 # `npm run stage:wxq`, which builds it with the opt-in feature and copies it to
 # src-tauri/binaries/wxq-<host-triple> for `bundle.resources`.
-scripts/macos-build.sh              # builds, signs, and replaces /Applications/AIMyChats.app
-scripts/macos-build.sh --no-install # builds + signs only, leaves /Applications untouched
+npm run desktop:install:dev         # builds, signs, installs only /Applications/AIMyChats Dev.app
+npm run desktop:build:dev           # builds + signs the development app without installing
+scripts/macos-build.sh --production --no-install # explicit production build, no installation
 ```
 
 Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.1.0_aarch64.dmg`). The DMG mounts with `AIMyChats.app` next to an `Applications` symlink, so the app can be dragged straight into `/Applications`. On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
+
+### Development app and production app
+
+Use `npm run desktop:dev` for hot reload, or `npm run desktop:install:dev` for a signed development package.
+The development package is optimized and bundles its frontend; it does not need Vite running.
+Development frontend output is `dist-dev/`, CLI resources are `src-tauri/binaries-dev/`;
+production retains `dist/` and `src-tauri/binaries/`. Packaging checks executable and CLI
+build identities before installing, so shared Cargo outputs cannot silently mix the variants.
+
+| | Production | Development |
+|---|---|---|
+| Application | AIMyChats | AIMyChats Dev |
+| Bundle ID | `local.wechat.devifybridge` | `local.wechat.devifybridge.dev` |
+| Default service | `https://aimychats.com` | `http://192.168.8.182:7000` |
+| Browser callback | `127.0.0.1:47832` | `127.0.0.1:47833` |
+| URL scheme | `devify` | `devify-dev` |
+| Local read API | `127.0.0.1:18765` | `127.0.0.1:18766` |
+| Installed Skill | `aimychats` | `aimychats-dev` |
+| Production updater | Enabled | Not registered; checks and installation disabled |
+
+Tauri's bundle ID selects each app's own Application Support directory. Credentials, SQLite tasks,
+settings, keys and caches are not copied from the production app. The app verifies its feature/config
+identity at startup and refuses a mixed build. DEV and the selected service are visible in the app; macOS also shows a DEV Dock badge.
+The service address can still be changed manually for occasional production testing; such operations
+are real, and the development app displays a production warning. App-owned data remains separate.
+
+**修改服务地址：** 开发版默认连接 `http://192.168.8.182:7000`。在登录页面点击
+**登录… → 连接设置 → 服务端地址**，修改后点击 **保存并返回登录**。
+这是当前客户端保存的地址，不会修改另一版本的设置。登录首页和弹窗会显示实际保存的地址；
+如果切换到正式服务，会提示操作将影响正式数据。
+
+Grant Full Disk Access to AIMyChats Dev once. Keep its signing identity stable across rebuilds.
+The script uses the local signing keychain when available, otherwise the single available Developer ID.
+With multiple identities, specify `AIMYCHATS_SIGNING_IDENTITY`; `AIMYCHATS_SIGNING_KEYCHAIN` is optional.
+
+Browser login needs the server's development registration (server issue #167). The app requests
+`desktop/config?channel=development` and rejects a production callback before binding or opening a
+browser. Until the registration is available, use password login. Production login discovery is unchanged.
+
+Both variants may read the original local chat databases. Automatic WeChat capture/recovery changes
+one shared WeChat installation: those operations use a cross-variant OS lock and retain ownership while
+another variant has a recovery record. Development additionally refuses capture while an installed
+production app is running, including older production builds without the new guard. Keep the older
+production app closed until capture/recovery finishes; its old code cannot enforce the new lock.
+Only the installation-operation lock is shared. Keys and recovery assets stay with their owning variant.
+
+Direct Skills installation includes the owning app-data path and endpoint and uses a separate Skill
+name, leaving production and legacy Skills intact. The old shell/prompt installer is disabled in the
+Dev app. Existing production CLI/Skills installation stays unchanged.
 
 ### macOS signing (why not ad-hoc)
 
@@ -479,8 +529,8 @@ printf 'aimychats' > ~/.config/aimychats-signing/keychain.pass && chmod 600 ~/.c
 ```
 
 `scripts/macos-build.sh` signs the app itself (nested binaries first, then the bundle), rebuilds
-the DMG from the signed app, and replaces `/Applications/AIMyChats.app` (pass `--no-install` to
-stay inside the repo), because `codesign` only finds the private key in that keychain when it
+the DMG from the signed app, and replaces only `/Applications/AIMyChats Dev.app` by default.
+Use `--production` explicitly for the production variant, and `--no-install` to leave installed apps untouched, because `codesign` only finds the private key in that keychain when it
 is passed `--keychain`, which the Tauri bundler does not do. `spctl` still rejects the result since
 it is not notarized by Apple — expected for a self-signed build, and only matters for downloads that
 carry the quarantine attribute.
@@ -593,7 +643,7 @@ GitHub Actions workflow `.github/workflows/release-macos.yml` builds and publish
    releases page and rendered as the update line in **设置 › 关于**. With no note the job falls
    back to `AIMyChats <version> for macOS Apple Silicon (build <sha>)`.
 3. The job runs on `macos-15` (Apple Silicon), imports the self-signed macOS identity, runs
-   `scripts/prepare-release.sh` (version check → build → `macos-build.sh --no-install` →
+   `scripts/prepare-release.sh` (version check → build → `macos-build.sh --production --no-install` →
    updater archive → Tauri signature → `latest.json`), then:
    - creates or updates the versioned Release with the DMG, `.app.tar.gz` and `.sig`;
    - creates or updates the `alpha` manifest Release and uploads `latest.json` last.

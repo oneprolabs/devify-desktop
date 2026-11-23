@@ -65,7 +65,8 @@ export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void
   const [error, setError] = useState('');
   const busy = ['checking', 'downloading', 'installing'].includes(update.status);
   const notes = updateNoteLines(update.notes);
-  const status = update.status === 'checking' ? t("正在检查更新…")
+  const status = update.status === 'disabled' ? t('开发版不检查或安装正式更新。')
+    : update.status === 'checking' ? t("正在检查更新…")
     : update.status === 'latest' ? t("当前已是最新版本")
     : update.status === 'available' ? tf("可以更新到 {0}", update.version)
     : update.status === 'downloading' ? t("正在下载更新…")
@@ -105,7 +106,7 @@ export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void
       <button type="button" onClick={dismissInstallBlockers}>{t("稍后")}</button>
       <button type="button" className="update-primary" onClick={() => void installUpdate(true)}>{t("仍然安装")}</button>
     </div> : null}
-    <div className="update-panel-footer">
+    {update.status !== 'disabled' && <div className="update-panel-footer">
       <button type="button" className="update-link" onClick={() => {
         setError('');
         const releaseUrl = update.version && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(update.version)
@@ -113,7 +114,7 @@ export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void
           : RELEASE_URL;
         void invoke('devify_auth_open', { url: releaseUrl }).catch(value => setError(tf("打开下载页面失败：{0}", String(value))));
       }}>{t("手动下载")}</button>
-    </div>
+    </div>}
   </div>;
 }
 
@@ -139,7 +140,7 @@ export function About() {
 
     <div className="about-details">
     <section className="panel about-product-panel">
-      <div className="about-product-identity"><img src={appMark} alt="" width={52} height={52}/><div><strong>AIMyChats</strong><p>{info ? tf('版本 {0}', info.version) : t('正在读取版本…')}{info && ` · ${platformLabel(info.platform, info.arch)}`}</p></div></div>
+      <div className="about-product-identity"><img src={appMark} alt="" width={52} height={52}/><div><strong>{info?.name || 'AIMyChats'}</strong><p>{info ? tf('版本 {0}', info.version) : t('正在读取版本…')}{info && ` · ${platformLabel(info.platform, info.arch)}`}</p></div></div>
       {!hideOffer && <UpdatePanel compact onClose={() => setUpdateLater(true)} />}
       <details className="about-app-details"><summary>{t('应用信息')}</summary><dl className="about-meta"><div><dt>{t('应用标识')}</dt><dd><code>local.wechat.devifybridge</code></dd></div></dl></details>
     </section>

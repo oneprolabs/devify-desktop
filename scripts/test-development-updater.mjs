@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { mock } from 'node:test';
+let nativeCalls = 0;
+mock.module(new URL('../src/shared/api/buildFlavor.ts', import.meta.url).href, { namedExports: { DEVELOPMENT_APP: true, APP_NAME: 'AIMyChats Dev' } });
+mock.module('@tauri-apps/api/core', { namedExports: { isTauri: () => true, invoke: async () => { nativeCalls++; throw Error('must not invoke updater native commands'); } } });
+mock.module('@tauri-apps/plugin-process', { namedExports: { relaunch: async () => { throw Error('must not relaunch'); } } });
+mock.module('@tauri-apps/plugin-updater', { namedExports: { check: async () => { throw Error('must not contact production update service'); } } });
+mock.module('react', { namedExports: { useSyncExternalStore: (_, getSnapshot) => getSnapshot() } });
+const updater = await import('../src/features/updates/updater.ts');
+assert.equal(updater.useUpdater().status, 'disabled');
+await updater.checkForUpdates();
+await updater.checkForUpdates(true);
+await updater.downloadUpdate();
+await updater.installUpdate(true);
+assert.equal(nativeCalls, 0);
+assert.equal(updater.useUpdater().status, 'disabled');
+console.log('Development updater never checks, downloads, installs or restarts production releases');

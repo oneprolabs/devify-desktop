@@ -22,10 +22,10 @@ pub struct SkillDoc {
 }
 
 pub const SKILLS: &[SkillDoc] = &[SkillDoc {
-    name: "aimychats",
+    name: crate::build_flavor::SKILL_NAME,
     legacy_names: &["wechat-chat-records", "wechat-daily-summary", "wechat-work-exploration",
         "aimychats-chat-records", "aimychats-daily-summary", "aimychats-work-exploration"],
-    content: include_str!("../../skills/aimychats/SKILL.md"),
+    content: include_str!(concat!(env!("OUT_DIR"), "/agent-skill.md")),
 }];
 
 pub fn skill_by_name(name: &str) -> Option<&'static SkillDoc> {
@@ -223,11 +223,15 @@ pub fn resolve_wxq(app_data: &Path) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(CLI_NAME));
+            // Cargo's sibling outputs are shared by both variants during hot reload.
+            if !crate::build_flavor::DEVELOPMENT { candidates.push(dir.join(CLI_NAME)); }
             candidates.extend(bundled_wxq(dir));
         }
     }
     candidates.push(app_data.join("bin").join(CLI_NAME));
+    if crate::build_flavor::DEVELOPMENT {
+        return candidates.into_iter().find(|path| agent::is_executable(path));
+    }
     if let Some(home) = home_dir() {
         candidates.push(home.join(".local/bin").join(CLI_NAME));
     }
@@ -245,11 +249,12 @@ pub fn resolve_wxq(app_data: &Path) -> Option<PathBuf> {
 /// `Contents/Resources`; other platforms place them next to the binary.
 fn bundled_wxq(bin_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    let resources = if crate::build_flavor::DEVELOPMENT { "binaries-dev" } else { "binaries" };
     if let Some(contents) = bin_dir.parent() {
-        dirs.push(contents.join("Resources").join("binaries"));
+        dirs.push(contents.join("Resources").join(resources));
     }
-    dirs.push(bin_dir.join("resources").join("binaries"));
-    dirs.push(bin_dir.join("binaries"));
+    dirs.push(bin_dir.join("resources").join(resources));
+    dirs.push(bin_dir.join(resources));
     dirs.into_iter()
         .filter_map(|dir| std::fs::read_dir(dir).ok())
         .flat_map(|entries| entries.flatten().map(|entry| entry.path()))
@@ -318,7 +323,7 @@ pub fn status(
             .collect(),
         targets,
         default_target: default_id,
-        default_bin_dir: default_bin_dir().to_string_lossy().to_string(),
+        default_bin_dir: if crate::build_flavor::DEVELOPMENT { app_data.join("bin") } else { default_bin_dir() }.to_string_lossy().to_string(),
         default_skills_dir: default_skills,
         manifest_url: format!("{base_url}/agent/manifest"),
         install_url: format!("{base_url}/agent/install.sh"),
@@ -473,6 +478,21 @@ pub fn build_install_script(bin_dir: &Path, skills_dir: &Path, base_url: &str, t
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packaged_cli_discovery_uses_only_its_channel_resources() {
+        let root = tempfile::tempdir().unwrap();
+        let contents = root.path().join("Contents");
+        let own = if crate::build_flavor::DEVELOPMENT { "binaries-dev" } else { "binaries" };
+        let other = if crate::build_flavor::DEVELOPMENT { "binaries" } else { "binaries-dev" };
+        for name in [own, other] {
+            let dir = contents.join("Resources").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("wxq-test"), "fixture").unwrap();
+        }
+        assert_eq!(super::bundled_wxq(&contents.join("MacOS")),
+            vec![contents.join("Resources").join(own).join("wxq-test")]);
+    }
+
     use super::*;
 
     fn target() -> AccessTarget {

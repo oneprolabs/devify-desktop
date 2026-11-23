@@ -26,6 +26,7 @@ extern crate self as wechat_devify_bridge_lib;
 pub mod access;
 pub mod agent;
 pub mod backup;
+pub mod build_flavor;
 pub mod capabilities;
 pub mod connectors;
 mod commands;
@@ -40,6 +41,7 @@ pub mod entitlements;
 pub mod history;
 pub(crate) mod http_client;
 mod network_connection;
+mod wechat_installation_guard;
 pub mod perm;
 pub mod settings;
 mod task_store;
@@ -191,7 +193,10 @@ fn begin_account_upload<'a>(state: &'a UploadState, account: &str) -> Result<upd
 }
 
 #[tauri::command]
-fn update_begin_install(state: State<'_, UploadState>, force: Option<bool>) -> Result<(), String> { state.syncing.begin_install(force.unwrap_or(false)) }
+fn update_begin_install(state: State<'_, UploadState>, force: Option<bool>) -> Result<(), String> {
+    if build_flavor::DEVELOPMENT { return Err("开发版不安装正式更新。".into()); }
+    state.syncing.begin_install(force.unwrap_or(false))
+}
 
 #[tauri::command]
 fn update_upload_accounts(state: State<'_, UploadState>) -> Result<Vec<String>, String> { state.syncing.uploading_accounts() }
@@ -234,8 +239,9 @@ async fn devify_auth_config(
     settings: &settings::DevifySettings,
 ) -> Result<DevifyAuthConfig, String> {
     let base_url = settings.resolved_base_url()?;
+    let suffix = if build_flavor::DEVELOPMENT { "?channel=development" } else { "" };
     let response = http_client::strict()
-        .get(format!("{}/api/v1/auth/desktop/config", base_url))
+        .get(format!("{}/api/v1/auth/desktop/config{}", base_url, suffix))
         .send_traced_retrying(data, diagnostics::Module::Auth, RetryPolicy::READ)
         .await
         .map_err(|e| devify_network_message("读取服务端登录配置失败", &e))?;
@@ -3280,6 +3286,8 @@ async fn devify_auth_start(
     let config_result = devify_auth_config(&app_data(&app), &settings.devify).await;
     eprintln!("桌面授权：读取登录配置耗时 {} 毫秒", config_started.elapsed().as_millis());
     let auth_config = config_result?;
+    if build_flavor::DEVELOPMENT { build_flavor::validate_auth_redirect(&auth_config.redirect_uri)?; }
+    let auth_address = format!("127.0.0.1:{}", build_flavor::AUTH_PORT);
     if desktop_credentials::generation()? != auth_generation {
         return Err("登录状态已改变，请重新登录。".into());
     }
@@ -3302,7 +3310,7 @@ async fn devify_auth_start(
     }
     let mut bound = None;
     for attempt in 0..12 {
-        match TcpListener::bind("127.0.0.1:47832").await {
+        match TcpListener::bind(&auth_address).await {
             Ok(listener) => {
                 bound = Some(listener);
                 break;
@@ -3312,14 +3320,15 @@ async fn devify_auth_start(
             }
             Err(error) => {
                 return Err(format!(
-                    "无法启动本地登录回调服务（47832）：{error}。请关闭其他 AIMyChats 实例后重试。"
+                    "无法启动本地登录回调服务（{}）：{error}。请关闭其他同版本客户端后重试。", build_flavor::AUTH_PORT
                 ))
             }
         }
     }
     let listener = bound.ok_or_else(|| {
-        "无法启动本地登录回调服务（47832）：端口已被占用。请关闭其他 AIMyChats 实例后重试，或改用 AI 邮箱用户名和密码登录。".to_string()
+        format!("无法启动本地登录回调服务（{}）：端口已被占用，请关闭其他同版本客户端后重试，或改用账号密码登录。", build_flavor::AUTH_PORT)
     })?;
+    let callback_origin = format!("http://{auth_address}");
     let callback_handle = app.clone();
     let handle = tauri::async_runtime::spawn(async move {
         if let Ok((mut stream, _)) = listener.accept().await {
@@ -3331,7 +3340,7 @@ async fn devify_auth_start(
                     .next()
                     .and_then(|line| line.strip_prefix("GET ")?.split_whitespace().next())
                 {
-                    let callback = format!("http://127.0.0.1:47832{target}");
+                    let callback = format!("{callback_origin}{target}");
                     let _ = callback_handle.emit("devify-auth-loopback", callback);
                 }
             }
@@ -4124,12 +4133,14 @@ struct AppInfo {
     platform: String,
     arch: String,
     os_version: String,
+    development: bool,
 }
 
 #[tauri::command]
 fn app_info() -> AppInfo {
     AppInfo {
-        name: "AIMyChats".to_string(),
+        name: build_flavor::APP_NAME.to_string(),
+        development: build_flavor::DEVELOPMENT,
         version: env!("CARGO_PKG_VERSION").to_string(),
         platform: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
@@ -5036,6 +5047,7 @@ async fn app_settings_save(
         }
         Ok(())
     })?;
+    if build_flavor::DEVELOPMENT { let _ = app.emit("development-service-changed", saved.devify.base_url.clone()); }
     if let Err(error)=flush_config_outbox(&app).await {return Err(format!("设置已在本地保存，等待同步：{error}"));}
     config_runtime::activate_profile(&app_data(&app))?;
     let saved=settings::load(&app_data(&app)).unwrap_or(saved);
@@ -5678,6 +5690,7 @@ async fn wechat_capture_prepare(
     let root = capture_root(&app);
     let backup_root = capture_backup_root(&app);
     tauri::async_runtime::spawn_blocking(move || {
+        let _installation = wechat_installation_guard::for_capture(&root)?;
         capture::prepare(Path::new(capture::WECHAT_APP), &root, &backup_root, true)
     })
     .await
@@ -5690,7 +5703,8 @@ async fn wechat_capture_prepare(
 /// security prompt; the app never bypasses one. Returns a diagnosis when nothing starts, because
 /// macOS 15.1 can reject the launch without showing a dialog.
 #[tauri::command]
-fn wechat_capture_open() -> Result<capture::LaunchAttempt, String> {
+fn wechat_capture_open(app: AppHandle) -> Result<capture::LaunchAttempt, String> {
+    let _installation = wechat_installation_guard::acquire(&app_data(&app))?;
     #[cfg(target_os = "macos")]
     {
         Ok(capture::open_wechat_for_user(Path::new(
@@ -5744,6 +5758,7 @@ async fn wechat_capture_preflight(
 ) -> Result<capture::PreflightResult, capture::CaptureError> {
     let root = capture_root(&app);
     tauri::async_runtime::spawn_blocking(move || {
+        let _installation = wechat_installation_guard::for_capture(&root)?;
         capture::preflight(Path::new(capture::WECHAT_APP), &root)
     })
     .await
@@ -5780,6 +5795,7 @@ async fn wechat_capture_start(
     let outcome = {
         let root = root.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            let _installation = wechat_installation_guard::for_capture(&root)?;
             capture::capture(Path::new(capture::WECHAT_APP), &root, &probes, timeout)
         })
         .await
@@ -5809,6 +5825,7 @@ async fn wechat_capture_restore(
 ) -> Result<capture::RestoreResult, capture::CaptureError> {
     let root = capture_root(&app);
     tauri::async_runtime::spawn_blocking(move || {
+        let _installation = wechat_installation_guard::for_capture(&root)?;
         capture::cancel(Path::new(capture::WECHAT_APP), &root)
     })
     .await
@@ -5821,7 +5838,10 @@ async fn wechat_capture_restore(
 #[tauri::command]
 async fn wechat_capture_accept_official(app: AppHandle) -> Result<capture::AcceptOfficialResult, capture::CaptureError> {
     let root = capture_root(&app);
-    tauri::async_runtime::spawn_blocking(move || capture::accept_official_installation(Path::new(capture::WECHAT_APP), &root))
+    tauri::async_runtime::spawn_blocking(move || {
+        let _installation = wechat_installation_guard::for_capture(&root)?;
+        capture::accept_official_installation(Path::new(capture::WECHAT_APP), &root)
+    })
         .await.map_err(|error| capture::CaptureError::new("command_failed", format!("微信校验任务异常结束：{error}")))?
 }
 
@@ -6752,13 +6772,23 @@ fn wechat_env(app: AppHandle) -> WechatEnv {
 }
 
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    let builder = tauri::Builder::default();
+    let builder = if build_flavor::DEVELOPMENT { builder } else {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    };
+    builder
         .plugin(tauri_plugin_process::init())
         .manage(SyncState::default())
         .manage(UploadState::default())
         .manage(DevifyAuthState::default())
         .setup(|app| {
+            build_flavor::validate_identifier(&app.config().identifier).map_err(std::io::Error::other)?;
+            #[cfg(target_os = "macos")]
+            if build_flavor::DEVELOPMENT {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_badge_label(Some("DEV".into()));
+                }
+            }
             let instance=instance_lock::acquire(&app_data(app.handle())).map_err(std::io::Error::other)?;
             app.manage(instance);
             let diagnostics_root = app_data(app.handle());

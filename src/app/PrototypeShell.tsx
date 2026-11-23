@@ -47,6 +47,8 @@ import './styles/navigation-rail.css';
 import '../features/connectors/connectors.css';
 import '../features/connectors/wizard/wechat-wizard.css';
 import brandMark from '../assets/app-mark-transparent.png';
+import { DEVELOPMENT_APP } from '../shared/api/buildFlavor';
+import { DevelopmentEnvironment } from '../features/settings/DevelopmentEnvironment';
 
 type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'network' | 'history' | 'agent' | 'feedback' | 'about';
 
@@ -112,6 +114,7 @@ export default function PrototypeShell() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [updateDialogOpen]);
   useEffect(() => {
+    if (DEVELOPMENT_APP) return;
     const refresh = () => { void checkForUpdates(true); };
     refresh();
     window.addEventListener('focus', refresh);
@@ -367,7 +370,8 @@ export default function PrototypeShell() {
     settingsContentRef.current?.scrollTo({ top: 0, behavior: 'auto' });
   }, [wechatGuide, whatsappGuide, wizardStep]);
   const openEvent = (eventId: number) => { setEventFocusId(eventId); setSection('events'); };
-  return <main className={`prototype-shell${isTauri() && /Mac/.test(navigator.platform) ? ' prototype-shell-macos' : ''}`} onMouseDown={handleWindowDrag}>
+  return <main className={`prototype-shell${DEVELOPMENT_APP ? ' prototype-shell-dev' : ''}${isTauri() && /Mac/.test(navigator.platform) ? ' prototype-shell-macos' : ''}`} onMouseDown={handleWindowDrag}>
+    {DEVELOPMENT_APP && <DevelopmentEnvironment />}
     <div className="prototype-titlebar" aria-hidden="true" />
     <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
       updateVersion={update.status === 'available' ? update.version : undefined}

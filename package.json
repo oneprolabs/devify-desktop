@@ -10,7 +10,13 @@
     "preview:menu": "vite --open /scripts/navigation-preview.html",
     "stage:wxq": "node scripts/stage-wxq.mjs --prepare && cargo build --release --bin wxq --features aux-binaries --manifest-path src-tauri/Cargo.toml && node scripts/stage-wxq.mjs",
     "tauri": "tauri",
-    "test:frontend": "node scripts/test-frontend.mjs"
+    "test:frontend": "node scripts/test-frontend.mjs",
+    "dev:app": "vite --mode development-app --port 1422 --strictPort",
+    "build:dev": "tsc && vite build --mode development-app --outDir dist-dev",
+    "stage:wxq:dev": "node scripts/stage-wxq.mjs --prepare --dev && cargo build --release --bin wxq --features aux-binaries,dev-app --manifest-path src-tauri/Cargo.toml && node scripts/stage-wxq.mjs --dev",
+    "desktop:dev": "tauri dev --config src-tauri/tauri.dev-app.conf.json",
+    "desktop:build:dev": "bash scripts/macos-build.sh --dev --no-install",
+    "desktop:install:dev": "bash scripts/macos-build.sh --dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

@@ -494,7 +494,8 @@ fn desktop_login_config_reports_html_as_service_configuration_error() {
         let (mut socket, _) = listener.accept().unwrap();
         let mut request = [0u8; 4096];
         let size = socket.read(&mut request).unwrap();
-        assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /api/v1/auth/desktop/config "));
+        let path = if crate::build_flavor::DEVELOPMENT { "/api/v1/auth/desktop/config?channel=development" } else { "/api/v1/auth/desktop/config" };
+        assert!(String::from_utf8_lossy(&request[..size]).starts_with(&format!("GET {path} ")));
         let body = "<html>not the login API</html>";
         write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
     });

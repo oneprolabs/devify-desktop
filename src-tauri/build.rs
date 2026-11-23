@@ -1,4 +1,5 @@
 fn main() {
+    build_skill();
     build_amfi_probe();
     build_silk();
     tauri_build::build()
@@ -51,4 +52,16 @@ fn build_silk() {
         return;
     }
     build.compile("wechat_silk");
+}
+
+// Keep one Skill source. The development variant gets a distinct host-visible name.
+fn build_skill() {
+    let source = "../skills/aimychats/SKILL.md";
+    println!("cargo:rerun-if-changed={source}");
+    let mut content = std::fs::read_to_string(source).expect("read bundled Skill");
+    if std::env::var_os("CARGO_FEATURE_DEV_APP").is_some() {
+        content = content.replacen("name: aimychats", "name: aimychats-dev", 1);
+    }
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(output.join("agent-skill.md"), content).expect("write bundled Skill");
 }

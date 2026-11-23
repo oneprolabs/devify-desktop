@@ -19,9 +19,14 @@ if (version !== pkg || version !== cargo) throw new Error(`Version mismatch: Tau
 NODE
 ARCH="$(uname -m)"
 case "$ARCH" in arm64) TARGET_ARCH=aarch64 ;; x86_64) TARGET_ARCH=x86_64 ;; *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; esac
-scripts/macos-build.sh --no-install
+scripts/macos-build.sh --production --no-install
 BUNDLE="$ROOT/src-tauri/target/release/bundle/macos"
 ARCHIVE="$BUNDLE/AIMyChats_${VERSION}_${TARGET_ARCH}.app.tar.gz"
+RELEASE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$BUNDLE/AIMyChats.app/Contents/Info.plist")
+if [ "$RELEASE_ID" != "local.wechat.devifybridge" ]; then
+  echo "Refusing to publish a non-production app: $RELEASE_ID" >&2
+  exit 1
+fi
 # Archive after codesign; Tauri's signature is over these final bytes.
 # macOS tar otherwise stores extended attributes as AppleDouble `._*` entries,
 # which the updater's Rust tar extractor fails to unpack.

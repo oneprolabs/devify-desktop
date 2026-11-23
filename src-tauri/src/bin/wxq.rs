@@ -20,7 +20,7 @@ use wechat_devify_bridge_lib::wechat::query::{
     DigestReport, MessageItem, SearchReport, SessionItem,
 };
 
-const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:18765";
+const DEFAULT_ENDPOINT: &str = if wechat_devify_bridge_lib::build_flavor::DEVELOPMENT { "http://127.0.0.1:18766" } else { "http://127.0.0.1:18765" };
 
 #[derive(Deserialize)]
 struct Policy {
@@ -130,25 +130,29 @@ fn default_app_data_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME")?;
-        Some(std::path::PathBuf::from(home).join("Library/Application Support/local.wechat.devifybridge"))
+        Some(std::path::PathBuf::from(home).join(format!("Library/Application Support/{}", wechat_devify_bridge_lib::build_flavor::IDENTIFIER)))
     }
     #[cfg(target_os = "windows")]
     {
         let base = std::env::var_os("APPDATA")?;
-        Some(std::path::PathBuf::from(base).join("local.wechat.devifybridge"))
+        Some(std::path::PathBuf::from(base).join(wechat_devify_bridge_lib::build_flavor::IDENTIFIER))
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share")))?;
-        Some(base.join("local.wechat.devifybridge"))
+        Some(base.join(wechat_devify_bridge_lib::build_flavor::IDENTIFIER))
     }
 }
 
 /// The per-install token the desktop app generated (0600). Loopback now requires it too.
 fn stored_token() -> Option<String> {
-    let raw = std::fs::read_to_string(default_app_data_dir()?.join("agent-token")).ok()?;
+    token_from_dir(&default_app_data_dir()?)
+}
+
+fn token_from_dir(data: &std::path::Path) -> Option<String> {
+    let raw = std::fs::read_to_string(data.join("agent-token")).ok()?;
     let value = raw.trim();
     (!value.is_empty()).then(|| value.to_string())
 }
@@ -158,10 +162,15 @@ fn run() -> Result<String, String> {
     if raw.is_empty() {
         return Ok(usage());
     }
+    if raw.first().is_some_and(|arg| arg == "build-info") {
+        return Ok(wechat_devify_bridge_lib::build_flavor::metadata().to_string());
+    }
 
     let mut endpoint = env_first(&["WECHAT_AGENT_ENDPOINT", "WECHAT_MCP_ENDPOINT"])
         .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
-    let mut token = env_first(&["WECHAT_AGENT_TOKEN", "WECHAT_MCP_TOKEN"]).or_else(stored_token);
+    let mut token = env_first(&["WECHAT_AGENT_TOKEN", "WECHAT_MCP_TOKEN"]);
+    let mut data_dir = None;
+    let mut explicit_token = false;
     let mut json = false;
     let mut rest: Vec<String> = Vec::new();
 
@@ -170,8 +179,15 @@ fn run() -> Result<String, String> {
         let arg = raw[index].clone();
         let (name, inline) = split_inline(&arg);
         match name {
+            "--app-data" => {
+                let directory = take_value(name, inline, &raw, &mut index)?;
+                data_dir = Some(std::path::PathBuf::from(directory));
+            }
             "--endpoint" => endpoint = take_value(name, inline, &raw, &mut index)?,
-            "--token" => token = Some(take_value(name, inline, &raw, &mut index)?),
+            "--token" => {
+                token = Some(take_value(name, inline, &raw, &mut index)?);
+                explicit_token = true;
+            }
             "--json" => json = true,
             "--help" | "-h" => rest.push("help".to_string()),
             _ => rest.push(arg),
@@ -191,6 +207,12 @@ fn run() -> Result<String, String> {
         return Ok(usage());
     }
 
+    // An installed Skill names its owning app. Ambient token variables from a
+    // different app must not override that choice; explicit --token stays supported.
+    let token = match data_dir {
+        Some(data) if !explicit_token => token_from_dir(&data),
+        _ => token.or_else(stored_token),
+    };
     let cli = Cli {
         endpoint,
         token,
@@ -204,6 +226,7 @@ fn run() -> Result<String, String> {
 fn dispatch(cli: Cli) -> Result<String, String> {
     let account = cli.args.last("account").map(str::to_string);
     match cli.command.as_str() {
+        "build-info" => Ok(wechat_devify_bridge_lib::build_flavor::metadata().to_string()),
         "health" => {
             let body = request_json(&cli, "GET", "/health", None)?;
             let service = body.get("service").and_then(Value::as_str).unwrap_or("unknown");
@@ -720,7 +743,7 @@ fn usage() -> String {
         "wxq — 只读读取 AIMyChats 白名单聊天记录
 
 用法:
-  wxq [--endpoint URL] [--token TOKEN] [--json] <命令> [参数]
+  wxq [--app-data DIR] [--endpoint URL] [--token TOKEN] [--json] <命令> [参数]
 
 命令:
   health                                    检查本地服务是否在运行

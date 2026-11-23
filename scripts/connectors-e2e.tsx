@@ -14,6 +14,7 @@ import lineIcon from '../src/assets/connectors/line.svg';
 import wecomIcon from '../src/assets/connectors/wecom.svg';
 import { defaultSettings } from '../src/features/settings/settingsModel';
 import '../src/app/styles/style.css';
+import { APP_NAME, DEVELOPMENT_APP } from '../src/shared/api/buildFlavor';
 const query = new URLSearchParams(location.search);
 // Optional, local-only snapshot. Never import chat data into the production bundle.
 // The file is excluded locally and fetched only for this explicit preview URL.
@@ -121,7 +122,9 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     if(state.saveDelay) await new Promise(resolve=>setTimeout(resolve,state.saveDelay));
     if(state.failNextSave){state.failNextSave=false;throw 'SETTINGS_CONFLICT: E2E concurrent edit';}
     if(args.value.user_settings_revision!==state.settings.user_settings_revision)throw 'SETTINGS_CONFLICT: stale E2E revision';
-    state.settings=clone({...args.value,user_settings_revision:state.settings.user_settings_revision+1});state.writes.push(clone(state.settings));return clone(state.settings);
+    state.settings=clone({...args.value,user_settings_revision:state.settings.user_settings_revision+1});state.writes.push(clone(state.settings));
+    for(const id of eventHandlers.get('development-service-changed')??[]) callbacks.get(id)?.({event:'development-service-changed',id,payload:state.settings.devify.base_url});
+    return clone(state.settings);
    }
    case 'devify_auth_status':{
     if(state.authPaused) await new Promise<void>(resolve=>state.authResolvers.push(resolve));
@@ -192,7 +195,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'plugin:event|listen':eventHandlers.set(args.event,[...(eventHandlers.get(args.event)??[]),args.handler]);return ++callbackId;
    case 'plugin:event|unlisten':case 'diagnostic_record':return null;
    case 'plugin:updater|check':return query.has('update')?{rid:901,version:'0.1.20',currentVersion:'0.1.10',body:'Synthetic update for preview'}:null;
-   case 'app_info':return {platform:'macos',arch:'aarch64',os_version:'15.7',version:'0.1.10',name:'AIMyChats'};
+   case 'app_info':return {platform:'macos',arch:'aarch64',os_version:'15.7',version:'0.1.10',name:APP_NAME,development:DEVELOPMENT_APP};
    case 'connector_detect':return {state:query.has('untrusted')&&args.kind==='wechat'?'untrusted':'installed',app_path:args.kind==='whatsapp'?'/Applications/WhatsApp.app':'/Applications/WeChat.app',version:'4.1.2',message:''};
    case 'chat_accounts':return clone(state.accounts);
    case 'chat_account_activate':state.settings.active_account_id=args.accountId;return null;

@@ -91,6 +91,9 @@ pub(crate) fn agent_access_prompt(
     bin_dir: String,
     skills_dir: String,
 ) -> Result<access::PromptOut, String> {
+    if crate::build_flavor::DEVELOPMENT {
+        return Err("开发版请使用页面中的「安装 Skills」，避免覆盖正式版工具。".into());
+    }
     let data = app_data(&app);
     let settings = settings::load(&data)?;
     require_internal_agent(&data, &settings.devify.base_url)?;
@@ -141,7 +144,7 @@ pub(crate) async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
                 "--bin",
                 access::CLI_NAME,
                 "--features",
-                "aux-binaries",
+                if crate::build_flavor::DEVELOPMENT { "aux-binaries,dev-app" } else { "aux-binaries" },
             ])
             .current_dir(&build_dir)
             .output()
@@ -165,6 +168,12 @@ pub(crate) async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
     let path = dir.join("target/release").join(access::CLI_NAME);
     if !path.is_file() {
         return Err("cargo 返回成功，但没有找到 target/release/wxq。".into());
+    }
+    if crate::build_flavor::DEVELOPMENT {
+        let owned = data.join("bin").join(access::CLI_NAME);
+        std::fs::create_dir_all(owned.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::copy(&path, &owned).map_err(|e| e.to_string())?;
+        return Ok(owned.to_string_lossy().to_string());
     }
     Ok(path.to_string_lossy().to_string())
 }
