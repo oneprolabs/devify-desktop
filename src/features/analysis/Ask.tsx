@@ -12,7 +12,7 @@ type Citation = { kind: string; id: number; title: string; excerpt: string; conv
 type Question = { id: number; thread_id?: number | null; question: string; answer: string; citations: Citation[]; status: string; error?: string; created_at?: string; updated_at?: string; scope?: { since?: string | null; until?: string | null } };
 type Settings = { devify?: { active_space_id: string | null } };
 
-const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些事件还没有完成？'];
+const suggestions = ['本周客户相关的风险有哪些？', '我现在有哪些事需要亲自处理？', '最近报价和合同有什么进展？', '哪些待办还没有完成？'];
 const rangerOptions = ['全部', '近 7 天', '今天'];
 const citationKind = (citation: Citation) => citation.kind.toLowerCase();
 const dateLabel = (value?: string) => value ? new Date(value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("刚刚");
@@ -24,7 +24,7 @@ const dayLabel = (value?: string) => {
   if (date.toDateString() === now.toDateString()) return tf("今天 {0}", date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
   return `${day} ${date.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' })}`;
 };
-const kindLabel = (kind: string) => ({ message: t("原文"), note: t("笔记"), event: t("事件") } as Record<string, string>)[kind] || kind;
+const kindLabel = (kind: string) => ({ message: t("原文"), note: t("笔记"), event: t("待办") } as Record<string, string>)[kind] || kind;
 
 function rangeBounds(range: string) {
   const now = new Date();
@@ -196,7 +196,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
                 : <p className="ask-answer-text">{t("这次回答没有内容，请重新提问。")}</p>}
 
           {events.length > 0 && <section className="ask-block">
-            <h3>{t("相关事件")}</h3>
+            <h3>{t("相关待办")}</h3>
             <div className="ask-events">
               {events.map(citation => <button
                 type="button"
@@ -233,7 +233,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
             </div>
           </section>}
 
-          {created && status !== 'queued' && status !== 'failed' && <p className="ask-foot">{t("基于")} {events.length} {t("个事件、")}{sources.length} {t("条原文 ·")} {dayLabel(created)}{answerRange && <> {t("· 范围：")}{answerRange}</>}</p>}
+          {created && status !== 'queued' && status !== 'failed' && <p className="ask-foot">{t("基于")} {events.length} {t("个待办、")}{sources.length} {t("条原文 ·")} {dayLabel(created)}{answerRange && <> {t("· 范围：")}{answerRange}</>}</p>}
         </div>
       </div>
     </div>;
@@ -267,7 +267,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
       <header className="ask-head">
         <div className="ask-head-text">
           <h2>{threadTurns[0]?.question || pending || t("新对话")}</h2>
-          <p>{t("仅检索已上传的会话与事件 · 回答附原文依据")}</p>
+          <p>{t("仅检索已上传的会话与待办 · 回答附原文依据")}</p>
         </div>
         <div className="ask-time">
           <span>{t("时间")}</span>
@@ -290,7 +290,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
         {spaceId && !threadTurns.length && !pending && <>
           <div className="ask-welcome">
             <h3>{t("问问你的聊天记录")}</h3>
-            <p>{t("跨已上传的聊天、事件和笔记提问，每条结论都附原文依据。")}</p>
+            <p>{t("跨已上传的聊天、待办和笔记提问，每条结论都附原文依据。")}</p>
           </div>
           <div className="ask-suggestions">{suggestions.map(item => <button type="button" key={item} onClick={() => void ask(item)}>{item}</button>)}</div>
         </>}
@@ -301,7 +301,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
           <div className="ask-user"><p>{pending}</p></div>
           <div className="ask-bot">
             <span className="ask-avatar" aria-hidden="true">a</span>
-            <div className="ask-content"><p className="ask-pending" role="status"><span className="ask-spinner" aria-hidden="true" />{t("正在检索事件与原始记录…")}</p></div>
+            <div className="ask-content"><p className="ask-pending" role="status"><span className="ask-spinner" aria-hidden="true" />{t("正在检索待办与原始记录…")}</p></div>
           </div>
         </div>}
       </div>

@@ -694,7 +694,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
       <div className="plan-row">
         <div className="plan-row-label">
           <span>{t("当前空间")}</span>
-          <small>{activeSpace ? t("聊天记录、事件与报告所属的空间") : (spacesStatus || t("登录后自动选择个人空间"))}</small>
+          <small>{activeSpace ? t("聊天记录、待办与报告所属的空间") : (spacesStatus || t("登录后自动选择个人空间"))}</small>
         </div>
         <div className="plan-row-control">
           <span className="plan-kv">{activeSpace ? `${activeSpace.name} · ${activeSpace.role || activeSpace.kind}` : (authenticated ? (spacesStatus || t("正在读取空间…")) : t("未登录"))}</span>

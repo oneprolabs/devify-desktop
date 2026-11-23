@@ -35,10 +35,11 @@ const state = {
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
  chatPageError:'', chatPageAccount:'', chatBadgeDelay:0,
+ chatMessageOverrides:{} as Record<string,any[]>,
  summaries:[] as any[],summaryLocal:[] as any[],summaryError:'',
  agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
  agents: query.has('no-agents')?[]:['codex','claude-code','gemini-cli'].map(id=>({id,name:id,command:'/e2e/'+id,version:'1.0 (fixture)',available:true,note:'Synthetic tool'})),
- analysisEvents:[] as any[],analysisReports:[] as any[],questions:[] as any[],
+ analysisEvents:[] as any[],analysisNotes:{} as Record<number,any[]>,analysisReports:[] as any[],questions:[] as any[],
  analysisPreferences:{event_granularity:'balanced',summary_length:'standard',summary_style:'concise',conversation_types:['direct','group'],lookback_days:0,auto_analyze:true},
  analysisSaveError:'', reportSaveError:'', reportReadError:'', reportDelay:0,
  feedbackDraft:feedbackDraft(),feedbackHistory:[] as any[],feedbackSubmitError:'',feedbackSubmits:0,
@@ -82,7 +83,8 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'devify_topics':if(state.reportReadError)throw state.reportReadError;return clone(state.dailyPlans);
    case 'devify_analysis_list':{const list=args.kind==='events'?state.analysisEvents:state.analysisReports;return {list:clone(list),pagination:{total:list.length,page:1}};}
    case 'devify_analysis_detail':return clone((args.kind==='events'?state.analysisEvents:state.analysisReports).find(row=>row.id===args.itemId));
-   case 'devify_event_notes':case 'devify_event_relations':return [];
+   case 'devify_event_notes':return clone(state.analysisNotes[args.eventId]??[]);
+   case 'devify_event_relations':return [];
    case 'devify_questions':return clone(state.questions);
    case 'devify_question_detail':return clone(state.questions.find(row=>row.id===args.questionId));
    case 'devify_question_ask':{const row={id:state.questions.length+1,question:args.question,status:'ready',answer:'## 回答\n这是一份样式演示回答。请以真实验证结果为准。',created_at:new Date().toISOString(),citations:[]};state.questions.push(row);return clone(row);}
@@ -217,6 +219,9 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'wechat_capture_restore':Object.assign(state.capture,{pending:false,needs_cleanup:false,stage:'idle',wechat_official:true,wechat_ad_hoc:false});return {restored:true,verified:true};
    case 'wechat_decrypt':case 'wechat_sync':return ['session/session.db','message/message_0.db'].map(rel=>({account:wx,rel,status:'ok',pages:1,error:null}));
    case 'wechat_messages':{
+    if(state.chatMessageOverrides[args.accountId]) return clone(state.chatMessageOverrides[args.accountId])
+      .filter((message:any)=>!args.before||message.time<args.before||(message.time===args.before&&message.local_id<args.beforeId))
+      .slice(0,args.limit??50);
     if(localSnapshot) return (localSnapshot.messages[`${args.accountId}:${args.username}`]??[])
       .filter((message:any)=>!args.before||message.time<args.before||(message.time===args.before&&message.local_id<args.beforeId))
       .slice(0,args.limit??50);

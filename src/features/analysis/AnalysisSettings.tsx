@@ -26,7 +26,7 @@ function validPreferences(value: AnalysisPreferences): boolean {
     && ['concise', 'narrative', 'actions'].includes(value.summary_style));
 }
 
-export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, canUseLocalSummary = false }: { onOpenReports: () => void; onOpenTopics: () => void; onOpenChats: () => void; canUseLocalSummary?: boolean }) {
+export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, canUseLocalSummary = false, focusSection }: { onOpenReports: () => void; onOpenTopics: () => void; onOpenChats: () => void; canUseLocalSummary?: boolean; focusSection?: 'events' }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -37,11 +37,19 @@ export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, can
   const [preferencesNotice, setPreferencesNotice] = useState('');
   const [preferencesSaving, setPreferencesSaving] = useState(false);
   const [preferencesRefresh, setPreferencesRefresh] = useState(0);
-  const [advanced, setAdvanced] = useState(false);
+  const [advanced, setAdvanced] = useState(focusSection === 'events');
+  const eventSettingsRef = useRef<HTMLElement>(null);
   const active = useRef(false);
   const loadId = useRef(0);
   const preferencesLock = useRef(false);
   const spaceId = settings.devify.active_space_id;
+
+  useEffect(() => {
+    if (focusSection !== 'events' || !ready || !spaceId) return;
+    setAdvanced(true);
+    eventSettingsRef.current?.scrollIntoView({ block: 'start' });
+    eventSettingsRef.current?.focus({ preventScroll: true });
+  }, [focusSection, ready, spaceId]);
 
   const load = useCallback(async () => {
     const request = ++loadId.current;
@@ -102,30 +110,30 @@ export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, can
   if (!ready) return <div className="settings-page analysis-settings analysis-simple"><h2>{t('智能分析')}</h2><p>{loading ? t('正在加载设置…') : t('设置尚未加载，无法安全保存。')}</p>{error && <p role="alert" className="error">{error}</p>}{!loading && <button type="button" onClick={() => void load()}>{t('重新加载')}</button>}</div>;
 
   return <div className="settings-page analysis-settings analysis-simple">
-    <header className="page-head"><h2>{t('智能分析')}</h2><p className="help">{t('按功能管理聊天总结、聊天事件分析和定期报告。')}</p></header>
+    <header className="page-head"><h2>{t('智能分析')}</h2><p className="help">{t('按功能管理聊天总结、聊天待办分析和定期报告。')}</p></header>
     {!spaceId ? <p role="alert">{t('请先在账户中选择可用空间。')}</p> : <>
       <section className="analysis-main-settings analysis-summary-settings" aria-label={t('聊天总结设置')}>
         <div className="analysis-setting-row"><div><h3>{t('聊天总结')}</h3><p>{t('在聊天中选择时间或消息，按需生成独立总结。')}</p></div><button type="button" className="analysis-feature-link" onClick={onOpenChats}>{t('前往聊天')}</button></div>
         {canUseLocalSummary && <AgentSummaryInstructions settings={settings} onSaved={setSettings}/>}
       </section>
-      <section className="analysis-main-settings" aria-label={t('事件与笔记设置')}>
+      <section className="analysis-main-settings" aria-label={t('待办与笔记设置')} ref={eventSettingsRef} tabIndex={-1}>
         <div className="analysis-setting-row">
-          <div><h3>{t('聊天事件分析')}</h3><p>{t('自动将已备份的聊天整理为笔记和事件。')}</p></div>
+          <div><h3>{t('聊天待办分析')}</h3><p>{t('大约每小时分析一次已备份的聊天，整理为笔记和待办。')}</p></div>
         </div>
       <section className="analysis-advanced">
-        <button type="button" className="analysis-advanced-trigger" aria-label={t('调整事件与笔记设置')} aria-expanded={advanced} aria-controls="analysis-advanced-options" disabled={!preferences} onClick={() => setAdvanced(value => !value)}>
-          <span><strong>{t('调整事件与笔记设置')}</strong><small>{preferences ? `${rangeSummary} · ${lengthSummary}` : t('正在读取设置…')}{dirty && ` · ${t('有未保存的修改')}`}</small></span>
+        <button type="button" className="analysis-advanced-trigger" aria-label={t('调整待办与笔记设置')} aria-expanded={advanced} aria-controls="analysis-advanced-options" disabled={!preferences} onClick={() => setAdvanced(value => !value)}>
+          <span><strong>{t('调整待办与笔记设置')}</strong><small>{preferences ? `${rangeSummary} · ${lengthSummary}` : t('正在读取设置…')}{dirty && ` · ${t('有未保存的修改')}`}</small></span>
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d={advanced ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'}/></svg>
         </button>
         {advanced && preferences && <div id="analysis-advanced-options">
           <fieldset disabled={preferencesSaving} className="analysis-preference-fields">
-            <p className="analysis-preference-help">{t('以下选项用于事件提取和笔记整理。聊天总结、报告和主题使用各自的生成规则。')}</p>
+            <p className="analysis-preference-help">{t('以下选项用于待办提取和笔记整理。聊天总结、报告和主题使用各自的生成规则。')}</p>
             <div className="analysis-preference-row"><span>{t('参与分析的聊天类型')}</span><div className="analysis-options" role="group" aria-label={t('聊天记录类型')}>{([{ value: 'direct', label: '私聊' }, { value: 'group', label: '群聊' }] as const).map(option => <label key={option.value}><input type="checkbox" checked={kinds.includes(option.value)} disabled={kinds.length === 1 && kinds.includes(option.value)} onChange={() => changePreferences({ ...preferences, conversation_types: kinds.includes(option.value) ? kinds.filter(value => value !== option.value) : [...kinds, option.value] })}/>{t(option.label)}</label>)}</div></div>
-            <div className="analysis-preference-row"><span>{t('事件划分粒度')}</span><div className="analysis-options" role="radiogroup" aria-label={t('事件划分粒度')}>{([{ value: 'fine', label: '更细（更多事件）' }, { value: 'balanced', label: '平衡' }, { value: 'coarse', label: '更粗（更少事件）' }] as const).map(option => <label key={option.value}><input type="radio" name="event-granularity" checked={preferences.event_granularity === option.value} onChange={() => changePreferences({ ...preferences, event_granularity: option.value })}/>{t(option.label)}</label>)}</div></div>
+            <div className="analysis-preference-row"><span>{t('待办划分粒度')}</span><div className="analysis-options" role="radiogroup" aria-label={t('待办划分粒度')}>{([{ value: 'fine', label: '更细（更多待办）' }, { value: 'balanced', label: '平衡' }, { value: 'coarse', label: '更粗（更少待办）' }] as const).map(option => <label key={option.value}><input type="radio" name="event-granularity" checked={preferences.event_granularity === option.value} onChange={() => changePreferences({ ...preferences, event_granularity: option.value })}/>{t(option.label)}</label>)}</div></div>
             <label className="analysis-preference-row"><span>{t('整理风格')}</span><select value={preferences.summary_style} onChange={event => changePreferences({ ...preferences, summary_style: event.target.value as AnalysisPreferences['summary_style'] })}><option value="concise">{t('简洁概述')}</option><option value="narrative">{t('背景与经过')}</option><option value="actions">{t('行动与后续')}</option></select></label>
             <div className="analysis-preference-row"><span>{t('内容详略')}</span><div className="analysis-options" role="radiogroup" aria-label={t('内容详略')}>{([{ value: 'short', label: '简短' }, { value: 'standard', label: '标准' }, { value: 'detailed', label: '详细' }] as const).map(option => <label key={option.value}><input type="radio" name="summary-length" checked={preferences.summary_length === option.value} onChange={() => changePreferences({ ...preferences, summary_length: option.value })}/>{t(option.label)}</label>)}</div></div>
           </fieldset>
-          <div className="analysis-preference-actions"><p>{t('用于之后新建的事件分析任务，已有任务和结果保持不变。')}</p><WizardActionButton className="primary" disabled={!dirty || preferencesSaving} loading={preferencesSaving} busyLabel={t('正在保存…')} onAction={savePreferences}>{t('保存事件与笔记设置')}</WizardActionButton></div>
+          <div className="analysis-preference-actions"><p>{t('用于之后新建的待办分析任务，已有任务和结果保持不变。')}</p><WizardActionButton className="primary" disabled={!dirty || preferencesSaving} loading={preferencesSaving} busyLabel={t('正在保存…')} onAction={savePreferences}>{t('保存待办与笔记设置')}</WizardActionButton></div>
         </div>}
       </section>
       <div className="analysis-preference-feedback" role="status" aria-live="polite">{preferencesNotice}</div>

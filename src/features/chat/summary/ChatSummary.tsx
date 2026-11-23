@@ -469,8 +469,8 @@ export function ChatSummary({
       <div className="chat-summary-intro">
         <p>
           {scoped.length
-            ? tf("{0} 份总结 · 只保存在本机，不参与事件分析", scoped.length)
-            : t("总结是某段时间或所选消息的快照，之后不会随事件分析变化。")}
+            ? tf("{0} 份总结 · 只保存在本机，不参与待办分析", scoped.length)
+            : t("总结是某段时间或所选消息的快照，之后不会随待办分析变化。")}
         </p>
         <button
           type="button"

@@ -504,7 +504,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         <div className="chat-workbench-head-right">
           <div className="chat-workbench-tabs" role="tablist" aria-label={t("聊天视图")}>
             <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>{t("原始记录")}{view === 'raw' && chatState.active && <small>{chatState.messages}</small>}</button>
-            <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>{t("事件")} <small>{scopedEvents.length}</small></button>
+            <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>{t("待办")} <small>{scopedEvents.length}</small></button>
             <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
               {t("聊天总结")}
               {summaryStatus.busy
@@ -512,10 +512,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                 : summaryStatus.count > 0 && <small>{summaryStatus.count}</small>}
             </button>
           </div>
-          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")} value={detailQuery} onChange={event => { const value = event.target.value; setDetailQueries(current => ({ ...current, [view]: value })); }} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索事件")}/>
-          {view === 'raw' && chatState.active && summarySelection.length > 0 && <div className="chat-workbench-head-actions">
-            <button type="button" className="selected" onClick={()=>{setSummaryPickRequest(value=>value+1);setView('summary');}}>{tf('总结所选 {0} 条',summarySelection.length)}</button>
-          </div>}</div>
+          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索待办")} value={detailQuery} onChange={event => { const value = event.target.value; setDetailQueries(current => ({ ...current, [view]: value })); }} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索待办")}/>
+          </div>
         </div>
         {selectedSession && <p className="chat-workbench-conversation-meta"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">{selectedSession.is_group?<><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></>:<><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></>}</svg>{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}{view === 'raw' && chatState.active ? ` · ${tf('已加载 {0} 条消息', chatState.messages)}` : ''}</p>}
       </header>
@@ -557,6 +555,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           onClearSearch={() => setQuery('')}
           onChatState={setChatState}
           onSummarySelection={setSummarySelection}
+          onSummarizeSelection={()=>{setSummaryPickRequest(value=>value+1);setView('summary');}}
           onOpenData={onOpenData}
           onOpenWhitelist={onOpenWhitelist}
         />}
@@ -573,6 +572,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           sessions={sessions.filter(session => session.accountId === accountId)}
           session={selectedSession}
           selection={summarySelection}
+          selectionTotal={chatState.selected}
           pickRequest={summaryPickRequest}
           query={detailQuery}
           onPick={()=>setView('raw')}

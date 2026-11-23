@@ -37,9 +37,9 @@ function SummaryBody({ body }: { body:string }) {
   </div>;
 }
 
-export function ConversationSummary({ visible, localAgentReady = false, localAgentName = '', localAgentModel = '', spaceId, accountId, session, sessions, selection, pickRequest, query, onPick, onOpenTasks, onStatus }: {
+export function ConversationSummary({ visible, localAgentReady = false, localAgentName = '', localAgentModel = '', spaceId, accountId, session, sessions, selection, selectionTotal = selection.length, pickRequest, query, onPick, onOpenTasks, onStatus }: {
   visible:boolean;localAgentReady?:boolean;localAgentName?:string;localAgentModel?:string;spaceId:string|null;accountId:string|null;session:SummaryChat|null;sessions:SummaryChat[];
-  selection:SummaryMessage[];pickRequest:number;query:string;onPick:()=>void;onOpenTasks:()=>void;
+  selection:SummaryMessage[];selectionTotal?:number;pickRequest:number;query:string;onPick:()=>void;onOpenTasks:()=>void;
   onStatus:(state:{count:number;busy:boolean})=>void;
 }) {
   const { internal }=useInternalAccount();
@@ -109,6 +109,9 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   useEffect(()=>{submission.current=null;setExcluded([]);},[selection]);
   const change=()=>{submission.current=null;setError('');setFormError('');setNotice('');};
   const selected=selection.filter(item=>!excluded.includes(keyOf(item)));
+  // The reader supplies text-only input, while its selection includes media.
+  const nonTextCount=Math.max(0,selectionTotal-selection.length);
+  const selectedTotal=selected.length+nonTextCount;
 
   const generate=async()=>{
     if(lock.current||!spaceId||!accountId||!session)return;
@@ -157,14 +160,16 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   };
   const visibleRows=rows.filter(row=>!query.trim()||`${row.range_label} ${row.body}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <div className="chat-summary-page"><div className="chat-summary-column conversation-summary">
-    <div className="chat-summary-intro"><p>{t('总结是所选聊天的独立快照，不参与事件分析。')}</p><button type="button" className={open?'summary-disclosure':'chat-summary-cta'} aria-expanded={open} aria-controls={panelId} disabled={!session||Boolean(phase)} onClick={()=>{setOpen(value=>!value);change();}}>{open?<><span>{t('收起')}</span><DisclosureArrow expanded/></>:t('生成总结')}</button></div>
+    <div className="chat-summary-intro"><p>{t('总结是所选聊天的独立快照，不参与待办分析。')}</p><button type="button" className={open?'summary-disclosure':'chat-summary-cta'} aria-expanded={open} aria-controls={panelId} disabled={!session||Boolean(phase)} onClick={()=>{setOpen(value=>!value);change();}}>{open?<><span>{t('收起')}</span><DisclosureArrow expanded/></>:t('生成总结')}</button></div>
     {open&&<section id={panelId} className="chat-summary-panel" aria-label={t('生成聊天总结')}>
       <div className="summary-segments" role="group" aria-label={t('选择消息方式')}>{([['time','按时间周期'],['pick','选具体消息']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={mode===id} disabled={Boolean(phase)} onClick={()=>{setMode(id);change();}}>{t(label)}</button>)}</div>
       {mode==='time'?<>
         <div className="chat-summary-row"><span className="chat-summary-label">{t('时间')}</span><div className="chat-summary-time"><div className="chat-summary-pills">{RANGES.map(([id,label])=><button type="button" key={id} className={range===id?'on':''} disabled={Boolean(phase)} onClick={()=>{setRange(id);change();}}>{t(label)}</button>)}</div><span className="chat-summary-hint">{t('单次最长一周')}</span></div></div>
         <div className="chat-summary-row"><span className="chat-summary-label">{t('聊天')}</span><div className="summary-chat-scope"><div className="summary-chat-chips"><span>{session?.display}</span>{extras.map(username=><span key={username}>{sessions.find(item=>item.username===username)?.display}<button type="button" aria-label={tf('移除 {0}',username)} disabled={Boolean(phase)} onClick={()=>{setExtras(old=>old.filter(item=>item!==username));change();}}>×</button></span>)}<button type="button" disabled={Boolean(phase)} onClick={()=>setPicker(value=>!value)}>{picker?t('完成选择'):t('添加聊天')}</button></div>
         {picker&&<div className="summary-chat-picker"><input aria-label={t('搜索聊天名称')} placeholder={t('搜索聊天名称')} value={chatQuery} onChange={event=>setChatQuery(event.target.value)}/><div>{sessions.filter(chat=>chat.username!==session?.username&&chat.display.toLowerCase().includes(chatQuery.toLowerCase())).slice(0,80).map(chat=><label key={chat.username}><input type="checkbox" checked={extras.includes(chat.username)} disabled={Boolean(phase)||(!extras.includes(chat.username)&&extras.length>=7)} onChange={event=>{setExtras(old=>event.target.checked?[...old,chat.username]:old.filter(item=>item!==chat.username));change();}}/><span>{chat.display}</span><small>{chat.is_group?t('群聊'):t('单聊')}</small></label>)}</div><small>{t('最多 8 个聊天，仅列出当前平台已加载的会话。')}</small></div>}</div></div>
-      </>:<div className="summary-message-picker"><div className="summary-message-picker-head"><strong>{tf('已选 {0} 条文字消息',selected.length)}</strong><button type="button" onClick={onPick}>{t('去原始记录选择')}</button></div>{selection.length?selection.slice(0,100).map(message=><label key={keyOf(message)}><input type="checkbox" checked={!excluded.includes(keyOf(message))} onChange={event=>{setExcluded(old=>event.target.checked?old.filter(key=>key!==keyOf(message)):[...old,keyOf(message)]);change();}}/><span><small>{message.display} · {message.sender} · {new Date(message.time*1000).toLocaleString(dateLocale(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><span>{message.text}</span></span></label>):<p>{t('在原始记录中点击消息进行选择，再回来生成总结。')}</p>}{selection.length>100&&<p>{tf('预览前 100 条，共选择 {0} 条。',selection.length)}</p>}</div>}
+      </>:<div className="summary-message-picker"><div className="summary-message-picker-head"><strong>{tf('已选 {0} 条消息',selectedTotal)}</strong><button type="button" onClick={onPick}>{t('去原始记录选择')}</button></div>
+        {nonTextCount>0&&<p role="status">{tf('其中 {0} 条文字参与总结，{1} 条非文字消息不参与。',selected.length,nonTextCount)}</p>}
+        {selection.length?selection.slice(0,100).map(message=><label key={keyOf(message)}><input type="checkbox" checked={!excluded.includes(keyOf(message))} onChange={event=>{setExcluded(old=>event.target.checked?old.filter(key=>key!==keyOf(message)):[...old,keyOf(message)]);change();}}/><span><small>{message.display} · {message.sender} · {new Date(message.time*1000).toLocaleString(dateLocale(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><span>{message.text}</span></span></label>):<p>{nonTextCount?t('所选消息不含可总结的文字，请返回选择文字消息。'):t('在原始记录中点击消息进行选择，再回来生成总结。')}</p>}{selection.length>100&&<p>{tf('仅预览前 100 条文字消息，共有 {0} 条文字参与总结。',selected.length)}</p>}</div>}
       <SummaryRequestOptions view={options.view} draft={options.draft} loading={options.loading} error={options.error} disabled={Boolean(phase)}
         onChange={patch=>{options.setDraft(old=>({...old,...patch}));change();}} onInitialize={()=>{change();void options.initialize();}} onReload={()=>{change();void options.reload();}}/>
       <div className="chat-summary-row"><span className="chat-summary-label">{t('智能体')}</span>

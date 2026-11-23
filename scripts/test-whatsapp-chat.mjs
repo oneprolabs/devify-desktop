@@ -126,6 +126,27 @@ const buttons = () => nodes(tree).filter(node => node.type === 'button');
 const rows = () => buttons().filter(node => node.props.className?.startsWith('chat-workbench-session') && !node.props.className?.includes('label'));
 const scrollList = () => nodes(tree).find(node => node.props?.className === 'chat-workbench-sessions');
 const selectPlatform = source => { bar().props.onSelect(source); tree=render(); tree=render(); };
+// Selection count covers images too; summary input remains text-only.
+const textSelection=[1,2].map(local_id=>({username:'shared',display:'测试会话',sender:'测试联系人',time:local_id,text:'测试文字',local_id}));
+firstPane.props.onSummarySelection(textSelection);
+firstPane.props.onChatState({active:true,messages:4,selected:4,agentReady:false,agentName:'',agentModel:''});
+tree=render();
+assert.equal(typeof nodes(tree).find(node=>node.type===MessagePane).props.onSummarizeSelection,'function','the reader footer can open summary options');
+let summaryPane=nodes(tree).find(node=>Array.isArray(node.props?.selection));
+assert.equal(summaryPane.props.selectionTotal,4);
+assert.equal(summaryPane.props.selection.length,2,'media stays out of the text-only request');
+firstPane.props.onSummarySelection([]);tree=render();
+summaryPane=nodes(tree).find(node=>Array.isArray(node.props?.selection));
+assert.equal(summaryPane.props.selectionTotal,4);
+nodes(tree).find(node=>node.type===MessagePane).props.onSummarizeSelection();tree=render();
+summaryPane=nodes(tree).find(node=>Array.isArray(node.props?.selection));
+assert.equal(summaryPane.props.visible,true,'the footer action opens the summary tab');
+assert.equal(summaryPane.props.pickRequest,1,'the footer requests selected-message mode even for an all-media selection');
+assert.equal(summaryPane.props.selectionTotal,4,'opening summary options preserves the complete selection count');
+buttons().find(node=>node.props.role==='tab'&&textOf(node).startsWith('原始记录')).props.onClick();tree=render();
+firstPane.props.onChatState({active:true,messages:4,selected:0,agentReady:false,agentName:'',agentModel:''});
+tree=render();
+assert.ok(!buttons().some(node=>textOf(node).startsWith('总结所选')),'clearing selection hides the action');
 assert.equal(bar().props.selected,'wechat');
 assert.equal(bar().props.platforms.length,2);
 assert.ok(rows().every(node=>textOf(node).includes('微信测试会话')),'one platform is displayed at a time');
@@ -166,6 +187,20 @@ assert.equal(nodes(tree).find(node => node.type === MessagePane).props.searchKey
 searchInput('chat-workbench-search').props.onChange({ target: { value: 'sidebar only' } });
 tree = render();
 assert.equal(searchInput('chat-workbench-head-search').props.value, 'message only');
+const selectChatTab = label => {
+  buttons().find(node => node.props.role === 'tab' && textOf(node).startsWith(label)).props.onClick();
+  tree = render();
+};
+selectChatTab('待办');
+assert.equal(searchInput('chat-workbench-head-search').props.value, '');
+searchInput('chat-workbench-head-search').props.onChange({ target: { value: 'to-do only' } });
+tree = render();
+selectChatTab('原始记录');
+assert.equal(searchInput('chat-workbench-head-search').props.value, 'message only');
+selectChatTab('待办');
+assert.equal(searchInput('chat-workbench-head-search').props.value, 'to-do only');
+assert.equal(searchInput('chat-workbench-search').props.value, 'sidebar only');
+selectChatTab('原始记录');
 searchInput('chat-workbench-search').props.onChange({ target: { value: '' } });
 tree = render();
 // Returning from another section preserves a reader absent from the refreshed first page.

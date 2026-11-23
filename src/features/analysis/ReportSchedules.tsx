@@ -68,7 +68,7 @@ export function ReportScheduleRow({ spaceId, plans, definition, onOpenTopics }: 
         onCancel={() => setDraft(plan?.time_local?.slice(0, 5) || '08:30')} disabled={busy || blocked}/>
     </div>}
     {(error || saved.error) && <p role="alert" className="analysis-report-error">{t('未能确认设置，当前显示上次读取的结果。')} {error || saved.error} <button type="button" disabled={busy} onClick={() => void reload()}>{t('重新读取')}</button> <button type="button" onClick={onOpenTopics}>{t('管理主题')}</button></p>}
-    {plan?.last_error && <p className="analysis-report-note">{plan.last_error === 'No matching events or notes.' ? t('上次未生成报告：该时段暂无可用的笔记或事件。') : t('上次报告未能完成，请到报告页面查看。')}</p>}
+    {plan?.last_error && <p className="analysis-report-note">{plan.last_error === 'No matching events or notes.' ? t('上次未生成报告：该时段暂无可用的笔记或待办。') : t('上次报告未能完成，请到报告页面查看。')}</p>}
     {saved.others > 0 && <p className="analysis-report-note">{tf('另有 {0} 个已开启的同周期报告，请在主题中核对。', saved.others)} <button type="button" onClick={onOpenTopics}>{t('管理主题')}</button></p>}
     <span role="status" aria-live="polite" className="analysis-report-saved">{busy ? action === 'read' ? t('正在读取…') : t('正在保存…') : notice}</span>
   </div>;
@@ -88,7 +88,7 @@ export function ReportSchedules({ spaceId, onOpenReports, onOpenTopics }: { spac
     return () => { current = false; };
   }, [spaceId, revision]);
   return <section className="analysis-report-settings" aria-label={t('定期报告')}>
-    <div className="analysis-section-head"><div><h3>{t('定期报告')}</h3><p>{t('根据已生成的笔记与事件汇总。客户端关闭后仍会按计划生成。')}</p></div><button type="button" onClick={onOpenReports}>{t('查看报告')}</button></div>
+    <div className="analysis-section-head"><div><h3>{t('定期报告')}</h3><p>{t('根据已生成的笔记与待办汇总。客户端关闭后仍会按计划生成。')}</p></div><button type="button" onClick={onOpenReports}>{t('查看报告')}</button></div>
     {!plans ? error ? <p role="alert" className="analysis-report-error">{error} <button type="button" onClick={() => setRevision(value => value + 1)}>{t('重新读取')}</button></p> : <p role="status" className="analysis-report-note">{t('正在读取报告计划…')}</p>
       : <div className="analysis-main-settings">{REPORT_PLANS.map(definition => <ReportScheduleRow key={definition.period} spaceId={spaceId} plans={plans} definition={definition} onOpenTopics={onOpenTopics}/>)}</div>}
     <p className="analysis-quiet-note">{t('按计划时间之后生成第一份报告；该时段暂无可用内容时跳过。')}</p>

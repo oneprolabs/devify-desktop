@@ -80,6 +80,11 @@
 .event-workspace .analysis-top-actions { gap: 8px; }
 .event-workspace .analysis-block-head { gap: 16px; }
 .event-workspace .analysis-step-tags { gap: 10px 16px; }
+.event-workspace .analysis-timeline { background: #fff; border: 1px solid #e9e9e6; }
+.event-workspace .analysis-step-preview { white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-workspace .analysis-step.manual .analysis-step-preview { display: block; }
+.event-workspace .analysis-raw-toggle { margin-top: 4px; }
+.event-workspace .analysis-raw-toggle:focus-visible { outline: 2px solid #a3279a; outline-offset: 3px; }
 .event-workspace .analysis-step-act { flex-shrink: 0; color: #5f5f5a; }
 .event-workspace .analysis-step-act:hover:enabled,.event-workspace .analysis-add-open:hover:enabled { border-color: #d1d1cd; background: #f3f3f1; }
 .event-workspace .analysis-current-state h2,.event-workspace .analysis-block-head h2 { font-size: 14px; font-weight: 600; line-height: 1.5; }
