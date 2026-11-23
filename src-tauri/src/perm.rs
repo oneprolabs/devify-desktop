@@ -207,12 +207,23 @@ pub fn status() -> DiskAccess {
 #[cfg(target_os = "macos")]
 fn open_settings_pane() -> Result<String, String> {
     use std::process::Command;
-    // macOS 13+ (Ventura and later) uses the Settings app's extension URL; earlier systems
-    // use the Security & Privacy pane. Try the new one first, then the legacy one.
-    let urls = [
-        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-    ];
+    let current = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles";
+    let legacy = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+    let macos_major = Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let version = String::from_utf8_lossy(&output.stdout);
+            version.split('.').next()?.trim().parse::<u32>().ok()
+        });
+    // `open` can accept a URL even when System Preferences cannot resolve its pane.
+    let urls = if macos_major.is_some_and(|major| major < 13) {
+        [legacy, current]
+    } else {
+        [current, legacy]
+    };
     let mut last = String::from("无法打开系统设置");
     for url in urls {
         match Command::new("open").arg(url).status() {

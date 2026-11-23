@@ -233,19 +233,24 @@ export async function runManualWechatKeySmoke(task, base = 'http://localhost:142
   const click = name => page.click(`loc=role:button[name="${name}"]`);
   const ready = name => page.waitForFunction(text => [...document.querySelectorAll('button')]
     .some(button => button.textContent.trim() === text && !button.disabled), name);
-  const enter = async () => {
-    await page.goto(`${base}/scripts/connectors-e2e.html?fresh`);
+  const enter = async (intel = false) => {
+    await page.goto(`${base}/scripts/connectors-e2e.html?fresh${intel ? '&intel' : ''}`);
     await ready('设置'); await click('设置');
     await page.waitForSelector('.connector-actions .connector-primary');
     await page.click('loc=css:.connector-actions .connector-primary >> nth=0');
     await ready('下一步');
-    await page.click('loc=css:.wizard-method-option >> nth=1');
+    if (intel) {
+      await page.waitForFunction(() => document.querySelectorAll('.wizard-method-option').length === 1);
+      assert.match(await page.evaluate(() => document.querySelector('.wizard-method-option[aria-pressed="true"]')?.textContent), /手动导入微信密钥/);
+    } else {
+      await page.click('loc=css:.wizard-method-option >> nth=1');
+    }
     await click('下一步');
     await ready('下一步：连接微信'); await click('下一步：连接微信');
     await page.waitForSelector('.wx-setup-file');
   };
 
-  await enter();
+  await enter(true);
   await click('手动输入密钥');
   await page.waitForSelector('#wx-manual-key');
   const form = '#wx-manual-key-form';
@@ -289,7 +294,7 @@ export async function runManualWechatKeySmoke(task, base = 'http://localhost:142
   await page.waitForSelector('.wizard-finish-facts');
   assert.ok(await page.evaluate(() => window.__E2E__.settings.chat.allowed_usernames['e2e-wechat'].length > 0));
   assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
-  console.log('PASS WeChat manual import: masked paste retries and JSON file import through wizard completion');
+  console.log('PASS WeChat manual import: Intel default and paste retries, Apple Silicon JSON import through completion');
 }
 
 // Run through ego-browser nodejs: import this module, then pass an owned TaskSpace.

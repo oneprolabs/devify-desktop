@@ -62,7 +62,8 @@ hostname = "0.4"
 base64 = "0.22"
 url = "2"
 tauri-plugin-deep-link = "2"
-zip = "2"
+# Upload archives use Deflate and ZIP timestamps. Enabling XZ also probes for a host liblzma.
+zip = { version = "2", default-features = false, features = ["deflate", "time"] }
 tauri-plugin-updater = "2.14.1"
 tauri-plugin-process = "2.4.0"
 
