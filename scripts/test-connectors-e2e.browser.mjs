@@ -19,7 +19,12 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   };
   await page.cdp('Emulation.setDeviceMetricsOverride', {width:1100,height:690,deviceScaleFactor:1,mobile:false});
   await start();
+  await page.waitForSelector('.auth-gate-card .network-connection select:not(:disabled)');
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-gate-card select').value), 'auto');
+  await page.selectOption('.auth-gate-card .network-connection select', 'direct');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'direct');
   await click('登录…');
+  await page.waitForFunction(() => document.querySelector('.auth-login-modal select')?.value === 'direct');
   await fits();
   assert.equal(await page.evaluate(() => document.querySelector('.auth-login-modal').getBoundingClientRect().width), 420);
   assert.ok(await page.evaluate(() => [...document.querySelectorAll('.auth-input-row input')].every(input => {
@@ -42,11 +47,25 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.waitForFunction(() => window.__E2E__.externalUrls.some(url => url.endsWith('/register')));
   await page.screenshot({path:'/tmp/aimychats-login-v7-register.png'});
   await page.click('loc=role:tab[name="登录"]');
-  await page.evaluate(() => { window.__E2E__.authStartPaused = true; });
+  await page.evaluate(() => {
+    window.__E2E__.authStartError = '读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
+  });
+  await click('通过浏览器登录');
+  await page.waitForFunction(() => document.querySelector('.auth-browser-option')?.textContent.includes('可切换连接方式后重试'));
+  await page.selectOption('.auth-login-modal .network-connection select', 'system_proxy');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'system_proxy');
+  await page.evaluate(() => {
+    window.__E2E__.authStartError = '';
+    window.__E2E__.authStartPaused = true;
+    window.__E2E__.browserOpenPaused = true;
+  });
   await click('通过浏览器登录');
   await page.waitForFunction(() => window.__E2E__.authStartResolvers.length === 1);
-  assert.ok(await page.evaluate(() => document.querySelector('.auth-alt').disabled && document.querySelector('.auth-alt .auth-button-spinner') && document.querySelector('.auth-alt').textContent.includes('正在打开浏览器')));
+  assert.ok(await page.evaluate(() => document.querySelector('.auth-alt').disabled && document.querySelector('.auth-alt .auth-button-spinner') && document.querySelector('.auth-alt').textContent.includes('正在读取登录配置')));
   await page.evaluate(() => { window.__E2E__.authStartPaused = false; window.__E2E__.authStartResolvers.splice(0).forEach(resolve => resolve()); });
+  await page.waitForFunction(() => window.__E2E__.browserOpenResolvers.length === 1);
+  await page.waitForFunction(() => document.querySelector('.auth-alt').textContent.includes('正在打开浏览器'));
+  await page.evaluate(() => { window.__E2E__.browserOpenPaused = false; window.__E2E__.browserOpenResolvers.splice(0).forEach(resolve => resolve()); });
   await page.waitForSelector('.auth-waiting');
   assert.ok(await page.evaluate(() => [...document.querySelectorAll('.auth-login-modal input,.auth-tabs button,.auth-submit')].every(control => control.disabled)), 'browser wait locks competing login actions');
   await page.evaluate(() => document.activeElement?.blur());
@@ -86,6 +105,11 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.evaluate(() => { window.__E2E__.loginError = ''; });
   await page.click('.auth-submit');
   await page.waitForFunction(() => !document.querySelector('.auth-gate'));
+  await click('设置');
+  await click('网络连接');
+  await page.waitForFunction(() => document.querySelector('.settings-page .network-connection select')?.value === 'system_proxy');
+  await page.selectOption('.settings-page .network-connection select', 'auto');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'auto');
   await clean();
 
   await start('&no-server');
@@ -107,7 +131,7 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   assert.equal(await page.evaluate(() => document.querySelector('.auth-divider').textContent), 'or');
   await page.screenshot({path:'/tmp/aimychats-login-v7-english-small.png'});
   await clean();
-  console.log('PASS V7 login UI: password validation/loading/retry, browser wait/cancel/error, register/recovery links, keyboard focus, server setup, English and 940×640 layout');
+  console.log('PASS V7 login UI: connection modes across login and settings, browser stages, password and browser retry, keyboard focus, server setup, English and 940×640 layout');
   console.log(await page.snapshot());
 }
 

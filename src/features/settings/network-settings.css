@@ -1,0 +1,48 @@
+.network-connection {
+  display: grid;
+  gap: 6px;
+  padding: 16px 0;
+  color: #3a3a37;
+  text-align: left;
+}
+
+.network-connection label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  font-size: 13px;
+}
+
+.network-connection select {
+  min-height: 32px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #dededb;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+.network-connection select:focus-visible {
+  outline: 2px solid #a3279a;
+  outline-offset: 2px;
+}
+
+.network-connection p {
+  margin: 0;
+  color: #5f5f5a;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.network-connection p.error {
+  color: #a12824;
+}
+
+.network-connection-compact {
+  width: 100%;
+  padding: 6px 0;
+}

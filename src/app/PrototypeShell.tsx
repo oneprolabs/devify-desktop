@@ -15,6 +15,7 @@ import type { AppSettings } from '../features/settings/settingsModel';
 import { BackupSchedule } from '../features/backup/BackupSchedule';
 import { AnalysisSettings } from '../features/analysis/AnalysisSettings';
 import { LanguageSettings } from '../features/settings/LanguageSettings';
+import { NetworkConnectionControl, NetworkSettings } from '../features/settings/NetworkSettings';
 import '../features/settings/settings-pages.css';
 import { Icons } from '../shared/ui/icons';
 import { NavigationRail, type Section } from './NavigationRail';
@@ -47,7 +48,7 @@ import '../features/connectors/connectors.css';
 import '../features/connectors/wizard/wechat-wizard.css';
 import brandMark from '../assets/app-mark-transparent.png';
 
-type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'history' | 'agent' | 'feedback' | 'about';
+type SettingsPage = 'connectors' | 'imports' | 'backup' | 'analysis' | 'language' | 'account' | 'network' | 'history' | 'agent' | 'feedback' | 'about';
 
 function handleWindowDrag(event: MouseEvent<HTMLElement>) {
   if (!isTauri() || event.button !== 0 || event.clientY - event.currentTarget.getBoundingClientRect().top >= 72) return;
@@ -71,6 +72,7 @@ const settingsPages: { id: SettingsPage; label: string; group: 'main' | 'local' 
   { id: 'analysis', label: '智能分析', group: 'main' },
   { id: 'language', label: '语言', group: 'main' },
   { id: 'account', label: '账户', group: 'main' },
+  { id: 'network', label: '网络连接', group: 'main' },
   // Local summaries are saved on this machine only; the prototype has no page for
   // them, but without this entry the records are unreachable from settings.
   { id: 'history', label: '总结记录', group: 'local' },
@@ -80,7 +82,7 @@ const settingsPages: { id: SettingsPage; label: string; group: 'main' | 'local' 
 ];
 const settingsIcons: Record<SettingsPage, ReactNode> = {
   connectors: Icons.key, imports: Icons.download, backup: Icons.clock,
-  analysis: Icons.agent, language: Icons.list, account: Icons.allow,
+  analysis: Icons.agent, language: Icons.list, account: Icons.allow, network: Icons.send,
   history: Icons.history, agent: Icons.agent, feedback: Icons.chat, about: Icons.info,
 };
 
@@ -144,6 +146,7 @@ export default function PrototypeShell() {
   const [authChecking, setAuthChecking] = useState(false);
   const [authNotice, setAuthNotice] = useState('');
   const [authError, setAuthError] = useState('');
+  const [connectionSaving, setConnectionSaving] = useState(false);
   const [currentUser, setCurrentUser] = useState('');
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [authVersion, setAuthVersion] = useState(0);
@@ -383,8 +386,9 @@ export default function PrototypeShell() {
           <h1>{t("暂时无法验证登录")}</h1>
           <p>{authError || t("服务端暂不可用，请稍后重试。")}</p>
           <p className="auth-gate-hint">{t("已保存的登录状态会保留，请根据上方提示处理后重试。")}</p>
-          <button type="button" className="auth-gate-primary" disabled={authChecking} aria-busy={authChecking} onClick={checkAuth}>{authChecking ? t("正在检查…") : t("重试")}</button>
-          <button type="button" className="auth-gate-secondary" onClick={() => { authEpoch.current += 1; setAuthNotice(''); setAuthState('anonymous'); }}>{t("返回登录")}</button>
+          <NetworkConnectionControl compact disabled={authChecking} onSavingChange={setConnectionSaving} />
+          <button type="button" className="auth-gate-primary" disabled={authChecking || connectionSaving} aria-busy={authChecking} onClick={checkAuth}>{authChecking ? t("正在检查…") : t("重试")}</button>
+          <button type="button" className="auth-gate-secondary" disabled={connectionSaving} onClick={() => { authEpoch.current += 1; setAuthNotice(''); setAuthState('anonymous'); }}>{t("返回登录")}</button>
           <button type="button" className="auth-gate-secondary" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button>
         </div>
       </div>}
@@ -452,6 +456,7 @@ export default function PrototypeShell() {
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
           {settingsPage === 'analysis' && <AnalysisSettings focusSection={analysisFocus} onOpenReports={() => setSection('reports')} onOpenTopics={() => setSection('topics')} onOpenChats={() => setSection('chat')} canUseLocalSummary={showAgentHub && granted(entitlements, 'ai.local_agent') && granted(entitlements, 'ai.agent_summary')} />}
           {settingsPage === 'language' && <LanguageSettings />}
+          {settingsPage === 'network' && <NetworkSettings />}
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && internalAccount && <HistoryPage />}
           {settingsPage === 'agent' && showAgentHub && <AgentHub onOpenAnalysis={() => setSettingsPage('analysis')} />}

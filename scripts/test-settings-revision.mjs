@@ -78,6 +78,7 @@ const mockedRequire = id => {
   if (id === '../../shared/api/devifyDevice') return { registerDevifyDevice: async () => {} };
   if (['../../../shared/api/desktopInvoke', '../../shared/api/desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
   if (['./settingsModel', '../../settings/settingsModel', '../settings/settingsModel'].includes(id)) return settingsModel;
+  if (id === '../settings/NetworkSettings') return loadModule('../src/features/settings/NetworkSettings.tsx');
   if (['../../settings/Settings', '../settings/Settings'].includes(id)) return module.exports;
   if (id === './wechatSetupState') return loadModule('../src/features/connectors/wizard/wechatSetupState.ts');
   if (['../../connectors/Permission', '../Permission'].includes(id)) return loadModule('../src/features/connectors/Permission.tsx');
