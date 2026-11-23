@@ -39,7 +39,7 @@ function savedCopy(value: string): string {
   return value;
 }
 const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("尚未执行");
-const statusLabel = (value?: string | null) => ({ open: t("待我处理"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("已匹配");
+const statusLabel = (value?: string | null) => ({ open: t("待跟进"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("已匹配");
 
 function StateDot({ done }: { done: boolean }) {
   return <svg className="topic-dot" viewBox="0 0 16 16" aria-hidden="true">

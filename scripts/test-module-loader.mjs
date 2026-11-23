@@ -10,7 +10,9 @@ export function resolve(specifier, context, nextResolve) {
     if (!fs.existsSync(target)) {
       for (const extension of ['.ts', '.tsx', '.js']) {
         const candidate = new URL(target.href + extension);
-        if (fs.existsSync(candidate)) return { url: candidate.href, shortCircuit: true };
+        // Let Node's remaining hooks observe the resolved URL (including module
+        // mocks on Node 22); short-circuiting here bypasses those registrations.
+        if (fs.existsSync(candidate)) return nextResolve(candidate.href, context);
       }
     }
   }
@@ -18,6 +20,9 @@ export function resolve(specifier, context, nextResolve) {
 }
 
 export function load(url, context, nextLoad) {
+  if (url.startsWith('file:') && url.endsWith('.css')) {
+    return { format: 'module', shortCircuit: true, source: '' };
+  }
   if (url.startsWith('file:') && /\.tsx?$/.test(url)) {
     const source = fs.readFileSync(fileURLToPath(url), 'utf8');
     return { format: 'module', shortCircuit: true, source: ts.transpileModule(source, { compilerOptions: {

@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
+import { viewerRelevanceLabel, type ViewerEventRelevance } from '../../shared/api/eventRelevance';
 import { t, tf, dateLocale } from '../../shared/i18n/locale';
 import { LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { eventViewState } from './chatPresentation';
 
-export type EventItem = { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
+export type EventItem = ViewerEventRelevance & { id: number; title: string; content?: string; status?: string | null; last_activity_at?: string | null; updated_at?: string | null };
 
 const dateLabel = (value?: string | number | null) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : t("时间未知");
 const dayLabel = (value?: string | null) => {
@@ -16,7 +17,7 @@ const dayLabel = (value?: string | null) => {
   if (date.toDateString() === yesterday.toDateString()) return tf("{0} · 昨天", day);
   return day;
 };
-const statusLabel = (value?: string | null) => ({ open: t("待我处理"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("未标记");
+const statusLabel = (value?: string | null) => ({ open: t("待跟进"), in_progress: t("推进中"), done: t("已完成") } as Record<string, string>)[value || ''] || t("未标记");
 
 function StateDot({ done }: { done: boolean }) {
   return <svg className="chat-event-dot" viewBox="0 0 16 16" aria-hidden="true">
@@ -76,9 +77,11 @@ export function ChatEventsPane({ active, loading, error, events, sessionCount, q
         <div className="chat-event-divider"><span/>{dayLabel(list[0]?.last_activity_at || day)}<span/></div>
         {list.map(event => {
           const done = event.status === 'done';
+          const relevance = viewerRelevanceLabel(event);
           return <div className="chat-event" key={event.id}>
             <div className="chat-event-gutter">
               <span className={`chat-event-tag${done ? ' done' : ''}`}>{statusLabel(event.status)}</span>
+              {relevance && <span className="chat-event-tag">{relevance}</span>}
             </div>
             <button type="button" className="chat-event-card" onClick={() => onOpenEvidence(event)}>
               <span className="chat-event-head">

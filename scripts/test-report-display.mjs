@@ -95,6 +95,7 @@ const load = path => {
 const { reportPresentation } = load('../src/features/analysis/reportPresentation.ts');
 mocks['./reportPresentation'] = { reportPresentation };
 mocks['../../shared/state/pageSnapshots'] = load('../src/shared/state/pageSnapshots.ts');
+mocks['../../shared/api/eventRelevance'] = load('../src/shared/api/eventRelevance.ts');
 const { CloudAnalysisPage } = load('../src/features/analysis/CloudAnalysis.tsx');
 
 const partialWith = '报告未完全生成，以下展示已保存的内容。';
