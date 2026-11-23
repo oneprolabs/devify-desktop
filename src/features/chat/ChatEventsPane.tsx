@@ -57,14 +57,14 @@ export function ChatEventsPane({ active, loading, error, events, sessionCount, q
 
   return <div className={`chat-workbench-pane${active ? '' : ' is-hidden'}`}>
     <div className="chat-workbench-subline">
-      <span>{loading ? t("正在同步事件…") : tf("{0} 条事件", events.length)} · {sessionCount} {t("个会话 · 云端整理，可人工修改")}</span>
+      <span>{loading ? t("正在同步待办…") : tf("{0} 条待办", events.length)} · {sessionCount} {t("个会话 · 云端整理，可人工修改")}</span>
     </div>
     <div className="chat-workbench-feed">
-      {loading && <LoadingSkeleton label={t("正在加载事件")} kind="detail" />}
-      {error && <div className="chat-workbench-error" role="alert"><span>{events.length ? t("事件刷新失败，显示的是上次读取结果。") : t("暂时无法读取事件，请检查网络或稍后重试。")}</span> <button type="button" onClick={onRetry}>{t("重试")}</button></div>}
+      {loading && <LoadingSkeleton label={t("正在加载待办")} kind="detail" />}
+      {error && <div className="chat-workbench-error" role="alert"><span>{events.length ? t("待办刷新失败，显示的是上次读取结果。") : t("暂时无法读取待办，请检查网络或稍后重试。")}</span> <button type="button" onClick={onRetry}>{t("重试")}</button></div>}
       {eventViewState(loading, error, visibleEvents.length) === 'empty' && <div className="chat-workbench-empty-panel">
-        <h2>{t("当前会话暂无事件")}</h2>
-        <p>{t("上传当前会话并等待服务端分析后，相关事件会出现在这里。")}</p>
+        <h2>{t("当前会话暂无待办")}</h2>
+        <p>{t("上传当前会话并等待服务端分析后，相关待办会出现在这里。")}</p>
         <button type="button" onClick={onSchedule}>{t("设置备份周期")}</button>
       </div>}
       {eventGroups.map(([day, list]) => <section className="chat-event-day" key={day}>
@@ -83,7 +83,7 @@ export function ChatEventsPane({ active, loading, error, events, sessionCount, q
               {event.content && <span className="chat-event-content">{event.content}</span>}
               <span className="chat-event-foot">
                 <span>{dateLabel(event.last_activity_at || event.updated_at)}</span>
-                <span className="chat-event-link">{t("查看完整事件 →")}</span>
+                <span className="chat-event-link">{t("查看完整待办 →")}</span>
               </span>
             </button>
           </div>;

@@ -28,7 +28,7 @@ type Page<T> = { list: T[]; pagination?: { total?: number; page?: number; next?:
 type AppSettings = { devify?: { base_url?: string; active_space_id: string | null } };
 
 const labels: Record<Kind, { title: string; empty: string }> = {
-  events: { title: '事件', empty: '当前空间还没有事件。' },
+  events: { title: '待办', empty: '当前空间还没有待办。' },
   reports: { title: '报告', empty: '当前空间还没有报告。' },
 };
 const REPORT_TYPES = [['all', '全部'], ['日报', '日报'], ['周报', '周报'], ['月报', '月报'], ['主题', '主题']];
@@ -156,7 +156,7 @@ function sectionItems(report: ReportItem): string[] {
   return (report.sections ?? []).flatMap(section => (section.items ?? []).map(item => item.title));
 }
 
-export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind: Kind; userId: number | null; focusId?: number | null; onOpenEvent?: (eventId: number) => void }) {
+export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAnalysisSettings }: { kind: Kind; userId: number | null; focusId?: number | null; onOpenEvent?: (eventId: number) => void; onOpenAnalysisSettings?: () => void }) {
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [items, setItems] = useState<Array<EventItem | ReportItem>>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -490,7 +490,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
   };
   const openRelatedEvent = (eventId: number) => {
     if (kind === 'events') {
-      if (!items.some(item => item.id === eventId)) setItems(current => [{ id: eventId, title: tf("事件 #{0}", eventId), content: '' }, ...current]);
+      if (!items.some(item => item.id === eventId)) setItems(current => [{ id: eventId, title: tf("待办 #{0}", eventId), content: '' }, ...current]);
       setSelectedId(eventId);
     } else onOpenEvent?.(eventId);
   };
@@ -528,10 +528,9 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
 
   const pageTitle = t(copy.title);
   const pageEmpty = t(copy.empty);
-  if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>{t("请在桌面应用中查看")}</h2><p>{t("事件和报告在上传处理后生成，桌面端负责同步并展示。")}</p></div></div>;
+  if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>{t("请在桌面应用中查看")}</h2><p>{t("待办和报告在上传处理后生成，桌面端负责同步并展示。")}</p></div></div>;
   if (loading) return <LoadingPage title={pageTitle} />;
   if (error || (listError && !items.length)) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>{t("同步失败")}</h2><p>{error || listError}</p></div></div>;
-  if (!items.length && kind==='events') return <div className="analysis-page"><div className="analysis-empty"><h2>{pageEmpty}</h2><p>{t("完成聊天采集并等待处理完成后，结果会出现在这里。")}</p></div></div>;
 
   return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
     <aside className="analysis-side" aria-label={tf("{0}列表", pageTitle)}>
@@ -591,7 +590,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
         <div className="analysis-top-actions">
           {kind === 'events' && event && <>
             <button type="button" disabled={!!actionBusy} onClick={startEdit}>{t("编辑")}</button>
-            <button type="button" disabled={!!actionBusy} onClick={() => { setActionError(''); setPickerQuery(''); setPickerOpen(true); }}>{t("关联事件")}</button>
+            <button type="button" disabled={!!actionBusy} onClick={() => { setActionError(''); setPickerQuery(''); setPickerOpen(true); }}>{t("关联待办")}</button>
             {((event.evidence?.length ?? 0) > 0 || eventNotes.length > 0) && <button type="button" onClick={() => setEventTab('sources')}>{t("查看全部原文")}</button>}
             <button
               type="button"
@@ -628,19 +627,24 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
           </div>
           {genError && <p className="analysis-empty error" role="alert">{genError}</p>}
           <button type="button" className="report-create-submit" disabled={generating} onClick={() => void generateReport()}>{generating ? t("正在提交…") : t("生成")}</button>
-          <p className="report-create-note">{t("会按所选区间重新汇总事件；生成完成后会出现在左侧列表，标题为「")}{genRange(genType).title}」。</p>
+          <p className="report-create-note">{t("会按所选区间重新汇总待办；生成完成后会出现在左侧列表，标题为「")}{genRange(genType).title}」。</p>
         </div>}
 
         {!(kind === 'reports' && creating) && <>
         {detailLoading && <LoadingSkeleton label={t("正在加载详情")} kind="detail" />}
-        {kind === 'events' && selectedId == null && !detailLoading && <div className="analysis-empty event-empty" role="status"><h2>{t("当前筛选下没有记录。")}</h2><p>{t("可切换筛选查看其他事件。")}</p><button type="button" className="event-empty-action" onClick={() => setFilter('all')}>{t("查看全部事件")}</button></div>}
+        {kind === 'events' && selectedId == null && !detailLoading && <div className="analysis-empty event-empty" role="status">
+          <h2>{items.length ? t("当前筛选下没有记录。") : pageEmpty}</h2>
+          <p>{items.length ? t("可切换筛选查看其他待办。") : t("已备份的聊天大约每小时分析一次，生成的待办会显示在这里。可在「智能分析 → 聊天待办分析」中调整设置。")}</p>
+          {items.length ? <button type="button" className="event-empty-action" onClick={() => setFilter('all')}>{t("查看全部待办")}</button>
+            : onOpenAnalysisSettings && <button type="button" className="event-empty-action" onClick={onOpenAnalysisSettings}>{t("设置聊天待办分析")}</button>}
+        </div>}
 
         {event && <article className="analysis-doc">
           {editing ? <div className="analysis-edit">
             <input
               className="analysis-edit-title"
               value={editTitle}
-              aria-label={t("事件标题")}
+              aria-label={t("待办标题")}
               onChange={change => setEditTitle(change.target.value)}
             />
             <label className="analysis-edit-label" htmlFor="event-edit-summary">{t("摘要")}</label>
@@ -662,13 +666,13 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
               <DoneDot done={isDone(event.status)}/>
               <span>{event.status === 'open' ? t("待跟进") : statusLabel(event.status)}</span>
             </div><span className="analysis-meta">{[eventNotes.length ? tf("{0} 条进展", eventNotes.length) : '', eventPeople ? tf("{0} 人", eventPeople) : '', event.last_activity_at ? tf("最近活动 {0}", shortDate(event.last_activity_at)) : ''].filter(Boolean).join(' · ')}</span></div></div></div>
-            <nav className="event-section-nav" aria-label={t("事件详情")}>
+            <nav className="event-section-nav" aria-label={t("待办详情")}>
               <button type="button" aria-pressed={eventTab === 'overview'} onClick={() => setEventTab('overview')}>{t("概览")}</button>
               <button type="button" aria-pressed={eventTab === 'sources'} onClick={() => setEventTab('sources')}>{t("进展与原文")}</button>
             </nav>
             {eventTab === 'overview' && <section className="analysis-current-state" aria-labelledby="analysis-current-title">
-              <h2 id="analysis-current-title">{t("事件概述")}</h2>
-              <p className="analysis-summary">{event.content || t("尚未返回事件内容。")}</p>
+              <h2 id="analysis-current-title">{t("待办概述")}</h2>
+              <p className="analysis-summary">{event.content || t("尚未返回待办内容。")}</p>
             </section>}
           </header>}
           {actionError && !editing && <p className="analysis-action-error" role="alert">{actionError}</p>}
@@ -681,7 +685,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
                 <p>{source.content}</p>
               </div>)}
             </div>}
-            {timelineRows.length === 0 && !(eventTab === 'sources' && event.evidence?.length) && <p className="analysis-list-empty">{t("还没有为这个事件记录进展。")}</p>}
+            {timelineRows.length === 0 && !(eventTab === 'sources' && event.evidence?.length) && <p className="analysis-list-empty">{t("还没有为这个待办记录进展。")}</p>}
             {timelineRows.map((row, index) => {
               const last = index === timelineRows.length - 1;
               if (row.kind === 'link') {
@@ -691,18 +695,17 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
                   <span className="analysis-step-gutter" aria-hidden="true"><i/>{!last && <b/>}</span>
                   <div className="analysis-step-body">
                     <div className="analysis-step-tags">
-                      <span className="analysis-tag">{t("关联事件")}</span>
+                      <span className="analysis-tag">{t("关联待办")}</span>
                       <span className="analysis-conv">{[relation.relation_type || relation.type || relation.label, relation.status ? statusLabel(relation.status) : ''].filter(Boolean).join(' · ')}</span>
                       {relation.relation_id && <button type="button" className="analysis-step-act" disabled={actionBusy === 'unlink'} onClick={() => void unlinkEvent(relation.relation_id!)}>{t("取消关联")}</button>}
                     </div>
-                    <button type="button" className="analysis-step-preview link" onClick={() => openRelatedEvent(relation.id)}>↗ {relation.title || tf("事件 #{0}", relation.id)}</button>
+                    <button type="button" className="analysis-step-preview link" onClick={() => openRelatedEvent(relation.id)}>↗ {relation.title || tf("待办 #{0}", relation.id)}</button>
                   </div>
                 </div>;
               }
               const note = row.note;
               const parts = noteParts(note);
               const open = !!openNotes[note.id];
-              const preview = note.origin === 'manual' ? parts.messages[parts.messages.length - 1] : null;
               return <div className={`analysis-step${note.origin === 'manual' ? ' manual' : ''}`} key={note.id}>
                 <time>{clockDate(note.start_at || note.end_at)}</time>
                 <span className={`analysis-step-gutter${last ? ' last' : ''}`} aria-hidden="true"><i/>{!last && <b/>}</span>
@@ -710,15 +713,17 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
                   <div className="analysis-step-tags">
                     {parts.tag && <span className="analysis-tag">{parts.tag}</span>}
                     <span className="analysis-conv">{parts.conversation}</span>
-                    <button type="button" className="analysis-step-act" disabled={!!actionBusy} onClick={() => void removeNote(note)}>{t("移出此事件")}</button>
+                    <button type="button" className="analysis-step-act" disabled={!!actionBusy} onClick={() => void removeNote(note)}>{t("移出此待办")}</button>
                   </div>
-                  {preview && <p className="analysis-step-preview">{preview.text}</p>}
+                  {note.origin === 'manual' && <p className="analysis-step-preview">{note.content}</p>}
                   {parts.messages.length > 0 && note.origin !== 'manual' && <button
                     type="button"
                     className={`analysis-raw-toggle${open ? ' on' : ''}`}
+                    aria-expanded={open}
+                    aria-controls={`event-note-raw-${note.id}`}
                     onClick={() => setOpenNotes(current => ({ ...current, [note.id]: !open }))}
-                  >{open ? tf("原文 {0} 条 · 查看中", parts.messages.length) : tf("原文 {0} 条 →", parts.messages.length)}</button>}
-                  {open && <div className="analysis-raw">
+                  >{open ? t("收起原文") : tf("展开原文 {0} 条", parts.messages.length)}</button>}
+                  {open && <div className="analysis-raw" id={`event-note-raw-${note.id}`}>
                     {parts.messages.map((message, messageIndex) => <div className="analysis-raw-item" key={messageIndex}>
                       {(message.who || message.stamp) && <span>{[message.who, message.stamp].filter(Boolean).join(' · ')}</span>}
                       <p>{message.text}</p>
@@ -807,7 +812,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
             </div>
           </section>)}
 
-          <p className="report-note">{t("每一项都是事件，点击可在右侧预览；需要完整时间线时再打开详情。")}</p>
+          <p className="report-note">{t("每一项都是待办，点击可在右侧预览；需要完整时间线时再打开详情。")}</p>
         </article>}
         </>}
 
@@ -815,21 +820,21 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent }: { kind
     </main>
 
     {pickerOpen && event && <div className="analysis-picker-backdrop" role="presentation" onClick={() => setPickerOpen(false)}>
-      <div className="analysis-picker" role="dialog" aria-modal="true" aria-label={t("关联事件")} onClick={stop => stop.stopPropagation()}>
+      <div className="analysis-picker" role="dialog" aria-modal="true" aria-label={t("关联待办")} onClick={stop => stop.stopPropagation()}>
         <header>
           <span>{t("关联到「")}{event.title}」</span>
-          <input autoFocus value={pickerQuery} placeholder={t("搜索事件…")} aria-label={t("搜索可关联的事件")} onChange={change => setPickerQuery(change.target.value)}/>
+          <input autoFocus value={pickerQuery} placeholder={t("搜索待办…")} aria-label={t("搜索可关联的待办")} onChange={change => setPickerQuery(change.target.value)}/>
         </header>
         <div className="analysis-picker-list">
           {linkCandidates.map(item => <div className="analysis-picker-row" key={item.id}>
             <DoneDot done={isDone(item.status)}/>
             <span>
-              <strong>{item.title || tf("事件 #{0}", item.id)}</strong>
+              <strong>{item.title || tf("待办 #{0}", item.id)}</strong>
               <small>{[statusLabel(item.status), item.last_activity_at ? shortDate(item.last_activity_at) : ''].filter(Boolean).join(' · ')}</small>
             </span>
             <button type="button" disabled={actionBusy === 'link'} onClick={() => void linkEvent(item.id)}>{t("关联")}</button>
           </div>)}
-          {!linkCandidates.length && <p className="analysis-list-empty">{t("没有可关联的事件")}</p>}
+          {!linkCandidates.length && <p className="analysis-list-empty">{t("没有可关联的待办")}</p>}
         </div>
         <footer>{t("关联：两件事相关，但各自独立跟踪。你的操作会反馈给云端，之后的新消息按此归类。")}</footer>
       </div>

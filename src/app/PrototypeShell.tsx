@@ -291,6 +291,7 @@ export default function PrototypeShell() {
   const { internal: internalAccount, view: entitlements } = useInternalAccount();
   const showAgentHub = internalAccount && (granted(entitlements, 'ai.local_agent') || granted(entitlements, 'bridge.agent_cli'));
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('connectors');
+  const [analysisFocus, setAnalysisFocus] = useState<'events'>();
   useEffect(() => {
     if ((settingsPage === 'agent' && !showAgentHub) || (settingsPage === 'history' && !internalAccount)) setSettingsPage('connectors');
   }, [settingsPage, showAgentHub, internalAccount]);
@@ -315,7 +316,7 @@ export default function PrototypeShell() {
   const settingsNav = settingsPages
     .filter(item => !(wechatGuide || whatsappGuide) || item.group === 'main' || item.id === 'feedback' || item.id === 'about')
     .filter(item => item.id === 'agent' ? showAgentHub : item.id !== 'history' || internalAccount);
-  const openSettings = useCallback((page: SettingsPage, guide = false, edit = guide) => { wizardResumeEpoch.current += 1; setWizardResuming(false); setSettingsPage(page); setWhatsappGuide(false); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
+  const openSettings = useCallback((page: SettingsPage, guide = false, edit = guide) => { wizardResumeEpoch.current += 1; setWizardResuming(false); setAnalysisFocus(undefined); setSettingsPage(page); setWhatsappGuide(false); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
   const handleChatUnlock = useCallback(() => { setSettingsPage('connectors'); setWhatsappGuide(false); setWechatGuide(true); setWechatGuideEdit(true); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
   const openWhatsApp = (resumeAccountId?: string) => {
     wizardResumeEpoch.current += 1; setWizardResuming(false);
@@ -422,7 +423,7 @@ export default function PrototypeShell() {
             const divider = item.group === 'local' && list[index - 1]?.group === 'main';
             return <Fragment key={item.id}>
               {divider && <div className="prototype-settings-divider" aria-hidden="true"/>}
-              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { wizardResumeEpoch.current += 1; setWizardResuming(false); setSettingsPage(item.id); setWechatGuide(false); setWhatsappGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}><span className="settings-nav-icon">{settingsIcons[item.id]}</span>{t(item.label)}</button>
+              <button type="button" className={settingsPage === item.id ? 'active' : ''} onClick={() => { wizardResumeEpoch.current += 1; setWizardResuming(false); setSettingsPage(item.id); setAnalysisFocus(undefined); setWechatGuide(false); setWhatsappGuide(false); }} aria-current={settingsPage === item.id ? 'page' : undefined}><span className="settings-nav-icon">{settingsIcons[item.id]}</span>{t(item.label)}</button>
             </Fragment>;
           })}
         </aside>
@@ -449,7 +450,7 @@ export default function PrototypeShell() {
           </div> : <Connectors onOpenWechat={(configured, resumeAccountId) => { if (resumeAccountId) { void resumeWechat(resumeAccountId); return; } setWechatGuide(true); setWechatGuideEdit(configured); setWizardManual(false); setWizardStep('wizard-method'); }} onOpenWhatsApp={openWhatsApp} />)}
           {settingsPage === 'imports' && <WhitelistSettings onSaved={count => { if (firstBackupStep === 'select' && count > 0) { setFirstBackupStep('schedule'); setSettingsPage('backup'); } }} />}
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
-          {settingsPage === 'analysis' && <AnalysisSettings onOpenReports={() => setSection('reports')} onOpenTopics={() => setSection('topics')} onOpenChats={() => setSection('chat')} canUseLocalSummary={showAgentHub && granted(entitlements, 'ai.local_agent') && granted(entitlements, 'ai.agent_summary')} />}
+          {settingsPage === 'analysis' && <AnalysisSettings focusSection={analysisFocus} onOpenReports={() => setSection('reports')} onOpenTopics={() => setSection('topics')} onOpenChats={() => setSection('chat')} canUseLocalSummary={showAgentHub && granted(entitlements, 'ai.local_agent') && granted(entitlements, 'ai.agent_summary')} />}
           {settingsPage === 'language' && <LanguageSettings />}
           {settingsPage === 'account' && <DevifySettings initialUser={currentUser} initialAuthenticated={authState === 'authed'} connection={connectionState} />}
           {settingsPage === 'history' && internalAccount && <HistoryPage />}
@@ -459,7 +460,7 @@ export default function PrototypeShell() {
         </div>
         </div>
       </div>}
-      {section === 'events' && <CloudAnalysisPage kind="events" userId={currentUserId} focusId={eventFocusId} onOpenEvent={openEvent} />}
+      {section === 'events' && <CloudAnalysisPage kind="events" userId={currentUserId} focusId={eventFocusId} onOpenEvent={openEvent} onOpenAnalysisSettings={() => { openSettings('analysis'); setAnalysisFocus('events'); }} />}
       {section === 'reports' && <CloudAnalysisPage kind="reports" userId={currentUserId} />}
       {section === 'topics' && <TopicsPage userId={currentUserId} onOpenEvent={openEvent} />}
       {section === 'ask' && <AskPage onOpenEvent={openEvent} />}

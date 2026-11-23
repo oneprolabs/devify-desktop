@@ -4,6 +4,7 @@ import { useWeChatConnection } from '../../connectors/wechat/useWeChatConnection
 import { WeChatConnectionPanel } from '../../connectors/wechat/WeChatConnectionPanel';
 import { WeChatConnectionWizard } from '../../connectors/wechat/WeChatConnectionWizard';
 import { MediaThumb } from './MediaThumb';
+import { MessageSelectionActions } from './MessageSelectionActions';
 import type {
   SessionItem,
   MessageItem,
@@ -147,6 +148,7 @@ export default function WeChatLocal({
   accountId: pinnedAccountId,
   onChatState,
   onSummarySelection,
+  onSummarizeSelection,
 }: {
   mode?: 'chat' | 'settings';
   onOpenChat?: () => void;
@@ -170,6 +172,7 @@ export default function WeChatLocal({
   /** Reports loaded and selected messages to the page-level actions. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean; agentName: string; agentModel: string }) => void;
   onSummarySelection?: (messages: import('../summary/summaryInput').SummaryMessage[]) => void;
+  onSummarizeSelection?: () => void;
 } = {}) {
   // 整理工作内容 runs the local summary agent, which is an internal-account feature.
   const { internal: internalAccount } = useInternalAccount();
@@ -1869,6 +1872,11 @@ export default function WeChatLocal({
         {renderMessages()}
 
         {!localMissing && <footer className={`wxv-chat-foot${selectedMessages.length ? ' has-selection' : ''}`}>
+          {selectedMessages.length > 0 && onSummarizeSelection ? <MessageSelectionActions
+            count={selectedMessages.length}
+            onSummarize={onSummarizeSelection}
+            onCancel={() => { clearSelectedMessages(); setNotice(''); }}
+          /> : <>
           <span>
             {t("已加载最近")} {messages.length} {t("条")}
             {hasMore ? t("，可继续向前加载") : t("，已到本地记录起点")}
@@ -1880,6 +1888,7 @@ export default function WeChatLocal({
             <button type="button" className="wxv-link" onClick={clearSelectedMessages}>{t("清空选中")}</button>
           )}
           <span className="mono">{messages.length ? listTime(messages[0].time) : ''}</span>
+          </>}
         </footer>}
       </>
     );

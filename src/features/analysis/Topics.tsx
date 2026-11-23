@@ -108,7 +108,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
   }, [spaceId, selectedId]);
 
   const detail = topicDetail?.id === selectedId ? topicDetail : selected;
-  const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: tf("事件 #{0}", id) } as TopicEvent));
+  const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: tf("待办 #{0}", id) } as TopicEvent));
   const openCount = matchedEvents.filter(event => event.status !== 'done').length;
   const runs = detail?.execution_history ?? detail?.runs ?? detail?.execution_records ?? [];
 
@@ -198,7 +198,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
       {spaceId && creating && <div className="topic-create-wrap">
         <header>
           <h1>{t("新建主题订阅")}</h1>
-          <p>{t("用一句话描述你想持续关注的内容。保存后先回溯已有事件，之后按周期执行，每期生成一份主题报告。")}</p>
+          <p>{t("用一句话描述你想持续关注的内容。保存后先回溯已有待办，之后按周期执行，每期生成一份主题报告。")}</p>
         </header>
         <input
           className="topic-name-input"
@@ -237,7 +237,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
 
       {spaceId && !creating && !topics.length && <div className="topic-empty">
         <h2>{t("还没有主题订阅")}</h2>
-        <p>{t("创建一个主题后，会按周期回溯已生成的事件。")}</p>
+        <p>{t("创建一个主题后，会按周期回溯已生成的待办。")}</p>
         <button type="button" className="topic-save" onClick={() => setCreating(true)}>{t("创建第一个主题")}</button>
       </div>}
 
@@ -251,7 +251,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
 
         <section className="topic-block">
           <div className="topic-block-head">
-            <span>{t("匹配的事件 ·")} {matchedEvents.length}</span>
+            <span>{t("匹配的待办 ·")} {matchedEvents.length}</span>
             <span>{t("未完成")} {openCount}</span>
           </div>
           {matchedEvents.length ? <div className="topic-event-list">
@@ -260,11 +260,11 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
               const done = event.status === 'done';
               return <button type="button" className="topic-event" key={id} onClick={() => setEvidence({ kind: 'event', id, title: event.title })}>
                 <StateDot done={done}/>
-                <strong>{event.title || tf("事件 #{0}", id)}</strong>
+                <strong>{event.title || tf("待办 #{0}", id)}</strong>
                 <small>{statusLabel(event.status)}{done ? '' : ''}</small>
               </button>;
             })}
-          </div> : <p className="topic-block-empty">{t("还没有匹配到事件。")}</p>}
+          </div> : <p className="topic-block-empty">{t("还没有匹配到待办。")}</p>}
         </section>
 
         <section className="topic-block">
@@ -273,7 +273,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
             {runs.map((run, index) => <div className="topic-run" key={run.id}>
               <span className="topic-run-mark">✓</span>
               <span className="topic-run-label">{t("第")} {runs.length - index} {t("期 ·")} {dateLabel(run.completed_at || run.started_at || run.created_at)}</span>
-              <span className="topic-run-count">{run.matched_count ?? 0} {t("个事件")}</span>
+              <span className="topic-run-count">{run.matched_count ?? 0} {t("个待办")}</span>
             </div>)}
           </div> : <p className="topic-block-empty">{t("还没有执行记录。")}</p>}
         </section>
