@@ -7,6 +7,8 @@
 .analysis-crumbs,.topic-crumbs { color: #74746e; font-size: 13px; }
 .analysis-crumb-current { color: #1a1a19; }
 .analysis-top-actions button,.topic-top-actions button,.event-workspace .analysis-step-act,.event-workspace .analysis-add-open { min-height: 30px; border: 1px solid #dededb; border-radius: 7px; padding: 5px 11px; background: #fff; box-shadow: none; font-size: 12px; }
+.analysis-refresh,.topic-loading-status { display: inline-flex; align-items: center; gap: 6px; }
+.topic-loading-status { color: #74746e; font-size: 13px; }
 .analysis-top-actions button.primary,.topic-save,.report-create-submit { background: #a3279a; border-color: #a3279a; color: #fff; }
 /* Events and topics share the same empty-state rhythm and action shape. */
 .topic-empty,.analysis-empty.event-empty { max-width: 520px; margin: 80px auto; padding: 32px 24px; text-align: center; color: #74746e; }
