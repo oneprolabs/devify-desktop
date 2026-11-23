@@ -179,3 +179,137 @@ fn clearing_keys_also_removes_the_decrypted_snapshot() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+fn encrypt_fixture_page(
+    page: &[u8; crypto::PAGE_SIZE],
+    page_number: u32,
+    key: &[u8; crypto::KEY_LEN],
+    salt: &[u8; crypto::SALT_LEN],
+) -> Vec<u8> {
+    use aes::Aes256;
+    use cbc::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyIvInit};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha512;
+
+    let iv = [0x19; crypto::IV_LEN];
+    let start = if page_number == 1 { crypto::SALT_LEN } else { 0 };
+    let end = crypto::PAGE_SIZE - crypto::RESERVE_LEN;
+    let cipher = cbc::Encryptor::<Aes256>::new(key.into(), (&iv).into());
+    let ciphertext = cipher.encrypt_padded_vec_mut::<NoPadding>(&page[start..end]);
+    let mac_key = crypto::derive_mac_key(key, salt).unwrap();
+    let mut mac = Hmac::<Sha512>::new_from_slice(&mac_key).unwrap();
+    mac.update(&ciphertext);
+    mac.update(&iv);
+    mac.update(&page_number.to_le_bytes());
+
+    let mut encrypted = Vec::with_capacity(crypto::PAGE_SIZE);
+    if page_number == 1 {
+        encrypted.extend_from_slice(salt);
+    }
+    encrypted.extend_from_slice(&ciphertext);
+    encrypted.extend_from_slice(&iv);
+    encrypted.extend_from_slice(&mac.finalize().into_bytes());
+    encrypted
+}
+
+#[test]
+fn synthetic_key_import_and_snapshot_retry_preserve_last_good_copy() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("synthetic.db");
+    let data = temp.path().join("app-data");
+    let account_id = "fixture-account";
+    let rel = "message/message_0.db";
+    let passphrase = [0x42; crypto::KEY_LEN];
+    let salt = [0x71; crypto::SALT_LEN];
+    let key = crypto::derive_enc_key(&passphrase, &salt).unwrap();
+
+    let mut plain = [[0; crypto::PAGE_SIZE]; 3];
+    plain[0][..crypto::SALT_LEN].copy_from_slice(crypto::SQLITE_HEADER);
+    plain[0][crypto::SALT_LEN] = 1;
+    plain[1][0] = 2;
+    plain[2][0] = 3;
+    let encrypted: Vec<u8> = plain
+        .iter()
+        .enumerate()
+        .flat_map(|(index, page)| encrypt_fixture_page(page, index as u32 + 1, &key, &salt))
+        .collect();
+    let original = &encrypted[..2 * crypto::PAGE_SIZE];
+    fs::write(&source, original).unwrap();
+    let mut scan = ScanResult {
+        roots: Vec::new(),
+        accounts: vec![discover::Account {
+            id: account_id.into(),
+            dir: temp.path().to_string_lossy().into(),
+            db_count: 1,
+            encrypted_count: 1,
+            total_bytes: original.len() as u64,
+            modified_at: None,
+            dbs: vec![discover::DbFile {
+                rel: rel.into(),
+                path: source.to_string_lossy().into(),
+                size: original.len() as u64,
+                encrypted: true,
+                salt: Some(hex::encode(salt)),
+                has_wal: false,
+            }],
+        }],
+        skipped: Vec::new(),
+    };
+
+    let mut store = KeyStore::default();
+    let wrong_passphrase = serde_json::json!({ "passphrase": "81".repeat(32) });
+    let invalid = keys::parse_candidates(&wrong_passphrase.to_string()).unwrap();
+    let rejected = apply_candidates(&mut store, &scan, &invalid, Some(account_id));
+    assert_eq!(rejected.matched, 0);
+    assert!(store.keys.is_empty());
+
+    let right_passphrase = serde_json::json!({ "passphrase": hex::encode(passphrase) });
+    let valid = keys::parse_candidates(&right_passphrase.to_string()).unwrap();
+    let imported = apply_candidates(&mut store, &scan, &valid, Some(account_id));
+    assert_eq!(imported.matched, 1);
+    let key_path = keys::store_path(&data);
+    keys::save(&key_path, &store).unwrap();
+    let mut store = keys::load(&key_path);
+    let repeated = apply_candidates(&mut store, &scan, &valid, Some(account_id));
+    assert_eq!((repeated.matched, repeated.already), (0, 1));
+
+    let account = &mut scan.accounts[0];
+    let cache = decrypt::cache_dir(&data, account_id);
+    let cache_file = cache.join(rel);
+    let initial = decrypt::decrypt_account(&data, account, &store, false, true);
+    assert_eq!(initial[0].status, "ok");
+    assert_eq!(initial[0].pages, 2);
+    let last_good = plain[..2].concat();
+    assert_eq!(fs::read(&cache_file).unwrap(), last_good);
+    assert_eq!(fs::read(&source).unwrap(), original);
+
+    for (damaged, failed_page) in [(&[][..], 1), (&original[..crypto::PAGE_SIZE + 91], 2)] {
+        fs::write(&source, damaged).unwrap();
+        account.dbs[0].size = damaged.len() as u64;
+        let failure = decrypt::decrypt_account(&data, account, &store, false, true);
+        assert_eq!(failure[0].status, "failed");
+        assert_eq!(failure[0].failed_page, Some(failed_page));
+        assert_eq!(fs::read(&cache_file).unwrap(), last_good);
+        assert!(!cache_file.with_extension("db.part").exists());
+    }
+
+    // Older builds could record a partial source as an up-to-date cache entry.
+    let meta_path = cache.join("_sync.json");
+    let mut old_meta: serde_json::Value = serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
+    let modified = fs::metadata(&source).unwrap().modified().unwrap();
+    let nanos = modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    old_meta["entries"][rel]["src_size"] = serde_json::json!(account.dbs[0].size);
+    old_meta["entries"][rel]["src_mtime"] = serde_json::json!(nanos);
+    fs::write(&meta_path, old_meta.to_string()).unwrap();
+    let stale = decrypt::decrypt_account(&data, account, &store, false, true);
+    assert_eq!(stale[0].status, "failed");
+    assert_eq!(stale[0].failed_page, Some(2));
+    assert_eq!(fs::read(&cache_file).unwrap(), last_good);
+
+    fs::write(&source, &encrypted).unwrap();
+    account.dbs[0].size = encrypted.len() as u64;
+    let retry = decrypt::decrypt_account(&data, account, &store, false, true);
+    assert_eq!(retry[0].status, "ok");
+    assert_eq!(retry[0].pages, 3);
+    assert_eq!(fs::read(&cache_file).unwrap(), plain.concat());
+}

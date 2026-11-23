@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -171,13 +171,19 @@ fn decrypt_file(db: &DbFile, out: &Path, enc_key: &[u8], apply_wal: bool) -> Dec
     let mut page = vec![0u8; crypto::PAGE_SIZE];
     let mut pgno: u32 = 1;
     loop {
-        match reader.read_exact(&mut page) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => {
-                remove_if_exists(&tmp);
-                return failed(&account, &db.rel, format!("读取第 {pgno} 页失败：{error}"));
-            }
+        // End of file is valid only at a page boundary after at least one page.
+        let page_read = match reader.fill_buf() {
+            Ok([]) if pages > 0 => break,
+            Ok(_) => reader.read_exact(&mut page),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = page_read {
+            drop(writer);
+            remove_if_exists(&tmp);
+            let mut outcome = failed(&account, &db.rel, format!("读取第 {pgno} 页失败：{error}"));
+            outcome.failed_page = Some(pgno as u64);
+            return outcome;
         }
         if !crypto::verify_page(&page, &mac_key, pgno) {
             remove_if_exists(&tmp);
@@ -361,11 +367,14 @@ pub fn decrypt_account(
             let _ = fs::create_dir_all(parent);
         }
         let src_size = db.size;
+        let page_size = crypto::PAGE_SIZE as u64;
+        let complete_pages = !db.encrypted || (src_size >= page_size && src_size % page_size == 0);
         let src_mtime = mtime_nanos(Path::new(&db.path));
         let (wal_size, wal_mtime) = file_signature(&wal_path(&db.path));
 
         if let Some(entry) = meta.entries.get(&db.rel) {
-            if entry.src_size == src_size
+            if complete_pages
+                && entry.src_size == src_size
                 && entry.src_mtime == src_mtime
                 && entry.wal_size == wal_size
                 && entry.wal_mtime == wal_mtime
@@ -385,7 +394,8 @@ pub fn decrypt_account(
                 continue;
             }
 
-            if apply_wal
+            if complete_pages
+                && apply_wal
                 && wal_size > 0
                 && entry.src_size == src_size
                 && entry.src_mtime == src_mtime
