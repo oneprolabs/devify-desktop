@@ -177,6 +177,13 @@
 .wechat-wizard .wx-setup-file { display: inline-flex; align-items: center; cursor: pointer; }
 .wechat-wizard .wx-setup-file input { width: 1px; height: 1px; opacity: 0; position: absolute; }
 .wechat-wizard .wx-setup-file:focus-within { outline: 2px solid #a3279a; outline-offset: 3px; }
+.wechat-wizard .wx-setup-key-toggle[aria-expanded="true"] { color: #a3279a; border-color: #a3279a; background: #faf1f9; }
+.wechat-wizard .wx-setup-key-form { max-width: 615px; margin-top: 14px; padding: 14px 16px; border: 1px solid #e5e5e2; border-radius: 12px; background: #fafaf9; }
+.wechat-wizard .wx-setup-key-form label { display: inline-block; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+.wechat-wizard .wx-setup-key-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wechat-wizard .wx-setup-key-fields input { flex: 1 1 220px; min-width: min(220px, 100%); min-height: 36px; padding: 0 12px; border: 1px solid #d9d9d6; border-radius: 8px; background: #fff; color: #242423; font: inherit; }
+.wechat-wizard .wx-setup-key-fields input:focus-visible { outline: 2px solid #a3279a; outline-offset: 1px; }
+.wechat-wizard .wx-setup-key-form p { margin: 8px 0 0; color: #62625c; font-size: 12px; }
 .wechat-wizard .wx-setup > footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .wechat-wizard .wx-setup > footer > button:last-child { margin-left: 0; }
 .wechat-wizard .wizard-skip { margin: 0; padding: 8px 0; border: 0; background: transparent; color: #5f5f5a; font-size: 12px; }

@@ -59,7 +59,8 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
  transformCallback(fn:Function){const id=++callbackId;callbacks.set(id,fn);return id;},
  unregisterCallback(id:number){callbacks.delete(id);},convertFileSrc:(path:string)=>path,
  invoke:async(command:string,args:any={})=>{
-  state.calls.push({command,args:structuredClone(args)});
+  const loggedArgs = command === 'wechat_import_keys' ? { accountId: args.accountId } : args;
+  state.calls.push({command,args:structuredClone(loggedArgs)});
   const clone=<T,>(x:T):T=>structuredClone(x);
   switch(command){
    case 'plugin:resources|close':return null;
@@ -212,6 +213,20 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'wechat_catalog_dates':return [['2026-11-18',2],['2026-11-17',1]];
    case 'wechat_scan':return {roots:['/e2e'],skipped:[],accounts:(localSnapshot?state.accounts:[{id:wx}]).map(account=>({id:account.id,dir:'/e2e',db_count:1,encrypted_count:1,total_bytes:1024,modified_at:100,dbs:[{rel:'test.db',path:'/e2e/test.db',size:1024,encrypted:true,salt:'test',has_wal:false}]}))};
    case 'wechat_key_status':return {path:'/e2e/keys',stored:state.keys,keys:state.keys?(localSnapshot?state.accounts:[{id:wx}]).map(account=>({account:account.id,rel:'test.db',salt:'test',source:'e2e',verified_at:'2026-11-18',verified_secs:1795000000})):[]};
+   case 'wechat_import_keys': {
+    const input = args.text.trim();
+    let key = input;
+    if (input.startsWith('{')) {
+     try { key = JSON.parse(input).passphrase; }
+     catch { throw '无法识别密钥格式。'; }
+    }
+    if (typeof key !== 'string' || !/^[0-9a-f]{64}$/i.test(key)) throw '无法识别密钥格式。';
+    if (args.accountId !== wx || key !== 'ab'.repeat(32)) {
+     return {matched:0,already:0,unmatched:[],accounts:[],message:'导入内容未通过当前微信账号的校验。'};
+    }
+    state.keys = 1;
+    return {matched:1,already:0,unmatched:[],accounts:[{account:wx,matched:1,already:0,total:1,selected:true}],message:'密钥已校验。'};
+   }
    case 'wechat_key_source_status':return {path:'/e2e/keys',exists:false,modified_at:null,age_seconds:null,secure:true,extractor_installed:true};
    case 'wechat_env':return {app_data_dir:'/e2e',cache_root:'/e2e',keys_path:'/e2e/keys',scanner_path:null};
    case 'wechat_platform_capabilities':return {platform:'macos',key_acquisition:'capture',supports_macos_capture:true,supports_key_import:true,supports_memory_scan:false};

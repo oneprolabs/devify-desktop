@@ -52,6 +52,7 @@ type Props = {
   onWindowsScan: () => void;
   onImportSaved: () => void;
   onImport: (file: File) => void;
+  onImportText: (text: string) => void;
   onDecrypt: () => void;
   onComplete: () => void;
   onBack: () => void;
@@ -82,6 +83,9 @@ export function WeChatSetupChecklist(p: Props) {
   const [openedWechat, setOpenedWechat] = useState(false);
   const [loggedOut, setLoggedOut] = useState(false);
   const [choosingAccount, setChoosingAccount] = useState(false);
+  const [manualKeyOpen, setManualKeyOpen] = useState(false);
+  const [manualKey, setManualKey] = useState('');
+  const manualKeyInput = useRef<HTMLInputElement>(null);
   const [confirmedAccount, setConfirmedAccount] = useState<string | null>(null);
   const startedCapture = useRef(false);
   const captureAttempt = useRef<CaptureAttempt | null>(null);
@@ -177,7 +181,25 @@ export function WeChatSetupChecklist(p: Props) {
     if (!p.permissionPhase) sectionRef.current?.querySelector('[aria-label="微信操作步骤"] > .current')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [p.permissionPhase, current]);
 
-  const fileInput = <label className="wxv-btn wx-setup-file">{t("选择密钥文件")}<input type="file" accept=".json,application/json,text/plain" disabled={working || !hasAccount} onChange={event => { const file = event.target.files?.[0]; if (file) void runStep('import-file', () => p.onImport(file)); event.target.value = ''; }} /></label>;
+  useEffect(() => {
+    setManualKeyOpen(false);
+    setManualKey('');
+  }, [p.accountId, p.permissionPhase, current]);
+
+  useEffect(() => {
+    if (manualKeyOpen) manualKeyInput.current?.focus();
+  }, [manualKeyOpen]);
+
+  const importDisabled = working || !hasAccount;
+  const manualKeyText = manualKey.trim();
+  const fileInput = <label className="wxv-btn wx-setup-file">
+    {t("选择密钥文件")}
+    <input type="file" accept=".json,application/json,text/plain" disabled={importDisabled} onChange={event => {
+      const file = event.target.files?.[0];
+      if (file) void runStep('import-key', () => p.onImport(file));
+      event.target.value = '';
+    }} />
+  </label>;
   const stepError = current === 'recover' ? p.recoveryError : p.error;
   const errorDetails = stepError && <details className="wx-setup-details"><summary>{t("查看错误详情")}</summary><p>{stepError}</p></details>;
   const accountChoices = <div className="wx-setup-accounts"><p>{t("选择要连接的微信账号：")}</p>{p.accounts.map(account => <label key={account.id}><input type="radio" name="setup-account" checked={p.accountId === account.id} disabled={working || Boolean(p.capture?.pending)} onChange={() => { setChoosingAccount(false); p.onChooseAccount(account.id); }} />{account.id}</label>)}<button className="wxv-btn primary" disabled={!hasAccount || working} onClick={() => { setConfirmedAccount(p.accountId); setChoosingAccount(false); }}>{t("使用此账号")}</button></div>;
@@ -200,7 +222,37 @@ export function WeChatSetupChecklist(p: Props) {
         <WizardActionButton className="wxv-btn primary" loading={p.captureBusy === 'restore'} busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在恢复微信…")} disabled={working} onAction={() => recover(p.onRestore)}>{p.recoveryError ? t("重试恢复微信") : t("恢复微信")}</WizardActionButton>
       </>}
     </>;
-    if (step === 'file') return <><p>{t("选择已准备好的微信密钥文件。")}</p>{failure(t("文件未能导入，请确认文件属于当前账号，再重新选择。"))}{fileInput}</>;
+    if (step === 'file') return <>
+      <p>{t("选择密钥文件，或直接粘贴已有的微信密钥。")}</p>
+      {failure(t("密钥未能导入，请确认格式及所属账号后重试。"))}
+      <div className="wx-setup-actions">
+        {fileInput}
+        <button type="button" className="wxv-btn wx-setup-key-toggle" aria-expanded={manualKeyOpen}
+          aria-controls={manualKeyOpen ? 'wx-manual-key-form' : undefined} disabled={importDisabled}
+          onClick={() => {
+            if (manualKeyOpen) setManualKey('');
+            setManualKeyOpen(!manualKeyOpen);
+          }}>{t("手动输入密钥")}</button>
+      </div>
+      {manualKeyOpen && <form id="wx-manual-key-form" className="wx-setup-key-form" autoComplete="off" onSubmit={event => {
+        event.preventDefault();
+        if (!importDisabled && manualKeyText) {
+          void runStep('import-key', () => p.onImportText(manualKeyText));
+        }
+      }}>
+        <label htmlFor="wx-manual-key">{t("微信密钥")}</label>
+        <div className="wx-setup-key-fields">
+          <input id="wx-manual-key" ref={manualKeyInput} type="password" value={manualKey}
+            onChange={event => setManualKey(event.target.value)} disabled={importDisabled}
+            autoComplete="off" spellCheck={false} aria-describedby="wx-manual-key-help"
+            placeholder={t("例如 a1b2c3…（共 64 位十六进制字符）")} />
+          <button type="submit" className="wxv-btn primary" disabled={importDisabled || !manualKeyText}>
+            {t("导入并校验")}
+          </button>
+        </div>
+        <p id="wx-manual-key-help">{t("请粘贴完整口令。密钥仅用于在本机校验当前微信账号。")}</p>
+      </form>}
+    </>;
     if (step === 'windows') return <><p>{t("请保持微信已登录，再点击「连接微信」。")}</p>{failure(t("连接未完成。请确认 AIMyChats 与微信使用同一 Windows 用户，必要时以管理员身份重新打开 AIMyChats 后重试。"))}<WizardActionButton className="wxv-btn primary" loading={Boolean(p.windowsBusy)} busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在连接…")} disabled={working || !hasAccount} onAction={() => runStep('windows', p.onWindowsScan)}>{p.error ? t("重试连接微信") : t("连接微信")}</WizardActionButton></>;
     if (step === 'prepare') {
       if (task === 'checking' || p.captureError) return <><p>{t("未能取得微信连接状态，请重新检查。")}</p><WizardActionButton className="wxv-btn primary" loading={p.captureChecking} busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查…")} disabled={working} onAction={p.onCaptureRefresh}>{t("重新检查连接状态")}</WizardActionButton></>;
@@ -246,7 +298,7 @@ export function WeChatSetupChecklist(p: Props) {
   const connectionRows: Array<[ConnectionStep, string]> = [
     ...(p.accounts.length !== 1 || !done[1] ? [['account', '确认微信账号'] as [ConnectionStep, string]] : []),
     ...(current === 'recover' ? [['recover', '恢复微信'] as [ConnectionStep, string]] : []),
-    ...(p.manual && !p.capture?.pending ? [['file', '导入微信连接文件'] as [ConnectionStep, string]]
+    ...(p.manual && !p.capture?.pending ? [['file', '导入微信密钥'] as [ConnectionStep, string]]
       : permission.platform === 'windows' ? [['windows', '连接微信'] as [ConnectionStep, string]]
         : [['prepare', '准备微信'], ['login', '登录微信'], ['authorize', '授权连接'], ['logout', '退出微信账号'], ['relogin', '重新登录微信']] as Array<[ConnectionStep, string]>),
     ['verify', '校验连接'], ['read', '读取聊天记录'],

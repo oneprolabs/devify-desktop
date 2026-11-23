@@ -158,6 +158,7 @@ function sectionItems(report: ReportItem): string[] {
 
 export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAnalysisSettings }: { kind: Kind; userId: number | null; focusId?: number | null; onOpenEvent?: (eventId: number) => void; onOpenAnalysisSettings?: () => void }) {
   const [spaceId, setSpaceId] = useState<string | null>(null);
+  const [resolvedScope, setResolvedScope] = useState<{ page: string; source: string } | null>(null);
   const [items, setItems] = useState<Array<EventItem | ReportItem>>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(isTauri());
@@ -172,6 +173,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const [eventNotes, setEventNotes] = useState<EventNote[]>([]);
   const [openNotes, setOpenNotes] = useState<Record<number, boolean>>({});
   const [reloadKey, setReloadKey] = useState(0);
+  const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [creating, setCreating] = useState(false);
   const [genType, setGenType] = useState("日报");
   const [generating, setGenerating] = useState(false);
@@ -189,7 +191,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const [addingProgress, setAddingProgress] = useState(false);
   const [progressText, setProgressText] = useState('');
   const pendingSelect = useRef<number | null>(null);
+  const listScope = useRef<{ page: string; source: string; generation: number } | null>(null);
   const copy = labels[kind];
+  const pageKey = JSON.stringify([kind, userId, focusId]);
+  const scopeChanged = resolvedScope !== null && resolvedScope.page !== pageKey;
+  const sourceScope = scopeChanged ? null : resolvedScope;
   const isDone = (status?: string | null) => status === 'done';
 
   useEffect(() => {
@@ -199,8 +205,16 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     const initialSelection = (list: Array<EventItem | ReportItem>) => focusId
       ?? (kind === 'events' ? list.find(item => !isDone((item as EventItem).status))?.id : list[0]?.id)
       ?? null;
-    setItems([]); setSelectedId(null); setDetail(null); setError(''); setListError(''); setQuery(''); setFilter(kind === 'events' && focusId == null ? 'open' : 'all');
-    setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
+    let keepContent = listScope.current?.page === pageKey && listScope.current.generation === generation;
+    const resetContent = () => {
+      listScope.current = null;
+      setSpaceId(null); setResolvedScope(null);
+      setItems([]); setTotal(0); setSelectedId(null); setDetail(null); setEventNotes([]);
+      setEvidence(null); setQuery(''); setFilter(kind === 'events' && focusId == null ? 'open' : 'all');
+      setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
+    };
+    if (!keepContent) resetContent();
+    setError(''); setListError('');
     if (!isTauri()) { setLoading(false); return; }
     setLoading(true);
     void invoke<AppSettings>('app_settings_get')
@@ -208,15 +222,24 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         if (!active) return;
         const id = settings.devify?.active_space_id ?? await invoke<string | null>('devify_space_ensure');
         if (!active) return;
+        const source = JSON.stringify([settings.devify?.base_url, id]);
+        if (keepContent && listScope.current?.source !== source) {
+          resetContent();
+          keepContent = false;
+        }
         setSpaceId(id);
         if (!id) throw new Error(t("暂时无法读取空间，请检查账户连接后重试。"));
+        if (!keepContent) {
+          const scope = { page: pageKey, source, generation };
+          listScope.current = scope;
+          setResolvedScope(scope);
+        }
         cacheKey = userId === null ? '' : JSON.stringify([settings.devify?.base_url, userId, id, kind]);
         const cached = cacheKey ? readPageSnapshot<{ list: Array<EventItem | ReportItem>; total: number }>(cacheKey) : undefined;
-        if (cached) {
+        if (cached && !keepContent) {
           setItems(cached.list);
           setTotal(cached.total);
           setSelectedId(initialSelection(cached.list));
-          setLoading(false);
         }
         return invoke<Page<EventItem> | Page<ReportItem>>('devify_analysis_list', { kind, spaceId: id, page: 1 });
       })
@@ -226,6 +249,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         if (cacheKey) savePageSnapshot(cacheKey, { list, total: result.pagination?.total ?? list.length }, generation);
         setItems(list);
         setTotal(result.pagination?.total ?? list.length);
+        if (keepContent) setDetailReloadKey(reloadKey);
         const pending = pendingSelect.current;
         pendingSelect.current = null;
         setSelectedId(current => pending && list.some(item => item.id === pending)
@@ -236,7 +260,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       .catch(reason => { if (active) setListError(String(reason)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [kind, userId, focusId, reloadKey]);
+  }, [kind, userId, focusId, pageKey, reloadKey]);
 
   const counts = useMemo(() => {
     const open = items.filter(item => !isDone((item as EventItem).status)).length;
@@ -263,43 +287,50 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const selected = useMemo(() => items.find(item => item.id === selectedId) ?? null, [items, selectedId]);
 
   useEffect(() => {
-    if (!isTauri() || !spaceId || selectedId == null) { setDetail(null); setEventNotes([]); setDetailLoading(false); setError(''); return; }
-    let active = true;
-    setDetailLoading(true);
-    setError('');
+    if (!isTauri() || !sourceScope || !spaceId || selectedId == null) return;
     setOpenNotes({});
+    setEventNotes([]);
     setEventTab('overview');
     setEditing(false);
     setActionError('');
     setRemovedNotes([]);
     setAddingProgress(false);
     setProgressText('');
+  }, [kind, spaceId, selectedId, sourceScope]);
+  useEffect(() => {
+    if (!isTauri() || !sourceScope || !spaceId || selectedId == null) { setDetail(null); setEventNotes([]); setDetailLoading(false); setError(''); return; }
+    let active = true;
+    setDetailLoading(true);
+    setError('');
     void invoke<EventDetail | ReportItem>('devify_analysis_detail', { kind, spaceId, itemId: selectedId })
       .then(value => { if (active) setDetail(value); })
       .catch(reason => { if (active) setError(String(reason)); })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
-  }, [kind, spaceId, selectedId]);
+  }, [kind, spaceId, selectedId, sourceScope, detailReloadKey]);
   useEffect(() => {
-    if (!isTauri() || kind !== 'events' || !spaceId || selectedId == null) { setEventNotes([]); return; }
+    if (!isTauri() || !sourceScope || kind !== 'events' || !spaceId || selectedId == null) { setEventNotes([]); return; }
     let active = true;
     void invoke<EventNote[]>('devify_event_notes', { spaceId, eventId: selectedId })
       .then(notes => { if (active) setEventNotes(sortNotes(notes ?? [])); })
       .catch(() => { if (active) setEventNotes([]); });
     return () => { active = false; };
-  }, [kind, spaceId, selectedId]);
+  }, [kind, spaceId, selectedId, sourceScope, detailReloadKey]);
   useEffect(() => {
-    if (!isTauri() || kind !== 'events' || !spaceId) { setRelations([]); return; }
+    if (!isTauri() || !sourceScope || kind !== 'events' || !spaceId) { setRelations([]); return; }
     let active = true;
     void invoke<EventRelationRecord[]>('devify_event_relations', { spaceId })
       .then(list => { if (active) setRelations(list ?? []); })
       .catch(() => { if (active) setRelations([]); });
     return () => { active = false; };
-  }, [kind, spaceId, reloadKey]);
+  }, [kind, spaceId, sourceScope, detailReloadKey]);
 
   const currentDetail = detail?.id === selectedId ? detail : null;
-  const report = !detailLoading && kind === 'reports' && (currentDetail || selected) ? (currentDetail || selected) as ReportItem : null;
-  const event = !detailLoading && kind === 'events' && (currentDetail || selected) ? (currentDetail || selected) as EventDetail : null;
+  const displayedDetail = currentDetail ?? (!detailLoading && !error ? selected : null);
+  const refreshing = loading || (detailLoading && currentDetail !== null);
+  const reload = () => setReloadKey(key => key + 1);
+  const report = kind === 'reports' ? displayedDetail as ReportItem | null : null;
+  const event = kind === 'events' ? displayedDetail as EventDetail | null : null;
   const relatedEvents = useMemo(() => {
     if (!event) return [];
     const byId = new Map<number, RelatedEvent>();
@@ -529,13 +560,19 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const pageTitle = t(copy.title);
   const pageEmpty = t(copy.empty);
   if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>{t("请在桌面应用中查看")}</h2><p>{t("待办和报告在上传处理后生成，桌面端负责同步并展示。")}</p></div></div>;
-  if (loading) return <LoadingPage title={pageTitle} />;
-  if (error || (listError && !items.length)) return <div className="analysis-page"><div className="analysis-empty error" role="alert"><h2>{t("同步失败")}</h2><p>{error || listError}</p></div></div>;
+  if (scopeChanged || (loading && !items.length)) return <LoadingPage title={pageTitle} />;
+  if (listError && !items.length) return <div className="analysis-page">
+    <div className="analysis-empty error" role="alert">
+      <h2>{t("同步失败")}</h2>
+      <p>{listError}</p>
+      <button type="button" className="event-empty-action" onClick={reload}>{t("重试")}</button>
+    </div>
+  </div>;
 
   return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
     <aside className="analysis-side" aria-label={tf("{0}列表", pageTitle)}>
       <h1>{pageTitle}</h1>
-      {listError && <p role="status">{t("暂时无法更新，显示上次读取的内容。")}<button type="button" onClick={() => setReloadKey(key => key + 1)}>{t("重试")}</button></p>}
+      {listError && <p role="status">{t("暂时无法更新，显示上次读取的内容。")}<button type="button" onClick={reload}>{t("重试")}</button></p>}
       <p className="analysis-side-count">{kind === 'events' ? tf("{0} 个未完成 · 跨全部会话", counts.open) : tf("{0} 份报告", items.length)}</p>
 
       <div className="analysis-search">
@@ -599,12 +636,15 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
               onClick={() => void toggleEventStatus()}
             >{actionBusy === 'status' ? t("保存中…") : isDone(event.status) ? t("重新打开") : t("标记完成")}</button>
           </>}
-          <button type="button" onClick={() => setReloadKey(key => key + 1)}>{t("刷新")}</button>
+          <button type="button" className="analysis-refresh" disabled={refreshing} aria-busy={refreshing} onClick={reload}>
+            {refreshing && <span className="loading-skeleton-spinner" aria-hidden="true"/>}
+            {t("刷新")}
+          </button>
         </div>
       </header>
 
       <div className="analysis-doc-wrap">
-        {kind==='reports'&&!creating&&!report&&!detailLoading&&<div className="analysis-empty"><h2>{t('还没有报告')}</h2><p>{t('可以按需生成第一份报告，也可以在智能分析中设置定期生成。')}</p><button type="button" className="report-create-submit" onClick={()=>setCreating(true)}>{t('生成报告')}</button></div>}
+        {kind==='reports'&&!creating&&!report&&!detailLoading&&!error&&<div className="analysis-empty"><h2>{t('还没有报告')}</h2><p>{t('可以按需生成第一份报告，也可以在智能分析中设置定期生成。')}</p><button type="button" className="report-create-submit" onClick={()=>setCreating(true)}>{t('生成报告')}</button></div>}
         {kind === 'reports' && creating && <div className="report-create">
           <header>
             <h2>{t("生成报告")}</h2>
@@ -631,7 +671,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         </div>}
 
         {!(kind === 'reports' && creating) && <>
-        {detailLoading && <LoadingSkeleton label={t("正在加载详情")} kind="detail" />}
+        {detailLoading && !currentDetail && <LoadingSkeleton label={t("正在加载详情")} kind="detail" />}
+        {error && <div className="analysis-action-error" role="alert">
+          <span>{error}</span>{' '}
+          <button type="button" className="event-empty-action" onClick={reload}>{t("重试")}</button>
+        </div>}
         {kind === 'events' && selectedId == null && !detailLoading && <div className="analysis-empty event-empty" role="status">
           <h2>{items.length ? t("当前筛选下没有记录。") : pageEmpty}</h2>
           <p>{items.length ? t("可切换筛选查看其他待办。") : t("已备份的聊天大约每小时分析一次，生成的待办会显示在这里。可在「智能分析 → 聊天待办分析」中调整设置。")}</p>

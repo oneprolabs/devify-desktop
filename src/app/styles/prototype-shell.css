@@ -854,12 +854,6 @@
 .chat-summary-kind { padding: 2px 7px; border-radius: 5px; background: #f1f1f3; color: #46463f; font-size: 12px; }
 .chat-summary-card-meta { display: flex; align-items: center; gap: 6px; margin-left: auto; color: #5f5f5a; font-size: 13px; }
 .chat-summary-spinner { width: 13px; height: 13px; border-radius: 50%; border: 1.8px solid rgba(163, 39, 154, .22); border-top-color: #a3279a; animation: chat-tab-spin .9s linear infinite; }
-.chat-summary-skeleton { display: flex; flex-direction: column; gap: 9px; }
-.chat-summary-skeleton i { height: 9px; border-radius: 4px; background: #ececef; animation: chat-summary-pulse 1.4s ease-in-out infinite; }
-.chat-summary-skeleton i:nth-child(1) { width: 92%; }
-.chat-summary-skeleton i:nth-child(2) { width: 76%; animation-delay: .2s; }
-.chat-summary-skeleton i:nth-child(3) { width: 58%; animation-delay: .4s; }
-@keyframes chat-summary-pulse { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
 
 .chat-summary-lead { color: #3a3a37; font-size: 14.5px; line-height: 1.7; text-wrap: pretty; }
 .chat-summary-section { display: flex; flex-direction: column; gap: 6px; }

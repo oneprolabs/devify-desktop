@@ -542,7 +542,6 @@ export function ChatSummary({
           <span className="chat-summary-kind">{t("生成中")}</span>
           <span className="chat-summary-card-meta"><i className="chat-summary-spinner"/>{t("正在")}{mode === 'ai' ? t("交给本地 Agent") : t("本机整理")}…</span>
         </header>
-        <div className="chat-summary-skeleton"><i/><i/><i/></div>
       </article>}
 
       {!busy && scoped.map(record => {

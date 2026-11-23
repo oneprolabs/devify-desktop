@@ -75,25 +75,36 @@ export function useWeChatKeys({ account, wizard, setNotice, setError, setBusy }:
     // Only wipe the box when the pasted material actually stored something; a rejected paste
     // stays visible so it can be corrected instead of retyped from memory.
     if(result.matched > 0) setKeyText('');
-    if(result.unmatched.length) {
+    const selected = result.accounts.find(entry => entry.account === account?.id);
+    const verified = account
+      ? (selected?.matched ?? 0) + (selected?.already ?? 0)
+      : result.matched + result.already;
+    if (result.unmatched.length) {
       setError(tf("有 {0} 个数据库没有匹配到密钥（微信可能从未打开过它们）。", result.unmatched.length));
+    } else if (!verified) {
+      setError(result.message);
     }
     await refreshKeys();
   };
 
-  const importKeys = async (file?: File) => {
+  const importKeys = async (file?: File, pastedText = keyText) => {
     setError('');
     setNotice('');
-    let text = keyText;
-    if(file) {
-      if(file.size > 2_000_000) {
+    let text = pastedText;
+    if (file) {
+      if (file.size > 2_000_000) {
         setError(t("密钥文件过大，请确认选择的是口令或密钥 JSON。"));
         return;
       }
-      text = await file.text();
+      try {
+        text = await file.text();
+      } catch {
+        setError(t("无法读取密钥文件，请重新选择。"));
+        return;
+      }
       setKeyText(text);
     }
-    if(!text.trim()) {
+    if (!text.trim()) {
       setError(t("请粘贴密钥或口令，或选择口令 JSON 文件。"));
       return;
     }
