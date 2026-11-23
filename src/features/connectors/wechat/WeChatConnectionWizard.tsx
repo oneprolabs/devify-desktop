@@ -30,7 +30,7 @@ export function WeChatConnectionWizard({ connection, selection, wizard, ready, e
     onCheckConnectionResult={connection.checkConnectionResult}
     onRestore={restoreWeChat} onAcceptOfficial={acceptOfficialWeChat} onOpenSecurity={openPrivacySecuritySettings}
     onWindowsScan={scanWindowsKeys} onImportSaved={importSavedKey}
-    onImport={file => importKeys(file)} onDecrypt={decrypt}
+    onImport={importKeys} onImportText={text => importKeys(undefined, text)} onDecrypt={decrypt}
     onComplete={() => onWizardStep?.('wizard-sessions')} onBack={() => onWizardStep?.(wizardStep === 'wizard-permission' ? 'wizard-method' : 'wizard-permission')}
   />;
 }

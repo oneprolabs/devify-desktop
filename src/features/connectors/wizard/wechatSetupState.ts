@@ -71,7 +71,7 @@ export function systemEnvironment(capture: SetupCapture | null, platform: string
   if (platform === 'windows') return { ready: true, problem: '' };
   if (!capture) return { ready: false, problem: '' };
   if (reuseConnection) return { ready: true, problem: '' };
-  if (!capture.platform_supported) return { ready: false, problem: '当前设备不支持自动连接，请返回接入方式，选择导入可信密钥文件。' };
+  if (!capture.platform_supported) return { ready: false, problem: '当前设备不支持自动连接，请返回接入方式，选择手动导入微信密钥。' };
   if (!capture.lldb_available) return { ready: false, problem: '缺少所需的系统工具。请安装或修复 Xcode Command Line Tools，再点「重新检查」。' };
   if (!capture.wechat_official && !(capture.pending && capture.wechat_ad_hoc && captureTask(capture) !== 'recover')) return { ready: false, problem: '请将官方微信安装到「应用程序」，再点「重新检查」。' };
   if (!capture.user_can_write) return { ready: false, problem: '无法修改微信安装目录。请确认当前用户有该目录的读写权限，再点「重新检查」。' };
