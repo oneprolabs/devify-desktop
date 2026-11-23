@@ -16,7 +16,7 @@ import type {
   AgentCurrent,
   AgentSummary,
 } from './nativeTypes';
-import { toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, Highlight } from './presentation';
+import { toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, messageAvatar, Highlight } from './presentation';
 import { isSummaryText } from '../summary/summaryInput';
 import { t, tf, dateLocale } from '../../../shared/i18n/locale';
 import { RemoteChatFallback } from '../RemoteChatFallback';
@@ -146,6 +146,7 @@ export default function WeChatLocal({
   onClearSearch,
   sessionRevision = 0,
   accountId: pinnedAccountId,
+  accountDisplay,
   onChatState,
   onSummarySelection,
   onSummarizeSelection,
@@ -169,6 +170,7 @@ export default function WeChatLocal({
   sessionRevision?: number;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
+  accountDisplay?: string | null;
   /** Reports loaded and selected messages to the page-level actions. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean; agentName: string; agentModel: string }) => void;
   onSummarySelection?: (messages: import('../summary/summaryInput').SummaryMessage[]) => void;
@@ -1668,6 +1670,7 @@ export default function WeChatLocal({
             </div>
           );
         }
+        const avatar = messageAvatar(message, active, accountId, accountDisplay);
         return (
           <div key={`${message.local_id}-${message.time}`}>
             {divider && <div className="wxv-divider">{divider}</div>}
@@ -1705,17 +1708,15 @@ export default function WeChatLocal({
             >
               {onChatState && <time className="wxv-timeline-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}
               {(!message.is_self || onChatState) && (
-                <span className="wxv-avatar sm" style={{ background: avatarColor(message.sender ?? message.text) }}>
-                  {message.sender && avatars[message.sender] ? (
+                <span className="wxv-avatar sm" style={{ background: avatar.color }}>
+                  {avatar.username && avatars[avatar.username] ? (
                     <img
                       className="wxv-avatar-img"
-                      src={avatars[message.sender]}
+                      src={avatars[avatar.username]}
                       alt=""
                       draggable={false}
                     />
-                  ) : (
-                    initial(message.sender_name || message.sender || (message.is_self ? t("我") : '?'))
-                  )}
+                  ) : avatar.label}
                 </span>
               )}
               <div className="wxv-msg-body">

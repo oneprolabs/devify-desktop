@@ -548,6 +548,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         {accountId && <WeChatLocal
           key={accountId}
           accountId={accountId}
+          accountDisplay={connectedAccounts.find(account => account.id === accountId)?.display}
           sessionRevision={sessionRevision}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
           focusMessageId={rawFocus?.messageId}
