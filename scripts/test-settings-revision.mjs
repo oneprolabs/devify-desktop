@@ -75,6 +75,7 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/core') return { invoke: (...args) => invoke(...args), isTauri: () => true };
   if (id === '@tauri-apps/api/event') return { listen: async () => () => {} };
   if (id === '@tauri-apps/plugin-deep-link') return { onOpenUrl: async () => () => {} };
+  if (id === '../../shared/api/buildFlavor') return { DEVELOPMENT_APP: false };
   if (id === '../../shared/api/devifyDevice') return { registerDevifyDevice: async () => {} };
   if (['../../../shared/api/desktopInvoke', '../../shared/api/desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
   if (['./settingsModel', '../../settings/settingsModel', '../settings/settingsModel'].includes(id)) return settingsModel;

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AIMyChats Dev",
+  "identifier": "local.wechat.devifybridge.dev",
+  "build": {
+    "features": [
+      "dev-app"
+    ],
+    "beforeDevCommand": "node scripts/stage-wxq.mjs --prepare --dev && npm run dev:app",
+    "devUrl": "http://localhost:1422",
+    "beforeBuildCommand": "npm run build:dev && npm run stage:wxq:dev",
+    "frontendDist": "../dist-dev"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AIMyChats Dev",
+        "width": 1360,
+        "height": 900,
+        "minWidth": 940,
+        "minHeight": 640,
+        "center": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 10,
+          "y": 26
+        }
+      }
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "devify-dev"
+        ]
+      }
+    },
+    "updater": {
+      "endpoints": []
+    }
+  },
+  "bundle": {
+    "resources": [
+      "binaries-dev/wxq-*"
+    ]
+  }
+}

@@ -5,7 +5,8 @@ import { listen } from '@tauri-apps/api/event';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import brandMark from '../../assets/app-mark-transparent.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from '../settings/settingsModel';
-import { apiBaseUrl, storedBaseUrl } from '../../shared/api/serviceUrl.ts';
+import { apiBaseUrl, storedBaseUrl, sameServiceUrl } from '../../shared/api/serviceUrl.ts';
+import { DEVELOPMENT_APP } from '../../shared/api/buildFlavor';
 import { requestFeedback } from '../../shared/api/desktopInvoke';
 import { Icons } from '../../shared/ui/icons';
 import { NetworkConnectionControl } from '../settings/NetworkSettings';
@@ -20,6 +21,17 @@ type Tab = 'login' | 'register';
 
 /** Example only: the app ships without a server, so this is never used as a value. */
 const SERVER_PLACEHOLDER = 'https://devify.example.com';
+
+function DevelopmentLoginService({ baseUrl }: { baseUrl: string }) {
+  if (!DEVELOPMENT_APP) return null;
+  const production = sameServiceUrl(baseUrl, 'https://aimychats.com');
+  return <aside className={`auth-development-service${production ? ' production' : ''}`} aria-label={t('开发模式')}>
+    <div><strong>{t('开发模式')}</strong><span>{production ? t('正式服务') : t('当前服务')}</span></div>
+    <code>{baseUrl || t('正在读取服务地址…')}</code>
+    <small>{t('修改地址：在登录弹窗底部点击「连接设置」。')}</small>
+    {production && <small>{t('当前连接正式服务，操作会影响正式数据。')}</small>}
+  </aside>;
+}
 
 export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; onAuthenticated: () => void }) {
   const [popup, setPopup] = useState(false);
@@ -372,6 +384,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
         </header>
         {connectionSettingsOpen ? <form key="connection" className="auth-modal-body auth-connection-form" noValidate
           onSubmit={event => { event.preventDefault(); if (!serverSaving && !connectionSaving) void saveServer(); }}>
+          <DevelopmentLoginService baseUrl={baseUrl}/>
           <label className="auth-connection-server">
             {t("服务端地址")}
             <input
@@ -391,6 +404,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
               ? t("保存并返回登录") : t("返回登录")}
           </button>
         </form> : <form key="sign-in" className="auth-modal-body" onSubmit={event => { event.preventDefault(); if (tab === 'login' && !busy) void submitPassword(); }}>
+          <DevelopmentLoginService baseUrl={baseUrl}/>
           <div className="auth-tabs" role="tablist" aria-label={t("登录方式")}>
             {([['login', t("登录")], ['register', t("注册")]] as Array<[Tab, string]>).map(([key, label]) => <button
               key={key} id={`auth-${key}-tab`} type="button" role="tab" aria-selected={tab === key} aria-controls={`auth-${key}-panel`} disabled={busy !== '' || connectionSaving} className={tab === key ? 'active' : ''}

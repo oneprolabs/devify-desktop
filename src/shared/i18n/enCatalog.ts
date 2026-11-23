@@ -2801,4 +2801,13 @@ export const en: Record<string, string> = {
   "加载更多总结": "Load more summaries",
   "按时间周期": "By time range",
   "选具体消息": "Select messages",
+  "开发版不检查或安装正式更新。": "Development builds do not check for or install production updates.",
+  "当前连接正式服务，操作会影响正式数据。": "Connected to production. Actions affect production data.",
+  "正在读取服务地址…": "Reading service address…",
+  "开发模式": "Development mode",
+  "正式服务": "Production service",
+  "当前服务": "Current service",
+  "修改地址：在登录弹窗底部点击「连接设置」。": "To change the address, click Connection settings at the bottom of this dialog.",
+  "修改地址：登录… → 连接设置": "Change address: Sign in… → Connection settings",
+  "修改地址：设置 → 账户": "Change address: Settings → Account",
 };

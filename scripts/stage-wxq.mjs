@@ -15,7 +15,7 @@
 //   cargo build --release --bin wxq ...    → build scripts see the glob match
 //   node scripts/stage-wxq.mjs             → copy the real binary over it
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,16 +29,25 @@ if (!host) {
 }
 
 const ext = process.platform === 'win32' ? '.exe' : '';
-const dir = join(root, 'src-tauri', 'binaries');
+const development = process.argv.includes('--dev');
+const dir = join(root, 'src-tauri', development ? 'binaries-dev' : 'binaries');
 const target = join(dir, `wxq-${host}${ext}`);
 const source = join(root, 'src-tauri', 'target', 'release', `wxq${ext}`);
 
 mkdirSync(dir, { recursive: true });
 
 if (process.argv.includes('--prepare')) {
-  writeFileSync(target, '');
-  console.log(`已创建占位 ${target}`);
+  if (!existsSync(target)) {
+    writeFileSync(target, '');
+    console.log(`已创建占位 ${target}`);
+  }
 } else {
   copyFileSync(source, target);
+  // Validate the copied file, not a shared Cargo output that another build can replace.
+  const info = JSON.parse(execFileSync(target, ['build-info', '--json'], { encoding: 'utf8' }));
+  const expected = 'local.wechat.devifybridge' + (development ? '.dev' : '');
+  if (info.identifier !== expected || info.development !== development) {
+    throw new Error('CLI build channel mismatch; refusing to bundle it.');
+  }
   console.log(`已暂存 ${target}`);
 }

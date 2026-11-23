@@ -1,6 +1,6 @@
 [package]
 name = "wechat-devify-bridge"
-version = "0.1.23"
+version = "0.1.24"
 description = "Manually review and forward selected chat text to a self-hosted Devify inbox"
 authors = ["You"]
 edition = "2021"
@@ -16,6 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # as plain resources (see `bundle.resources` in tauri.conf.json).
 [features]
 aux-binaries = []
+dev-app = []
 
 [[bin]]
 name = "wxq"

@@ -16,3 +16,35 @@ Before reorganizing directories or splitting large files in this project, read
 `src/README.md`. For native test changes, also read `src-tauri/src/tests/README.md`.
 These record the agreed ownership boundaries, the roughly 1000-line file preference,
 and the requirement to verify and commit each bounded batch before continuing.
+
+## Development app isolation
+
+- Use **AIMyChats Dev** for local development. Run `npm run desktop:dev` for hot
+  reload, `npm run desktop:build:dev` for a signed macOS package, or
+  `npm run desktop:install:dev` to install it. Do not use the production bundle ID
+  for everyday debugging. See README's **Development app and production app** section.
+- Development defaults to the development service. Occasional production testing
+  is allowed by explicitly changing the service address; keep the production warning
+  visible and remember that server-side operations then affect real production data.
+  Show the development-mode label, saved service address and address-change guidance
+  in the login dialog and top environment bar, including when connecting to production.
+  Keep the login landing body free of a duplicate development information panel.
+  To change the default development service, click **登录… → 连接设置 → 服务端地址
+  → 保存并返回登录**. Tell colleagues this path; changing the address affects only
+  the selected app variant's saved settings.
+- Installing or restarting Dev must not quit, replace, re-sign or clear the installed
+  production app. Do not copy production credentials, task databases, keys or caches
+  into Dev, or overwrite production Skills/CLI installations.
+- Keep the Dev bundle ID, signing identity, app-owned storage, local API port
+  and URL scheme separate and stable. Keep Dev frontend output in `dist-dev/`
+  and CLI resources in `src-tauri/binaries-dev/`; do not point either at production output. Dev must not use the production updater.
+  Do not bypass the WeChat installation-operation guard to test capture/recovery.
+- Production builds are explicit: `scripts/macos-build.sh --production --no-install`.
+  Retain the production release configuration and update signatures; publishing,
+  replacing the installed production app and changing server configuration require
+  authorization for that action. Follow existing session authorization when present.
+- Browser login reuses the existing desktop API and `127.0.0.1:47832` callback.
+  Only one app can start browser authorization at a time; report a busy port without
+  closing the other app. Keep state/PKCE checks and app-owned credentials separate.
+  Do not require a development-specific server registration or change the selected service.
+- Report simulated browser checks, packaged smoke checks and real server E2E separately.

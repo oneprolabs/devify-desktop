@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useTaskRuntime } from '../features/tasks/taskRuntime';
 import { RailIcons } from '../shared/ui/icons';
 import brandMark from '../assets/app-mark-transparent.png';
+import { APP_NAME, DEVELOPMENT_APP } from '../shared/api/buildFlavor';
 
 const avatarColors = ['#7c4d80', '#3f6b8f', '#3f766b', '#8a5b42', '#5869a6', '#8a4764', '#72703e', '#486d92'];
 
@@ -62,6 +63,7 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
     <button type="button" className="prototype-rail-mark" style={{ backgroundColor: avatar.color }} onClick={onAccount} disabled={!authenticated} aria-label={t("打开账户设置")} title={accountName ? tf("{0} · 账户设置", accountName) : t("账户设置")}>
       {avatar.initial ?? <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg>}
     </button>
+    {DEVELOPMENT_APP && <span className="prototype-dev-badge" title="AIMyChats Dev">DEV</span>}
     <nav className="prototype-nav" aria-label={t("工作区")}>{primaryItems.map(navButton)}</nav>
     <div className="prototype-spacer" />
     <nav className="prototype-nav" aria-label={t("应用")}>
@@ -71,6 +73,6 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
       </button>}
       {utilityItems.map(navButton)}
     </nav>
-    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt="AIMyChats" title="AIMyChats" /><span className="prototype-rail-version" title={currentVersion ? `${t('当前版本')} ${currentVersion}` : t('版本读取失败')}>{currentVersion ? `v${currentVersion.replace(/^v/, '')}` : '—'}</span></div>}
+    {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt={APP_NAME} title={APP_NAME} /><span className="prototype-rail-version" title={currentVersion ? `${t('当前版本')} ${currentVersion}` : t('版本读取失败')}>{currentVersion ? `v${currentVersion.replace(/^v/, '')}` : '—'}</span></div>}
   </aside>;
 }

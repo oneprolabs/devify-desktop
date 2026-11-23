@@ -3,11 +3,12 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { useSyncExternalStore } from 'react';
+import { DEVELOPMENT_APP } from '../../shared/api/buildFlavor';
 
 export const RELEASE_URL = 'https://github.com/oneprolabs/devify-desktop-releases/releases/tag/alpha';
-type Status = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'installed' | 'error';
+type Status = 'disabled' | 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'installed' | 'error';
 type Snapshot = { status: Status; version?: string; currentVersion?: string; notes?: string; progress?: number; error?: string; blockers?: string[] };
-let snapshot: Snapshot = { status: 'idle' };
+let snapshot: Snapshot = { status: DEVELOPMENT_APP ? 'disabled' : 'idle' };
 let update: Update | null = null;
 let checkInFlight: Promise<void> | undefined;
 const listeners = new Set<() => void>();
@@ -31,6 +32,7 @@ function friendlyUpdateError(error: unknown): string {
 export function useUpdater() { return useSyncExternalStore(listener => { listeners.add(listener); return () => listeners.delete(listener); }, () => snapshot, () => snapshot); }
 
 export function checkForUpdates(silent = false): Promise<void> {
+  if (DEVELOPMENT_APP) return Promise.resolve();
   if (checkInFlight) return checkInFlight;
   if (!isTauri() || ['downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) return Promise.resolve();
   checkInFlight = refreshUpdate(silent).finally(() => { checkInFlight = undefined; });
@@ -56,6 +58,7 @@ async function refreshUpdate(silent: boolean) {
 }
 
 export async function downloadUpdate() {
+  if (DEVELOPMENT_APP) return;
   if (snapshot.status !== 'available') return;
   // A newer release may have replaced the offer while the dialog was open.
   await checkForUpdates(true);
@@ -84,6 +87,7 @@ export async function downloadUpdate() {
  * (`blockers`) and the caller can confirm with `installUpdate(true)`.
  */
 export async function installUpdate(force = false) {
+  if (DEVELOPMENT_APP) return;
   if (!update || !['downloaded', 'installed'].includes(snapshot.status)) return;
   const selected = update;
   const base = { version: selected.version, currentVersion: selected.currentVersion, notes: selected.body, progress: 100 };

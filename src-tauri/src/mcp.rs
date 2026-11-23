@@ -26,7 +26,7 @@ use crate::access;
 use crate::entitlements;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
-pub const DEFAULT_BIND: &str = "127.0.0.1:18765";
+pub const DEFAULT_BIND: &str = crate::build_flavor::AGENT_BIND;
 /// Per-install bearer token. Every request needs it, including loopback ones: another
 /// local user can reach 127.0.0.1 too, so "bound to loopback" is not authentication.
 pub const TOKEN_FILE: &str = "agent-token";
@@ -648,6 +648,9 @@ async fn agent_install_script(
     }
     if !internal_agent_allowed(&state) {
         return agent_forbidden();
+    }
+    if crate::build_flavor::DEVELOPMENT {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"开发版请在智能体集成页面安装 Skills。"}))).into_response();
     }
     let Some(bin_dir) = access::expand_path(args.bin.as_deref().unwrap_or("~/.local/bin")) else {
         return (

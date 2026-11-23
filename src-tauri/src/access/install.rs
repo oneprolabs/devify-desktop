@@ -89,8 +89,9 @@ pub fn install(
     let bytes = fs::read(cli).map_err(|e| format!("读取本机工具失败：{e}"))?;
     write_owned(&installed_cli, &bytes, true)?;
     let command = format!(
-        "{} --endpoint {}",
+        "{} --app-data {} --endpoint {}",
         super::sh_quote(&installed_cli.to_string_lossy()),
+        super::sh_quote(&data.to_string_lossy()),
         super::sh_quote(endpoint)
     );
     for skill in SKILLS {
@@ -110,7 +111,7 @@ pub fn install(
     // Retire only app-managed legacy Skills, after all replacements are installed.
     // Move them outside hosts' watched Skills directories; never discard user files.
     let mut legacy_preserved = Vec::new();
-    for legacy_name in SKILLS.iter().flat_map(|skill| skill.legacy_names.iter()) {
+    for legacy_name in SKILLS.iter().flat_map(|skill| skill.legacy_names.iter()).filter(|_| !crate::build_flavor::DEVELOPMENT) {
         let old = skills.join(legacy_name);
         let Ok(meta) = fs::symlink_metadata(&old) else {
             continue;
@@ -154,6 +155,10 @@ mod tests {
         let skills = root.join("skills");
         fs::create_dir_all(&skills).unwrap();
         fs::write(skills.join("unrelated"), b"keep").unwrap();
+        if crate::build_flavor::DEVELOPMENT {
+            fs::create_dir_all(skills.join("aimychats")).unwrap();
+            fs::write(skills.join("aimychats/SKILL.md"), b"production skill").unwrap();
+        }
         let legacy = skills.join(SKILLS[0].legacy_names[0]);
         fs::create_dir_all(&legacy).unwrap();
         fs::write(
@@ -183,26 +188,19 @@ mod tests {
             );
         }
         let text = fs::read_to_string(skills.join(SKILLS[0].name).join("SKILL.md")).unwrap();
-        assert!(
-            !legacy.exists(),
-            "managed legacy Skills are no longer discovered twice"
-        );
-        assert_eq!(
-            fs::read(custom.join("SKILL.md")).unwrap(),
-            b"my custom skill"
-        );
-        assert_eq!(
-            fs::read_dir(data.join("legacy-skill-backups"))
-                .unwrap()
-                .count(),
-            1
-        );
-        assert_eq!(
-            install(&data, &target, &cli, "http://127.0.0.1:18765")
-                .unwrap()
-                .legacy_preserved,
-            vec![SKILLS[0].legacy_names[1]]
-        );
+        if crate::build_flavor::DEVELOPMENT {
+            assert!(legacy.exists(), "development must not retire production/legacy Skills");
+            assert_eq!(fs::read(skills.join("aimychats/SKILL.md")).unwrap(), b"production skill");
+            assert!(!data.join("legacy-skill-backups").exists());
+            assert!(text.starts_with("---\nname: aimychats-dev\n"));
+            assert!(text.contains("--app-data"));
+        } else {
+            assert!(!legacy.exists(), "managed legacy Skills are no longer discovered twice");
+            assert_eq!(fs::read_dir(data.join("legacy-skill-backups")).unwrap().count(), 1);
+            assert_eq!(install(&data, &target, &cli, "http://127.0.0.1:18765").unwrap().legacy_preserved,
+                vec![SKILLS[0].legacy_names[1]]);
+        }
+        assert_eq!(fs::read(custom.join("SKILL.md")).unwrap(), b"my custom skill");
         assert!(text.starts_with("---\nname:"));
         assert!(text.contains("--endpoint"));
         assert_eq!(fs::read(skills.join("unrelated")).unwrap(), b"keep");
