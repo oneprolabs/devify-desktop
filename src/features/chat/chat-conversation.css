@@ -56,6 +56,7 @@
 .chat-workbench-embedded .wxv-selection-actions button.primary:hover { border-color: #8e2187; background: #8e2187; }
 .chat-workbench-embedded .wxv-selection-actions button:focus-visible { outline: 2px solid #a3279a; outline-offset: 3px; }
 .chat-workbench-feed { background: #fff; }
+.chat-events-status { display: inline-flex; align-items: center; gap: 8px; }
 @container conversation (max-width: 940px) {
   .chat-workbench-head { grid-template-columns: minmax(0, 1fr); }
   .chat-workbench-head-right { justify-content: space-between; flex-wrap: wrap; gap: 10px; }

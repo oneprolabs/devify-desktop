@@ -49,6 +49,7 @@ function StateDot({ done }: { done: boolean }) {
 }
 
 export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onOpenEvent?: (eventId: number) => void }) {
+  const [loadedUserId, setLoadedUserId] = useState(userId);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -71,7 +72,8 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
     if (!isTauri()) { setLoading(false); return; }
     const revision = ++loadRevision.current;
     const generation = pageSnapshotGeneration();
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setLoadedUserId(userId);
+    setSpaceId(null); setTopics([]); setSelectedId(null); setTopicDetail(null); setEvidence(null);
     try {
       const settings = await invoke<Settings>('app_settings_get');
       if (!mounted.current || revision !== loadRevision.current) return;
@@ -83,7 +85,6 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
       if (cached) {
         setTopics(cached);
         setSelectedId(current => current && cached.some(item => item.id === current) ? current : cached[0]?.id ?? null);
-        setLoading(false);
       }
       const list = await invoke<Topic[]>('devify_topics', { spaceId: id });
       if (!mounted.current || revision !== loadRevision.current) return;
@@ -103,7 +104,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
   const selected = useMemo(() => visibleTopics.find(item => item.id === selectedId) ?? visibleTopics[0] ?? null, [visibleTopics, selectedId]);
   const visibleId = selected?.id ?? null;
   useEffect(() => {
-    if (!isTauri() || !spaceId || visibleId == null) { setTopicDetail(null); setDetailLoading(false); return; }
+    if (!isTauri() || loadedUserId !== userId || !spaceId || visibleId == null) { setTopicDetail(null); setDetailLoading(false); return; }
     let active = true;
     setDetailLoading(true);
     void invoke<Topic>('devify_topic_detail', { spaceId, topicId: visibleId })
@@ -111,7 +112,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
       .catch(() => { if (active) setTopicDetail(null); })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
-  }, [spaceId, visibleId]);
+  }, [loadedUserId, userId, spaceId, visibleId]);
 
   const detail = selected && topicDetail?.id === selected.id ? topicDetail : selected;
   const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: tf("待办 #{0}", id) } as TopicEvent));
@@ -153,7 +154,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
   };
 
   if (!isTauri()) return <div className="topic-page topic-page-empty"><h1>{t("主题订阅")}</h1><p>{t("主题订阅会按周期执行，请在桌面应用中使用。")}</p></div>;
-  if (loading) return <LoadingPage title={t("主题订阅")} />;
+  if (loadedUserId !== userId || (loading && !topics.length)) return <LoadingPage title={t("主题订阅")} />;
 
   return <div className="topic-page">
     <aside className="topic-side">
@@ -186,6 +187,9 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
       <header className="topic-top">
         <div className="topic-crumbs">{t("主题订阅")} <span>/</span> {creating ? t("新建") : (detail ? t(detail.title) : t("全部"))}</div>
         <div className="topic-top-actions">
+          {loading && <span className="topic-loading-status" role="status">
+            <span className="loading-skeleton-spinner" aria-hidden="true"/>{tf("正在加载{0}", t("主题订阅"))}
+          </span>}
           {!creating && detail && <>
             <button type="button" onClick={() => void toggle(detail)}>{detail.enabled ? t("暂停") : t("启用")}</button>
             <button type="button" className="danger" onClick={() => void remove(detail)}>{t("删除")}</button>

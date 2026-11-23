@@ -189,7 +189,9 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
     </section>}
     {error&&<div className="summary-feedback error" role="alert"><span>{t(error.replace(/^Error: /,''))}</span><button type="button" disabled={loading} onClick={()=>void load()}>{t('重试读取')}</button></div>}
     {notice&&<div className="summary-feedback" role="status"><span>{notice}</span><button type="button" onClick={onOpenTasks}>{t('查看任务')}</button></div>}
-    {loading&&!rows.length&&<p className="chat-summary-note" role="status">{t('正在读取总结…')}</p>}
+    {loading && !rows.length && <div className="summary-progress" role="status">
+      <i className="chat-summary-spinner" aria-hidden="true"/>{t('正在读取总结…')}
+    </div>}
     {visibleRows.map(row=><article className={`chat-summary-card${waiting(row)?' doing':''}`} key={summaryRecordKey(row)}>
       <header className="chat-summary-card-head"><strong>{row.range_label}</strong><span className="chat-summary-kind">{row.engine==='local'?(row.caller||t('本地工具')):t('云端总结')}</span><span className="chat-summary-card-meta">{tf('{0} 条消息',row.message_count)} · {new Date(row.created_at).toLocaleString(dateLocale(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></header>
       {waiting(row)?<div className="summary-progress" role="status"><i className="chat-summary-spinner"/>{row.status==='queued'?t('等待处理，可在任务中查看。'):t('正在生成总结，可以继续使用应用。')}</div>:row.status==='failed'?<div className="summary-feedback error"><span>{row.error||t('总结生成失败，请重试。')}</span><button type="button" onClick={()=>void action(row,'retry')}>{t('重试')}</button></div>:<SummaryBody body={row.body}/>}

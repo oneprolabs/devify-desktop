@@ -86,7 +86,7 @@ const load = path => {
   const requireMock = id => {
     if (id === '../../shared/content/summary') return { renderAgentMarkdown: value => value };
     if (id in mocks) return mocks[id];
-    if (id === '../../shared/i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+    if (id === '../../shared/i18n/locale' || id === '../i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
     throw Error(`unexpected import: ${id}`);
   };
   new Function('require', 'module', 'exports', compiled)(requireMock, module, module.exports);
@@ -189,6 +189,66 @@ const assertNotice = (tree, role, expected) => {
   assert.equal(text(notices[0]), expected);
 };
 
+const refreshedReport = fixture({ body: '刷新后的报告正文' });
+const refreshPage = await mount(fixture({ body }));
+let resolveRefreshList, resolveRefreshDetail;
+invoke = (command, args) => {
+  if (command === 'app_settings_get') return Promise.resolve({ devify: { active_space_id: '999' } });
+  if (command === 'devify_analysis_list') return new Promise(resolve => { resolveRefreshList = resolve; });
+  if (command === 'devify_analysis_detail') {
+    assert.equal(args.itemId, refreshedReport.id);
+    return new Promise(resolve => { resolveRefreshDetail = resolve; });
+  }
+  throw Error(`unexpected IPC: ${command}`);
+};
+const refreshButton = view => find(view, node => node.type === 'button' && text(node) === '刷新');
+refreshButton(refreshPage.tree).props.onClick();
+render(refreshPage.instance); await flush();
+let refreshingReport = render(refreshPage.instance);
+assert.equal(refreshButton(refreshingReport).props['aria-busy'], true);
+assert.ok(text(summaryOf(refreshingReport)).includes(body), 'List refresh keeps the report visible');
+resolveRefreshList({ list: [{ id: refreshedReport.id, title: refreshedReport.title }] });
+await flush();
+render(refreshPage.instance); await flush();
+refreshingReport = render(refreshPage.instance);
+assert.ok(text(summaryOf(refreshingReport)).includes(body), 'Detail refresh keeps the report visible');
+resolveRefreshDetail(refreshedReport);
+await flush();
+assert.ok(text(summaryOf(render(refreshPage.instance))).includes(refreshedReport.body));
+
+invoke = (command, args) => {
+  if (command === 'app_settings_get') return Promise.resolve({ devify: { active_space_id: '1000' } });
+  if (command === 'devify_analysis_list') {
+    assert.equal(args.spaceId, '1000');
+    return new Promise(() => {});
+  }
+  throw Error(`unexpected IPC: ${command}`);
+};
+refreshButton(render(refreshPage.instance)).props.onClick();
+render(refreshPage.instance); await flush();
+const newSpacePage = render(refreshPage.instance);
+assert.equal(newSpacePage.type, mocks['../../shared/ui/LoadingSkeleton'].LoadingPage);
+assert.ok(!text(newSpacePage).includes(refreshedReport.body), 'A space change clears the old report');
+
+const sameIdReport = await mount(fixture({ body }));
+invoke = async (command, args) => {
+  if (command === 'app_settings_get') {
+    return { devify: { base_url: 'https://reports.example.invalid', active_space_id: '999' } };
+  }
+  if (command === 'devify_analysis_list') return { list: [{ id: refreshedReport.id, title: refreshedReport.title }] };
+  if (command === 'devify_analysis_detail') {
+    assert.deepEqual(args, { kind: 'reports', spaceId: '999', itemId: refreshedReport.id });
+    return refreshedReport;
+  }
+  throw Error(command);
+};
+refreshButton(sameIdReport.tree).props.onClick();
+render(sameIdReport.instance); await flush();
+const switchingServer = render(sameIdReport.instance);
+assert.ok(!text(switchingServer).includes(body), 'A server change must not reuse the same report ID from the previous server');
+await flush();
+assert.ok(text(summaryOf(render(sameIdReport.instance))).includes(refreshedReport.body));
+
 const partial = await mount(fixture({ body, content: metadata }));
 let tree = partial.tree;
 assertNotice(tree, 'status', partialWith);
@@ -269,9 +329,22 @@ assert.match(text(summaryOf(largeTree)), /3 个分类 · 846 项/);
 assert.ok(text(summaryOf(largeTree)).includes('虚构的已保存正文'));
 assert.equal(elements(largeTree).filter(node => node.type === 'button' && node.props?.className === 'report-item').length, 846);
 
-const { tree: errorTree } = await mount(fixture({ status: 'ready' }), true);
+const failedReport = fixture({ status: 'ready' });
+const { instance: retryInstance, tree: errorTree } = await mount(failedReport, true);
 const errorAlert = find(errorTree, node => node.props?.role === 'alert');
 assert.ok(text(errorAlert).includes('虚构详情错误'), 'IPC failure must remain visible');
+assert.ok(text(byClass(errorTree, 'analysis-items')).includes(failedReport.title), 'Detail failure must keep the list visible');
+const retryButton = find(errorAlert, node => node.type === 'button' && text(node) === '重试');
+invoke = async command => {
+  if (command === 'app_settings_get') return { devify: { active_space_id: '999' } };
+  if (command === 'devify_analysis_list') return { list: [{ id: failedReport.id, title: failedReport.title }] };
+  if (command === 'devify_analysis_detail') return { ...failedReport, body: '重试后的报告正文' };
+  throw Error(command);
+};
+retryButton.props.onClick();
+render(retryInstance); await flush();
+render(retryInstance); await flush();
+assert.ok(text(summaryOf(render(retryInstance))).includes('重试后的报告正文'));
 console.log('report presentation and CloudAnalysis rendering checks passed');
 
 // A completed event is excluded by the default filter. Cancelling a selected
@@ -335,6 +408,42 @@ assert.ok(text(emptyTree).includes('智能分析 → 聊天待办分析'));
 assert.ok(!text(emptyTree).includes('查看全部待办'));
 console.log('Event empty-space analysis cadence and settings guidance passed');
 
+mocks['./chatPresentation'] = load('../src/features/chat/chatPresentation.ts');
+const { ChatEventsPane } = load('../src/features/chat/ChatEventsPane.tsx');
+const chatEvent = { id: 1, title: '测试待办' };
+const renderChatEvents = (events, query = '') => renderPage({ hooks: [] }, () => ChatEventsPane({
+  active: true,
+  loading: true,
+  error: '',
+  events,
+  sessionCount: 1,
+  query,
+  filter: 'all',
+  onRetry: () => {},
+  onSchedule: () => {},
+  onOpenEvidence: () => {},
+}));
+mocks['./loading-skeleton.css'] = {};
+const { LoadingSkeleton, LoadingPage } = load('../src/shared/ui/LoadingSkeleton.tsx');
+const skeleton = mocks['../../shared/ui/LoadingSkeleton'].LoadingSkeleton;
+for (const kind of ['list', 'messages', 'detail']) {
+  const indicator = LoadingSkeleton({ label: '正在加载', kind });
+  assert.equal(indicator.props.role, 'status');
+  assert.equal(text(indicator), '正在加载');
+  assert.ok(byClass(indicator, 'loading-skeleton-spinner'));
+  assert.equal(elements(indicator).length, 3, 'The indicator contains only the label and spinner');
+}
+assert.ok(!elements(LoadingPage({ title: '待办' })).some(node => node.props?.className === 'loading-page-search'));
+const firstChatLoad = renderChatEvents([]);
+assert.equal(find(firstChatLoad, node => node.type === skeleton).props.label, '正在加载待办');
+for (const query of ['', '没有匹配']) {
+  const tree = renderChatEvents([chatEvent], query);
+  const status = byClass(tree, 'chat-events-status');
+  assert.ok(byClass(status, 'loading-skeleton-spinner'));
+  assert.ok(text(status).includes('正在同步待办'));
+  assert.ok(!elements(tree).some(node => node.type === skeleton), 'Refresh does not insert an indicator into the feed');
+  if (!query) assert.ok(text(tree).includes(chatEvent.title));
+}
 
 // The current sidebar range must not rewrite the scope shown on an old answer.
 mocks['./analysisSettingsText'] = load('../src/features/analysis/analysisSettingsText.ts');
@@ -354,7 +463,7 @@ invoke = async command => {
 };
 const askInstance = { hooks: [] };
 const renderAsk = () => renderPage(askInstance, () => AskPage({}));
-renderAsk();
+assert.equal(renderAsk().type, mocks['../../shared/ui/LoadingSkeleton'].LoadingPage);
 await flush();
 const askTree = renderAsk();
 const answerFooter = tree => text(byClass(tree, 'ask-foot'));
@@ -366,6 +475,16 @@ assert.ok(answerFooter(askTree).includes('个待办'));
 find(askTree, node => node.type === 'button' && text(node) === '今天').props.onClick();
 assert.equal(answerFooter(renderAsk()), answerFooter(askTree));
 console.log('Saved question scope remains visible after changing the sidebar range');
+
+invoke = command => {
+  if (command === 'devify_question_ask') return new Promise(() => {});
+  throw Error(command);
+};
+find(renderAsk(), node => node.type === 'textarea').props.onChange({ target: { value: '继续提问' } });
+find(renderAsk(), node => node.props?.['aria-label'] === '发送').props.onClick();
+const pendingAsk = renderAsk();
+assert.ok(text(pendingAsk).includes(question.answer), 'A pending answer must not hide earlier turns');
+assert.ok(byClass(byClass(pendingAsk, 'ask-pending'), 'ask-spinner'));
 
 const { TopicsPage } = load('../src/features/analysis/Topics.tsx');
 const topics = [
@@ -405,3 +524,32 @@ find(topicTree, node => node.type === 'button' && text(node) === '清除搜索')
 topicTree = await settleTopics();
 assert.ok(text(byClass(topicTree, 'topic-detail-wrap')).includes('甲详情'));
 console.log('Topic detail follows visible search results and clears when nothing matches');
+
+const topicSpace = 'cached-topic-space';
+const topicUser = 901;
+const snapshotKey = JSON.stringify([undefined, topicUser, topicSpace, 'topics']);
+mocks['../../shared/state/pageSnapshots'].savePageSnapshot(snapshotKey, topics);
+let resolveTopicList;
+invoke = (command, args) => {
+  if (command === 'app_settings_get') return Promise.resolve({ devify: { active_space_id: topicSpace } });
+  if (command === 'devify_topics') return new Promise(resolve => { resolveTopicList = resolve; });
+  if (command === 'devify_topic_detail') return Promise.resolve(topics.find(topic => topic.id === args.topicId));
+  throw Error(command);
+};
+const cachedTopicsInstance = { hooks: [] };
+const renderCachedTopics = (userId = topicUser) => renderPage(cachedTopicsInstance, () => TopicsPage({ userId }));
+assert.equal(renderCachedTopics().type, mocks['../../shared/ui/LoadingSkeleton'].LoadingPage);
+await flush();
+let cachedTopicsTree = renderCachedTopics();
+await flush();
+cachedTopicsTree = renderCachedTopics();
+assert.ok(text(byClass(cachedTopicsTree, 'topic-side-list')).includes(topics[0].title));
+assert.ok(text(byClass(cachedTopicsTree, 'topic-detail-wrap')).includes(topics[0].instruction));
+assert.ok(byClass(byClass(cachedTopicsTree, 'topic-loading-status'), 'loading-skeleton-spinner'));
+resolveTopicList(topics);
+await flush();
+assert.ok(!elements(renderCachedTopics()).some(node => node.props?.className === 'topic-loading-status'));
+assert.equal(renderCachedTopics(topicUser + 1).type, mocks['../../shared/ui/LoadingSkeleton'].LoadingPage);
+await flush();
+assert.ok(!text(renderCachedTopics(topicUser + 1)).includes(topics[0].title));
+console.log('Topic refresh keeps cached content in place and clears it on account change');
