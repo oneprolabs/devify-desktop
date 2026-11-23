@@ -96,6 +96,7 @@ const { reportPresentation } = load('../src/features/analysis/reportPresentation
 mocks['./reportPresentation'] = { reportPresentation };
 mocks['../../shared/state/pageSnapshots'] = load('../src/shared/state/pageSnapshots.ts');
 mocks['../../shared/api/eventRelevance'] = load('../src/shared/api/eventRelevance.ts');
+mocks['./useEventSearch'] = load('../src/features/analysis/useEventSearch.ts');
 const { CloudAnalysisPage } = load('../src/features/analysis/CloudAnalysis.tsx');
 
 const partialWith = '报告未完全生成，以下展示已保存的内容。';
@@ -493,6 +494,61 @@ assert.ok(!text(boundaryTree).includes('无效页码'));
 assert.match(text(byClass(boundaryTree,'analysis-pills')),/我的待办50与我有关1/);
 assert.equal(elements(byClass(boundaryTree,'analysis-items')).filter(n=>n.type==='button').length,50);
 console.log('Completing the last item on the last page reloads page one and refreshed category counts');
+
+// Server search debounces, resets paging, preserves global badges and rejects late results.
+const searchCalls=[],searchPending=[];
+let searchOwner=31,searchAvailable=true,searchService='https://search.invalid';
+invoke=(command,args)=>{
+ if(command==='app_settings_get')return Promise.resolve({devify:{base_url:searchService,active_space_id:'search-fixture'}});
+ if(command==='devify_analysis_list'){
+  searchCalls.push({...args,service:searchService});
+  if(args.searchQuery&&searchAvailable)return new Promise(resolve=>searchPending.push({args,resolve}));
+  return Promise.resolve({list:[raceRow(701,'未筛选第一页')],search_supported:searchAvailable,pagination:{total:120,next:'page=2'},relevance_counts:pageCounts});
+ }
+ if(command==='devify_analysis_detail')return Promise.resolve(raceRow(args.itemId,'搜索详情'));
+ if(command==='devify_event_notes'||command==='devify_event_relations')return Promise.resolve([]);
+ throw Error(command);
+};
+const searchInstance={hooks:[]};
+const renderSearch=()=>renderPage(searchInstance,()=>CloudAnalysisPage({kind:'events',userId:searchOwner}));
+const settleSearch=async()=>{for(let i=0;i<5;i++){renderSearch();await flush();}return renderSearch();};
+let searchTree=await settleSearch();
+find(searchTree,n=>n.type==='button'&&text(n)==='下一页').props.onClick();searchTree=await settleSearch();
+const inputSearch=(value)=>find(searchTree,n=>n.type==='input').props.onChange({target:{value}});
+const waitSearch=async()=>{await new Promise(resolve=>setTimeout(resolve,380));return settleSearch();};
+const beforeTyping=searchCalls.length;
+inputSearch('a');searchTree=await settleSearch();inputSearch('alpha');searchTree=await settleSearch();
+assert.equal(searchCalls.length,beforeTyping,'Typing does not request the old keyword/page');
+searchTree=await waitSearch();
+assert.equal(searchPending.at(-1).args.page,1);assert.equal(searchPending.at(-1).args.searchQuery,'alpha');
+inputSearch('beta');searchTree=await settleSearch();searchTree=await waitSearch();
+searchPending.at(-1).resolve({list:[raceRow(702,'服务端跨页命中')],search_supported:true,pagination:{total:1,next:null},relevance_counts:pageCounts});searchTree=await settleSearch();
+searchPending[0].resolve({list:[raceRow(703,'迟到搜索结果')],search_supported:true,pagination:{total:999,next:null},relevance_counts:{my_todo:999,related:0,other:0}});searchTree=await settleSearch();
+assert.ok(text(byClass(searchTree,'analysis-items')).includes('服务端跨页命中'),'Server matches are not re-filtered using a different local search algorithm');
+assert.ok(!text(searchTree).includes('迟到搜索结果'));
+assert.match(text(byClass(searchTree,'analysis-pills')),/我的待办60与我有关41/);
+selectFilter(searchTree,'与我有关');searchTree=await settleSearch();
+assert.equal(searchPending.at(-1).args.viewerRelevance,'related');assert.equal(searchPending.at(-1).args.searchQuery,'beta');assert.equal(searchPending.at(-1).args.page,1);
+searchPending.at(-1).resolve({list:[],search_supported:true,pagination:{total:0,next:null},relevance_counts:pageCounts});searchTree=await settleSearch();
+find(searchTree,n=>n.type==='button'&&text(n)==='清除搜索').props.onClick();searchTree=await settleSearch();searchTree=await waitSearch();
+assert.equal(searchCalls.at(-1).searchQuery,undefined);assert.equal(searchCalls.at(-1).page,1);
+const beforeTooLong=searchCalls.length;inputSearch('中'.repeat(201));searchTree=await settleSearch();searchTree=await waitSearch();
+assert.equal(searchCalls.length,beforeTooLong);assert.ok(text(searchTree).includes('最多输入 200 个字符'));
+inputSearch('downgrade');searchTree=await settleSearch();searchTree=await waitSearch();
+searchAvailable=false;searchPending.at(-1).resolve({list:[raceRow(704,'不应冒充全局搜索')],pagination:{total:1,next:null},relevance_counts:pageCounts});searchTree=await settleSearch();
+assert.equal(find(searchTree,n=>n.type==='input').props['aria-label'],'搜索当前页待办');
+assert.ok(!text(searchTree).includes('不应冒充全局搜索'));
+searchOwner=32;searchTree=await settleSearch();
+assert.equal(find(searchTree,n=>n.type==='input').props.value,'');
+assert.equal(searchCalls.at(-1).searchQuery,undefined);
+searchOwner=33;searchAvailable=true;searchTree=await settleSearch();
+inputSearch('private-keyword');searchTree=await settleSearch();searchTree=await waitSearch();
+searchPending.at(-1).resolve({list:[raceRow(705,'旧服务搜索结果')],search_supported:true,pagination:{total:1,next:null},relevance_counts:pageCounts});searchTree=await settleSearch();
+searchService='https://new-search.invalid';
+find(searchTree,n=>n.type==='button'&&text(n)==='刷新').props.onClick();searchTree=await settleSearch();
+assert.equal(find(searchTree,n=>n.type==='input').props.value,'');
+assert.ok(searchCalls.filter(call=>call.service===searchService).every(call=>!call.searchQuery),'An old keyword is never sent to a new service before capability discovery');
+console.log('Debounced remote search, category/query paging, global counts, stale results, Unicode limit and downgrade/account isolation passed');
 
 // Opening the linking dialog preserves the original space-wide candidate scope.
 invoke=(command,args)=>{

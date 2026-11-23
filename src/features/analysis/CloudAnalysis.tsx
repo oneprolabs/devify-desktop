@@ -6,6 +6,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
 import { isViewerEvidence, viewerRelevanceLabel, readRelevanceCounts, type RelevanceCounts, type ViewerEventRelevance } from '../../shared/api/eventRelevance';
 import { reportPresentation } from './reportPresentation';
+import { useEventSearch } from './useEventSearch';
 import { renderAgentMarkdown } from '../../shared/content/summary';
 import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from '../../shared/state/pageSnapshots';
 
@@ -25,7 +26,7 @@ type EventDetail = EventItem & {
   relations?: EventRelation[];
   related_events?: EventRelation[];
 };
-type Page<T> = { list: T[]; relevance_counts?: RelevanceCounts; pagination?: { total?: number; page?: number; next?: string | null } };
+type Page<T> = { list: T[]; relevance_counts?: RelevanceCounts; search_supported?: boolean; pagination?: { total?: number; page?: number; next?: string | null } };
 type AppSettings = { devify?: { base_url?: string; active_space_id: string | null } };
 
 const labels: Record<Kind, { title: string; empty: string }> = {
@@ -200,9 +201,10 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const [addingProgress, setAddingProgress] = useState(false);
   const [progressText, setProgressText] = useState('');
   const pendingSelect = useRef<number | null>(null);
-  const listScope = useRef<{ page: string; source: string; generation: number; filter: string; number: number } | null>(null);
+  const listScope = useRef<{ page: string; source: string; generation: number; filter: string; number: number; keyword: string } | null>(null);
   const copy = labels[kind];
   const pageKey = JSON.stringify([kind, userId, focusId]);
+  const search = useEventSearch(pageKey, query, kind === 'events');
   const ownsFilter = listScope.current?.page === pageKey;
   const eventFilter = kind === 'events' && ownsFilter ? filter : defaultFilter;
   const requestPage = kind === 'events' && ownsFilter ? eventPage : 1;
@@ -214,16 +216,17 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     let active = true;
     let rerouting = false;
     let cacheKey = '';
+    if (search.waiting || search.tooLong) { setLoading(!search.tooLong); setListError(search.tooLong ? t('搜索内容最多输入 200 个字符。') : ''); return; }
     const generation = pageSnapshotGeneration();
-    const focus = kind === 'events' && (eventFilter !== 'all' || requestPage !== 1) ? null : focusId;
+    const focus = kind === 'events' && (eventFilter !== 'all' || requestPage !== 1 || !!search.keyword) ? null : focusId;
     const initialSelection = (list: Array<EventItem | ReportItem>) => focus ?? list[0]?.id ?? null;
     const sameIdentity = listScope.current?.page === pageKey;
     const samePage = sameIdentity && listScope.current?.generation === generation;
-    let keepContent = samePage && listScope.current?.filter === eventFilter && listScope.current?.number === requestPage;
+    let keepContent = samePage && listScope.current?.filter === eventFilter && listScope.current?.number === requestPage && listScope.current?.keyword === search.keyword;
     const resetContent = (resetFilters = true) => {
       if (resetFilters) { listScope.current = null; setSpaceId(null); setResolvedScope(null); }
       setItems([]); setTotal(0); setSelectedId(null); setDetail(null); setEventNotes([]);
-      setEvidence(null); setQuery('');
+      setEvidence(null); if (resetFilters) { setQuery(''); search.reset(); }
       if (resetFilters) { setFilter(defaultFilter); setEventPage(1); setRelevanceCounts(null); setLegacyEvents(false); }
       setHasNextPage(false);
       setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
@@ -240,16 +243,17 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         const source = JSON.stringify([settings.devify?.base_url, id]);
         if (listScope.current && listScope.current.source !== source) {
           resetContent();
+          if (kind === 'events') { setReloadKey(key => key + 1); rerouting = true; return; }
           keepContent = false;
         }
         setSpaceId(id);
         if (!id) throw new Error(t("暂时无法读取空间，请检查账户连接后重试。"));
         if (!keepContent) {
-          const scope = { page: pageKey, source, generation, filter: eventFilter, number: requestPage };
+          const scope = { page: pageKey, source, generation, filter: eventFilter, number: requestPage, keyword: search.keyword };
           listScope.current = scope;
           setResolvedScope(scope);
         }
-        cacheKey = userId === null ? '' : JSON.stringify(kind === 'events' ? [settings.devify?.base_url, userId, id, kind, eventFilter, requestPage] : [settings.devify?.base_url, userId, id, kind]);
+        cacheKey = userId === null ? '' : JSON.stringify(kind === 'events' ? [settings.devify?.base_url, userId, id, kind, eventFilter, requestPage, search.keyword] : [settings.devify?.base_url, userId, id, kind]);
         const cached = cacheKey ? readPageSnapshot<{ list: Array<EventItem | ReportItem>; total: number; relevanceCounts?: RelevanceCounts | null; hasNextPage?: boolean }>(cacheKey) : undefined;
         if (cached && !keepContent) {
           setItems(cached.list);
@@ -259,6 +263,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         }
         return invoke<Page<EventItem> | Page<ReportItem>>('devify_analysis_list', { kind, spaceId: id, page: requestPage,
           ...(kind === 'events' ? { pageSize: 50, viewerRelevance: eventFilter === 'all' ? null : eventFilter, includeRelevanceCounts: eventFilter === 'all' && requestPage === 1 } : {}),
+          ...(search.keyword ? { searchQuery: search.keyword } : {}),
         });
       })
       .then(result => {
@@ -266,6 +271,8 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         const list = result.list ?? [];
         const counts = readRelevanceCounts(result.relevance_counts);
         if (kind === 'events') {
+          search.setSupported(result.search_supported === true);
+          if (search.keyword && result.search_supported !== true) { resetContent(false); setEventPage(1); rerouting = true; return; }
           if (result.relevance_counts != null && !counts) throw new Error(t('服务端返回的待办分类统计无效，请稍后重试。'));
           if (!counts && eventFilter !== 'all') {
             // Old servers ignore the filter. Explicitly reload unfiltered data;
@@ -297,7 +304,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       .catch(reason => { if (active) setListError(String(reason)); })
       .finally(() => { if (active && !rerouting) setLoading(false); });
     return () => { active = false; };
-  }, [kind, userId, focusId, pageKey, reloadKey, eventFilter, requestPage, defaultFilter]);
+  }, [kind, userId, focusId, pageKey, reloadKey, eventFilter, requestPage, defaultFilter, search.keyword, search.waiting, search.tooLong]);
 
   // The linking dialog keeps its original space-wide candidates. Main-list
   // paging and personal categories must not restrict which events can be linked.
@@ -313,17 +320,18 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
 
   const filteredItems = useMemo(() => items.filter(item => {
     const text = `${item.title} ${kind === 'events' ? (item as EventItem).content : ''}`.toLowerCase();
-    if (query.trim() && !text.includes(query.trim().toLowerCase())) return false;
+    if (search.waiting || search.tooLong) return false;
+    if (!search.supported && query.trim() && !text.includes(query.trim().toLowerCase())) return false;
     if (kind === 'events') return true;
     if (filter !== 'all') return item.title.includes(filter);
     return true;
-  }), [items, kind, query, filter]);
+  }), [items, kind, query, filter, search.supported, search.waiting, search.tooLong]);
   useEffect(() => {
-    const focused = focusId != null && selectedId === focusId;
+    const focused = !search.keyword && focusId != null && selectedId === focusId;
     if (kind === 'events' && items.length && !focused && !filteredItems.some(item => item.id === selectedId)) {
       setSelectedId(filteredItems[0]?.id ?? null);
     }
-  }, [filteredItems, selectedId, kind, items.length, focusId]);
+  }, [filteredItems, selectedId, kind, items.length, focusId, search.keyword]);
   const selected = useMemo(() => items.find(item => item.id === selectedId) ?? null, [items, selectedId]);
 
   useEffect(() => {
@@ -596,6 +604,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     if (kind === 'events') { setEventPage(1); setItems([]); setSelectedId(null); setDetail(null); setLoading(true); setHasNextPage(false); }
     setFilter(value);
   };
+  const changeQuery = (value: string) => { setQuery(value); if (search.supported) { setEventPage(1); setItems([]); setSelectedId(null); setDetail(null); } };
   const changePage = (value: number) => { setItems([]); setSelectedId(null); setDetail(null); setLoading(true); setEventPage(value); };
   const allCount = relevanceCounts ? relevanceCounts.my_todo + relevanceCounts.related + relevanceCounts.other : filter === 'all' ? total : null;
   const anyEvents = (allCount ?? 0) > 0 || (relevanceCounts === null && kind === 'events' && filter !== 'all');
@@ -627,7 +636,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       <p className="analysis-side-count">{kind === 'events' ? tf("{0} 个待办 · 跨全部会话", allCount ?? '—') : tf("{0} 份报告", items.length)}</p>
 
       <div className="analysis-search">
-        <input value={query} spellCheck={false} placeholder={kind === 'events' ? t('搜索当前页待办') : tf("搜索{0}", pageTitle)} aria-label={kind === 'events' ? t('搜索当前页待办') : tf("搜索{0}", pageTitle)} onChange={change => setQuery(change.target.value)}/>
+        <input value={query} spellCheck={false} placeholder={kind === 'events' && !search.supported ? t('搜索当前页待办') : tf("搜索{0}", pageTitle)} aria-label={kind === 'events' && !search.supported ? t('搜索当前页待办') : tf("搜索{0}", pageTitle)} onChange={change => changeQuery(change.target.value)}/>
       </div>
 
       {kind === 'reports' && <button type="button" className={`analysis-side-new${creating ? ' on' : ''}`} onClick={() => { setCreating(true); setGenError(''); }}>{t("＋ 生成报告")}</button>}
@@ -738,7 +747,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         {kind === 'events' && selectedId == null && !detailLoading && !loading && !listError && <div className="analysis-empty event-empty" role="status">
           <h2>{anyEvents ? t("当前筛选下没有记录。") : pageEmpty}</h2>
           <p>{anyEvents ? t("可切换筛选查看其他待办。") : t("已备份的聊天大约每小时分析一次，生成的待办会显示在这里。可在「智能分析 → 聊天待办分析」中调整设置。")}</p>
-          {query.trim() ? <button type="button" className="event-empty-action" onClick={() => setQuery('')}>{t('清除搜索')}</button>
+          {query.trim() ? <button type="button" className="event-empty-action" onClick={() => changeQuery('')}>{t('清除搜索')}</button>
             : !anyEvents && onOpenAnalysisSettings && <button type="button" className="event-empty-action" onClick={onOpenAnalysisSettings}>{t("设置聊天待办分析")}</button>}
         </div>}
 

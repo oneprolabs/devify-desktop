@@ -7,7 +7,7 @@ use crate::{
 };
 use tauri::AppHandle;
 
-fn analysis_list_query(kind: &str, page: u32, page_size: Option<u32>, conversation_id: Option<i64>, viewer_relevance: Option<&str>, include_counts: bool) -> Result<String, String> {
+fn analysis_list_query(kind: &str, page: u32, page_size: Option<u32>, conversation_id: Option<i64>, viewer_relevance: Option<&str>, include_counts: bool, search_query: Option<&str>) -> Result<String, String> {
     if page_size.is_some_and(|size| !(1..=100).contains(&size)) {
         return Err("分页大小无效。".into());
     }
@@ -19,6 +19,15 @@ fn analysis_list_query(kind: &str, page: u32, page_size: Option<u32>, conversati
     if let Some(id) = conversation_id { query.push_str(&format!("&conversation_id={id}")); }
     if let Some(value) = viewer_relevance { query.push_str(&format!("&viewer_relevance={value}")); }
     if include_counts { query.push_str("&include_relevance_counts=true"); }
+    if let Some(keyword) = search_query {
+        if kind != "events" { return Err("报告不支持待办搜索。".into()); }
+        let keyword = keyword.trim();
+        if keyword.chars().count() > 200 { return Err("搜索内容最多输入 200 个字符。".into()); }
+        if !keyword.is_empty() {
+            query.push('&');
+            query.push_str(&url::form_urlencoded::Serializer::new(String::new()).append_pair("q", keyword).finish());
+        }
+    }
     Ok(query)
 }
 
@@ -74,6 +83,7 @@ pub(crate) async fn devify_analysis_list(
     page_size: Option<u32>,
     viewer_relevance: Option<String>,
     include_relevance_counts: Option<bool>,
+    search_query: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if !matches!(kind.as_str(), "events" | "reports") {
         return Err("不支持的服务端分析类型。".into());
@@ -95,7 +105,7 @@ pub(crate) async fn devify_analysis_list(
         "reports"
     };
     let first_page = page.unwrap_or(1).max(1);
-    analysis_list_query(&kind, first_page, page_size, conversation_id, viewer_relevance.as_deref(), include_relevance_counts.unwrap_or(false))?;
+    analysis_list_query(&kind, first_page, page_size, conversation_id, viewer_relevance.as_deref(), include_relevance_counts.unwrap_or(false), search_query.as_deref())?;
     let client = http_client::api();
     let token = devify_access_token_async(&app_data(&app), &settings.devify.base_url).await?;
     let generation = request_generation(&app_data(&app), &settings.devify.base_url, &token)?;
@@ -103,7 +113,7 @@ pub(crate) async fn devify_analysis_list(
     let mut current_page = first_page;
     let mut total = None;
     for _ in 0..100 {
-        let query = analysis_list_query(&kind, current_page, page_size, conversation_id, viewer_relevance.as_deref(), include_relevance_counts.unwrap_or(false))?;
+        let query = analysis_list_query(&kind, current_page, page_size, conversation_id, viewer_relevance.as_deref(), include_relevance_counts.unwrap_or(false), search_query.as_deref())?;
         let url = format!("{}/api/v1/spaces/{space_id}/{resource}?{query}", settings.devify.resolved_base_url()?);
         let response = client
             .get(url)
@@ -243,22 +253,36 @@ mod event_query_tests {
 
     #[test]
     fn personal_filters_counts_and_pages_are_sent_independently_of_status() {
-        assert_eq!(analysis_list_query("events", 1, Some(50), None, None, true).unwrap(),
+        assert_eq!(analysis_list_query("events", 1, Some(50), None, None, true, None).unwrap(),
             "page=1&page_size=50&include_relevance_counts=true");
-        assert_eq!(analysis_list_query("events", 1, Some(50), None, Some("my_todo"), false).unwrap(),
+        assert_eq!(analysis_list_query("events", 1, Some(50), None, Some("my_todo"), false, None).unwrap(),
             "page=1&page_size=50&viewer_relevance=my_todo");
-        assert_eq!(analysis_list_query("events", 2, Some(50), None, Some("related"), false).unwrap(),
+        assert_eq!(analysis_list_query("events", 2, Some(50), None, Some("related"), false, None).unwrap(),
             "page=2&page_size=50&viewer_relevance=related");
-        assert_eq!(analysis_list_query("events", 1, None, Some(12), None, false).unwrap(),
+        assert_eq!(analysis_list_query("events", 1, None, Some(12), None, false, None).unwrap(),
             "page=1&page_size=100&conversation_id=12");
-        assert_eq!(analysis_list_query("reports", 1, None, None, None, false).unwrap(),
+        assert_eq!(analysis_list_query("reports", 1, None, None, None, false, None).unwrap(),
             "page=1&page_size=100");
         for invalid in ["all", "open", "done", "my_todo&status=done"] {
-            assert!(analysis_list_query("events", 1, Some(50), None, Some(invalid), false).is_err());
+            assert!(analysis_list_query("events", 1, Some(50), None, Some(invalid), false, None).is_err());
         }
-        assert!(analysis_list_query("reports", 1, None, None, Some("related"), false).is_err());
-        assert!(analysis_list_query("reports", 1, None, None, None, true).is_err());
-        assert!(analysis_list_query("events", 1, Some(0), None, None, false).is_err());
-        assert!(analysis_list_query("events", 1, Some(101), None, None, false).is_err());
+        assert!(analysis_list_query("reports", 1, None, None, Some("related"), false, None).is_err());
+        assert!(analysis_list_query("reports", 1, None, None, None, true, None).is_err());
+        assert!(analysis_list_query("events", 1, Some(0), None, None, false, None).is_err());
+        assert!(analysis_list_query("events", 1, Some(101), None, None, false, None).is_err());
+    }
+
+    #[test]
+    fn keyword_search_is_bounded_encoded_and_event_only() {
+        let query = analysis_list_query("events", 2, Some(50), None, Some("related"), false, Some("  中文 A&B +#?  ")).unwrap();
+        let pairs: std::collections::HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+        assert_eq!(pairs["q"], "中文 A&B +#?");
+        assert_eq!(pairs["viewer_relevance"], "related");
+        assert_eq!(pairs["page"], "2");
+        assert_eq!(pairs.len(), 4);
+        assert_eq!(analysis_list_query("events", 1, Some(50), None, None, false, Some(" \n ")).unwrap(), "page=1&page_size=50");
+        assert!(analysis_list_query("events", 1, Some(50), None, None, false, Some(&"😀".repeat(200))).is_ok());
+        assert!(analysis_list_query("events", 1, Some(50), None, None, false, Some(&"中".repeat(201))).is_err());
+        assert!(analysis_list_query("reports", 1, None, None, None, false, Some("test")).is_err());
     }
 }
