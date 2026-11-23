@@ -15,7 +15,7 @@
 //   cargo build --release --bin wxq ...    → build scripts see the glob match
 //   node scripts/stage-wxq.mjs             → copy the real binary over it
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,8 +37,10 @@ const source = join(root, 'src-tauri', 'target', 'release', `wxq${ext}`);
 mkdirSync(dir, { recursive: true });
 
 if (process.argv.includes('--prepare')) {
-  writeFileSync(target, '');
-  console.log(`已创建占位 ${target}`);
+  if (!existsSync(target)) {
+    writeFileSync(target, '');
+    console.log(`已创建占位 ${target}`);
+  }
 } else {
   copyFileSync(source, target);
   // Validate the copied file, not a shared Cargo output that another build can replace.

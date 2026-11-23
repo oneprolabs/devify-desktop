@@ -14,6 +14,7 @@ assert.deepEqual(dev.plugins.updater.endpoints, []);
 assert.deepEqual(dev.build.features, ['dev-app']);
 assert.notEqual(dev.build.devUrl, prod.build.devUrl);
 assert.match(dev.build.beforeBuildCommand, /stage:wxq:dev/);
+assert.match(dev.build.beforeDevCommand, /stage-wxq\.mjs --prepare --dev/);
 const scripts = load('../package.json').scripts;
 assert.match(scripts['stage:wxq:dev'], /aux-binaries,dev-app/);
 assert.match(scripts['build:dev'], /--mode development-app/);
