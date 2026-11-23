@@ -173,6 +173,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const [eventPage, setEventPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
   const [relevanceCounts, setRelevanceCounts] = useState<RelevanceCounts | null>(null);
+  const [legacyEvents, setLegacyEvents] = useState(false);
   const [eventTab, setEventTab] = useState<'overview' | 'sources'>('overview');
   const [detail, setDetail] = useState<EventDetail | ReportItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -211,6 +212,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
 
   useEffect(() => {
     let active = true;
+    let rerouting = false;
     let cacheKey = '';
     const generation = pageSnapshotGeneration();
     const focus = kind === 'events' && (eventFilter !== 'all' || requestPage !== 1) ? null : focusId;
@@ -222,7 +224,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       if (resetFilters) { listScope.current = null; setSpaceId(null); setResolvedScope(null); }
       setItems([]); setTotal(0); setSelectedId(null); setDetail(null); setEventNotes([]);
       setEvidence(null); setQuery('');
-      if (resetFilters) { setFilter(defaultFilter); setEventPage(1); setRelevanceCounts(null); }
+      if (resetFilters) { setFilter(defaultFilter); setEventPage(1); setRelevanceCounts(null); setLegacyEvents(false); }
       setHasNextPage(false);
       setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
     };
@@ -263,7 +265,22 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         if (!active || !result) return;
         const list = result.list ?? [];
         const counts = readRelevanceCounts(result.relevance_counts);
-        if (kind === 'events' && eventFilter !== 'all' && !counts) throw new Error(t('服务端尚不支持个人分类，请更新服务端后重试。'));
+        if (kind === 'events') {
+          if (result.relevance_counts != null && !counts) throw new Error(t('服务端返回的待办分类统计无效，请稍后重试。'));
+          if (!counts && eventFilter !== 'all') {
+            // Old servers ignore the filter. Explicitly reload unfiltered data;
+            // never present those rows as personal to-dos or cache them as such.
+            resetContent(false); setRelevanceCounts(null); setLegacyEvents(true);
+            setFilter('all'); setEventPage(1); rerouting = true; return;
+          }
+          if (counts && eventFilter === 'all' && focusId == null) {
+            // A manual refresh after a server upgrade restores personal categories.
+            resetContent(false); setLegacyEvents(false);
+            setFilter(defaultFilter); setEventPage(1); rerouting = true; return;
+          }
+          if (counts) setLegacyEvents(false);
+          else if (requestPage === 1) { setLegacyEvents(true); setRelevanceCounts(null); }
+        }
         if (cacheKey) savePageSnapshot(cacheKey, { list, total: result.pagination?.total ?? list.length, relevanceCounts: counts, hasNextPage: Boolean(result.pagination?.next) }, generation);
         setItems(list);
         setTotal(result.pagination?.total ?? list.length);
@@ -278,7 +295,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
           : current && list.some(item => item.id === current) ? current : initialSelection(list));
       })
       .catch(reason => { if (active) setListError(String(reason)); })
-      .finally(() => { if (active) setLoading(false); });
+      .finally(() => { if (active && !rerouting) setLoading(false); });
     return () => { active = false; };
   }, [kind, userId, focusId, pageKey, reloadKey, eventFilter, requestPage, defaultFilter]);
 
@@ -351,7 +368,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const currentDetail = detail?.id === selectedId ? detail : null;
   const displayedDetail = currentDetail ?? (!detailLoading && !error ? selected : null);
   const refreshing = loading || (detailLoading && currentDetail !== null);
-  const reload = () => setReloadKey(key => key + 1);
+  const reload = () => { if (kind === 'events') setEventPage(1); setReloadKey(key => key + 1); };
   const report = kind === 'reports' ? displayedDetail as ReportItem | null : null;
   const event = kind === 'events' ? displayedDetail as EventDetail | null : null;
   const eventRelevance = event ? viewerRelevanceLabel(event) : '';
@@ -410,6 +427,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       ? { ...(current as EventDetail), ...updated }
       : current));
     setItems(current => current.map(item => (item.id === updated.id ? { ...item, ...updated } : item)));
+    setEventPage(1);
     setReloadKey(key => key + 1);
   };
   const startEdit = () => {
@@ -583,7 +601,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const anyEvents = (allCount ?? 0) > 0 || (relevanceCounts === null && kind === 'events' && filter !== 'all');
   const cycleStatus = () => { if (kind === 'events') changeFilter(EVENT_FILTERS[(EVENT_FILTERS.findIndex(([value]) => value === filter) + 1) % EVENT_FILTERS.length][0]); };
   const filterLabel = kind === 'events'
-    ? t(EVENT_FILTERS.find(([value]) => value === filter)?.[1] ?? '全部')
+    ? t(legacyEvents ? '全部待办' : EVENT_FILTERS.find(([value]) => value === filter)?.[1] ?? '全部')
     : t(filter === 'all' ? "全部" : filter);
   const filterPills: Array<[string, string, number | null]> = kind === 'events'
     ? EVENT_FILTERS.map(([value, label]) => [value, label, value === 'all' ? allCount : relevanceCounts?.[value as keyof RelevanceCounts] ?? null])
@@ -604,6 +622,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
     <aside className="analysis-side" aria-label={tf("{0}列表", pageTitle)}>
       <h1>{pageTitle}</h1>
+      {kind === 'events' && legacyEvents && <p role="status">{t('当前服务暂不支持个人分类，暂时显示全部待办。')}</p>}
       {listError && <p role="status">{items.length ? t("暂时无法更新，显示上次读取的内容。") : listError}<button type="button" onClick={reload}>{t("重试")}</button></p>}
       <p className="analysis-side-count">{kind === 'events' ? tf("{0} 个待办 · 跨全部会话", allCount ?? '—') : tf("{0} 份报告", items.length)}</p>
 
@@ -615,7 +634,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
 
       <div className="analysis-side-row">
         <span>{pageTitle}</span>
-        <button type="button" onClick={cycleStatus}>{filterLabel} ▾</button>
+        <button type="button" disabled={kind === 'events' && legacyEvents} onClick={cycleStatus}>{filterLabel} ▾</button>
       </div>
 
       <div className="analysis-pills" role="group" aria-label={t("筛选")}>
@@ -623,6 +642,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
           key={value}
           type="button"
           aria-pressed={filter === value}
+          disabled={kind === 'events' && legacyEvents}
           className={filter === value ? 'on' : ''}
           onClick={() => changeFilter(value)}
         >{t(label)}<small>{count ?? '—'}</small></button>)}

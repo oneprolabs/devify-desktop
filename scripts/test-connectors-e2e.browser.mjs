@@ -560,3 +560,37 @@ export async function runEventRelevanceUiE2E(task, base = 'http://localhost:1434
   console.log('Three personal categories, default My to-dos, server counts, paging, independent status, source highlighting and space-wide linking passed in Ego.');
   console.log(await page.snapshot());
 }
+
+export async function runEventRelevanceRecoveryE2E(task, base = 'http://localhost:1434', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  await page.goto(`${base}/scripts/connectors-e2e.html?analysis`);
+  await page.waitForFunction(() => Boolean(window.__E2E__));
+  await page.evaluate(() => {
+    window.__E2E__.analysisEvents = Array.from({length:51}, (_, i) => ({
+      id:i+1,title:`分页恢复事项 ${i+1}`,content:'检查末页事项完成后的恢复。',status:'open',viewer_relevance:'my_todo',
+    }));
+  });
+  await page.snapshot();
+  await page.click('text="待办"');
+  await page.waitForSelector('.event-pagination');
+  await page.snapshot();
+  await page.click('text="下一页"');
+  await page.waitForFunction(() => document.querySelector('.analysis-items button')?.textContent.includes('分页恢复事项 51'));
+  await page.snapshot();
+  await page.click('text="标记完成"');
+  await page.waitForFunction(() => document.querySelectorAll('.analysis-items button').length === 50 && document.querySelector('.analysis-pills')?.textContent.includes('我的待办50与我有关1'));
+  assert.equal(await page.evaluate(() => window.__E2E__.calls.filter(c => c.command === 'devify_analysis_list').at(-1).args.page),1);
+  assert.equal(await page.evaluate(() => document.querySelector('.event-pagination')),null);
+  await page.evaluate(() => { window.__E2E__.analysisLegacy = true; });
+  await page.click('text="刷新"');
+  await page.waitForFunction(() => document.body.textContent.includes('暂时显示全部待办') && document.querySelectorAll('.analysis-items button').length === 50);
+  assert.ok(await page.evaluate(() => [...document.querySelectorAll('.analysis-pills button')].every(n => n.disabled && n.getAttribute('aria-pressed') === 'false')));
+  assert.equal(await page.evaluate(() => window.__E2E__.calls.filter(c => c.command === 'devify_analysis_list').at(-1).args.viewerRelevance),null);
+  await page.evaluate(() => { window.__E2E__.analysisLegacy = false; });
+  await page.click('text="刷新"');
+  await page.waitForFunction(() => !document.body.textContent.includes('暂时显示全部待办') && document.querySelector('.analysis-pills button[aria-pressed="true"]')?.textContent === '我的待办50');
+  assert.equal(await page.evaluate(() => window.__E2E__.calls.filter(c => c.command === 'devify_analysis_list').at(-1).args.viewerRelevance),'my_todo');
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors),[]);
+  console.log('Last-page completion, legacy readability and upgrade detection passed in Ego.');
+  console.log(await page.snapshot());
+}

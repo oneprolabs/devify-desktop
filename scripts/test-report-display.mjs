@@ -441,19 +441,58 @@ assert.equal(eventPages.at(-1).page,1);
 assert.match(text(byClass(raceTree,'analysis-pills')),/我的待办0与我有关0其他0/);
 console.log('Event paging, page-one category changes, global counts, late replies and account isolation passed');
 
-// Older servers silently ignore unknown queries. Do not mislabel their unfiltered list.
+// Older servers remain readable, but their unfiltered rows are never labelled as personal.
+let upgradedServer=false;
+const legacyCalls=[];
 invoke=(command,args)=>{
+  legacyCalls.push({command,args});
   if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'legacy-event-space'}});
-  if(command==='devify_analysis_list')return Promise.resolve({list:[raceRow(70,'旧服务端未筛选的事项')],pagination:{total:70}});
-  if(command==='devify_event_relations')return Promise.resolve([]);
+  if(command==='devify_analysis_list')return Promise.resolve({list:[raceRow(70,'旧服务端未筛选的事项')],pagination:{total:70},...(upgradedServer?{relevance_counts:pageCounts}:{})});
+  if(command==='devify_analysis_detail')return Promise.resolve(raceRow(70,'旧服务端详情'));
+  if(command==='devify_event_relations'||command==='devify_event_notes')return Promise.resolve([]);
   throw Error(command);
 };
 const legacyInstance={hooks:[]};
 const settleLegacy=async()=>{for(let i=0;i<4;i++){render(legacyInstance,'events');await flush();}return render(legacyInstance,'events');};
 let legacyTree=await settleLegacy();
-assert.ok(text(legacyTree).includes('服务端尚不支持个人分类'));
-assert.ok(!text(byClass(legacyTree,'analysis-items')).includes('旧服务端未筛选的事项'));
-console.log('Legacy server category queries fail visibly instead of showing unfiltered results');
+assert.ok(text(legacyTree).includes('暂时显示全部待办'));
+assert.ok(text(byClass(legacyTree,'analysis-items')).includes('旧服务端未筛选的事项'));
+assert.ok(elements(byClass(legacyTree,'analysis-pills')).filter(n=>n.type==='button').every(n=>n.props.disabled&&!n.props['aria-pressed']));
+assert.equal(legacyCalls.filter(c=>c.command==='devify_analysis_list').at(-1).args.viewerRelevance,null);
+upgradedServer=true;
+find(legacyTree,n=>n.type==='button'&&text(n)==='刷新').props.onClick();legacyTree=await settleLegacy();
+assert.ok(!text(legacyTree).includes('暂时显示全部待办'));
+assert.equal(legacyCalls.filter(c=>c.command==='devify_analysis_list').at(-1).args.viewerRelevance,'my_todo');
+assert.ok(elements(byClass(legacyTree,'analysis-pills')).filter(n=>n.type==='button').every(n=>!n.props.disabled));
+console.log('Legacy server stays readable without personal mislabelling; refresh detects an upgraded server');
+
+// Completing the only item on page two must not re-request an invalid page.
+const boundaryRows=Array.from({length:51},(_,i)=>raceRow(10000+i,'分页边界事项 '+i));
+let boundaryDone=false;const boundaryPages=[];
+invoke=(command,args)=>{
+  if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'boundary-space'}});
+  if(command==='devify_analysis_list'){
+    boundaryPages.push(args.page);
+    if(args.page===2&&boundaryDone)return Promise.reject('无效页码（404）');
+    const rows=boundaryDone?boundaryRows.slice(0,50):boundaryRows;
+    return Promise.resolve({list:rows.slice((args.page-1)*50,args.page*50),pagination:{total:rows.length,next:args.page===1&&rows.length>50?'next':null},relevance_counts:{my_todo:rows.length,related:boundaryDone?1:0,other:0}});
+  }
+  if(command==='devify_analysis_detail')return Promise.resolve(boundaryRows.find(row=>row.id===args.itemId));
+  if(command==='devify_event_notes'||command==='devify_event_relations')return Promise.resolve([]);
+  if(command==='devify_event_update'){boundaryDone=true;return Promise.resolve({...boundaryRows.at(-1),status:'done',viewer_relevance:'related'});}
+  throw Error(command);
+};
+const boundaryInstance={hooks:[]};
+const settleBoundary=async()=>{for(let i=0;i<6;i++){render(boundaryInstance,'events');await flush();}return render(boundaryInstance,'events');};
+let boundaryTree=await settleBoundary();
+find(boundaryTree,n=>n.type==='button'&&text(n)==='下一页').props.onClick();boundaryTree=await settleBoundary();
+assert.equal(boundaryPages.at(-1),2);
+find(boundaryTree,n=>n.type==='button'&&text(n)==='标记完成').props.onClick();boundaryTree=await settleBoundary();
+assert.equal(boundaryPages.at(-1),1);
+assert.ok(!text(boundaryTree).includes('无效页码'));
+assert.match(text(byClass(boundaryTree,'analysis-pills')),/我的待办50与我有关1/);
+assert.equal(elements(byClass(boundaryTree,'analysis-items')).filter(n=>n.type==='button').length,50);
+console.log('Completing the last item on the last page reloads page one and refreshed category counts');
 
 // Opening the linking dialog preserves the original space-wide candidate scope.
 invoke=(command,args)=>{
