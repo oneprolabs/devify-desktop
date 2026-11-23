@@ -10,7 +10,9 @@ export function resolve(specifier, context, nextResolve) {
     if (!fs.existsSync(target)) {
       for (const extension of ['.ts', '.tsx', '.js']) {
         const candidate = new URL(target.href + extension);
-        if (fs.existsSync(candidate)) return { url: candidate.href, shortCircuit: true };
+        // Let Node's remaining hooks observe the resolved URL (including module
+        // mocks on Node 22); short-circuiting here bypasses those registrations.
+        if (fs.existsSync(candidate)) return nextResolve(candidate.href, context);
       }
     }
   }
