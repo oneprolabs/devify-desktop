@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -281,7 +281,10 @@ pub(crate) static UPLOAD_IDENTITY_LOCK: tokio::sync::RwLock<()> = tokio::sync::R
 /// Uploads capture the value when they start; a bump also stops the sync loop from opening
 /// another batch, which keeps the drain short even for long uploads.
 static UPLOAD_ABORT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static CREDENTIAL_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+// Also serializes and remembers the last unsupported device-session request.
+static CREDENTIAL_REFRESH_LOCK: tokio::sync::Mutex<Option<(String, Instant)>> =
+    tokio::sync::Mutex::const_new(None);
+const DEVICE_SESSION_RETRY_DELAY: Duration = Duration::from_secs(300);
 static AUTH_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Shown when a sign-out or logout-driven cancellation stopped an upload on purpose.
@@ -3739,7 +3742,7 @@ async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, St
 }
 
 async fn establish_device_session(data: &Path, base: &str, result: &DevifyDeviceResult) -> Result<(desktop_credentials::Credentials, u64), String> {
-    let _refresh_guard = CREDENTIAL_REFRESH_LOCK.lock().await;
+    let mut unsupported_session = CREDENTIAL_REFRESH_LOCK.lock().await;
     let config = settings::load(data)?;
     let (mut credentials, generation) = desktop_credentials::load_with_generation(data, base)?;
     if generation != result.generation || config.devify.resolved_base_url()? != base
@@ -3748,13 +3751,21 @@ async fn establish_device_session(data: &Path, base: &str, result: &DevifyDevice
     }
     let mut committed_generation = generation;
     if credentials.device_session.is_none() {
+        if unsupported_session.as_ref().is_some_and(|(server, checked_at)| {
+            server == base && checked_at.elapsed() < DEVICE_SESSION_RETRY_DELAY
+        }) {
+            return Ok((credentials, generation));
+        }
         let original = credentials.clone();
         let response = http_client::strict().post(format!("{base}/api/v1/auth/desktop/session"))
             .bearer_auth(&credentials.access)
             .json(&serde_json::json!({"device_id": result.device_id}))
             .send_traced_retrying(&data, diagnostics::Module::Auth, RetryPolicy::WRITE).await
             .map_err(|e| devify_network_message("建立设备登录会话失败", &e))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND { return Ok((credentials, generation)); }
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            *unsupported_session = Some((base.to_owned(), Instant::now()));
+            return Ok((credentials, generation));
+        }
         if !response.status().is_success() { return Err(format!("建立设备登录会话失败：{}", response.status())); }
         let value: serde_json::Value = response.json().await.map_err(|e| format!("读取设备会话失败：{e}"))?;
         let value = value.get("data").unwrap_or(&value);

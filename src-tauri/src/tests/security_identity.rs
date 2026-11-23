@@ -338,6 +338,49 @@ fn expired_access_uses_persistent_device_session() {
 }
 
 #[test]
+fn missing_device_session_endpoint_is_not_retried_on_every_registration() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    settings_for(dir.path(), &base);
+    let original = credentials(&base, "synthetic-access");
+    desktop_credentials::save(dir.path(), &original).unwrap();
+    let registration = DevifyDeviceResult {
+        device_id: "device-1".into(),
+        label: "Test device".into(),
+        platform: "macos".into(),
+        status: "active".into(),
+        generation: desktop_credentials::generation().unwrap(),
+        summary_config_version: None,
+    };
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut request = [0u8; 4096];
+        let size = socket.read(&mut request).unwrap();
+        assert!(request[..size].starts_with(b"POST /api/v1/auth/desktop/session "));
+        socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (saved, generation) = runtime
+        .block_on(establish_device_session(dir.path(), &base, &registration))
+        .unwrap();
+    server.join().unwrap();
+    assert!(saved == original);
+    assert_eq!(generation, registration.generation);
+
+    // The server has stopped, so a second network request would fail.
+    let (saved, generation) = runtime
+        .block_on(establish_device_session(dir.path(), &base, &registration))
+        .unwrap();
+    assert!(saved == original);
+    assert_eq!(generation, registration.generation);
+}
+
+#[test]
 fn rejected_access_can_force_refresh_before_its_local_expiry() {
     let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
