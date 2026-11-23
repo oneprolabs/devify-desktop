@@ -1,6 +1,6 @@
 import { captureTask, systemEnvironment, type ConnectionStep, type SetupCapture } from './wechatSetupState.ts';
 
-export type WeChatAction = 'connect' | 'prepare' | 'open' | 'confirm' | 'preflight' | 'capture' | 'windows' | 'import-file' | 'import-saved' | 'decrypt' | 'complete' | 'result' | 'restart';
+export type WeChatAction = 'connect' | 'prepare' | 'open' | 'confirm' | 'preflight' | 'capture' | 'windows' | 'import-key' | 'import-saved' | 'decrypt' | 'complete' | 'result' | 'restart';
 export type StepCheck = { kind: 'ready' } | {
   kind: 'missing' | 'check-failed' | 'busy';
   message: string;

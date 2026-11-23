@@ -228,6 +228,70 @@ export async function runLoginRecoveryE2E(task, base = 'http://localhost:1420', 
   console.log(await page.snapshot());
 }
 
+export async function runManualWechatKeySmoke(task, base = 'http://localhost:1420', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const click = name => page.click(`loc=role:button[name="${name}"]`);
+  const ready = name => page.waitForFunction(text => [...document.querySelectorAll('button')]
+    .some(button => button.textContent.trim() === text && !button.disabled), name);
+  const enter = async () => {
+    await page.goto(`${base}/scripts/connectors-e2e.html?fresh`);
+    await ready('设置'); await click('设置');
+    await page.waitForSelector('.connector-actions .connector-primary');
+    await page.click('loc=css:.connector-actions .connector-primary >> nth=0');
+    await ready('下一步');
+    await page.click('loc=css:.wizard-method-option >> nth=1');
+    await click('下一步');
+    await ready('下一步：连接微信'); await click('下一步：连接微信');
+    await page.waitForSelector('.wx-setup-file');
+  };
+
+  await enter();
+  await click('手动输入密钥');
+  await page.waitForSelector('#wx-manual-key');
+  const form = '#wx-manual-key-form';
+  assert.ok(await page.evaluate(() => document.querySelector('#wx-manual-key').placeholder.includes('64 位')));
+  assert.ok(await page.evaluate(selector => document.querySelector(`${selector} button`).disabled, form));
+  for (const [invalid, message] of [['invalid-key', '无法识别密钥格式。'], ['cd'.repeat(32), '导入内容未通过当前微信账号的校验。']]) {
+    await page.fill('#wx-manual-key', invalid);
+    await click('导入并校验');
+    await page.waitForFunction(expected => document.querySelector('.wx-setup-details p')?.textContent === expected, message);
+    await ready('导入并校验');
+    assert.ok(await page.evaluate(() => !document.querySelector('#wx-manual-key').disabled));
+  }
+  await page.fill('#wx-manual-key', 'ab'.repeat(32));
+  await page.press('#wx-manual-key', 'Enter');
+  await ready('下一步：选择会话');
+  assert.equal(await page.evaluate(() => document.querySelector('#wx-manual-key')), null);
+  const importedAccounts = await page.evaluate(() => window.__E2E__.calls
+    .filter(call => call.command === 'wechat_import_keys').map(call => call.args.accountId));
+  assert.deepEqual(importedAccounts, ['e2e-wechat', 'e2e-wechat', 'e2e-wechat']);
+  assert.ok(await page.evaluate(() => !window.__E2E__.calls.some(call => call.command === 'wechat_capture_prepare')));
+
+  await enter();
+  const chooseKeyFile = content => page.evaluate(text => {
+    const input = document.querySelector('.wx-setup-file input');
+    const data = new DataTransfer();
+    data.items.add(new File([text], 'fixture-key.json', { type: 'application/json' }));
+    input.files = data.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, content);
+  await chooseKeyFile('{malformed');
+  await page.waitForFunction(() => document.querySelector('.wx-setup-details p')?.textContent === '无法识别密钥格式。');
+  await page.waitForSelector('.wx-setup-file input:not(:disabled)', { state: 'attached' });
+  await chooseKeyFile(JSON.stringify({ passphrase: 'ab'.repeat(32) }));
+  await ready('下一步：选择会话');
+  await click('下一步：选择会话');
+  await ready('群聊');
+  await click('群聊');
+  await ready('下一步'); await click('下一步');
+  await page.waitForSelector('.wizard-backup-page');
+  await ready('沿用当前设置并继续'); await click('沿用当前设置并继续');
+  await page.waitForSelector('.wizard-finish-facts');
+  assert.ok(await page.evaluate(() => window.__E2E__.settings.chat.allowed_usernames['e2e-wechat'].length > 0));
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  console.log('PASS WeChat manual import: masked paste retries and JSON file import through wizard completion');
+}
+
 // Run through ego-browser nodejs: import this module, then pass an owned TaskSpace.
 // The fixture exercises production components and routing with strict, isolated IPC.
 export async function runConnectorE2E(task, base = 'http://localhost:1420', pageLabel = 'p1') {
@@ -368,6 +432,7 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   await clean();
   console.log('PASS upstream signature behavior: untrusted WeChat can reach manual import, without claiming official status or capturing');
 
+  await runManualWechatKeySmoke(task, base, pageLabel);
   await runConnectorEnglishSmoke(task, base, pageLabel);
   return { scenarios: 6, errors: (await state()).errors };
 }

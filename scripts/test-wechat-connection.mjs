@@ -99,13 +99,17 @@ handlers.wechat_import_keys = async args => { assert.equal(args.accountId, 'A');
 await connection.keys.importKeys(); connection = render();
 assert.equal(connection.keys.keyText, 'synthetic-invalid-key');
 assert.match(state.error, /没有匹配/); assert.equal(state.busy, null);
-handlers.wechat_import_keys = async () => ({ matched: 2, unmatched: [], accounts: [], message: 'accepted' });
+handlers.wechat_import_keys = async () => ({ matched: 2, already: 0, unmatched: [], accounts: [{ account: 'A', matched: 2, already: 0 }], message: 'accepted' });
 keyRows = A.dbs.map(db => ({ account: 'A', rel: db.rel }));
 await connection.keys.importKeys(); connection = render();
 assert.equal(connection.keys.keyText, ''); assert.equal(connection.keys.keyedCount, 2);
 const beforeOversize = calls.length;
 await connection.keys.importKeys({ size: 2_000_001, text: () => { throw Error('must not read'); } });
 assert.equal(calls.length, beforeOversize); assert.match(state.error, /过大/);
+
+await connection.keys.importKeys({ size: 64, text: async () => { throw Error('unreadable'); } });
+assert.equal(calls.length, beforeOversize);
+assert.match(state.error, /无法读取密钥文件/);
 
 // The supported V7 Windows path still uses native memory scanning, independently of
 // the removed standalone branch whose platform state was permanently null.
