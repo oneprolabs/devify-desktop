@@ -348,56 +348,172 @@ render(retryInstance); await flush();
 assert.ok(text(summaryOf(render(retryInstance))).includes('重试后的报告正文'));
 console.log('report presentation and CloudAnalysis rendering checks passed');
 
-// A completed event is excluded by the default filter. Cancelling a selected
-// event's in-flight detail must also end loading, even if that request is late.
-const completedEvent={id:601,title:'虚构已完成待办',status:'done',content:'虚构摘要'};
+// Personal classification and shared completion are independent server fields.
+const completedEvent={id:601,title:'虚构已完成待办',status:'done',content:'虚构摘要',viewer_relevance:'related',viewer_evidence_message_ids:[99],evidence:[
+  {id:99,message_id:8,content:'不匹配的原文'}, {id:8,message_id:99,content:'匹配的原文'},
+]};
+const myEvent={id:602,title:'默认个人待办',status:'open',content:'个人待办摘要',viewer_relevance:'my_todo'};
+const eventCounts={my_todo:1,related:6,other:4};
 const eventCalls=[],detailResolvers=[];
 invoke=(command,args)=>{
   eventCalls.push({command,args});
   if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'event-fixture'}});
-  if(command==='devify_analysis_list')return Promise.resolve({list:[completedEvent],pagination:{total:1}});
+  if(command==='devify_analysis_list')return Promise.resolve({list:args.viewerRelevance==='my_todo'?[myEvent]:args.viewerRelevance==='other'?[]:[completedEvent],pagination:{total:args.viewerRelevance==='my_todo'?1:args.viewerRelevance==='other'?4:6},relevance_counts:eventCounts});
   if(command==='devify_event_notes'||command==='devify_event_relations')return Promise.resolve([]);
   if(command==='devify_analysis_detail')return new Promise(resolve=>detailResolvers.push(resolve));
   throw Error(`unexpected event IPC: ${command}`);
 };
 const eventInstance={hooks:[]};
 const renderEvents=()=>render(eventInstance,'events',null);
-for(let i=0;i<4;i++){renderEvents();await flush();}
-let eventTree=renderEvents();
+const settleEvents=async()=>{for(let i=0;i<4;i++){renderEvents();await flush();}return renderEvents();};
+let eventTree=await settleEvents();
 const hasDetailLoading=tree=>elements(tree).some(node=>node.type===mocks['../../shared/ui/LoadingSkeleton'].LoadingSkeleton&&node.props.label==='正在加载详情');
-assert.equal(eventCalls.filter(call=>call.command==='devify_analysis_detail').length,0,'Default filter must not load a hidden completed event');
-assert.equal(hasDetailLoading(eventTree),false);
-assert.match(text(eventTree),/当前筛选下没有记录/);
 const selectFilter=(tree,label)=>find(byClass(tree,'analysis-pills'),node=>node.type==='button'&&text(node).startsWith(label)).props.onClick();
-selectFilter(eventTree,'已完成');
-for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
+assert.equal(find(byClass(eventTree,'analysis-pills'),node=>node.type==='button'&&text(node).startsWith('我的待办')).props['aria-pressed'],true);
+assert.deepEqual(eventCalls.find(c=>c.command==='devify_analysis_list').args,{kind:'events',spaceId:'event-fixture',page:1,pageSize:50,viewerRelevance:'my_todo',includeRelevanceCounts:false});
+assert.equal(elements(byClass(eventTree,'analysis-pills')).filter(n=>n.type==='button').length,3);
+assert.match(text(byClass(eventTree,'analysis-pills')),/我的待办1与我有关6其他4/);
+selectFilter(eventTree,'与我有关');eventTree=await settleEvents();
+assert.equal(detailResolvers.length,2);
+detailResolvers[1](completedEvent);eventTree=await settleEvents();
+detailResolvers[0](myEvent);eventTree=await settleEvents();
+assert.ok(text(byClass(eventTree,'analysis-doc')).includes(completedEvent.title),'Late detail cannot replace the current category');
+assert.match(text(byClass(eventTree,'analysis-items')),/已完成 · 与我有关/);
+find(eventTree,node=>node.type==='button'&&text(node)==='查看全部原文').props.onClick();
 eventTree=renderEvents();
-assert.equal(hasDetailLoading(eventTree),true,'The selected completed event starts a real detail request');
-assert.equal(detailResolvers.length,1);
-selectFilter(eventTree,'待跟进');
-for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
-eventTree=renderEvents();
-assert.equal(hasDetailLoading(eventTree),false,'An empty filter cancels the loading state');
-assert.match(text(eventTree),/当前筛选下没有记录/);
-detailResolvers[0](completedEvent);await flush();eventTree=renderEvents();
-assert.equal(hasDetailLoading(eventTree),false,'Late detail completion must not restore the cancelled view');
-assert.ok(!elements(eventTree).some(node=>node.props?.className==='analysis-doc'));
-find(eventTree,node=>node.type==='input'&&node.props['aria-label']==='搜索待办').props.onChange({target:{value:'no matches'}});
-eventTree=renderEvents();
-find(eventTree,node=>node.type==='button'&&text(node)==='查看全部待办').props.onClick();
-assert.equal(find(renderEvents(),node=>node.type==='input'&&node.props['aria-label']==='搜索待办').props.value,'');
-for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
-assert.equal(detailResolvers.length,2,'View all selects the visible event even when focusId is null');
-detailResolvers[1](completedEvent);await flush();eventTree=renderEvents();
-assert.ok(text(byClass(eventTree,'analysis-doc')).includes(completedEvent.title));
+const highlights=elements(eventTree).filter(node=>String(node.props?.className).includes('event-personal-evidence'));
+assert.equal(highlights.length,1);
+assert.ok(text(highlights[0]).includes('匹配的原文')&&!text(highlights[0]).includes('不匹配的原文'),'Highlight matches evidence.message_id, never evidence.id');
+find(eventTree,node=>node.type==='input'&&node.props['aria-label']==='搜索当前页待办').props.onChange({target:{value:'no matches'}});
+eventTree=await settleEvents();
+find(eventTree,node=>node.type==='button'&&text(node)==='清除搜索').props.onClick();
+eventTree=await settleEvents();
+assert.equal(find(eventTree,node=>node.type==='input'&&node.props['aria-label']==='搜索当前页待办').props.value,'');
+selectFilter(eventTree,'其他');eventTree=await settleEvents();
 assert.equal(hasDetailLoading(eventTree),false);
-console.log('Event empty-filter, null-focus selection and cancelled-detail loading regressions passed');
+assert.ok(text(eventTree).includes('当前筛选下没有记录'));
+assert.ok(!text(eventTree).includes('查看全部待办'),'Hidden All category must not reappear through an empty-state action');
+// Existing links to an event still fetch that event even outside the first page.
+const focusedInstance={hooks:[]};
+for(let i=0;i<4;i++){render(focusedInstance,'events',601);await flush();}
+assert.deepEqual(eventCalls.filter(c=>c.command==='devify_analysis_list').at(-1).args,{kind:'events',spaceId:'event-fixture',page:1,pageSize:50,viewerRelevance:null,includeRelevanceCounts:true});
+console.log('Default personal category, three server counts, independent status, evidence IDs and cancelled details passed');
+
+// Paging is bounded; switching categories starts at page one and rejects late replies.
+const pageCounts={my_todo:60,related:41,other:0};
+const eventPages=[],pendingCategories=[];
+let raceAccount=1;
+const raceRow=(id,title,viewer_relevance='my_todo')=>({id,title,content:title,status:'open',viewer_relevance});
+invoke=(command,args)=>{
+  if(command==='app_settings_get')return Promise.resolve({devify:{base_url:'https://events.invalid',active_space_id:'race-space'}});
+  if(command==='devify_analysis_list'){
+    eventPages.push(args);
+    if(raceAccount===2)return Promise.resolve({list:[],pagination:{total:0,next:null},relevance_counts:{my_todo:0,related:0,other:0}});
+    if(args.viewerRelevance!=='my_todo')return new Promise(resolve=>pendingCategories.push({args,resolve}));
+    return Promise.resolve({list:[raceRow(args.page,args.page===1?'我的第一页':'我的第二页')],pagination:{total:60,next:args.page===1?'page=2':null},relevance_counts:pageCounts});
+  }
+  if(command==='devify_analysis_detail')return Promise.resolve(raceRow(args.itemId,'详情'+args.itemId));
+  if(command==='devify_event_notes'||command==='devify_event_relations')return Promise.resolve([]);
+  throw Error(command);
+};
+const raceInstance={hooks:[]};
+const renderRace=()=>renderPage(raceInstance,()=>CloudAnalysisPage({kind:'events',userId:raceAccount}));
+const settleRace=async()=>{for(let i=0;i<4;i++){renderRace();await flush();}return renderRace();};
+let raceTree=await settleRace();
+find(raceTree,node=>node.type==='button'&&text(node)==='下一页').props.onClick();
+raceTree=await settleRace();
+assert.equal(eventPages.at(-1).page,2);
+assert.match(text(byClass(raceTree,'analysis-pills')),/我的待办60与我有关41/,'Counts do not shrink to the current page');
+selectFilter(raceTree,'与我有关');raceTree=await settleRace();
+assert.equal(pendingCategories.at(-1).args.page,1);
+selectFilter(raceTree,'其他');raceTree=await settleRace();
+assert.equal(pendingCategories.at(-1).args.page,1);
+pendingCategories[1].resolve({list:[],pagination:{total:0,next:null},relevance_counts:pageCounts});
+raceTree=await settleRace();
+pendingCategories[0].resolve({list:[raceRow(4,'迟到的相关事项','related')],pagination:{total:41,next:null},relevance_counts:{my_todo:999,related:0,other:0}});
+raceTree=await settleRace();
+assert.ok(!text(raceTree).includes('迟到的相关事项')&&!text(byClass(raceTree,'analysis-pills')).includes('999'));
+raceAccount=2;
+assert.equal(renderRace().type,mocks['../../shared/ui/LoadingSkeleton'].LoadingPage,'An account change hides the former personal classification immediately');
+raceTree=await settleRace();
+assert.equal(eventPages.at(-1).viewerRelevance,'my_todo');
+assert.equal(eventPages.at(-1).page,1);
+assert.match(text(byClass(raceTree,'analysis-pills')),/我的待办0与我有关0其他0/);
+console.log('Event paging, page-one category changes, global counts, late replies and account isolation passed');
+
+// Older servers remain readable, but their unfiltered rows are never labelled as personal.
+let upgradedServer=false;
+const legacyCalls=[];
+invoke=(command,args)=>{
+  legacyCalls.push({command,args});
+  if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'legacy-event-space'}});
+  if(command==='devify_analysis_list')return Promise.resolve({list:[raceRow(70,'旧服务端未筛选的事项')],pagination:{total:70},...(upgradedServer?{relevance_counts:pageCounts}:{})});
+  if(command==='devify_analysis_detail')return Promise.resolve(raceRow(70,'旧服务端详情'));
+  if(command==='devify_event_relations'||command==='devify_event_notes')return Promise.resolve([]);
+  throw Error(command);
+};
+const legacyInstance={hooks:[]};
+const settleLegacy=async()=>{for(let i=0;i<4;i++){render(legacyInstance,'events');await flush();}return render(legacyInstance,'events');};
+let legacyTree=await settleLegacy();
+assert.ok(text(legacyTree).includes('暂时显示全部待办'));
+assert.ok(text(byClass(legacyTree,'analysis-items')).includes('旧服务端未筛选的事项'));
+assert.ok(elements(byClass(legacyTree,'analysis-pills')).filter(n=>n.type==='button').every(n=>n.props.disabled&&!n.props['aria-pressed']));
+assert.equal(legacyCalls.filter(c=>c.command==='devify_analysis_list').at(-1).args.viewerRelevance,null);
+upgradedServer=true;
+find(legacyTree,n=>n.type==='button'&&text(n)==='刷新').props.onClick();legacyTree=await settleLegacy();
+assert.ok(!text(legacyTree).includes('暂时显示全部待办'));
+assert.equal(legacyCalls.filter(c=>c.command==='devify_analysis_list').at(-1).args.viewerRelevance,'my_todo');
+assert.ok(elements(byClass(legacyTree,'analysis-pills')).filter(n=>n.type==='button').every(n=>!n.props.disabled));
+console.log('Legacy server stays readable without personal mislabelling; refresh detects an upgraded server');
+
+// Completing the only item on page two must not re-request an invalid page.
+const boundaryRows=Array.from({length:51},(_,i)=>raceRow(10000+i,'分页边界事项 '+i));
+let boundaryDone=false;const boundaryPages=[];
+invoke=(command,args)=>{
+  if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'boundary-space'}});
+  if(command==='devify_analysis_list'){
+    boundaryPages.push(args.page);
+    if(args.page===2&&boundaryDone)return Promise.reject('无效页码（404）');
+    const rows=boundaryDone?boundaryRows.slice(0,50):boundaryRows;
+    return Promise.resolve({list:rows.slice((args.page-1)*50,args.page*50),pagination:{total:rows.length,next:args.page===1&&rows.length>50?'next':null},relevance_counts:{my_todo:rows.length,related:boundaryDone?1:0,other:0}});
+  }
+  if(command==='devify_analysis_detail')return Promise.resolve(boundaryRows.find(row=>row.id===args.itemId));
+  if(command==='devify_event_notes'||command==='devify_event_relations')return Promise.resolve([]);
+  if(command==='devify_event_update'){boundaryDone=true;return Promise.resolve({...boundaryRows.at(-1),status:'done',viewer_relevance:'related'});}
+  throw Error(command);
+};
+const boundaryInstance={hooks:[]};
+const settleBoundary=async()=>{for(let i=0;i<6;i++){render(boundaryInstance,'events');await flush();}return render(boundaryInstance,'events');};
+let boundaryTree=await settleBoundary();
+find(boundaryTree,n=>n.type==='button'&&text(n)==='下一页').props.onClick();boundaryTree=await settleBoundary();
+assert.equal(boundaryPages.at(-1),2);
+find(boundaryTree,n=>n.type==='button'&&text(n)==='标记完成').props.onClick();boundaryTree=await settleBoundary();
+assert.equal(boundaryPages.at(-1),1);
+assert.ok(!text(boundaryTree).includes('无效页码'));
+assert.match(text(byClass(boundaryTree,'analysis-pills')),/我的待办50与我有关1/);
+assert.equal(elements(byClass(boundaryTree,'analysis-items')).filter(n=>n.type==='button').length,50);
+console.log('Completing the last item on the last page reloads page one and refreshed category counts');
+
+// Opening the linking dialog preserves the original space-wide candidate scope.
+invoke=(command,args)=>{
+  if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'link-fixture'}});
+  if(command==='devify_analysis_list')return Promise.resolve({list:[myEvent,...(!args.pageSize?[completedEvent]:[])],pagination:{total:1},relevance_counts:eventCounts});
+  if(command==='devify_analysis_detail')return Promise.resolve(myEvent);
+  if(command==='devify_event_notes'||command==='devify_event_relations')return Promise.resolve([]);
+  throw Error(command);
+};
+const linkInstance={hooks:[]};
+const settleLinks=async()=>{for(let i=0;i<4;i++){render(linkInstance,'events');await flush();}return render(linkInstance,'events');};
+let linkTree=await settleLinks();
+find(linkTree,node=>node.type==='button'&&text(node)==='关联待办').props.onClick();
+linkTree=await settleLinks();
+assert.ok(text(byClass(linkTree,'analysis-picker-list')).includes(completedEvent.title),'Linking includes other pages and personal categories');
 
 // A true empty space directs users to analysis settings; a filtered-empty list
 // continues to offer View All, without implying that event analysis failed.
 invoke=command=>{
   if(command==='app_settings_get')return Promise.resolve({devify:{active_space_id:'empty-fixture'}});
-  if(command==='devify_analysis_list')return Promise.resolve({list:[]});
+  if(command==='devify_analysis_list')return Promise.resolve({list:[],relevance_counts:{my_todo:0,related:0,other:0}});
   if(command==='devify_event_relations')return Promise.resolve([]);
   throw Error(command);
 };

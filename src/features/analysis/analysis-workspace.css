@@ -131,3 +131,10 @@
   .ask-scroll { padding: 24px 20px; }
   .ask-composer { padding: 12px 20px 16px; }
 }
+
+/* Personal categories are independent of the shared event's progress. */
+.event-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 8px; flex-shrink: 0; font-size: 12px; }
+.event-pagination button { border: 1px solid #e5e5e2; border-radius: 6px; padding: 5px 8px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
+.event-pagination button:disabled { opacity: .45; cursor: default; }
+.event-workspace .analysis-raw-item.event-personal-evidence,
+.evidence-row.event-personal-evidence { background: #fcf2fb; }
