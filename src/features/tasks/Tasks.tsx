@@ -5,6 +5,9 @@ import { useTaskRuntime, refreshTaskRuntime } from './taskRuntime';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import { BackupRuntimeSwitch } from '../backup/BackupRuntimeSwitch';
 
+const emptyBackup = (job: { kind?: string; status: string; message: string }) =>
+  job.kind !== 'summary' && job.status === 'completed'
+  && (job.message === '本批未新增消息' || /^服务端解析完成，共 0 条消息$/.test(job.message));
 const labels: Record<string, string> = { queued: '等待备份', running: '正在准备', uploading: '正在上传', processing: '服务端处理中', completed: '已完成', failed: '等待重试', cancelled: '已取消' };
 export function Tasks({ onContinueSetup }: { onNewUpload: () => void; startCreating?: boolean; onContinueSetup?: (platform: string) => void }) {
   const runtime = useTaskRuntime();
@@ -38,8 +41,21 @@ export function Tasks({ onContinueSetup }: { onNewUpload: () => void; startCreat
     } catch (reason) { if (current()) setError(String(reason)); }
     finally { if (current()) setCloudBusy(false); }
   };
-  const jobs = [...runtime.jobs].sort((a,b) => b.updated_at.localeCompare(a.updated_at));
-  const visible = jobs.slice(page * 20, (page + 1) * 20);
+  const emptyCounts = new Map<string, number>();
+  const grouped = new Map<string, string>();
+  const jobs = [...runtime.jobs].sort((a,b) => b.updated_at.localeCompare(a.updated_at)).filter(job => {
+    if (!emptyBackup(job)) return true;
+    const key = JSON.stringify([job.account_id, [...(job.scope?.usernames ?? [])].sort(), new Date(job.updated_at).toDateString()]);
+    const first = grouped.get(key);
+    if (first !== undefined) {
+      emptyCounts.set(first, (emptyCounts.get(first) ?? 1) + 1);
+      return false;
+    }
+    grouped.set(key, job.id);
+    return true;
+  });
+  const activePage = Math.min(page, Math.max(0, Math.ceil(jobs.length / 20) - 1));
+  const visible = jobs.slice(activePage * 20, (activePage + 1) * 20);
   // At most two names per visible task; progress events must not rescan metadata.
   const nameTargets = JSON.stringify(visible.map(job => [job.account_id, job.scope?.usernames.slice(0, 2) ?? []]));
   useEffect(() => {
@@ -81,9 +97,9 @@ export function Tasks({ onContinueSetup }: { onNewUpload: () => void; startCreat
     {[...new Set((runtime.sources ?? []).filter(source => !source.setup_complete).map(source => source.platform))].map(platform => <div key={platform} className="task-setup-notice" role="status"><p>{tf('{0} 配置未完成，备份已暂停。', platform === 'whatsapp' ? 'WhatsApp' : t('微信'))}</p>{onContinueSetup && <button type="button" className="wxv-btn" onClick={() => onContinueSetup(platform)}>{t('继续配置')}</button>}</div>)}
     {(error || runtime.error) && <p className="wx-setup-error" role="alert">{error || runtime.error}</p>}
     {!visible.length && <p>{t('暂无任务。完成备份设置或生成聊天总结后，会显示在这里。')}</p>}
-    <div className="task-runtime-list">{visible.map(job => <article key={job.id} className="task-runtime-job"><div><strong>{taskTitle(job)}</strong><p>{job.message}</p>{job.kind==='summary'&&<p className="task-summary-caller">{job.caller} · {tf('发起账号：{0}',job.initiator_id??'—')}</p>}<small>{new Date(job.updated_at).toLocaleString()}</small>{job.status === 'failed' && <WizardActionButton disabled={job.kind!=='summary'&&runtime.paused} onAction={async () => { if(job.kind==='summary')await invoke('summary_task_retry',{taskId:job.id});else await invoke('task_runtime_retry', { jobId: job.id }); await refreshTaskRuntime(); }}>{t('重试')}</WizardActionButton>}</div><span className={`task-status ${job.status === 'completed' ? 'done' : job.status === 'failed' ? 'failed' : 'pending'}`}>{t(job.kind==='summary'?({queued:'排队中',running:'正在生成',processing:'云端生成中',completed:'已完成',failed:'等待重试'} as Record<string,string>)[job.status]||job.status:labels[job.status] || job.status)}</span></article>)}</div>
+    <div className="task-runtime-list">{visible.map(job => <article key={job.id} className="task-runtime-job"><div><strong>{taskTitle(job)}</strong><p>{emptyBackup(job) ? t('本批未新增消息') : job.message}{emptyCounts.has(job.id) && <> · {tf('当天 {0} 次', emptyCounts.get(job.id)!)}</>}</p>{job.kind==='summary'&&<p className="task-summary-caller">{job.caller} · {tf('发起账号：{0}',job.initiator_id??'—')}</p>}<small>{new Date(job.updated_at).toLocaleString()}</small>{job.status === 'failed' && <WizardActionButton disabled={job.kind!=='summary'&&runtime.paused} onAction={async () => { if(job.kind==='summary')await invoke('summary_task_retry',{taskId:job.id});else await invoke('task_runtime_retry', { jobId: job.id }); await refreshTaskRuntime(); }}>{t('重试')}</WizardActionButton>}</div><span className={`task-status ${job.status === 'completed' ? 'done' : job.status === 'failed' ? 'failed' : 'pending'}`}>{t(job.kind==='summary'?({queued:'排队中',running:'正在生成',processing:'云端生成中',completed:'已完成',failed:'等待重试'} as Record<string,string>)[job.status]||job.status:labels[job.status] || job.status)}</span></article>)}</div>
     <div className="page-actions"><WizardActionButton onAction={() => loadCloud()}>{t('查看云端历史')}</WizardActionButton></div>
-    {cloudPage > 0 && <section><h3>{t('当前空间的云端历史')}</h3>{cloud.map(batch => <article className="task-runtime-job" key={batch.id}><div><strong>{batch.source_type === 'whatsapp' ? 'WhatsApp' : t('微信')} · #{batch.id}</strong><p>{batch.error_message || `${batch.message_count} ${t('条消息')}`}</p></div><span>{t(labels[batch.status] || batch.status)}</span></article>)}<footer className="page-actions"><button disabled={cloudBusy || cloudPage <= 1} onClick={() => void loadCloud(cloudPage - 1)}>{t('上一页')}</button><span>{cloudPage}</span><button disabled={cloudBusy || !cloudMore} onClick={() => void loadCloud(cloudPage + 1)}>{t('下一页')}</button></footer></section>}
-    {jobs.length > 20 && <footer className="page-actions"><button disabled={page === 0} onClick={() => setPage(value => value - 1)}>{t('上一页')}</button><span>{Math.min(page + 1, Math.ceil(jobs.length / 20))} / {Math.ceil(jobs.length / 20)}</span><button disabled={(page + 1) * 20 >= jobs.length} onClick={() => setPage(value => value + 1)}>{t('下一页')}</button></footer>}
+    {cloudPage > 0 && <section><h3>{t('当前空间的云端历史')}</h3>{cloud.map(batch => <article className="task-runtime-job" key={batch.id}><div><strong>{batch.source_type === 'whatsapp' ? 'WhatsApp' : t('微信')} · #{batch.id}</strong><p>{batch.error_message || (batch.status === 'completed' && batch.message_count === 0 ? t('本批未新增消息') : `${batch.message_count} ${t('条消息')}`)}</p></div><span>{t(labels[batch.status] || batch.status)}</span></article>)}<footer className="page-actions"><button disabled={cloudBusy || cloudPage <= 1} onClick={() => void loadCloud(cloudPage - 1)}>{t('上一页')}</button><span>{cloudPage}</span><button disabled={cloudBusy || !cloudMore} onClick={() => void loadCloud(cloudPage + 1)}>{t('下一页')}</button></footer></section>}
+    {jobs.length > 20 && <footer className="page-actions"><button disabled={activePage === 0} onClick={() => setPage(activePage - 1)}>{t('上一页')}</button><span>{activePage + 1} / {Math.ceil(jobs.length / 20)}</span><button disabled={(activePage + 1) * 20 >= jobs.length} onClick={() => setPage(activePage + 1)}>{t('下一页')}</button></footer>}
   </section>;
 }

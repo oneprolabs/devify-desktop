@@ -338,6 +338,130 @@ fn expired_access_uses_persistent_device_session() {
 }
 
 #[test]
+fn recovered_login_clears_only_refresh_errors_for_the_current_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = "https://example.invalid";
+    let token = format!("x.{}.x", URL_SAFE_NO_PAD.encode(r#"{"user_id":7}"#));
+    settings_for(dir.path(), base);
+    desktop_credentials::save(dir.path(), &credentials(base, &token)).unwrap();
+    let refresh_error = "刷新登录状态失败（HTTP 404），请稍后重试。";
+    let owner = settings::UploadOwner {
+        base_url: base.into(),
+        user_id: 7,
+        device_id: "device-1".into(),
+        space_id: "7".into(),
+        account_id: "current".into(),
+    };
+    settings::update(dir.path(), |value| {
+        value.runtime.last_error = Some(refresh_error.into());
+        value.runtime.sources.insert(
+            "current".into(),
+            config_runtime::Source {
+                owner: Some(owner.clone()),
+                last_error: Some(refresh_error.into()),
+                retry_after: Some("2099-01-01T00:00:00Z".into()),
+                failures: 2,
+                ..Default::default()
+            },
+        );
+        value.runtime.sources.insert(
+            "other".into(),
+            config_runtime::Source {
+                owner: Some(settings::UploadOwner {
+                    user_id: 8,
+                    account_id: "other".into(),
+                    ..owner.clone()
+                }),
+                last_error: Some(refresh_error.into()),
+                ..Default::default()
+            },
+        );
+        value.runtime.sources.insert(
+            "network".into(),
+            config_runtime::Source {
+                owner: Some(settings::UploadOwner {
+                    account_id: "network".into(),
+                    ..owner
+                }),
+                last_error: Some("网络暂时不可用".into()),
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    clear_recovered_refresh_errors(dir.path(), base, "old-access");
+    assert_eq!(
+        settings::load(dir.path())
+            .unwrap()
+            .runtime
+            .last_error
+            .as_deref(),
+        Some(refresh_error)
+    );
+
+    clear_recovered_refresh_errors(dir.path(), base, &token);
+    let runtime = settings::load(dir.path()).unwrap().runtime;
+    assert!(runtime.last_error.is_none());
+    let current = &runtime.sources["current"];
+    assert!(current.last_error.is_none());
+    assert!(current.retry_after.is_none());
+    assert_eq!(current.failures, 0);
+    assert_eq!(
+        runtime.sources["other"].last_error.as_deref(),
+        Some(refresh_error)
+    );
+    assert_eq!(
+        runtime.sources["network"].last_error.as_deref(),
+        Some("网络暂时不可用")
+    );
+}
+
+#[test]
+fn missing_device_session_endpoint_is_not_retried_on_every_registration() {
+    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    settings_for(dir.path(), &base);
+    let original = credentials(&base, "synthetic-access");
+    desktop_credentials::save(dir.path(), &original).unwrap();
+    let registration = DevifyDeviceResult {
+        device_id: "device-1".into(),
+        label: "Test device".into(),
+        platform: "macos".into(),
+        status: "active".into(),
+        generation: desktop_credentials::generation().unwrap(),
+        summary_config_version: None,
+    };
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut request = [0u8; 4096];
+        let size = socket.read(&mut request).unwrap();
+        assert!(request[..size].starts_with(b"POST /api/v1/auth/desktop/session "));
+        socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (saved, generation) = runtime
+        .block_on(establish_device_session(dir.path(), &base, &registration))
+        .unwrap();
+    server.join().unwrap();
+    assert!(saved == original);
+    assert_eq!(generation, registration.generation);
+
+    // The server has stopped, so a second network request would fail.
+    let (saved, generation) = runtime
+        .block_on(establish_device_session(dir.path(), &base, &registration))
+        .unwrap();
+    assert!(saved == original);
+    assert_eq!(generation, registration.generation);
+}
+
+#[test]
 fn rejected_access_can_force_refresh_before_its_local_expiry() {
     let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

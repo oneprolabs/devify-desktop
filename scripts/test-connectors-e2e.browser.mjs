@@ -286,7 +286,14 @@ export async function runConnectorE2E(task, base = 'http://localhost:1420', page
   await click('5 分钟'); await ready('下一步');
   await page.click('loc=role:switch[name="限制上传时间"]'); await ready('下一步');
   await click('只在此时段上传'); await ready('下一步');
-  await click('仅文本'); await ready('下一步');
+  await page.evaluate(() => { window.__E2E__.saveDelay = 500; });
+  await click('仅文本');
+  assert.deepEqual(await page.evaluate(() => {
+    const next = document.querySelector('.wizard-backup-page .primary');
+    return { disabled: next.disabled, label: next.textContent.trim() };
+  }), { disabled: true, label: '下一步' }, 'attachment autosave keeps the Next label stable');
+  await ready('下一步');
+  await page.evaluate(() => { window.__E2E__.saveDelay = 0; });
   await click('下一步'); await page.waitForSelector('.wizard-finish-facts');
   await page.snapshot({ scope: 'full_page' });
   assert.ok(await page.evaluate(() => document.querySelector('.wizard-finish-facts').textContent.includes('每 5 分钟')));

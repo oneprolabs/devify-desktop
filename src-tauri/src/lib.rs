@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -282,11 +282,66 @@ pub(crate) static UPLOAD_IDENTITY_LOCK: tokio::sync::RwLock<()> = tokio::sync::R
 /// Uploads capture the value when they start; a bump also stops the sync loop from opening
 /// another batch, which keeps the drain short even for long uploads.
 static UPLOAD_ABORT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static CREDENTIAL_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+// Also serializes and remembers the last unsupported device-session request.
+static CREDENTIAL_REFRESH_LOCK: tokio::sync::Mutex<Option<(String, Instant)>> =
+    tokio::sync::Mutex::const_new(None);
+const DEVICE_SESSION_RETRY_DELAY: Duration = Duration::from_secs(300);
 static AUTH_START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Shown when a sign-out or logout-driven cancellation stopped an upload on purpose.
 const UPLOAD_ABORTED_MESSAGE: &str = "已退出登录，上传已取消。";
+
+fn shared_backup_changed(before: &settings::AppSettings, after: &settings::AppSettings) -> bool {
+    before.sync.enabled != after.sync.enabled
+        || before.chat.sync_interval_seconds != after.chat.sync_interval_seconds
+        || serde_json::to_value(&before.backup).ok() != serde_json::to_value(&after.backup).ok()
+}
+
+fn account_backup_changed(
+    before: &settings::AppSettings,
+    after: &settings::AppSettings,
+    account: &str,
+) -> bool {
+    let connector_changed = if whatsapp::is_account(account) {
+        before.connectors.whatsapp_enabled != after.connectors.whatsapp_enabled
+    } else {
+        before.connectors.wechat_enabled != after.connectors.wechat_enabled
+    };
+    connector_changed
+        || config_runtime::payload(before, account, false)
+            != config_runtime::payload(after, account, false)
+}
+
+fn invalidate_unsent_backups(before: &settings::AppSettings, value: &mut settings::AppSettings) {
+    let shared_changed = shared_backup_changed(before, value);
+    let affected: HashSet<_> = value
+        .upload_queue
+        .iter()
+        .map(|job| job.account_id.clone())
+        .chain(value.runtime.sources.keys().cloned())
+        .filter(|account| shared_changed || account_backup_changed(before, value, account))
+        .collect();
+    for job in &mut value.upload_queue {
+        if affected.contains(&job.account_id)
+            && job.batch_id.is_none()
+            && job.create_started == Some(false)
+            && matches!(job.status.as_str(), "queued" | "running" | "failed")
+        {
+            job.status = "cancelled".into();
+            job.legacy_failure_confirmed = true;
+            job.message = "备份配置已更新，未发送的批次将重新生成。".into();
+            job.updated_at = Utc::now().to_rfc3339();
+        }
+    }
+    for (account, source) in &mut value.runtime.sources {
+        if affected.contains(account) {
+            source.scan_remaining = 0;
+            source.last_run_at = None;
+            source.retry_after = None;
+            source.failures = 0;
+        }
+    }
+}
 
 fn upload_epoch() -> u64 {
     UPLOAD_ABORT_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
@@ -391,7 +446,53 @@ async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_ge
         return Err(DevifyTokenError::Unavailable("登录状态已改变，请重新检查。".into()));
     }
     config_runtime::activate_profile(app_data).map_err(DevifyTokenError::Unavailable)?;
+    clear_recovered_refresh_errors(app_data, &base_url, new_access);
     Ok(new_access.to_string())
+}
+
+fn clear_recovered_refresh_errors(data: &Path, base_url: &str, access: &str) {
+    let is_refresh_error = |error: &Option<String>| {
+        error
+            .as_deref()
+            .is_some_and(|message| message.starts_with("刷新登录状态失败（HTTP "))
+    };
+    let Ok(snapshot) = settings::load(data) else {
+        return;
+    };
+    if !is_refresh_error(&snapshot.runtime.last_error)
+        && !snapshot
+            .runtime
+            .sources
+            .values()
+            .any(|source| is_refresh_error(&source.last_error))
+    {
+        return;
+    }
+    let _ = settings::update(data, |settings| {
+        if !settings::same_service_url(&settings.devify.base_url, base_url)
+            || desktop_credentials::load(data, base_url)?.access != access
+        {
+            return Ok(());
+        }
+        if is_refresh_error(&settings.runtime.last_error) {
+            settings.runtime.last_error = None;
+        }
+        let user_id = access_token_claim(access, "user_id").and_then(|id| id.parse::<i64>().ok());
+        for source in settings.runtime.sources.values_mut() {
+            if is_refresh_error(&source.last_error)
+                && source.owner.as_ref().is_some_and(|owner| {
+                    Some(owner.user_id) == user_id
+                        && settings::same_service_url(&owner.base_url, base_url)
+                })
+            {
+                source.last_error = None;
+                source.retry_after = None;
+                source.failures = 0;
+            }
+        }
+        Ok(())
+    });
+    TASK_WAKE.notify_one();
 }
 
 #[derive(Serialize)]
@@ -2013,6 +2114,9 @@ fn apply_manual_upload_outcome(
     let later_terminal = matches!(item.status.as_str(), "completed" | "cancelled")
         || (item.status == "failed" && (expected.status != "failed" || item.updated_at != expected.updated_at));
     if later_terminal {
+        if item.status == "cancelled" && item.batch_id.is_none() && item.create_started == Some(false) {
+            return Ok(());
+        }
         if matches!(item.status.as_str(), "completed" | "cancelled")
             && (item.batch_id.is_none() || item.create_started != Some(true)) {
             return Err("已结束任务缺少可核验的批次状态。".into());
@@ -2980,6 +3084,12 @@ async fn devify_upload_wechat(
     settings::update(&data, |current| {
         let job = current.upload_queue.iter().find(|item| item.id == job_id).ok_or("找不到上传任务。")?;
         validate_owned_job(current, job, &owner, &token, &scope)?;
+        if job.status == "cancelled" && job.create_started == Some(false) {
+            return Err(job.message.clone());
+        }
+        if matches!(trigger, UploadTrigger::Scheduled) && !config_runtime::ready(current, &owner) {
+            return Err("备份配置正在更新，稍后会自动继续。".into());
+        }
         if desktop_credentials::load(&data, &owner.base_url)?.access != token { return Err("登录状态已改变。".into()); }
         if cloud_retry.is_some() || (job.status == "failed" && job.can_recover_create()) {
             if !job.matches_create_package(&key, &digest) {
@@ -3576,6 +3686,7 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
             if request_generation(&data, &settings.devify.base_url, &token)? != generation {
                 return Err("登录状态已改变，请重新检查。".into());
             }
+            clear_recovered_refresh_errors(&data, &settings.devify.resolved_base_url()?, &token);
             Ok(DevifyAuthStatus { authenticated: true, unavailable: false, error: String::new() })
         },
         Err(error) if devify_unreachable(&error) => {
@@ -3631,7 +3742,7 @@ async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, St
 }
 
 async fn establish_device_session(data: &Path, base: &str, result: &DevifyDeviceResult) -> Result<(desktop_credentials::Credentials, u64), String> {
-    let _refresh_guard = CREDENTIAL_REFRESH_LOCK.lock().await;
+    let mut unsupported_session = CREDENTIAL_REFRESH_LOCK.lock().await;
     let config = settings::load(data)?;
     let (mut credentials, generation) = desktop_credentials::load_with_generation(data, base)?;
     if generation != result.generation || config.devify.resolved_base_url()? != base
@@ -3640,13 +3751,21 @@ async fn establish_device_session(data: &Path, base: &str, result: &DevifyDevice
     }
     let mut committed_generation = generation;
     if credentials.device_session.is_none() {
+        if unsupported_session.as_ref().is_some_and(|(server, checked_at)| {
+            server == base && checked_at.elapsed() < DEVICE_SESSION_RETRY_DELAY
+        }) {
+            return Ok((credentials, generation));
+        }
         let original = credentials.clone();
         let response = http_client::strict().post(format!("{base}/api/v1/auth/desktop/session"))
             .bearer_auth(&credentials.access)
             .json(&serde_json::json!({"device_id": result.device_id}))
             .send_traced_retrying(&data, diagnostics::Module::Auth, RetryPolicy::WRITE).await
             .map_err(|e| devify_network_message("建立设备登录会话失败", &e))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND { return Ok((credentials, generation)); }
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            *unsupported_session = Some((base.to_owned(), Instant::now()));
+            return Ok((credentials, generation));
+        }
         if !response.status().is_success() { return Err(format!("建立设备登录会话失败：{}", response.status())); }
         let value: serde_json::Value = response.json().await.map_err(|e| format!("读取设备会话失败：{e}"))?;
         let value = value.get("data").unwrap_or(&value);
@@ -4679,7 +4798,11 @@ async fn reconcile_owned_job(data: &Path, owner: &settings::UploadOwner, token: 
     };
     validate_remote_owner(owner, batch_id, &batch, None)?;
     let (state, message) = match batch.get("status").and_then(serde_json::Value::as_str) {
-        Some("completed") => ("completed", format!("服务端解析完成，共 {} 条消息", batch.get("message_count").and_then(serde_json::Value::as_i64).unwrap_or_default())),
+        Some("completed") => ("completed", match batch.get("message_count").and_then(serde_json::Value::as_i64) {
+            Some(0) => "本批未新增消息".into(),
+            Some(count) => format!("服务端解析完成，共 {count} 条消息"),
+            None => "服务端解析完成".into(),
+        }),
         Some("failed") => ("failed", batch.get("error_message").and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()).unwrap_or("服务端解析失败").to_string()),
         Some("cancelled") => ("cancelled", "服务端任务已取消".to_string()),
         _ => return Ok(()),
@@ -4885,8 +5008,6 @@ async fn app_settings_save(
             config_runtime::activate_settings_profile(&app_data(&app), stored)?;
             return Ok(());
         }
-        let backup_changed=serde_json::to_value((&value.chat,&value.backup,&value.connectors,value.sync.enabled)).ok()!=serde_json::to_value((&stored.chat,&stored.backup,&stored.connectors,stored.sync.enabled)).ok();
-        if backup_changed {abort_in_flight_uploads();}
         value.upload_queue = stored.upload_queue.clone();
         value.runtime = stored.runtime.clone();
         let sync_enabled = value.sync.enabled;
@@ -4897,14 +5018,7 @@ async fn app_settings_save(
                 progress.retain(|name,_|serde_json::to_value(ranges.get(name)).ok()==serde_json::to_value(stored.chat.initial_ranges.get(account).and_then(|r|r.get(name))).ok());
             }
         }
-        if backup_changed {
-            for job in &mut value.upload_queue {
-                if job.batch_id.is_none() && job.create_started==Some(false) && matches!(job.status.as_str(),"queued"|"running"|"failed") {
-                    job.status="cancelled".into();job.legacy_failure_confirmed=true;job.message="备份配置已更新，未发送的批次将重新生成。".into();
-                }
-            }
-            for source in value.runtime.sources.values_mut() {source.scan_remaining=0;source.last_run_at=None;source.retry_after=None;source.failures=0;}
-        }
+        invalidate_unsent_backups(stored, &mut value);
         value.automation.last_daily_run = stored.automation.last_daily_run.clone();
         value.automation.last_daily_status = stored.automation.last_daily_status.clone();
         value.automation.last_daily_error = stored.automation.last_daily_error.clone();

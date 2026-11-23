@@ -26,6 +26,7 @@ const react = {
       });
     }
   },
+  useCallback(fn, deps) { return react.useMemo(() => fn, deps); },
   useMemo(fn, deps) {
     const instance = current, index = instance.index++, previous = instance.hooks[index];
     if (!previous || !deps || !previous.deps || deps.length !== previous.deps.length || deps.some((value, i) => !Object.is(value, previous.deps[i]))) {
@@ -36,15 +37,17 @@ const react = {
 };
 const jsx = { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }), Fragment: Symbol('Fragment') };
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
-const render = (instance, kind = 'reports', focusId) => {
+const renderPage = (instance, page) => {
   current = instance;
   instance.index = 0;
   instance.effects = [];
-  const tree = CloudAnalysisPage({ kind, userId: null, focusId });
+  const tree = page();
   for (const effect of instance.effects) effect();
   current = undefined;
   return tree;
 };
+const render = (instance, kind = 'reports', focusId) =>
+  renderPage(instance, () => CloudAnalysisPage({ kind, userId: null, focusId }));
 const elements = node => {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== 'object') return [];
@@ -305,7 +308,10 @@ assert.match(text(eventTree),/当前筛选下没有记录/);
 detailResolvers[0](completedEvent);await flush();eventTree=renderEvents();
 assert.equal(hasDetailLoading(eventTree),false,'Late detail completion must not restore the cancelled view');
 assert.ok(!elements(eventTree).some(node=>node.props?.className==='analysis-doc'));
+find(eventTree,node=>node.type==='input'&&node.props['aria-label']==='搜索待办').props.onChange({target:{value:'no matches'}});
+eventTree=renderEvents();
 find(eventTree,node=>node.type==='button'&&text(node)==='查看全部待办').props.onClick();
+assert.equal(find(renderEvents(),node=>node.type==='input'&&node.props['aria-label']==='搜索待办').props.value,'');
 for(let i=0;i<3;i++){eventTree=renderEvents();await flush();}
 assert.equal(detailResolvers.length,2,'View all selects the visible event even when focusId is null');
 detailResolvers[1](completedEvent);await flush();eventTree=renderEvents();
@@ -328,3 +334,74 @@ assert.ok(text(emptyTree).includes('大约每小时分析一次'));
 assert.ok(text(emptyTree).includes('智能分析 → 聊天待办分析'));
 assert.ok(!text(emptyTree).includes('查看全部待办'));
 console.log('Event empty-space analysis cadence and settings guidance passed');
+
+
+// The current sidebar range must not rewrite the scope shown on an old answer.
+mocks['./analysisSettingsText'] = load('../src/features/analysis/analysisSettingsText.ts');
+mocks['./askAnswer'] = load('../src/features/analysis/askAnswer.ts');
+const { AskPage } = load('../src/features/analysis/Ask.tsx');
+const savedStart = '2026-10-08T10:15:00Z';
+const savedEnd = '2026-10-09T10:15:00Z';
+const question = {
+  id: 701, question: '有历史回答的问题', answer: '原有回答', citations: [],
+  status: 'completed', created_at: new Date().toISOString(),
+  scope: { since: savedStart, until: savedEnd },
+};
+invoke = async command => {
+  if (command === 'app_settings_get') return { devify: { active_space_id: 'ask-fixture' } };
+  if (command === 'devify_questions') return [question];
+  throw Error(command);
+};
+const askInstance = { hooks: [] };
+const renderAsk = () => renderPage(askInstance, () => AskPage({}));
+renderAsk();
+await flush();
+const askTree = renderAsk();
+const answerFooter = tree => text(byClass(tree, 'ask-foot'));
+const shortDate = value => new Date(value).toLocaleString('zh-CN', {
+  month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+});
+assert.ok(answerFooter(askTree).includes(shortDate(savedStart) + ' – ' + shortDate(savedEnd)));
+assert.ok(answerFooter(askTree).includes('个待办'));
+find(askTree, node => node.type === 'button' && text(node) === '今天').props.onClick();
+assert.equal(answerFooter(renderAsk()), answerFooter(askTree));
+console.log('Saved question scope remains visible after changing the sidebar range');
+
+const { TopicsPage } = load('../src/features/analysis/Topics.tsx');
+const topics = [
+  { id: 801, title: '项目甲', instruction: '甲详情', enabled: true, period: 'day' },
+  { id: 802, title: '项目乙', instruction: '乙详情', enabled: true, period: 'day' },
+];
+const topicRequests = [];
+invoke = async (command, args) => {
+  if (command === 'app_settings_get') return { devify: { active_space_id: 'topic-fixture' } };
+  if (command === 'devify_topics') return topics;
+  if (command === 'devify_topic_detail') {
+    topicRequests.push(args.topicId);
+    return { ...topics.find(topic => topic.id === args.topicId), matched_event_ids: [37] };
+  }
+  throw Error(command);
+};
+const topicsInstance = { hooks: [] };
+const renderTopics = () => renderPage(topicsInstance, () => TopicsPage({ userId: null }));
+const settleTopics = async () => {
+  renderTopics();
+  await flush();
+  return renderTopics();
+};
+await settleTopics();
+let topicTree = await settleTopics();
+assert.ok(text(byClass(topicTree, 'topic-detail-wrap')).includes('甲详情'));
+const searchTopic = (tree, value) => byClass(tree, 'topic-side-search').props.onChange({ target: { value } });
+searchTopic(topicTree, '项目乙');
+topicTree = await settleTopics();
+assert.ok(text(byClass(topicTree, 'topic-detail-wrap')).includes('乙详情'));
+assert.ok(text(byClass(topicTree, 'topic-detail-wrap')).includes('待办 #37'));
+assert.deepEqual(topicRequests, [801, 802]);
+searchTopic(topicTree, 'nothing matches');
+topicTree = await settleTopics();
+assert.ok(!elements(topicTree).some(node => node.props?.className === 'topic-detail-wrap'));
+find(topicTree, node => node.type === 'button' && text(node) === '清除搜索').props.onClick();
+topicTree = await settleTopics();
+assert.ok(text(byClass(topicTree, 'topic-detail-wrap')).includes('甲详情'));
+console.log('Topic detail follows visible search results and clears when nothing matches');

@@ -80,6 +80,18 @@ function accountLabel(account: Account): string {
   return account.id.length > 38 ? `${account.id.slice(0, 35)}…` : account.id;
 }
 
+type SyncIdentity = { user_id: number; device_id: string };
+
+function importCursors(settings: AppSettings, accountId: string, identity: SyncIdentity | null) {
+  const matches = (owner?: UploadOwner | null) => Boolean(owner && identity
+    && owner.account_id === accountId && owner.space_id === settings.devify.active_space_id
+    && owner.user_id === identity.user_id && owner.device_id === identity.device_id
+    && sameServiceUrl(owner.base_url, settings.devify.base_url));
+  return matches(settings.sync.owners?.[accountId])
+    ? settings.sync.cursors?.[accountId]
+    : settings.sync.saved_progress?.find(item => matches(item.owner))?.cursors;
+}
+
 export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wechat', onBack }: { onSaved?: (count: number) => void; wizard?: boolean; wizardSource?: 'wechat' | 'whatsapp'; onBack?: () => void } = {}) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
@@ -88,19 +100,15 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
   const [accounts, setAccounts] = useState<Account[]>([]);
   const profiles = useWechatProfiles(accounts);
   const [accountId, setAccountId] = useState('');
-  const [syncIdentity, setSyncIdentity] = useState<{ user_id: number; device_id: string } | null>(null);
+  const [syncIdentity, setSyncIdentity] = useState<SyncIdentity | null>(null);
+  const identityRequest = useRef<Promise<SyncIdentity | null> | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const accountIdRef = useRef('');
   const [catalog, setCatalog] = useState<SessionItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [kind, setKind] = useState<'all' | 'group' | 'direct'>('all');
   const [search, setSearch] = useState('');
-  const matchesSyncOwner = (owner?: UploadOwner | null) => Boolean(owner && syncIdentity
-    && owner.account_id === accountId && owner.space_id === settings.devify.active_space_id
-    && owner.user_id === syncIdentity.user_id && owner.device_id === syncIdentity.device_id
-    && sameServiceUrl(owner.base_url, settings.devify.base_url));
-  const currentCursors = matchesSyncOwner(settings.sync.owners?.[accountId])
-    ? settings.sync.cursors?.[accountId]
-    : settings.sync.saved_progress?.find(item => matchesSyncOwner(item.owner))?.cursors;
+  const currentCursors = importCursors(settings, accountId, syncIdentity);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -161,15 +169,18 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
   );
 
   useEffect(() => {
+    let active = true;
     void (async () => {
       try {
-        const [stored, scan, identity] = await Promise.all([
+        const [stored, scan] = await Promise.all([
           invoke<AppSettings>('app_settings_get'),
           invoke<Account[]>('chat_accounts'),
-          invoke<{ user_id: number; device_id: string }>('devify_upload_identity').catch(() => null),
         ]);
-        setSyncIdentity(identity);
+        if (!active) return;
         const next = mergeSettings(requireSettingsRevision(stored));
+        identityRequest.current = Object.keys(next.sync.owners ?? {}).length || next.sync.saved_progress?.length
+          ? invoke<SyncIdentity>('devify_upload_identity').catch(() => null)
+          : null;
         const list = wizard ? (scan ?? []).filter(account => wizardSource === 'whatsapp' ? account.source === 'whatsapp' : account.source !== 'whatsapp') : scan ?? [];
         confirmedRevision.current = next.user_settings_revision;
         setSettings(next);
@@ -178,11 +189,13 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
         const id = currentAccount(list, next.active_account_id)?.id ?? '';
         accountIdRef.current = id;
         setCatalogLoading(Boolean(id));
+        setHistoryLoading(Boolean(id));
         setAccountId(id);
       } catch (e) {
-        setError(String(e));
+        if (active) setError(String(e));
       }
     })();
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -192,16 +205,24 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
     setCatalogLoading(true);
     setError('');
     void invoke<SessionItem[]>('wechat_session_catalog', { accountId })
-      .then(items => {
+      .then(async items => {
         if (!active || accountIdRef.current !== accountId) return;
         setCatalog(items);
+        setCatalogLoading(false);
+        // Only history settings depend on verifying ownership of stored backup progress.
+        const hasProgress = Boolean(settings.sync.owners?.[accountId]
+          || settings.sync.saved_progress?.some(item => item.owner?.account_id === accountId));
+        const identity = hasProgress ? await identityRequest.current : null;
+        if (!active || accountIdRef.current !== accountId) return;
+        setSyncIdentity(identity);
         // Offer the complete current catalog only for an unconfigured account. Nothing
         // is persisted until Next; existing saved choices and the backend cap stay intact.
         setSettings(current => {
           const selected = current.chat.allowed_usernames[accountId]
             ?? (wizard && wizardSource === 'wechat' && items.length > 0 && items.length <= 1000 ? items.map(item => item.username) : []);
           const ranges = { ...current.chat.initial_ranges[accountId] };
-          for (const username of selected) if (!ranges[username] && !currentCursors?.[username]) ranges[username] = presetHistoryRange('7');
+          const cursors = importCursors(current, accountId, identity);
+          for (const username of selected) if (!ranges[username] && !cursors?.[username]) ranges[username] = presetHistoryRange('7');
           return { ...current, chat: { ...current.chat,
             allowed_usernames: { ...current.chat.allowed_usernames, [accountId]: selected },
             initial_ranges: { ...current.chat.initial_ranges, [accountId]: ranges },
@@ -213,7 +234,11 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
         setCatalog([]);
         setError(tf("无法读取该账号的会话候选：{0}", String(e)));
       })
-      .finally(() => { if (active && accountIdRef.current === accountId) setCatalogLoading(false); });
+      .finally(() => {
+        if (!active || accountIdRef.current !== accountId) return;
+        setCatalogLoading(false);
+        setHistoryLoading(false);
+      });
     return () => { active = false; };
   }, [accountId]);
 
@@ -270,7 +295,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
   };
 
   const save = async () => {
-    if (!loaded || !accountId || catalogLoading || confirmedRevision.current === null || saveLock.current) return;
+    if (!loaded || !accountId || catalogLoading || historyLoading || confirmedRevision.current === null || saveLock.current) return;
     saveLock.current = true;
     setSaving(true);
     setSelectionIssue(null);
@@ -335,6 +360,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
     accountIdRef.current = id;
     setCatalog([]);
     setCatalogLoading(Boolean(id));
+    setHistoryLoading(Boolean(id));
     setAccountId(id);
     setFocusedSession('');
     setHistoryScope('selected');
@@ -355,27 +381,30 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
     onScope={setHistoryScope} onFocus={id => { setFocusedSession(id); setHistoryScope('single'); }} onChange={applyHistoryRange}
     dateDetails={dateDetails[accountId] ?? {}} dateLoading={dateLoading} onLoadDates={id => void loadDates(id)} />;
 
-  if (!loaded) return <div className="settings-page">{error ? <div className="error">{t("设置加载失败：")}{error} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
-
   const source = accounts.find(account => account.id === accountId)?.source === 'whatsapp' ? 'whatsapp' : 'wechat';
   const sourceName = source === 'whatsapp' ? 'WhatsApp' : '微信';
   const sourceAccounts = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === source);
   const editor = <>
     {(!wizardWechat || accounts.length > 1 || !accountId) && <section className="imports-account-card">{accountId ? <WechatIdentity account={{ id: accountId }} profile={profiles[accountId]} source={source} /> : <><span className="wechat-account-avatar"><ConnectorIcon name={sourceName} /></span><span className="wechat-account-details"><strong>{t("聊天账号")}</strong><small>{t("未检测到可用的聊天账号")}</small></span></>}{sourceAccounts.length > 1 && <AccountPicker accounts={sourceAccounts} value={accountId} disabled={saving} nameFor={account => profiles[account.id]?.nickname || accountLabel(account)} onChange={changeAccount} />}</section>}
     {source === 'whatsapp' && <p className="imports-hint">{t("选择的账号和范围同步成功后，将按备份周期自动执行。")}</p>}
-    <WizardImportScope catalog={catalog} selected={allowed} loading={catalogLoading} disabled={saving} accountId={accountId} onScope={setScopeSelection} selectionIssue={selectionIssue} onClearIssue={() => setSelectionIssue(null)} sourceName={sourceName}>
+    <WizardImportScope catalog={catalog} selected={allowed} loading={catalogLoading} disabled={saving || historyLoading} accountId={accountId} onScope={setScopeSelection} selectionIssue={selectionIssue} onClearIssue={() => setSelectionIssue(null)} sourceName={sourceName}>
       <WizardSessionPicker items={visibleCatalog} total={matchedCatalog.length} groupCount={groupCount}
         selected={allowed} selectedCount={allowedCount} kind={kind} onKind={setKind} search={search} onSearch={setSearch}
-        loading={catalogLoading} disabled={saving} accountId={accountId} onToggle={toggleUsername} onBulk={setVisibleSelection}
+        loading={catalogLoading} disabled={saving || historyLoading} accountId={accountId} onToggle={toggleUsername} onBulk={setVisibleSelection}
         focused={focused?.username ?? ''} onFocus={id => { setFocusedSession(id); setHistoryScope('single'); }} activity={activityText} sourceName={sourceName} />
     </WizardImportScope>
-    {!catalogLoading && accountId && historyEditor}
+    {!catalogLoading && accountId && (historyLoading
+      ? <p className="help" role="status">{t("正在核对备份进度…")}</p>
+      : historyEditor)}
     {error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}{allowedCount > 1000 && <div className="error" role="alert">{t("已超出")}{allowedCount - 1000} {t("个会话，请取消选择后保存。")}</div>}
-    <div className="page-actions">{notice && <span className="imports-save-status" role="status">{Icons.check}<span>{notice}</span></span>}{wizard && onBack && <button type="button" className="wxv-btn" disabled={saving} onClick={onBack}>{t("上一步")}</button>}<button className="primary" aria-busy={saving} disabled={saving || !accountId || catalogLoading || allowedCount > 1000 || (wizard && allowedCount === 0)} onClick={() => void save()}>{saving ? t("正在保存…") : wizardWechat ? t("下一步") : wizard ? t("保存并继续") : t("保存所选会话")}</button></div>
+    <div className="page-actions">{notice && <span className="imports-save-status" role="status">{Icons.check}<span>{notice}</span></span>}{wizard && onBack && <button type="button" className="wxv-btn" disabled={saving} onClick={onBack}>{t("上一步")}</button>}<button className="primary" aria-busy={saving} disabled={saving || !accountId || catalogLoading || historyLoading || allowedCount > 1000 || (wizard && allowedCount === 0)} onClick={() => void save()}>{saving ? t("正在保存…") : wizardWechat ? t("下一步") : wizard ? t("保存并继续") : t("保存所选会话")}</button></div>
   </>;
   return <div className={`settings-page imports-page imports-v7${wizard ? ' wizard-imports' : ' imports-management'}`}>
     <header className="page-head"><h2>{wizard ? t("选择要备份的会话") : t("导入管理")}</h2><p className="help">{wizard ? t("只导入你确认的会话。会话较多时，可以通过「自定义」筛选和批量选择。") : t("每个平台单独选择要备份的私聊和群聊。连接向导里也可以设置，修改后保存即可生效。")}</p></header>
-    {wizard || !accounts.length ? editor : <div className="imports-platforms">{(['wechat', 'whatsapp'] as const).filter(platform => accounts.some(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === platform)).map(platform => {
+    {!loaded ? (error
+      ? <div className="error" role="alert">{t("设置加载失败：")}{error} {t("请重新打开页面。")}</div>
+      : <p role="status">{t("正在加载设置…")}</p>)
+      : wizard || !accounts.length ? editor : <div className="imports-platforms">{(['wechat', 'whatsapp'] as const).filter(platform => accounts.some(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === platform)).map(platform => {
       const list = accounts.filter(account => (account.source === 'whatsapp' ? 'whatsapp' : 'wechat') === platform);
       const name = platform === 'whatsapp' ? 'WhatsApp' : t("微信");
       const open = source === platform && importsExpanded;
@@ -384,7 +413,9 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
         <button type="button" className="imports-platform-head" aria-expanded={open} disabled={saving} onClick={() => {
           if (source === platform) setImportsExpanded(!importsExpanded);
           else { changeAccount(currentAccount(list, settings.active_account_id)!.id); setImportsExpanded(true); }
-        }}><ConnectorIcon name={platform === 'whatsapp' ? 'WhatsApp' : '微信'} /><span><strong>{name}</strong><small>{t("已选")}{count} {t("个会话 ·")}{list.length} {t("个账号")}</small></span><svg className={open ? 'open' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
+        }}><ConnectorIcon name={platform === 'whatsapp' ? 'WhatsApp' : '微信'} /><span><strong>{name}</strong><small>
+          {count === 1 ? t("已选 1 个会话") : tf("已选 {0} 个会话", count)} · {list.length === 1 ? t("1 个账号") : tf("{0} 个账号", list.length)}
+        </small></span><svg className={open ? 'open' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg></button>
         {open && <div className="imports-platform-content">{editor}</div>}
       </section>;
     })}</div>}

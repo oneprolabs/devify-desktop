@@ -179,6 +179,30 @@ resolveUploadState([{username:wechatSession.username,state:'pending',new_message
 assert.equal(textOf(pendingFilter()),'待传 1','new messages also belong to pending');
 selectPlatform('whatsapp');
 assert.equal(pendingFilter().props.className,'active','platform filters are remembered separately');
+const searchInput = (className) => nodes(tree).find(node => node.type === 'input' && node.props.className === className);
+searchInput('chat-workbench-head-search').props.onChange({ target: { value: 'message only' } });
+tree = render();
+assert.equal(searchInput('chat-workbench-search').props.value, '', 'conversation search must not change the sidebar query');
+assert.equal(nodes(tree).find(node => node.type === MessagePane).props.searchKeyword, 'message only');
+searchInput('chat-workbench-search').props.onChange({ target: { value: 'sidebar only' } });
+tree = render();
+assert.equal(searchInput('chat-workbench-head-search').props.value, 'message only');
+const selectChatTab = label => {
+  buttons().find(node => node.props.role === 'tab' && textOf(node).startsWith(label)).props.onClick();
+  tree = render();
+};
+selectChatTab('待办');
+assert.equal(searchInput('chat-workbench-head-search').props.value, '');
+searchInput('chat-workbench-head-search').props.onChange({ target: { value: 'to-do only' } });
+tree = render();
+selectChatTab('原始记录');
+assert.equal(searchInput('chat-workbench-head-search').props.value, 'message only');
+selectChatTab('待办');
+assert.equal(searchInput('chat-workbench-head-search').props.value, 'to-do only');
+assert.equal(searchInput('chat-workbench-search').props.value, 'sidebar only');
+selectChatTab('原始记录');
+searchInput('chat-workbench-search').props.onChange({ target: { value: '' } });
+tree = render();
 // Returning from another section preserves a reader absent from the refreshed first page.
 hideWhatsAppFromFirstPage=true;props.visible=false;tree=render();props.visible=true;tree=render();await flush();tree=render();
 assert.equal(nodes(tree).find(node=>node.type===MessagePane).props.accountId,account);

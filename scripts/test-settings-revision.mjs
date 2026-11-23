@@ -794,7 +794,8 @@ tree = render(backupView, () => BackupSchedule(backupProps));
 assert.ok(!elements(tree).some(node => node.type?.name === 'Row' && node.props.label === '自定义间隔'));
 let continueBackup = find(tree, node => node.type === WizardActionButton && node.props.children === '下一步');
 assert.equal(continueBackup.props.disabled, true);
-assert.equal(continueBackup.props.loading, true, 'next remains busy until the save is acknowledged');
+assert.ok(!continueBackup.props.loading, 'autosave must keep the Next label stable');
+assert.match(continueBackup.props.className, /backup-next-saving/);
 assert.equal(backupWrites[0].args.value.user_settings_revision, 100);
 backupWrites[0].resolve({ ...backupWrites[0].args.value, user_settings_revision: 101 }); await flush();
 tree = render(backupView, () => BackupSchedule(backupProps));
@@ -940,11 +941,13 @@ for (const hook of scoped.view.hooks) hook?.cleanup?.();
 
 // Import management shares both editors, scopes accounts by platform, and keeps drafts
 // when changing platforms. Opening a page or changing platforms must never auto-save.
-const management = { hooks: [] }, managementWrites = [];
+const management = { hooks: [] }, managementWrites = [], managementIdentity = deferred();
+const managementOwner = { account_id: 'A', space_id: 'space', base_url: defaultSettings().devify.base_url, user_id: 1, device_id: 'dev' };
 invoke = async (command, args) => {
-  if (command === 'app_settings_get') return { ...defaultSettings(), user_settings_revision: 130, active_account_id: 'A', chat: { ...defaultSettings().chat, allowed_usernames: { A: ['d'], WA: ['w'] } } };
+  if (command === 'app_settings_get') return { ...defaultSettings(), user_settings_revision: 130, active_account_id: 'A', devify: { ...defaultSettings().devify, active_space_id: 'space' }, sync: { ...defaultSettings().sync, owners: { A: managementOwner }, cursors: { A: { d: 10 } } }, chat: { ...defaultSettings().chat, allowed_usernames: { A: ['d'], WA: ['w'] } } };
   if (command === 'chat_accounts') return [{ id: 'A', source: 'wechat' }, { id: 'WA', source: 'whatsapp' }];
-  if (command === 'devify_upload_identity' || command === 'wechat_account_profile') return null;
+  if (command === 'devify_upload_identity') return managementIdentity.promise;
+  if (command === 'wechat_account_profile') return null;
   if (command === 'wechat_session_catalog') return args.accountId === 'WA' ? [session('w')] : [session('d'), session('x')];
   if (command === 'app_settings_save') { managementWrites.push(args.value); return { ...args.value, user_settings_revision: 131 }; }
   throw Error(command);
@@ -953,7 +956,12 @@ const drawManagement = () => render(management, WhitelistSettings);
 for (let i = 0; i < 4; i++) { drawManagement(); await flush(); }
 tree = drawManagement();
 assert.ok(elements(tree).some(node => node.type?.name === 'WizardImportScope'));
-assert.ok(elements(tree).some(node => node.type?.name === 'WizardSessionPicker'));
+assert.deepEqual(find(tree, node => node.type?.name === 'WizardSessionPicker').props.items.map(item => item.username), ['d', 'x'], 'local catalog loads before cloud verification');
+assert.ok(elements(tree).some(node => node.props?.role === 'status' && node.props.children === '正在核对备份进度…'));
+managementIdentity.resolve({ user_id: 1, device_id: 'dev' });
+await flush();
+tree = drawManagement();
+assert.ok(find(tree, node => node.type?.name === 'ImportHistoryRange').props.synced.has('d'));
 find(tree, node => node.type?.name === 'WizardImportScope').props.onScope(false, true);
 tree = drawManagement();
 find(tree, node => node.type?.name === 'WizardSessionPicker').props.onSearch('x');

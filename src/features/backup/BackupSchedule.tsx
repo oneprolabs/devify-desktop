@@ -301,7 +301,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
     </div>}
 
     </fieldset>
-    {onContinue && <div className="page-actions">{wizard && onBack && <button type="button" className="wxv-btn" disabled={savePending} onClick={onBack}>{t("上一步")}</button>}<WizardActionButton className="primary" loading={savePending} busyLabel={t("正在保存…")} disabled={!connected || (!wizard && (!settings.sync.enabled || plan.mode === 'manual')) || blocked || savePending} onAction={onContinue}>{wizard ? editingSharedPlan ? t("下一步") : t("沿用当前设置并继续") : t("保存并继续")}</WizardActionButton>{!wizard && (!settings.sync.enabled || plan.mode === 'manual') && <span>{t("请开启自动备份并选择备份周期。")}</span>}</div>}
+    {onContinue && <div className="page-actions">{wizard && onBack && <button type="button" className="wxv-btn" disabled={savePending} onClick={onBack}>{t("上一步")}</button>}<WizardActionButton className={savePending ? "primary backup-next-saving" : "primary"} busyLabel={t("正在保存…")} disabled={!connected || (!wizard && (!settings.sync.enabled || plan.mode === 'manual')) || blocked || savePending} onAction={onContinue}>{wizard ? editingSharedPlan ? t("下一步") : t("沿用当前设置并继续") : t("保存并继续")}</WizardActionButton>{!wizard && (!settings.sync.enabled || plan.mode === 'manual') && <span>{t("请开启自动备份并选择备份周期。")}</span>}</div>}
     {error && <div className="error" role="alert">{error}</div>}
     {blocked && <div><p>{t("当前修改未确认保存；重新加载会放弃这些修改。")}</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? t("正在加载…") : t("放弃未保存修改并重新加载")}</button></div>}
   </div>;

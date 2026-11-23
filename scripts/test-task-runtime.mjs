@@ -57,4 +57,16 @@ runtime={...runtime,context:'three'};tree=render();await flush();
 assert.ok(!text(tree).includes('项目讨论群'),'an identity switch hides names immediately');
 runtime={...runtime,context:'four',jobs:[]};render();finishNames([{username:'group',display:'旧账号的群'}]);await flush();tree=render();
 assert.ok(!text(tree).includes('旧账号的群'),'late name responses cannot cross identity boundaries');
+const batch = { account_id: 'wechat', status: 'completed', message: '本批未新增消息', updated_at: '2026-01-02T12:00:00' };
+runtime = { ...runtime, jobs: [
+  { ...batch, id: 'latest' },
+  { ...batch, id: 'legacy', message: '服务端解析完成，共 0 条消息', updated_at: '2026-01-02T11:00:00' },
+  { ...batch, id: 'other-day', updated_at: '2026-01-01T12:00:00' },
+  { ...batch, id: 'other-account', account_id: 'other' },
+  { ...batch, id: 'with-messages', message: '服务端解析完成，共 3 条消息' },
+] };
+const rows = all(render()).filter(node => node.type === 'article').map(text);
+assert.equal(rows.length, 4, 'only empty batches for the same account and day collapse');
+assert.equal(rows.filter(row => row.includes('当天 2 次')).length, 1);
+assert.ok(rows.some(row => row.includes('服务端解析完成，共 3 条消息')));
 console.log('Task page uses bounded local names, skips progress rescans and rejects old-identity names/history');

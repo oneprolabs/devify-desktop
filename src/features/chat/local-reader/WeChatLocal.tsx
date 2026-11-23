@@ -1839,7 +1839,7 @@ export default function WeChatLocal({
           <div className="wxv-chat-actions">
             {selectedMessages.length > 0 && (
               <button type="button" className="wxv-selection-count" onClick={openWorkPicker}>
-                {t("已选")} {selectedMessages.length} {t("条")}
+                {tf("已选 {0} 条，其中 {1} 条可用于总结", selectedMessages.length, selectedMessages.filter(item => isSummaryText(item.message)).length)}
               </button>
             )}
             {canOrganize && (
@@ -1882,7 +1882,7 @@ export default function WeChatLocal({
             {hasMore ? t("，可继续向前加载") : t("，已到本地记录起点")}
           </span>
           <span>{selectedMessages.length
-            ? tf("已选 {0} 条 · 点击消息可切换，Shift + 点击连续选择", selectedMessages.length)
+            ? tf("已选 {0} 条，其中 {1} 条可用于总结。Shift + 点击连续选择", selectedMessages.length, selectedMessages.filter(item => isSummaryText(item.message)).length)
             : t("点击图片查看原图，Shift + 点击消息可加入跨会话选集")}</span>
           {selectedMessages.length > 0 && (
             <button type="button" className="wxv-link" onClick={clearSelectedMessages}>{t("清空选中")}</button>

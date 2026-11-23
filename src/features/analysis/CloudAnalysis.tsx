@@ -635,7 +635,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         {kind === 'events' && selectedId == null && !detailLoading && <div className="analysis-empty event-empty" role="status">
           <h2>{items.length ? t("当前筛选下没有记录。") : pageEmpty}</h2>
           <p>{items.length ? t("可切换筛选查看其他待办。") : t("已备份的聊天大约每小时分析一次，生成的待办会显示在这里。可在「智能分析 → 聊天待办分析」中调整设置。")}</p>
-          {items.length ? <button type="button" className="event-empty-action" onClick={() => setFilter('all')}>{t("查看全部待办")}</button>
+          {items.length ? <button type="button" className="event-empty-action" onClick={() => { setQuery(''); setFilter('all'); }}>{t("查看全部待办")}</button>
             : onOpenAnalysisSettings && <button type="button" className="event-empty-action" onClick={onOpenAnalysisSettings}>{t("设置聊天待办分析")}</button>}
         </div>}
 

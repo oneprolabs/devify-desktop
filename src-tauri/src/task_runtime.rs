@@ -519,13 +519,9 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
             return Err("配置或登录状态已改变。".into());
         }
         // Do not commit a plan prepared against changed ranges or checkpoints.
-        if serde_json::to_value((&s.chat, &s.sync.cursors, &s.sync.initial_progress)).ok()
-            != serde_json::to_value((
-                &value.chat,
-                &value.sync.cursors,
-                &value.sync.initial_progress,
-            ))
-            .ok()
+        if account_backup_changed(&value, s, account)
+            || serde_json::to_value((s.sync.cursors.get(account), s.sync.initial_progress.get(account))).ok()
+                != serde_json::to_value((value.sync.cursors.get(account), value.sync.initial_progress.get(account))).ok()
         {
             return Err("备份范围或进度已改变，稍后重新读取。".into());
         }
@@ -537,6 +533,7 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
         }
         source.retry_after = None;
         source.failures = 0;
+        source.last_error = None;
         if let Some(job) = job.clone() {
             s.upload_queue.push(job);
         }

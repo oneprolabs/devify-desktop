@@ -95,28 +95,29 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
   }, [userId]);
   useEffect(() => { mounted.current = true; void load(); return () => { mounted.current = false; }; }, [load]);
 
-  const selected = useMemo(() => topics.find(item => item.id === selectedId) ?? null, [topics, selectedId]);
-  useEffect(() => {
-    if (!isTauri() || !spaceId || !selectedId) { setTopicDetail(null); return; }
-    let active = true;
-    setDetailLoading(true);
-    void invoke<Topic>('devify_topic_detail', { spaceId, topicId: selectedId })
-      .then(value => { if (active) setTopicDetail(value); })
-      .catch(() => { if (active) setTopicDetail(null); })
-      .finally(() => { if (active) setDetailLoading(false); });
-    return () => { active = false; };
-  }, [spaceId, selectedId]);
-
-  const detail = topicDetail?.id === selectedId ? topicDetail : selected;
-  const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: tf("待办 #{0}", id) } as TopicEvent));
-  const openCount = matchedEvents.filter(event => event.status !== 'done').length;
-  const runs = detail?.execution_history ?? detail?.runs ?? detail?.execution_records ?? [];
-
   const visibleTopics = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) return topics;
     return topics.filter(topic => `${topic.title} ${topic.instruction}`.toLowerCase().includes(keyword));
   }, [topics, query]);
+  const selected = useMemo(() => visibleTopics.find(item => item.id === selectedId) ?? visibleTopics[0] ?? null, [visibleTopics, selectedId]);
+  const visibleId = selected?.id ?? null;
+  useEffect(() => {
+    if (!isTauri() || !spaceId || visibleId == null) { setTopicDetail(null); setDetailLoading(false); return; }
+    let active = true;
+    setDetailLoading(true);
+    void invoke<Topic>('devify_topic_detail', { spaceId, topicId: visibleId })
+      .then(value => { if (active) setTopicDetail(value); })
+      .catch(() => { if (active) setTopicDetail(null); })
+      .finally(() => { if (active) setDetailLoading(false); });
+    return () => { active = false; };
+  }, [spaceId, visibleId]);
+
+  const detail = selected && topicDetail?.id === selected.id ? topicDetail : selected;
+  const matchedEvents = detail?.matched_events ?? detail?.events ?? (detail?.matched_event_ids ?? []).map(id => ({ id, title: tf("待办 #{0}", id) } as TopicEvent));
+  const openCount = matchedEvents.filter(event => event.status !== 'done').length;
+  const runs = detail?.execution_history ?? detail?.runs ?? detail?.execution_records ?? [];
+
   const groups = useMemo(() => [
     { label: t("运行中"), items: visibleTopics.filter(topic => topic.enabled) },
     { label: t("已暂停"), items: visibleTopics.filter(topic => !topic.enabled) },
@@ -166,7 +167,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
           {group.items.map(topic => <button
             type="button"
             key={topic.id}
-            className={!creating && topic.id === selectedId ? 'on' : ''}
+            className={!creating && topic.id === visibleId ? 'on' : ''}
             onClick={() => { setCreating(false); setSelectedId(topic.id); }}
           >
             <span className={`topic-side-dot${topic.enabled ? ' on' : ''}`} aria-hidden="true"/>
@@ -241,7 +242,11 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
         <button type="button" className="topic-save" onClick={() => setCreating(true)}>{t("创建第一个主题")}</button>
       </div>}
 
-      {spaceId && !creating && detailLoading && <LoadingSkeleton label={t("正在加载主题详情")} kind="detail" />}
+      {spaceId && !creating && topics.length > 0 && !visibleTopics.length && <div className="topic-empty" role="status">
+        <h2>{t("没有匹配的主题。")}</h2>
+        <button type="button" className="topic-save" onClick={() => setQuery('')}>{t("清除搜索")}</button>
+      </div>}
+      {spaceId && !creating && detail && detailLoading && <LoadingSkeleton label={t("正在加载主题详情")} kind="detail" />}
       {spaceId && !creating && detail && !detailLoading && <div className="topic-detail-wrap">
         <span className={`topic-state${detail.enabled ? ' on' : ''}`}>{detail.enabled ? t("运行中") : t("已暂停")}</span>
         <h1>{t(detail.title)}</h1>
