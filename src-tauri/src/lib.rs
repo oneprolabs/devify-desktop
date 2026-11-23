@@ -239,9 +239,8 @@ async fn devify_auth_config(
     settings: &settings::DevifySettings,
 ) -> Result<DevifyAuthConfig, String> {
     let base_url = settings.resolved_base_url()?;
-    let suffix = if build_flavor::DEVELOPMENT { "?channel=development" } else { "" };
     let response = http_client::strict()
-        .get(format!("{}/api/v1/auth/desktop/config{}", base_url, suffix))
+        .get(format!("{}/api/v1/auth/desktop/config", base_url))
         .send_traced_retrying(data, diagnostics::Module::Auth, RetryPolicy::READ)
         .await
         .map_err(|e| devify_network_message("读取服务端登录配置失败", &e))?;
@@ -3286,7 +3285,6 @@ async fn devify_auth_start(
     let config_result = devify_auth_config(&app_data(&app), &settings.devify).await;
     eprintln!("桌面授权：读取登录配置耗时 {} 毫秒", config_started.elapsed().as_millis());
     let auth_config = config_result?;
-    if build_flavor::DEVELOPMENT { build_flavor::validate_auth_redirect(&auth_config.redirect_uri)?; }
     let auth_address = format!("127.0.0.1:{}", build_flavor::AUTH_PORT);
     if desktop_credentials::generation()? != auth_generation {
         return Err("登录状态已改变，请重新登录。".into());
@@ -3319,14 +3317,17 @@ async fn devify_auth_start(
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => {
+                if error.kind() == std::io::ErrorKind::AddrInUse {
+                    return Err("另一个客户端正在进行浏览器登录，请先完成或取消后重试，也可使用账号密码登录。".into());
+                }
                 return Err(format!(
-                    "无法启动本地登录回调服务（{}）：{error}。请关闭其他同版本客户端后重试。", build_flavor::AUTH_PORT
+                    "无法启动本地登录回调服务（{}）：{error}。请稍后重试。", build_flavor::AUTH_PORT
                 ))
             }
         }
     }
     let listener = bound.ok_or_else(|| {
-        format!("无法启动本地登录回调服务（{}）：端口已被占用，请关闭其他同版本客户端后重试，或改用账号密码登录。", build_flavor::AUTH_PORT)
+        "另一个客户端正在进行浏览器登录，请先完成或取消后重试，也可使用账号密码登录。".to_string()
     })?;
     let callback_origin = format!("http://{auth_address}");
     let callback_handle = app.clone();

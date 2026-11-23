@@ -17,7 +17,9 @@ pub const DEFAULT_SERVICE: &str = if DEVELOPMENT {
 } else {
     "https://aimychats.com/"
 };
-pub const AUTH_PORT: u16 = if DEVELOPMENT { 47833 } else { 47832 };
+// Both apps reuse the existing desktop login registration. The listener exists
+// only during authorization; binding it prevents simultaneous browser attempts.
+pub const AUTH_PORT: u16 = 47832;
 pub const AGENT_BIND: &str = if DEVELOPMENT {
     "127.0.0.1:18766"
 } else {
@@ -45,33 +47,11 @@ pub fn validate_identifier(actual: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A distinct callback must be configured by the development server. Never grab the
-/// production port or rewrite a server-issued OAuth redirect without its approval.
-pub fn validate_auth_redirect(raw: &str) -> Result<url::Url, String> {
-    let url = url::Url::parse(raw).map_err(|_| "登录回调配置无效。".to_string())?;
-    if url.scheme() != "http"
-        || url.host_str() != Some("127.0.0.1")
-        || url.port() != Some(AUTH_PORT)
-        || url.path() != "/auth/callback"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(if DEVELOPMENT {
-            "当前服务尚未配置开发版浏览器登录，请使用账号密码登录。".into()
-        } else {
-            "服务端浏览器登录回调配置无效，请联系管理员。".into()
-        });
-    }
-    Ok(url)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn identity_and_callback_cannot_fall_back_to_the_other_app() {
+    fn app_identity_is_separate_but_existing_login_callback_is_shared() {
         assert!(validate_identifier(IDENTIFIER).is_ok());
         assert!(validate_identifier(if DEVELOPMENT {
             PRODUCTION_ID
@@ -79,16 +59,6 @@ mod tests {
             DEVELOPMENT_ID
         })
         .is_err());
-        assert!(
-            validate_auth_redirect(&format!("http://127.0.0.1:{AUTH_PORT}/auth/callback")).is_ok()
-        );
-        let other = if DEVELOPMENT { 47832 } else { 47833 };
-        for uri in [
-            format!("http://127.0.0.1:{other}/auth/callback"),
-            format!("http://example.com:{AUTH_PORT}/auth/callback"),
-            format!("http://127.0.0.1:{AUTH_PORT}/other"),
-        ] {
-            assert!(validate_auth_redirect(&uri).is_err());
-        }
+        assert_eq!(AUTH_PORT, 47832);
     }
 }

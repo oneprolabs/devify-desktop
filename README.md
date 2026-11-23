@@ -460,7 +460,7 @@ build identities before installing, so shared Cargo outputs cannot silently mix 
 | Application | AIMyChats | AIMyChats Dev |
 | Bundle ID | `local.wechat.devifybridge` | `local.wechat.devifybridge.dev` |
 | Default service | `https://aimychats.com` | `http://192.168.8.182:7000` |
-| Browser callback | `127.0.0.1:47832` | `127.0.0.1:47833` |
+| Browser callback | `127.0.0.1:47832` | `127.0.0.1:47832` (shared during login only) |
 | URL scheme | `devify` | `devify-dev` |
 | Local read API | `127.0.0.1:18765` | `127.0.0.1:18766` |
 | Installed Skill | `aimychats` | `aimychats-dev` |
@@ -481,9 +481,11 @@ Grant Full Disk Access to AIMyChats Dev once. Keep its signing identity stable a
 The script uses the local signing keychain when available, otherwise the single available Developer ID.
 With multiple identities, specify `AIMYCHATS_SIGNING_IDENTITY`; `AIMYCHATS_SIGNING_KEYCHAIN` is optional.
 
-Browser login needs the server's development registration (server issue #167). The app requests
-`desktop/config?channel=development` and rejects a production callback before binding or opening a
-browser. Until the registration is available, use password login. Production login discovery is unchanged.
+Browser login reuses the existing desktop configuration, authorization and token APIs on the
+selected service, with the existing `127.0.0.1:47832/auth/callback` registration. No development-specific
+server endpoint or registration is required. The listener is temporary: both apps may remain open,
+but only one can start browser authorization at a time. A busy port prompts the user to complete or
+cancel the other login. State/PKCE validation and app-owned credential storage remain separate.
 
 Both variants may read the original local chat databases. Automatic WeChat capture/recovery changes
 one shared WeChat installation: those operations use a cross-variant OS lock and retain ownership while

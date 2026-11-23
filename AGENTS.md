@@ -35,14 +35,16 @@ and the requirement to verify and commit each bounded batch before continuing.
 - Installing or restarting Dev must not quit, replace, re-sign or clear the installed
   production app. Do not copy production credentials, task databases, keys or caches
   into Dev, or overwrite production Skills/CLI installations.
-- Keep the Dev bundle ID, signing identity, app-owned storage, local API port, login
-  callback and URL scheme separate and stable. Keep Dev frontend output in `dist-dev/`
+- Keep the Dev bundle ID, signing identity, app-owned storage, local API port
+  and URL scheme separate and stable. Keep Dev frontend output in `dist-dev/`
   and CLI resources in `src-tauri/binaries-dev/`; do not point either at production output. Dev must not use the production updater.
   Do not bypass the WeChat installation-operation guard to test capture/recovery.
 - Production builds are explicit: `scripts/macos-build.sh --production --no-install`.
   Retain the production release configuration and update signatures; publishing,
   replacing the installed production app and changing server configuration require
   authorization for that action. Follow existing session authorization when present.
-- Report simulated browser checks, packaged smoke checks and real server E2E
-  separately. Until the server supports the Dev browser-login registration, use
-  password login; do not fall back to the production callback port.
+- Browser login reuses the existing desktop API and `127.0.0.1:47832` callback.
+  Only one app can start browser authorization at a time; report a busy port without
+  closing the other app. Keep state/PKCE checks and app-owned credentials separate.
+  Do not require a development-specific server registration or change the selected service.
+- Report simulated browser checks, packaged smoke checks and real server E2E separately.
