@@ -6170,9 +6170,9 @@ fn wechat_platform_capabilities() -> WeChatPlatformCapabilities {
     {
         return WeChatPlatformCapabilities {
             platform: "macos".into(),
-            key_acquisition: "macos_capture_or_import".into(),
+            key_acquisition: if capture::PLATFORM_SUPPORTED { "macos_capture_or_import" } else { "import_only" }.into(),
             supports_memory_scan: false,
-            supports_macos_capture: true,
+            supports_macos_capture: capture::PLATFORM_SUPPORTED,
             supports_key_import: true,
         };
     }

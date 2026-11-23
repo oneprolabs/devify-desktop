@@ -16,6 +16,7 @@ import { defaultSettings } from '../src/features/settings/settingsModel';
 import '../src/app/styles/style.css';
 import { APP_NAME, DEVELOPMENT_APP } from '../src/shared/api/buildFlavor';
 const query = new URLSearchParams(location.search);
+const intel = query.has('intel');
 // Optional, local-only snapshot. Never import chat data into the production bundle.
 // The file is excluded locally and fetched only for this explicit preview URL.
 const localSnapshot = query.has('local-chat')
@@ -26,7 +27,7 @@ const localSnapshot = query.has('local-chat')
 const wx = 'e2e-wechat', wa = '10000000000@s.whatsapp.net';
 const accounts = [{id:wx,source:'wechat',modified_at:100},{id:wa,source:'whatsapp',modified_at:99}];
 const catalog = (account: string) => localSnapshot ? localSnapshot.sessions[account] ?? [] : Array.from({length:query.has('chat')?query.has('long')?275:125:45},(_,i)=>({username:`${account}-chat-${i}`,display:`${account===wa?'WA':'微信'}测试${i%2?'私聊':'群聊'} ${i+1}`,is_group:i%2===0,last_time:1795000000-i*300,member_count:null,preview:null,unread:0}));
-const capture = {pending:false,needs_cleanup:false,stage:'idle',transaction_id:null,wechat_official:true,wechat_ad_hoc:false,platform_supported:true,lldb_available:true,user_can_write:true,sip_disabled:true,os_version:'15.7',arch:'aarch64',recovery_error_code:null,resume_available:false};
+const capture = {pending:false,needs_cleanup:false,stage:'idle',transaction_id:null,wechat_official:true,wechat_ad_hoc:false,platform_supported:!intel,lldb_available:true,user_can_write:true,sip_disabled:true,os_version:intel?'12.7.6':'15.7',arch:intel?'x86_64':'aarch64',recovery_error_code:null,resume_available:false};
 const feedbackDraft = () => ({client_id:'00000000-0000-4000-8000-000000000001',environment:{app_version:'0.1.17',platform:'macos',arch:'aarch64',os_version:'macOS 15.7',wechat_version:'4.1.2'},related_batch_ids:[],receiver:'https://example.invalid',owner_id:1,category:'other',description:'',page:'settings',screenshots:[] as {data:string}[],diagnostics:null as any,attempted:false});
 const state = {
  summaryConfig:{schema_version:1,version:'fixture-v7',default_scenario:'three_part',max_instructions_chars:4000,scenarios:[['summary','总结','只概括主要内容、结论与当前结果。'],['action_items','待办','只列行动、负责人、期限及待确认项。'],['timeline','时间线','只按时间顺序整理事情经过。'],['three_part','综合分析','总结、时间线和待办三项都有。'],['custom','自定义','描述希望从聊天记录中得到什么，自定关注点和输出结构。']].map(([id,name,description])=>({id,name,description,requires_instructions:id==='custom',sha256:'fixture-'+id,budgets:{cloud:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:2000,reserved_overhead_bytes:64,max_content_bytes:9936},local_cli:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:1800,reserved_overhead_bytes:2048,max_content_bytes:8152}}}))},summaryConfigError:'',
@@ -196,7 +197,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'plugin:event|listen':eventHandlers.set(args.event,[...(eventHandlers.get(args.event)??[]),args.handler]);return ++callbackId;
    case 'plugin:event|unlisten':case 'diagnostic_record':return null;
    case 'plugin:updater|check':return query.has('update')?{rid:901,version:'0.1.20',currentVersion:'0.1.10',body:'Synthetic update for preview'}:null;
-   case 'app_info':return {platform:'macos',arch:'aarch64',os_version:'15.7',version:'0.1.10',name:APP_NAME,development:DEVELOPMENT_APP};
+   case 'app_info':return {platform:'macos',arch:capture.arch,os_version:capture.os_version,version:'0.1.10',name:APP_NAME,development:DEVELOPMENT_APP};
    case 'connector_detect':return {state:query.has('untrusted')&&args.kind==='wechat'?'untrusted':'installed',app_path:args.kind==='whatsapp'?'/Applications/WhatsApp.app':'/Applications/WeChat.app',version:'4.1.2',message:''};
    case 'chat_accounts':return clone(state.accounts);
    case 'chat_account_activate':state.settings.active_account_id=args.accountId;return null;
@@ -229,7 +230,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    }
    case 'wechat_key_source_status':return {path:'/e2e/keys',exists:false,modified_at:null,age_seconds:null,secure:true,extractor_installed:true};
    case 'wechat_env':return {app_data_dir:'/e2e',cache_root:'/e2e',keys_path:'/e2e/keys',scanner_path:null};
-   case 'wechat_platform_capabilities':return {platform:'macos',key_acquisition:'capture',supports_macos_capture:true,supports_key_import:true,supports_memory_scan:false};
+   case 'wechat_platform_capabilities':return {platform:'macos',key_acquisition:intel?'import_only':'macos_capture_or_import',supports_macos_capture:!intel,supports_key_import:true,supports_memory_scan:false};
    case 'perm_status':return {granted:state.permission,app_path:'/Applications/AIMyChats.app',bundled:true,installed:true,location:'applications',detail:''};
    case 'perm_open_settings':case 'perm_reveal_app':return null;
    case 'wechat_capture_status':return clone(state.capture);

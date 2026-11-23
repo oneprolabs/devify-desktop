@@ -42,6 +42,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const WECHAT_APP: &str = "/Applications/WeChat.app";
+pub const PLATFORM_SUPPORTED: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
 pub const TENANT_TEAM: &str = "5A4RE8SF68";
 pub const TENANT_IDENTIFIER: &str = "com.tencent.xinWeChat";
 pub const LOGIN_HELPER: &str = "Contents/MacOS/WeChatAppEx.app";
@@ -1550,7 +1551,7 @@ fn lldb_available() -> bool {
 }
 
 pub fn status(app: &Path, root: &Path, backup_root: &Path) -> CaptureStatus {
-    let platform_supported = cfg!(target_os = "macos") && cfg!(target_arch = "aarch64");
+    let platform_supported = PLATFORM_SUPPORTED;
     let signature = inspect_signature(app, false).ok();
     let official = signature.as_ref().map(|value| value.is_tencent_official()).unwrap_or(false);
     let ad_hoc = signature.as_ref().map(|value| value.ad_hoc).unwrap_or(false);
