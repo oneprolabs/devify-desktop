@@ -10,6 +10,7 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
     await page.snapshot();
   };
   const clean = async () => assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  const connectionIcon = () => page.evaluate(() => document.querySelector('.network-connection-icon svg')?.innerHTML);
   const fits = async () => {
     assert.ok(await page.evaluate(() => {
       const box = document.querySelector('.auth-login-modal').getBoundingClientRect();
@@ -19,7 +20,20 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   };
   await page.cdp('Emulation.setDeviceMetricsOverride', {width:1100,height:690,deviceScaleFactor:1,mobile:false});
   await start();
+  assert.ok(await page.evaluate(() => !document.querySelector('.auth-gate-card .auth-connection-trigger, .auth-gate-card select')));
   await click('登录…');
+  await page.evaluate(() => { window.__loginDialog = document.querySelector('.auth-login-modal'); });
+  await click('连接设置');
+  await page.waitForSelector('.auth-connection-form select:not(:disabled)');
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-connection-form select').value), 'auto');
+  const autoIcon = await connectionIcon();
+  await page.selectOption('.auth-connection-form select', 'system_proxy');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'system_proxy');
+  await page.waitForSelector('.auth-connection-form select:not(:disabled)');
+  const proxyIcon = await connectionIcon();
+  await click('返回登录');
+  assert.ok(await page.evaluate(() => window.__loginDialog === document.querySelector('.auth-login-modal')));
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.auth-login-gate select').length), 0, 'sign-in has no repeated connection control');
   await fits();
   assert.equal(await page.evaluate(() => document.querySelector('.auth-login-modal').getBoundingClientRect().width), 420);
   assert.ok(await page.evaluate(() => [...document.querySelectorAll('.auth-input-row input')].every(input => {
@@ -42,11 +56,40 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.waitForFunction(() => window.__E2E__.externalUrls.some(url => url.endsWith('/register')));
   await page.screenshot({path:'/tmp/aimychats-login-v7-register.png'});
   await page.click('loc=role:tab[name="登录"]');
-  await page.evaluate(() => { window.__E2E__.authStartPaused = true; });
+  await page.evaluate(() => { window.__E2E__.authStartError = '读取服务端登录配置失败：503 Service Unavailable'; });
   await click('通过浏览器登录');
+  await page.waitForFunction(() => document.querySelector('.auth-error')?.textContent.includes('503'));
+  assert.ok(await page.evaluate(() => !document.querySelector('.auth-connection-recovery')), 'an HTTP error does not suggest bypassing the proxy');
+  await page.evaluate(() => {
+    window.__E2E__.authStartError = '读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
+  });
+  await click('通过浏览器登录');
+  await page.waitForSelector('.auth-connection-recovery select:not(:disabled)');
+  assert.ok(await page.evaluate(() =>
+    window.__loginDialog === document.querySelector('.auth-login-modal') &&
+    !document.querySelector('.auth-connection-form, .auth-connection-link') &&
+    document.querySelector('.auth-connection-recovery').textContent.includes('如果本机开启了代理')
+  ), 'a connection timeout reveals a single inline recovery control');
+  assert.equal(await page.evaluate(() => document.querySelector('.auth-connection-recovery select').value), 'system_proxy');
+  await page.selectOption('.auth-connection-recovery select', 'direct');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'direct');
+  await page.waitForSelector('.auth-connection-recovery select:not(:disabled)');
+  const directIcon = await connectionIcon();
+  assert.ok(autoIcon && proxyIcon && directIcon && new Set([autoIcon, proxyIcon, directIcon]).size === 3, 'each saved connection mode shows a distinct icon');
+  assert.equal(await page.evaluate(() => document.querySelector('input[name="username"]').value), 'tester', 'changing the connection keeps the form draft');
+  assert.equal(await page.evaluate(() => document.querySelector('input[name="password"]').value), 'example-password');
+  await page.evaluate(() => {
+    window.__E2E__.authStartError = '';
+    window.__E2E__.authStartPaused = true;
+    window.__E2E__.browserOpenPaused = true;
+  });
+  await click('重试浏览器登录');
   await page.waitForFunction(() => window.__E2E__.authStartResolvers.length === 1);
-  assert.ok(await page.evaluate(() => document.querySelector('.auth-alt').disabled && document.querySelector('.auth-alt .auth-button-spinner') && document.querySelector('.auth-alt').textContent.includes('正在打开浏览器')));
+  assert.ok(await page.evaluate(() => document.querySelector('.auth-alt').disabled && document.querySelector('.auth-alt .auth-button-spinner') && document.querySelector('.auth-alt').textContent.includes('正在读取登录配置')));
   await page.evaluate(() => { window.__E2E__.authStartPaused = false; window.__E2E__.authStartResolvers.splice(0).forEach(resolve => resolve()); });
+  await page.waitForFunction(() => window.__E2E__.browserOpenResolvers.length === 1);
+  await page.waitForFunction(() => document.querySelector('.auth-alt').textContent.includes('正在打开浏览器'));
+  await page.evaluate(() => { window.__E2E__.browserOpenPaused = false; window.__E2E__.browserOpenResolvers.splice(0).forEach(resolve => resolve()); });
   await page.waitForSelector('.auth-waiting');
   assert.ok(await page.evaluate(() => [...document.querySelectorAll('.auth-login-modal input,.auth-tabs button,.auth-submit')].every(control => control.disabled)), 'browser wait locks competing login actions');
   await page.evaluate(() => document.activeElement?.blur());
@@ -67,7 +110,7 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.evaluate(() => { window.__E2E__.authStartError = ''; });
   await page.focus('.auth-modal-head button');
   await page.keyboard.press('Shift+Tab');
-  assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-switch button')), 'focus wraps within the dialog');
+  assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-connection-link')), 'focus wraps within the dialog');
   await page.keyboard.press('Tab');
   assert.ok(await page.evaluate(() => document.activeElement === document.querySelector('.auth-modal-head button')));
   await page.keyboard.press('Escape');
@@ -86,17 +129,24 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await page.evaluate(() => { window.__E2E__.loginError = ''; });
   await page.click('.auth-submit');
   await page.waitForFunction(() => !document.querySelector('.auth-gate'));
+  await click('设置');
+  await click('网络连接');
+  await page.waitForFunction(() => document.querySelector('.settings-page .network-connection select')?.value === 'direct');
+  await page.selectOption('.settings-page .network-connection select', 'auto');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'auto');
   await clean();
 
   await start('&no-server');
-  await page.fill('.auth-gate-server input', 'not-a-url');
-  await click('保存');
-  await page.waitForFunction(() => document.querySelector('.auth-gate [role="status"]')?.textContent.includes('完整'));
-  assert.equal(await page.evaluate(() => window.__E2E__.writes.length), 0);
-  await page.fill('.auth-gate-server input', 'https://example.invalid');
-  await click('保存');
-  await page.waitForFunction(() => window.__E2E__.writes.length === 1);
   await click('登录…');
+  await page.waitForSelector('.auth-connection-form');
+  await page.fill('.auth-connection-form input', 'not-a-url');
+  await click('保存并返回登录');
+  await page.waitForFunction(() => document.querySelector('.auth-connection-form [role="alert"]')?.textContent.includes('完整'));
+  assert.equal(await page.evaluate(() => window.__E2E__.writes.length), 0);
+  await page.fill('.auth-connection-form input', 'https://example.invalid');
+  await click('保存并返回登录');
+  await page.waitForFunction(() => window.__E2E__.writes.length === 1);
+  await page.waitForSelector('.auth-alt');
   await fits();
   await clean();
 
@@ -106,8 +156,22 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   assert.equal(await page.evaluate(() => document.querySelector('.auth-alt-help').textContent), 'Finish signing in in your browser, then return to the app.');
   assert.equal(await page.evaluate(() => document.querySelector('.auth-divider').textContent), 'or');
   await page.screenshot({path:'/tmp/aimychats-login-v7-english-small.png'});
+  await page.evaluate(() => {
+    window.__E2E__.authStartError = '读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
+  });
+  await page.click('.auth-alt');
+  await page.waitForSelector('.auth-connection-recovery select:not(:disabled)');
+  await fits();
+  assert.ok(await page.evaluate(() => {
+    const select = document.querySelector('.auth-connection-recovery select');
+    const style = getComputedStyle(select);
+    const context = document.createElement('canvas').getContext('2d');
+    context.font = style.font;
+    const availableWidth = select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    return Array.from(select.options).every(option => context.measureText(option.text).width + 4 <= availableWidth);
+  }), 'the compact recovery control fits every English connection label beside its icon and arrow');
   await clean();
-  console.log('PASS V7 login UI: password validation/loading/retry, browser wait/cancel/error, register/recovery links, keyboard focus, server setup, English and 940×640 layout');
+  console.log('PASS V7 login UI: inline proxy recovery, shared settings, browser stages, password and browser retry, keyboard focus, first-use setup, English and 940×640 layout');
   console.log(await page.snapshot());
 }
 
@@ -117,6 +181,11 @@ export async function runLoginRecoveryE2E(task, base = 'http://localhost:1420', 
   await page.goto(`${base}/scripts/connectors-e2e.html?auth-unavailable`);
   await page.waitForFunction(() => document.querySelector('.auth-gate-primary')?.textContent === '重试');
   await page.snapshot();
+  await click('连接设置');
+  await page.waitForSelector('.auth-connection-panel select:not(:disabled)');
+  await page.selectOption('.auth-connection-panel select', 'direct');
+  await page.waitForFunction(() => window.__E2E__.networkMode === 'direct');
+  await click('连接设置');
   await page.evaluate(() => {
     window.__loginGate = document.querySelector('.auth-gate');
     window.__E2E__.authPaused = true;

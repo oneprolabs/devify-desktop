@@ -117,7 +117,7 @@ pub(super) async fn task_runtime_retry(app: AppHandle, job_id: String) -> Result
                     let response = http_client::strict()
                         .post(format!("{}/api/v1/chat/uploads/{id}/retry", owner.base_url))
                         .bearer_auth(&token)
-                        .send().await.map_err(|e| devify_network_message("重试失败", &e))?;
+                        .send(&data).await.map_err(|e| devify_network_message("重试失败", &e))?;
                     if !response.status().is_success() {
                         return Err(format!("重试失败：HTTP {}", response.status()));
                     }
@@ -728,7 +728,7 @@ async fn resume_archive(
             ))
             .bearer_auth(token)
             .json(&payload)
-            .send()
+            .send(&data)
             .await
             .map_err(|e| devify_network_message("恢复上传失败", &e))?;
         if !response.status().is_success() {
@@ -796,7 +796,7 @@ async fn resume_archive(
                 ))
                 .bearer_auth(token)
                 .multipart(form)
-                .send()
+                .send(&data)
                 .await
                 .map_err(|e| devify_network_message("恢复归档失败", &e))?;
             if !response.status().is_success() {
@@ -813,7 +813,7 @@ async fn resume_archive(
                 owner.base_url
             ))
             .bearer_auth(token)
-            .send()
+            .send(&data)
             .await
             .map_err(|e| devify_network_message("恢复提交失败", &e))?;
         if !response.status().is_success() {

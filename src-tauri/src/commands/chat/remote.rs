@@ -153,7 +153,7 @@ pub(crate) async fn chat_remote_image(
     let mut response = http_client::api()
         .get(format!("{base}{media_path}"))
         .bearer_auth(&token)
-        .send()
+        .send(&data)
         .await
         .map_err(|e| devify_network_message("读取图片失败", &e))?;
     if !response.status().is_success() {

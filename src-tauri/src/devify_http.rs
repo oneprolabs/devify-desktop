@@ -1,7 +1,7 @@
 //! Correlate Devify requests using content-free local diagnostics, and retry the
 //! failures that are safe to repeat.
 use crate::diagnostics::{self, Code, EventInput, Module, Operation};
-use crate::http_client::REQUEST_TIMEOUT;
+use crate::http_client::{self, DevifyRequest, PreparedRequest, REQUEST_TIMEOUT};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -197,6 +197,115 @@ async fn traced_send(
     result
 }
 
+impl DevifyRequest {
+    /// Send a request that previously did not emit diagnostic events.
+    pub(crate) async fn send(self, root: &Path) -> Result<reqwest::Response, reqwest::Error> {
+        send_attempts(self.prepare(root)?, root, None, None).await
+    }
+}
+
+impl RequestTrace for DevifyRequest {
+    async fn send_traced(
+        self,
+        root: &Path,
+        module: Module,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        send_attempts(self.prepare(root)?, root, Some((module, None)), None).await
+    }
+
+    async fn send_traced_hinted(
+        self,
+        root: &Path,
+        module: Module,
+        hint: diagnostics::RequestInfo,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        send_attempts(self.prepare(root)?, root, Some((module, Some(hint))), None).await
+    }
+
+    async fn send_traced_retrying(
+        self,
+        root: &Path,
+        module: Module,
+        policy: RetryPolicy,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        send_attempts(
+            self.prepare(root)?,
+            root,
+            Some((module, None)),
+            Some(policy),
+        )
+        .await
+    }
+}
+
+async fn send_attempts(
+    prepared: PreparedRequest,
+    root: &Path,
+    trace: Option<(Module, Option<diagnostics::RequestInfo>)>,
+    policy: Option<RetryPolicy>,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let started = Instant::now();
+    let PreparedRequest {
+        first: mut pending,
+        mut fallback,
+    } = prepared;
+    let attempts = policy.map_or(1 + u32::from(fallback.is_some()), |policy| {
+        policy.attempts.max(1)
+    });
+    let mut using_fallback = false;
+
+    for attempt in 1..=attempts {
+        // A multipart or streamed body cannot be replayed.
+        let next = policy
+            .filter(|_| attempt < attempts)
+            .and_then(|_| pending.try_clone());
+        if let Some(policy) = policy {
+            let remaining = RETRY_BUDGET.saturating_sub(started.elapsed());
+            pending = pending.timeout(remaining.min(policy.attempt_timeout));
+        }
+        let result = match &trace {
+            Some((module, hint)) => traced_send(pending, root, module.clone(), hint.clone()).await,
+            None => pending.send().await,
+        };
+        if using_fallback
+            && result.as_ref().is_ok_and(|response| {
+                response.status().is_success()
+                    || response.status() == reqwest::StatusCode::NOT_MODIFIED
+            })
+        {
+            http_client::remember_proxy_route(root);
+        }
+        if attempt == attempts {
+            return result;
+        }
+        let delay = retry_delay(attempt);
+        if RETRY_BUDGET.saturating_sub(started.elapsed()) <= delay + RETRY_MIN_WINDOW {
+            return result;
+        }
+        if let Some((builder, _)) = fallback.take_if(|(_, original)| {
+            result
+                .as_ref()
+                .is_err_and(|error| error.is_connect() && error.url() == Some(original))
+        }) {
+            using_fallback = true;
+            pending = builder;
+            continue;
+        }
+        let retryable = policy.is_some_and(|policy| match &result {
+            Ok(response) => policy.idempotent && transient_status(response.status()),
+            Err(error) => error.is_connect() || (policy.idempotent && error.is_timeout()),
+        });
+        let Some(next) = next.filter(|_| retryable) else {
+            return result;
+        };
+        drop(result);
+        tokio::time::sleep(delay).await;
+        pending = next;
+    }
+    unreachable!("at least one request attempt always runs")
+}
+
+#[cfg(test)]
 impl RequestTrace for reqwest::RequestBuilder {
     async fn send_traced(
         self,
@@ -221,42 +330,11 @@ impl RequestTrace for reqwest::RequestBuilder {
         module: Module,
         policy: RetryPolicy,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        let started = Instant::now();
-        let attempts = policy.attempts.max(1);
-        let mut pending = self;
-        let mut attempt = 1;
-
-        loop {
-            // A multipart or streamed body cannot be replayed; `try_clone` then returns
-            // `None` and this attempt is the last one whatever happens.
-            let next = if attempt < attempts { pending.try_clone() } else { None };
-            let remaining = RETRY_BUDGET.saturating_sub(started.elapsed());
-            let result = pending
-                .timeout(remaining.min(policy.attempt_timeout))
-                .send_traced(root, module.clone())
-                .await;
-            let retryable = match &result {
-                Ok(response) => policy.idempotent && transient_status(response.status()),
-                Err(error) => {
-                    // A connect error proves nothing was sent. A timeout or a 5xx on a
-                    // write may still have applied on the server, so it is reported.
-                    error.is_connect() || (policy.idempotent && error.is_timeout())
-                }
-            };
-            let Some(next) = next.filter(|_| retryable) else {
-                return result;
-            };
-            let delay = retry_delay(attempt);
-            if RETRY_BUDGET.saturating_sub(started.elapsed()) <= delay + RETRY_MIN_WINDOW {
-                return result;
-            }
-            // The failed response is dropped without draining its body: buffering an
-            // arbitrarily large error page is worse than needing a new socket.
-            drop(result);
-            tokio::time::sleep(delay).await;
-            pending = next;
-            attempt += 1;
-        }
+        let prepared = PreparedRequest {
+            first: self,
+            fallback: None,
+        };
+        send_attempts(prepared, root, Some((module, None)), Some(policy)).await
     }
 }
 
@@ -450,6 +528,114 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
+    }
+
+    fn request_with_proxy_fallback(
+        method: reqwest::Method,
+        url: reqwest::Url,
+        proxy: std::net::SocketAddr,
+    ) -> PreparedRequest {
+        let first = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .request(method.clone(), url.clone());
+        let fallback = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{proxy}")).unwrap())
+            .build()
+            .unwrap()
+            .request(method, url.clone());
+        PreparedRequest {
+            first,
+            fallback: Some((fallback, url)),
+        }
+    }
+
+    #[test]
+    fn auto_falls_back_to_proxy_after_a_connect_failure() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = reqwest::Url::parse(&format!("http://{}/config", closed.local_addr().unwrap()))
+            .unwrap();
+        drop(closed);
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let request =
+            request_with_proxy_fallback(reqwest::Method::GET, url, proxy.local_addr().unwrap());
+        let server = serve(proxy, vec![200]);
+        let root = tempfile::tempdir().unwrap();
+
+        let response = runtime()
+            .block_on(send_attempts(
+                request,
+                root.path(),
+                Some((Module::Auth, None)),
+                Some(RetryPolicy::READ),
+            ))
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(server.join().unwrap().len(), 1);
+        let logs = diagnostics::snapshot(root.path(), 0);
+        let lines = logs["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 4);
+        assert!(lines[1].as_str().unwrap().contains("code=NETWORK_CONNECT"));
+        assert_ne!(
+            request_id_of(lines[0].as_str().unwrap()),
+            request_id_of(lines[2].as_str().unwrap())
+        );
+        http_client::forget_proxy_route(root.path());
+    }
+
+    #[test]
+    fn auto_does_not_replay_writes_with_an_http_response_or_an_ambiguous_timeout() {
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let runtime = runtime();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = reqwest::Url::parse(&format!("http://{}/write", listener.local_addr().unwrap()))
+            .unwrap();
+        let server = serve(listener, vec![502]);
+        let request =
+            request_with_proxy_fallback(reqwest::Method::POST, url, proxy.local_addr().unwrap());
+        let result = runtime
+            .block_on(send_attempts(
+                request,
+                root.path(),
+                Some((Module::Auth, None)),
+                Some(RetryPolicy::WRITE),
+            ))
+            .unwrap();
+        assert_eq!(result.status(), reqwest::StatusCode::BAD_GATEWAY);
+        assert_eq!(server.join().unwrap().len(), 1);
+
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url =
+                reqwest::Url::parse(&format!("http://{}/write", listener.local_addr().unwrap()))
+                    .unwrap();
+            let mut request = request_with_proxy_fallback(
+                reqwest::Method::POST,
+                url,
+                proxy.local_addr().unwrap(),
+            );
+            request.first = request.first.timeout(Duration::from_millis(400));
+            let server = tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 1024];
+                assert!(stream.read(&mut bytes).await.unwrap() > 0);
+                // The server received the request but never replies.
+                std::future::pending::<()>().await;
+            });
+            let error = send_attempts(request, root.path(), None, None)
+                .await
+                .unwrap_err();
+            assert!(error.is_timeout() && !error.is_connect());
+            server.abort();
+        });
+        assert!(
+            matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
     }
 
     #[test]

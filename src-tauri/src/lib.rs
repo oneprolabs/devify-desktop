@@ -39,6 +39,7 @@ mod feedback;
 pub mod entitlements;
 pub mod history;
 pub(crate) mod http_client;
+mod network_connection;
 pub mod perm;
 pub mod settings;
 mod task_store;
@@ -2560,8 +2561,8 @@ fn append_retry_identity_body(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), St
     Ok(())
 }
 
-async fn retry_identity_get(data: &Path, client: &reqwest::Client, auth: &CloudRetryAuth, path: &str) -> Result<serde_json::Value, String> {
-    let mut response = client.get(format!("{}{path}", auth.base_url))
+async fn retry_identity_get(data: &Path, auth: &CloudRetryAuth, path: &str) -> Result<serde_json::Value, String> {
+    let mut response = http_client::strict().get(format!("{}{path}", auth.base_url))
         .bearer_auth(&auth.token).send_traced_retrying(data, diagnostics::Module::Upload, RetryPolicy::READ).await
         .map_err(|_| "无法读取云端重试身份，请检查网络连接。")?;
     if !response.status().is_success() {
@@ -2577,9 +2578,8 @@ async fn retry_identity_get(data: &Path, client: &reqwest::Client, auth: &CloudR
 }
 
 async fn verify_cloud_retry_remote(data: &Path, auth: &CloudRetryAuth) -> Result<(i64, String), String> {
-    let client = http_client::strict();
-    let user = retry_identity_get(data, &client, auth, "/api/v1/auth/user").await?;
-    let batch = retry_identity_get(data, &client, auth, &format!("/api/v1/chat/uploads/{}", auth.batch_id)).await?;
+    let user = retry_identity_get(data, auth, "/api/v1/auth/user").await?;
+    let batch = retry_identity_get(data, auth, &format!("/api/v1/chat/uploads/{}", auth.batch_id)).await?;
     validate_cloud_retry_remote(auth, &user, &batch)
 }
 
@@ -3545,7 +3545,7 @@ async fn devify_auth_status(app: AppHandle) -> Result<DevifyAuthStatus, String> 
                 Ok(refreshed) => {
                     let refreshed_generation = request_generation(&data, &settings.devify.base_url, &refreshed)?;
                     let response = http_client::api().get(format!("{}/api/v1/spaces", settings.devify.resolved_base_url()?))
-                        .bearer_auth(&refreshed).send().await;
+                        .bearer_auth(&refreshed).send(&data).await;
                     if request_generation(&data, &settings.devify.base_url, &refreshed)? != refreshed_generation {
                         return Err("登录状态已改变，请重新检查。".into());
                     }
@@ -3903,7 +3903,7 @@ async fn devify_logout(app: AppHandle) -> Result<(), String> {
         if let Some((base, credentials))=cleared {
             if let (Some(secret),Some(device_id))=(credentials.device_session,credentials.session_device_id) {
                 let _=tokio::time::timeout(Duration::from_secs(8),http_client::strict().delete(format!("{base}/api/v1/auth/desktop/session/refresh"))
-                    .json(&serde_json::json!({"device_id":device_id,"session":secret})).send()).await;
+                    .json(&serde_json::json!({"device_id":device_id,"session":secret})).send(&data)).await;
             }
         }
     });
@@ -6789,6 +6789,8 @@ pub fn run() {
             runtime_commands::task_runtime_status,
             app_settings_get,
             app_settings_save,
+            network_connection::network_connection_get,
+            network_connection::network_connection_set,
             wechat_scan,
             chat_accounts,
             whatsapp_status,

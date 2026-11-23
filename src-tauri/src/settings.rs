@@ -528,7 +528,7 @@ pub struct DevifySettings {
 
 /// Official product hosts share one API origin. The homepage is not that API, so requests
 /// always go to [`OFFICIAL_API_BASE`]; the stored address itself is never rewritten.
-const OFFICIAL_API_BASE: &str = "https://app.aimychats.com";
+pub(crate) const OFFICIAL_API_BASE: &str = "https://app.aimychats.com";
 
 /// Normalize a service address for request building.
 ///

@@ -7,6 +7,8 @@ import brandMark from '../../assets/app-mark-transparent.png';
 import { isSettingsConflict, requireSettingsRevision, settingsSaveError } from '../settings/settingsModel';
 import { apiBaseUrl, storedBaseUrl } from '../../shared/api/serviceUrl.ts';
 import { requestFeedback } from '../../shared/api/desktopInvoke';
+import { Icons } from '../../shared/ui/icons';
+import { NetworkConnectionControl } from '../settings/NetworkSettings';
 
 type GateSettings = {
   user_settings_revision: number;
@@ -25,11 +27,12 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState<'' | 'password' | 'browser-opening' | 'browser' | 'session'>('');
+  const [busy, setBusy] = useState<'' | 'password' | 'browser-config' | 'browser-opening' | 'browser' | 'session'>('');
+  const [connectionSaving, setConnectionSaving] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
-  const [serverOpen, setServerOpen] = useState(false);
+  const [connectionSettingsOpen, setConnectionSettingsOpen] = useState(false);
   const [serverDraft, setServerDraft] = useState('');
   const [serverStatus, setServerStatus] = useState('');
   const completed = useRef(false);
@@ -44,6 +47,14 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   const [serverSaving, setServerSaving] = useState(false);
   const dialogRef = useRef<HTMLElement | null>(null);
   const loginButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closePopup = useCallback(() => {
+    draftRef.current = baseUrl;
+    setServerDraft(baseUrl);
+    setServerStatus('');
+    setPopup(false);
+    setError('');
+    setInfo('');
+  }, [baseUrl]);
 
   const finishBrowserLogin = useCallback(async (url: string) => {
     try {
@@ -92,8 +103,6 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
         draftRef.current = value;
         setBaseUrl(value);
         setServerDraft(value);
-        // A fresh install has no server, so the field is required instead of hidden.
-        if (!value) setServerOpen(true);
       })
       .catch(reason => setError(tf("设置加载失败：{0}，请重新打开页面。", String(reason))));
   }, []);
@@ -101,9 +110,9 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   useEffect(() => {
     if (!popup) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) { setPopup(false); setError(''); setInfo(''); }
+      if (event.key === 'Escape' && !busy && !connectionSaving && !serverSaving) closePopup();
       if (event.key !== 'Tab') return;
-      const controls = dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]');
+      const controls = dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]');
       if (!controls?.length) return;
       const first = controls[0], last = controls[controls.length - 1];
       if (!dialogRef.current?.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
@@ -112,7 +121,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [popup, busy]);
+  }, [popup, busy, connectionSaving, serverSaving, closePopup]);
   useEffect(() => {
     if (!popup) return;
     return () => loginButtonRef.current?.focus();
@@ -132,8 +141,11 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   }, [busy]);
 
   const idOk = /^[a-z0-9._-]{3,}$/i.test(username);
+  const browserStarting = busy === 'browser-config' || busy === 'browser-opening';
+  const configFailed = /^(读取服务端登录配置失败|服务端登录配置)/.test(error);
+  const configConnectionFailed = error.startsWith("读取服务端登录配置失败：服务端暂不可用");
   const retrySavedSession = async () => {
-    if (sessionCheckLock.current || busy !== '') return;
+    if (sessionCheckLock.current || busy !== '' || connectionSaving) return;
     sessionCheckLock.current = true;
     setBusy('session');
     setError('');
@@ -221,31 +233,31 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
     const current = baseUrl.trim().replace(/\/+$/, '');
     const candidate = serverDraft.trim().replace(/\/+$/, '') || current;
     if (!candidate) {
-      setServerOpen(true);
+      setConnectionSettingsOpen(true);
       setServerStatus(t("请先填写服务端地址，再继续登录。"));
       setError(t("请先填写服务端地址，再继续登录。"));
       return null;
     }
     const invalid = serverError(candidate);
     if (invalid) {
-      setServerOpen(true);
+      setConnectionSettingsOpen(true);
       setServerStatus(invalid);
       setError(invalid);
       return null;
     }
     if (candidate === current) return candidate;
     if (!(await persistServer(candidate))) {
-      setServerOpen(true);
+      setConnectionSettingsOpen(true);
       setError(t("服务地址保存失败，请检查后重试。"));
       return null;
     }
-    setServerOpen(false);
+    setConnectionSettingsOpen(false);
     setServerStatus(t("服务地址已保存。"));
     return candidate;
   };
 
   const submitPassword = async () => {
-    if (loginActionLock.current || busy) return;
+    if (loginActionLock.current || busy || connectionSaving) return;
     loginActionLock.current = true;
     setBusy('password');
     try {
@@ -266,9 +278,9 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   };
 
   const startBrowserLogin = async () => {
-    if (loginActionLock.current || busy) return;
+    if (loginActionLock.current || busy || connectionSaving) return;
     loginActionLock.current = true;
-    setBusy('browser-opening');
+    setBusy('browser-config');
     setError('');
     setInfo('');
     try {
@@ -276,6 +288,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       const settings = await invoke<GateSettings>('app_settings_get');
       const deviceLabel = settings.devify?.device_label?.trim() || 'AIMyChats';
       const url = await invoke<string>('devify_auth_start', { deviceLabel });
+      setBusy('browser-opening');
       await invoke('devify_auth_open', { url });
       setBusy('browser');
       setInfo(t("已在浏览器打开登录页，完成授权后会自动返回。"));
@@ -313,10 +326,25 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       setServerStatus(invalid);
       return;
     }
-    if (!(await persistServer(value))) return;
-    setServerOpen(false);
-    setServerStatus(t("服务地址已保存。"));
+    if (value !== baseUrl && !(await persistServer(value))) return;
+    setConnectionSettingsOpen(false);
+    setServerStatus('');
   };
+
+  const openConnectionSettings = () => {
+    setConnectionSettingsOpen(true);
+    setServerStatus('');
+    setError('');
+    setInfo('');
+  };
+
+  const signInError = error && !configConnectionFailed && <div className="auth-error">
+    <p role="alert">{t(error)}</p>
+    <div className="auth-error-actions">
+      {configFailed && <button type="button" onClick={openConnectionSettings}>{t("连接设置")}</button>}
+      <button type="button" disabled={connectionSaving} onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button>
+    </div>
+  </div>;
 
   return <div className="auth-gate auth-login-gate">
     <div className="auth-gate-card" aria-hidden={popup || undefined} {...(popup ? { inert: '' } : {})}>
@@ -326,83 +354,89 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       {notice && <p className="auth-gate-error" role="alert">{notice}</p>}
       {busy === 'browser'
         ? <div className="auth-gate-waiting" role="status"><span className="auth-gate-pulse"/><span>{t("正在等待浏览器完成授权…")}</span></div>
-        : <button ref={loginButtonRef} type="button" className="auth-gate-primary" disabled={!settingsLoaded || serverSaving || busy !== ''} onClick={() => {
+        : <button ref={loginButtonRef} type="button" className="auth-gate-primary" disabled={!settingsLoaded || serverSaving || connectionSaving || busy !== ''} onClick={() => {
             if (!settingsLoaded) return;
-            if (!baseUrl.trim()) {
-              setServerOpen(true);
-              setServerStatus(t("请先填写服务端地址，再继续登录。"));
-              return;
-            }
+            setConnectionSettingsOpen(!baseUrl);
             setPopup(true); setError(''); setInfo('');
           }}>{t("登录…")}</button>}
       {busy === 'browser' && <button type="button" className="auth-gate-secondary" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button>}
-      {busy !== 'browser' && <button type="button" className="auth-gate-secondary" disabled={!settingsLoaded || serverSaving || busy !== ''} aria-busy={busy === 'session'} onClick={() => void retrySavedSession()}>{busy === 'session' ? t("正在检查…") : t("重新检查已有登录")}</button>}
+      {busy !== 'browser' && <button type="button" className="auth-gate-secondary" disabled={!settingsLoaded || serverSaving || connectionSaving || busy !== ''} aria-busy={busy === 'session'} onClick={() => void retrySavedSession()}>{busy === 'session' ? t("正在检查…") : t("重新检查已有登录")}</button>}
       {error && !popup && <p className="auth-gate-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
-      <div className="auth-gate-server">
-        {serverOpen || !baseUrl
-          ? <>
-              <label>{baseUrl ? t("服务端地址") : t("服务端地址（首次使用请填写）")}
-                <input
-                  type="url"
-                  disabled={!settingsLoaded}
-                  value={serverDraft}
-                  autoFocus={!baseUrl}
-                  onChange={event => { draftRef.current = event.target.value; setServerDraft(event.target.value); }}
-                  onKeyDown={event => { if (event.key === 'Enter') void saveServer(); }}
-                  placeholder={SERVER_PLACEHOLDER}
-                />
-              </label>
-              {!baseUrl && <p className="auth-gate-hint">{t("服务端不随客户端分发，请填写你们部署的服务端地址。")}</p>}
-              <div className="auth-gate-server-actions">
-                <button type="button" disabled={!settingsLoaded || serverSaving} onClick={() => void saveServer()}>{t("保存")}</button>
-                {baseUrl && <button type="button" onClick={() => { setServerOpen(false); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>{t("取消")}</button>}
-              </div>
-            </>
-          : <button type="button" className="auth-gate-server-toggle" onClick={() => { setServerOpen(true); draftRef.current = baseUrl; setServerDraft(baseUrl); if (!conflict.current) setServerStatus(''); }}>{t("服务地址 ·")} {storedBaseUrl(baseUrl).replace(/^https?:\/\//, '').replace(/\/+$/, '')}</button>}
-      </div>
-      {serverStatus && <p className="auth-gate-hint" role="status">{serverStatus}</p>}
     </div>
 
-    {popup && <div className="auth-backdrop auth-login-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) { setPopup(false); setError(''); setInfo(''); } }}>
+    {popup && <div className="auth-backdrop auth-login-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy && !connectionSaving && !serverSaving) closePopup(); }}>
       <section ref={dialogRef} className="auth-modal auth-login-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
         <header className="auth-modal-head">
-          <span className="auth-modal-brand"><img src={brandMark} alt=""/><span id="auth-modal-title">{t("登录 Aimychats")}</span></span>
-          <button type="button" aria-label={t("关闭登录")} disabled={busy !== ''} onClick={() => { setPopup(false); setError(''); setInfo(''); }}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8"/></svg></button>
+          <span className="auth-modal-brand"><img src={brandMark} alt=""/><span id="auth-modal-title">{connectionSettingsOpen ? t("连接设置") : t("登录 Aimychats")}</span></span>
+          <button type="button" aria-label={t("关闭登录")} disabled={busy !== '' || connectionSaving || serverSaving} onClick={closePopup}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8"/></svg></button>
         </header>
-        <form className="auth-modal-body" onSubmit={event => { event.preventDefault(); if (tab === 'login' && !busy) void submitPassword(); }}>
+        {connectionSettingsOpen ? <form key="connection" className="auth-modal-body auth-connection-form" noValidate
+          onSubmit={event => { event.preventDefault(); if (!serverSaving && !connectionSaving) void saveServer(); }}>
+          <label className="auth-connection-server">
+            {t("服务端地址")}
+            <input
+              type="url"
+              disabled={serverSaving || connectionSaving}
+              value={serverDraft}
+              autoFocus
+              onChange={event => { draftRef.current = event.target.value; setServerDraft(event.target.value); }}
+              placeholder={SERVER_PLACEHOLDER}
+            />
+          </label>
+          {!baseUrl && <p className="auth-connection-note">{t("服务端不随客户端分发，请填写你们部署的服务端地址。")}</p>}
+          <NetworkConnectionControl disabled={serverSaving} onSavingChange={setConnectionSaving} />
+          {serverStatus && <p className="auth-error" role="alert">{serverStatus}</p>}
+          <button type="submit" className="auth-submit" disabled={serverSaving || connectionSaving}>
+            {serverSaving ? t("正在保存…") : serverDraft.trim().replace(/\/+$/, '') !== baseUrl || !baseUrl
+              ? t("保存并返回登录") : t("返回登录")}
+          </button>
+        </form> : <form key="sign-in" className="auth-modal-body" onSubmit={event => { event.preventDefault(); if (tab === 'login' && !busy) void submitPassword(); }}>
           <div className="auth-tabs" role="tablist" aria-label={t("登录方式")}>
             {([['login', t("登录")], ['register', t("注册")]] as Array<[Tab, string]>).map(([key, label]) => <button
-              key={key} id={`auth-${key}-tab`} type="button" role="tab" aria-selected={tab === key} aria-controls={`auth-${key}-panel`} disabled={busy !== ''} className={tab === key ? 'active' : ''}
+              key={key} id={`auth-${key}-tab`} type="button" role="tab" aria-selected={tab === key} aria-controls={`auth-${key}-panel`} disabled={busy !== '' || connectionSaving} className={tab === key ? 'active' : ''}
               onClick={() => { setTab(key); setError(''); setInfo(''); }}
             >{t(label)}</button>)}
           </div>
 
           {tab === 'login' && <div className="auth-login-fields" id="auth-login-panel" role="tabpanel" aria-labelledby="auth-login-tab">
-            <div className="auth-browser-option">
-              <button type="button" className="auth-alt" disabled={busy !== ''} aria-busy={busy === 'browser-opening'} onClick={() => void startBrowserLogin()}>
-                {busy === 'browser-opening' ? <span className="auth-button-spinner" aria-hidden="true"/> : <svg className="auth-alt-mark" viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-4"/></svg>}{busy === 'browser-opening' ? t("正在打开浏览器…") : t("通过浏览器登录")}
+            <div className={`auth-browser-option${configConnectionFailed ? ' auth-connection-recovery' : ''}`}>
+              {configConnectionFailed && <>
+                <div className="auth-connection-recovery-head">
+                  <p role="alert"><span aria-hidden="true">{Icons.warning}</span>{t("无法连接登录服务")}</p>
+                  <button type="button" className="auth-connection-feedback" disabled={connectionSaving}
+                    aria-label={t("反馈此问题")} onClick={() => requestFeedback('login', 'login')}>{t("问题反馈")}</button>
+                </div>
+                <p className="auth-connection-advice">{t("如果本机开启了代理，可选择「直接连接」后重试。")}</p>
+                <NetworkConnectionControl compact onSavingChange={setConnectionSaving} />
+              </>}
+              <button type="button" className={configConnectionFailed ? 'auth-connection-retry' : 'auth-alt'}
+                aria-label={configConnectionFailed ? t("重试浏览器登录") : undefined}
+                disabled={busy !== '' || connectionSaving} aria-busy={browserStarting} onClick={() => void startBrowserLogin()}>
+                {!configConnectionFailed && (browserStarting ? <span className="auth-button-spinner" aria-hidden="true"/> : <svg className="auth-alt-mark" viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8M8 4H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-4"/></svg>)}
+                {busy === 'browser-config' ? t("正在读取登录配置…") : busy === 'browser-opening' ? t("正在打开浏览器…")
+                  : configConnectionFailed ? t("重试") : t("通过浏览器登录")}
               </button>
-              <p className="auth-alt-help">{t("在浏览器完成登录后，将自动返回客户端。")}</p>
+              {!configConnectionFailed && <p className="auth-alt-help">{t("在浏览器完成登录后，将自动返回客户端。")}</p>}
+              {configFailed && signInError}
             </div>
             <div className="auth-divider"><span>{t("或")}</span></div>
             <label className="auth-field">{t("AI 邮箱用户名")}
               <span className="auth-input-row">
-                <input name="username" value={username} disabled={busy !== ''} autoFocus placeholder={t("用户名")} autoComplete="username" autoCapitalize="none" spellCheck={false} onChange={event => { setUsername(event.target.value.trim()); setError(''); }}/>
+                <input name="username" value={username} disabled={busy !== '' || connectionSaving} autoFocus placeholder={t("用户名")} autoComplete="username" autoCapitalize="none" spellCheck={false} onChange={event => { setUsername(event.target.value.trim()); setError(''); }}/>
                 <span className="auth-suffix">@aimychats.com</span>
               </span>
             </label>
             <label className="auth-field">{t("密码")}
               <span className="auth-input-row">
-                <input name="password" type={showPassword ? 'text' : 'password'} value={password} disabled={busy !== ''} placeholder={t("密码")} autoComplete="current-password" onChange={event => { setPassword(event.target.value); setError(''); }}/>
-                <button type="button" className="auth-show" disabled={busy !== ''} aria-pressed={showPassword} onClick={() => setShowPassword(value => !value)}>{showPassword ? t("隐藏") : t("显示")}</button>
+                <input name="password" type={showPassword ? 'text' : 'password'} value={password} disabled={busy !== '' || connectionSaving} placeholder={t("密码")} autoComplete="current-password" onChange={event => { setPassword(event.target.value); setError(''); }}/>
+                <button type="button" className="auth-show" disabled={busy !== '' || connectionSaving} aria-pressed={showPassword} onClick={() => setShowPassword(value => !value)}>{showPassword ? t("隐藏") : t("显示")}</button>
               </span>
             </label>
-            <div className="auth-forgot"><button type="button" disabled={busy !== ''} onClick={() => void openExternal('/login?forgot=1')}>{t("忘记密码？")}</button></div>
-            {error && <p className="auth-error" role="alert">{t(error)} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
+            <div className="auth-forgot"><button type="button" disabled={busy !== '' || connectionSaving} onClick={() => void openExternal('/login?forgot=1')}>{t("忘记密码？")}</button></div>
+            {!configFailed && signInError}
             {info && busy !== 'browser' && <p className="auth-info" role="status">{info}</p>}
             {busy === 'browser' && <div className="auth-waiting" role="status"><span className="auth-gate-pulse"/><span>{t("正在等待浏览器完成授权…")}</span><button type="button" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button></div>}
-            <button type="submit" className="auth-submit" disabled={busy !== ''} aria-busy={busy === 'password'}>{busy === 'password' && <span className="auth-button-spinner" aria-hidden="true"/>}{busy === 'password' ? t("正在登录…") : t("登录")}</button>
-            <p className="auth-switch">{t("还没有账号？")}<button type="button" disabled={busy !== ''} onClick={() => { setTab('register'); setError(''); setInfo(''); }}>{t("注册")}</button></p>
+            <button type="submit" className="auth-submit" disabled={busy !== '' || connectionSaving} aria-busy={busy === 'password'}>{busy === 'password' && <span className="auth-button-spinner" aria-hidden="true"/>}{busy === 'password' ? t("正在登录…") : t("登录")}</button>
           </div>}
 
           {tab === 'register' && <div className="auth-login-fields" id="auth-register-panel" role="tabpanel" aria-labelledby="auth-register-tab">
@@ -412,9 +446,16 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
               <button type="button" className="auth-submit" onClick={() => void openExternal('/register')}>{t("在浏览器中注册")}</button>
             </div>
             {error && <p className="auth-error" role="alert">{t(error)}</p>}
-            <p className="auth-switch">{t("已有账号？")}<button type="button" onClick={() => { setTab('login'); setError(''); setInfo(''); }}>{t("登录")}</button></p>
           </div>}
-        </form>
+          <div className="auth-login-footer">
+            <p className="auth-switch">{tab === 'login' ? t("还没有账号？") : t("已有账号？")}
+              <button type="button" disabled={busy !== ''} onClick={() => { setTab(tab === 'login' ? 'register' : 'login'); setError(''); setInfo(''); }}>
+                {tab === 'login' ? t("注册") : t("登录")}
+              </button>
+            </p>
+            {!configFailed && <button type="button" className="auth-connection-link" disabled={busy !== ''} onClick={openConnectionSettings}>{t("连接设置")}</button>}
+          </div>
+        </form>}
       </section>
     </div>}
   </div>;

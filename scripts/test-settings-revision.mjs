@@ -78,6 +78,7 @@ const mockedRequire = id => {
   if (id === '../../shared/api/devifyDevice') return { registerDevifyDevice: async () => {} };
   if (['../../../shared/api/desktopInvoke', '../../shared/api/desktopInvoke'].includes(id)) return { desktopInvoke: (...args) => invoke(...args), requestFeedback: () => {} };
   if (['./settingsModel', '../../settings/settingsModel', '../settings/settingsModel'].includes(id)) return settingsModel;
+  if (id === '../settings/NetworkSettings') return loadModule('../src/features/settings/NetworkSettings.tsx');
   if (['../../settings/Settings', '../settings/Settings'].includes(id)) return module.exports;
   if (id === './wechatSetupState') return loadModule('../src/features/connectors/wizard/wechatSetupState.ts');
   if (['../../connectors/Permission', '../Permission'].includes(id)) return loadModule('../src/features/connectors/Permission.tsx');
@@ -324,6 +325,8 @@ assert.ok(!elements(tree).some(node => node.type === 'a' && node.props.href === 
 connectorInstall = installed;
 
 // Login gate saves from its loaded context and does not overwrite later typing.
+const previousWindow = globalThis.window;
+globalThis.window = new EventTarget();
 const { LoginGate } = loadModule('../src/features/auth/LoginGate.tsx');
 const gateLoad = deferred(), gateSaves = [];
 invoke = (command, args) => {
@@ -334,18 +337,21 @@ invoke = (command, args) => {
 const gate = { hooks: [] };
 tree = render(gate, () => LoginGate({ onAuthenticated() {} }));
 const gateInput = tree => find(tree, node => node.type === 'input' && node.props.type === 'url');
-assert.equal(gateInput(tree).props.disabled, true);
+const gateLogin = tree => find(tree, node => node.type === 'button' && node.props.className === 'auth-gate-primary');
+assert.equal(gateLogin(tree).props.disabled, true);
 gateLoad.resolve({ ...defaultSettings(), user_settings_revision: 30, devify: { ...defaultSettings().devify, base_url: '' } }); await flush();
+tree = render(gate, () => LoginGate({ onAuthenticated() {} }));
+gateLogin(tree).props.onClick();
 tree = render(gate, () => LoginGate({ onAuthenticated() {} }));
 gateInput(tree).props.onChange({ target: { value: 'https://first.example' } });
 tree = render(gate, () => LoginGate({ onAuthenticated() {} }));
-find(tree, node => node.type === 'button' && node.props.children === '保存').props.onClick(); await flush();
+find(tree, node => node.type === 'form' && node.props.className.includes('auth-connection-form')).props.onSubmit({ preventDefault() {} }); await flush();
 assert.equal(gateSaves[0].args.value.user_settings_revision, 30);
 gateInput(tree).props.onChange({ target: { value: 'https://later.example' } });
 gateSaves[0].resolve({ ...gateSaves[0].args.value, user_settings_revision: 31 }); await flush();
 tree = render(gate, () => LoginGate({ onAuthenticated() {} }));
 assert.equal(gateInput(tree).props.value, 'https://later.example');
-assert.ok(elements(tree).some(node => node.props?.role === 'status' && String(node.props.children).includes('尚未保存')));
+assert.ok(elements(tree).some(node => node.props?.role === 'alert' && String(node.props.children).includes('尚未保存')));
 const { ChatEntry } = loadModule('../src/features/chat/ChatLanding.tsx');
 backupRuntime = { paused: false, sources: [{ account_id: 'locked-account', platform: 'wechat', setup_complete: true }] };
 let entryChecks = 0, unlocks = 0;
@@ -392,8 +398,7 @@ render(unfinishedEntry, () => ChatEntry(unfinishedProps)); await flush();
 assert.equal(unfinishedReady, 1, 'completed setup can enter chat');
 const { DiskAccessCard } = loadModule('../src/features/connectors/Permission.tsx');
 const { WizardActionButton } = mockedRequire('../../../shared/ui/WizardActionButton');
-const previousWindow = globalThis.window, previousDocument = globalThis.document;
-globalThis.window = new EventTarget();
+const previousDocument = globalThis.document;
 globalThis.document = Object.assign(new EventTarget(), { visibilityState: 'visible' });
 window.setInterval = () => { throw Error('permission checks must not poll'); };
 let permissionChecks = 0, permissionGranted = false, reportedPermission;

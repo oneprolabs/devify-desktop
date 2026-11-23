@@ -48,6 +48,7 @@ const state = {
  authPaused:false, authResolvers:[] as Array<()=>void>,
  loginPaused:false, loginResolvers:[] as Array<()=>void>, loginError:'', browserError:'', externalUrls:[] as string[],
  authStartError:'', authStartPaused:false, authStartResolvers:[] as Array<()=>void>,
+ browserOpenPaused:false, browserOpenResolvers:[] as Array<()=>void>, networkMode:'auto',
 };
 Object.assign(window,{__E2E__:state,isTauri:true});
 const callbacks = new Map<number,Function>();const eventHandlers = new Map<string,number[]>();let callbackId=0;
@@ -62,6 +63,8 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
   switch(command){
    case 'plugin:resources|close':return null;
    case 'app_settings_get':return clone(state.settings);
+   case 'network_connection_get':return state.networkMode;
+   case 'network_connection_set':state.networkMode=args.mode;return state.networkMode;
    case 'devify_spaces':return [{id:'e2e-space',name:'个人空间',kind:'personal',role:'owner'}];
    case 'devify_space_ensure':return 'e2e-space';
    case 'feedback_draft_get':return clone(state.feedbackDraft);
@@ -136,6 +139,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     return 'https://example.invalid/auth/desktop?state=e2e';
    }
    case 'devify_auth_open':{
+    if(state.browserOpenPaused) await new Promise<void>(resolve=>state.browserOpenResolvers.push(resolve));
     if(state.browserError) throw state.browserError;
     state.externalUrls.push(args.url);return null;
    }
