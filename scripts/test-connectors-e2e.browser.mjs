@@ -10,6 +10,7 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
     await page.snapshot();
   };
   const clean = async () => assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  const connectionIcon = () => page.evaluate(() => document.querySelector('.network-connection-icon svg')?.innerHTML);
   const fits = async () => {
     assert.ok(await page.evaluate(() => {
       const box = document.querySelector('.auth-login-modal').getBoundingClientRect();
@@ -25,8 +26,11 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   await click('连接设置');
   await page.waitForSelector('.auth-connection-form select:not(:disabled)');
   assert.equal(await page.evaluate(() => document.querySelector('.auth-connection-form select').value), 'auto');
+  const autoIcon = await connectionIcon();
   await page.selectOption('.auth-connection-form select', 'system_proxy');
   await page.waitForFunction(() => window.__E2E__.networkMode === 'system_proxy');
+  await page.waitForSelector('.auth-connection-form select:not(:disabled)');
+  const proxyIcon = await connectionIcon();
   await click('返回登录');
   assert.ok(await page.evaluate(() => window.__loginDialog === document.querySelector('.auth-login-modal')));
   assert.equal(await page.evaluate(() => document.querySelectorAll('.auth-login-gate select').length), 0, 'sign-in has no repeated connection control');
@@ -69,6 +73,9 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   assert.equal(await page.evaluate(() => document.querySelector('.auth-connection-recovery select').value), 'system_proxy');
   await page.selectOption('.auth-connection-recovery select', 'direct');
   await page.waitForFunction(() => window.__E2E__.networkMode === 'direct');
+  await page.waitForSelector('.auth-connection-recovery select:not(:disabled)');
+  const directIcon = await connectionIcon();
+  assert.ok(autoIcon && proxyIcon && directIcon && new Set([autoIcon, proxyIcon, directIcon]).size === 3, 'each saved connection mode shows a distinct icon');
   assert.equal(await page.evaluate(() => document.querySelector('input[name="username"]').value), 'tester', 'changing the connection keeps the form draft');
   assert.equal(await page.evaluate(() => document.querySelector('input[name="password"]').value), 'example-password');
   await page.evaluate(() => {

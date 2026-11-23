@@ -15,15 +15,42 @@
   font-size: 13px;
 }
 
+.network-connection-choice {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.network-connection-icon {
+  position: absolute;
+  inset-inline-start: 9px;
+  top: 50%;
+  color: #726871;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.network-connection-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
 .network-connection select {
+  min-width: 0;
   min-height: 32px;
   max-width: 100%;
-  padding: 4px 8px;
+  padding: 4px 26px 4px 8px;
   border: 1px solid #dededb;
   border-radius: 6px;
-  background: #fff;
+  background-color: #fff;
   color: inherit;
   font: inherit;
+}
+
+.network-connection-icon + select {
+  padding-inline-start: 29px;
 }
 
 .network-connection select:focus-visible {
@@ -251,31 +278,14 @@
 }
 
 .auth-connection-recovery .network-connection label {
-  position: relative;
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 8px;
   font-size: 12.5px;
 }
 
-.auth-connection-recovery .network-connection label::after {
-  position: absolute;
-  inset-inline-end: 11px;
-  bottom: 14px;
-  width: 5px;
-  height: 5px;
-  border-right: 1px solid #625d63;
-  border-bottom: 1px solid #625d63;
-  content: "";
-  pointer-events: none;
-  transform: rotate(45deg);
-}
-
 .auth-connection-recovery .network-connection select {
-  min-width: 0;
   width: 100%;
-  padding-inline-end: 22px;
-  appearance: none;
 }
 
 .auth-connection-retry {

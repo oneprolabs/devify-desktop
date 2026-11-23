@@ -6,14 +6,17 @@ import './network-settings.css';
 
 const MODES = {
   auto: {
+    icon: Icons.networkAuto,
     label: '自动（默认）',
     hint: '官方服务优先直连，连接失败时尝试系统代理。自托管服务使用系统代理。',
   },
   system_proxy: {
+    icon: Icons.networkProxy,
     label: '使用系统代理',
     hint: '客户端遵循系统代理设置。',
   },
   direct: {
+    icon: Icons.networkDirect,
     label: '直接连接',
     hint: '客户端连接服务时绕过系统代理。',
   },
@@ -78,12 +81,15 @@ export function NetworkConnectionControl({ disabled = false, compact = false, on
   return <div className={`network-connection${compact ? ' network-connection-compact' : ''}`}>
     <label>
       <span>{t('连接方式')}</span>
-      <select value={mode ?? ''} disabled={disabled || loading || saving}
-        onChange={event => void save(event.target.value as ConnectionMode)}>
-        {!mode && <option value="" disabled>{loading ? t('正在加载设置…') : t('请选择连接方式')}</option>}
-        {(Object.keys(MODES) as ConnectionMode[]).map(key =>
-          <option key={key} value={key}>{t(MODES[key].label)}</option>)}
-      </select>
+      <span className="network-connection-choice">
+        {mode && <span className="network-connection-icon" aria-hidden="true">{MODES[mode].icon}</span>}
+        <select value={mode ?? ''} disabled={disabled || loading || saving}
+          onChange={event => void save(event.target.value as ConnectionMode)}>
+          {!mode && <option value="" disabled>{loading ? t('正在加载设置…') : t('请选择连接方式')}</option>}
+          {(Object.keys(MODES) as ConnectionMode[]).map(key =>
+            <option key={key} value={key}>{t(MODES[key].label)}</option>)}
+        </select>
+      </span>
     </label>
     {saving && <p role="status">{t('正在保存…')}</p>}
     {mode && !compact && <p>{t(MODES[mode].hint)}</p>}

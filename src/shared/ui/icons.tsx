@@ -67,6 +67,19 @@ export const Icons = {
   check: stroke(<path d="M3.7 8.3 6.4 11 12.3 4.9" />),
   close: stroke(<path d="M4.4 4.4 11.6 11.6M11.6 4.4 4.4 11.6" />),
   chevronLeft: stroke(<path d="M9.7 3.9 5.6 8l4.1 4.1" />),
+  networkAuto: stroke(<>
+    <path d="M2.5 8h2a4 4 0 0 0 3-1.5A4 4 0 0 1 10.5 5h3m-2-2 2 2-2 2" />
+    <path d="M4.5 8a4 4 0 0 1 3 1.5 4 4 0 0 0 3 1.5h3m-2-2 2 2-2 2" />
+  </>),
+  networkProxy: stroke(<>
+    <rect x="5.6" y="5" width="4.8" height="6" rx="1" />
+    <path d="M2 8h3.6m4.8 0H14" />
+  </>),
+  networkDirect: stroke(<>
+    <circle cx="3.5" cy="8" r="1.5" />
+    <path d="M5 8h6" />
+    <circle cx="12.5" cy="8" r="1.5" />
+  </>),
   refresh: stroke(<>
     <path d="M13.1 8A5.1 5.1 0 1 1 11 3.9" />
     <path d="M13.2 2.9v3.4H9.8" />
