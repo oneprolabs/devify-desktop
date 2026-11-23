@@ -2819,6 +2819,7 @@ export const en: Record<string, string> = {
   "{0} 个待办 · 跨全部会话": "{0} to-dos across all conversations",
   "待办分页": "To-do pages",
   "全部待办": "All to-dos",
+  "搜索内容最多输入 200 个字符。": "Search is limited to 200 characters.",
   "当前服务暂不支持个人分类，暂时显示全部待办。": "Personal categories are not available on this server yet. Showing all to-dos for now.",
   "服务端返回的待办分类统计无效，请稍后重试。": "The server returned invalid to-do category counts. Please retry later.",
   "第 {0} / {1} 页": "Page {0} of {1}",

@@ -594,3 +594,59 @@ export async function runEventRelevanceRecoveryE2E(task, base = 'http://localhos
   console.log('Last-page completion, legacy readability and upgrade detection passed in Ego.');
   console.log(await page.snapshot());
 }
+
+// UI + real, read-only development API through a local bridge. Other IPC remains synthetic.
+export async function runEventSearchApiE2E(task, fixture, base = 'http://127.0.0.1:1434') {
+ const page=task.page('p1');
+ await page.goto(`${base}/scripts/connectors-e2e.html?analysis`);
+ await page.waitForFunction(()=>Boolean(window.__E2E__));
+ await page.evaluate(({space})=>{
+  window.__E2E__.settings.devify.active_space_id=space;
+  window.__E2E__.settings.devify.base_url='http://192.168.8.182:7000';
+  const original=window.__TAURI_INTERNALS__.invoke;
+  window.__TAURI_INTERNALS__.invoke=async(command,args={})=>{
+   if(!['devify_analysis_list','devify_analysis_detail'].includes(command)||args.kind!=='events')return original(command,args);
+   window.__E2E__.calls.push({command,args:structuredClone(args)});
+   const params=new URLSearchParams({kind:command==='devify_analysis_list'?'list':'detail'});
+   if(command==='devify_analysis_list'){
+    params.set('page',String(args.page??1));params.set('page_size',String(args.pageSize??100));
+    if(args.viewerRelevance)params.set('viewer_relevance',args.viewerRelevance);
+    if(args.includeRelevanceCounts)params.set('include_relevance_counts','true');
+    if(args.searchQuery)params.set('q',args.searchQuery);
+   }else params.set('id',String(args.itemId));
+   const response=await fetch('/__search173_api?'+params);const payload=await response.json();
+   if(!response.ok)throw Error(payload.detail??`HTTP ${response.status}`);return payload.data??payload;
+  };
+ },fixture);
+ await page.snapshot();await page.click('text="待办"');
+ await page.waitForSelector('input[aria-label="搜索待办"]');
+ await page.snapshot();await page.click('.analysis-pills button:nth-child(3)');
+ await page.waitForSelector('.analysis-items button');
+ const counts=await page.evaluate(()=>document.querySelector('.analysis-pills').textContent);
+ await page.fill('input[aria-label="搜索待办"]',fixture.marker);
+ await page.waitForFunction(()=>document.querySelector('.event-pagination')?.textContent.includes('第 1 / 2 页')&&document.querySelector('.analysis-items button')?.textContent.includes('desktop-search173-'));
+ assert.equal(await page.evaluate(()=>document.querySelectorAll('.analysis-items button').length),50);
+ assert.equal(await page.evaluate(()=>document.querySelector('.analysis-pills').textContent),counts);
+ await page.snapshot();await page.click('text="下一页"');
+ await page.waitForFunction(()=>document.querySelector('.event-pagination')?.textContent.includes('第 2 / 2 页')&&document.querySelectorAll('.analysis-items button').length===6);
+ assert.equal(await page.evaluate(()=>document.querySelectorAll('.analysis-items button').length),6);
+ const unique='UniqueNeedle A&B +? # 中文';
+ await page.fill('input[aria-label="搜索待办"]',unique);
+ await page.waitForFunction(()=>document.querySelectorAll('.analysis-items button').length===1&&document.querySelector('.analysis-doc h1')?.textContent.includes('UniqueNeedle'));
+ const latest=()=>page.evaluate(()=>window.__E2E__.calls.filter(c=>c.command==='devify_analysis_list').at(-1).args);
+ assert.equal((await latest()).searchQuery,unique);assert.equal((await latest()).page,1);
+ await page.fill('input[aria-label="搜索待办"]',fixture.marker+' body-only-0');
+ await page.waitForFunction(marker=>window.__E2E__.calls.filter(c=>c.command==='devify_analysis_list').at(-1)?.args.searchQuery===marker+' body-only-0'&&document.querySelectorAll('.analysis-items button').length===1,fixture.marker);
+ assert.ok(await page.evaluate(()=>document.querySelector('.analysis-items button').textContent.includes('UniqueNeedle')),'content-only server match is retained');
+ assert.equal(await page.evaluate(()=>document.querySelector('.analysis-pills').textContent),counts);
+ await page.snapshot();await page.click('.analysis-pills button:nth-child(1)');
+ await page.waitForSelector('.event-empty');
+ assert.equal((await latest()).page,1);assert.equal((await latest()).viewerRelevance,'my_todo');
+ assert.equal((await latest()).searchQuery,fixture.marker+' body-only-0');
+ await page.snapshot();await page.click('text="清除搜索"');
+ await page.waitForFunction(()=>document.querySelector('.event-empty')&&document.querySelector('input[aria-label="搜索待办"]')?.value===''&&!window.__E2E__.calls.filter(c=>c.command==='devify_analysis_list').at(-1)?.args.searchQuery);
+ assert.equal((await latest()).page,1);
+ assert.deepEqual(await page.evaluate(()=>window.__E2E__.errors),[]);
+ console.log('Real development API + React UI: cross-page search, 50/6 pagination, special characters, content matches, stable badges, category/query reset and clear passed.');
+ console.log(await page.snapshot());
+}

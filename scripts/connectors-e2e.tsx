@@ -41,7 +41,7 @@ const state = {
  summaries:[] as any[],summaryLocal:[] as any[],summaryError:'',
  agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
  agents: query.has('no-agents')?[]:['codex','claude-code','gemini-cli'].map(id=>({id,name:id,command:'/e2e/'+id,version:'1.0 (fixture)',available:true,note:'Synthetic tool'})),
- analysisEvents:[] as any[],analysisNotes:{} as Record<number,any[]>,analysisReports:[] as any[],questions:[] as any[],analysisLegacy:false,
+ analysisEvents:[] as any[],analysisNotes:{} as Record<number,any[]>,analysisReports:[] as any[],questions:[] as any[],analysisLegacy:false,analysisSearch:false,
  analysisPreferences:{event_granularity:'balanced',summary_length:'standard',summary_style:'concise',conversation_types:['direct','group'],lookback_days:0,auto_analyze:true},
  analysisSaveError:'', reportSaveError:'', reportReadError:'', reportDelay:0,
  feedbackDraft:feedbackDraft(),feedbackHistory:[] as any[],feedbackSubmitError:'',feedbackSubmits:0,
@@ -92,10 +92,11 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     const counts={my_todo:0,related:0,other:0};
     for(const row of state.analysisEvents)counts[(row.viewer_relevance??'other') as keyof typeof counts]++;
     const list=state.analysisEvents.filter(row=>state.analysisLegacy||!args.viewerRelevance||(row.viewer_relevance??'other')===args.viewerRelevance)
+     .filter(row=>!state.analysisSearch||!args.searchQuery||`${row.title} ${row.content??''}`.toLowerCase().includes(args.searchQuery.trim().toLowerCase()))
      .map(row=>state.analysisLegacy?Object.fromEntries(Object.entries(row).filter(([key])=>!key.startsWith('viewer_'))):row);
     if(!args.pageSize)return {list:clone(list),pagination:{total:list.length,page:1,next:null}};
     const page=args.page??1,size=args.pageSize??100,start=(page-1)*size;
-    return {list:clone(list.slice(start,start+size)),pagination:{total:list.length,page,page_size:size,next:start+size<list.length?'next':null},
+    return {list:clone(list.slice(start,start+size)),search_supported:!state.analysisLegacy&&state.analysisSearch,pagination:{total:list.length,page,page_size:size,next:start+size<list.length?'next':null},
      ...(!state.analysisLegacy&&(args.includeRelevanceCounts||args.viewerRelevance)?{relevance_counts:counts}:{})};
    }
    case 'devify_event_update':{
