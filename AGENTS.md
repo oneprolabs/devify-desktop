@@ -26,8 +26,9 @@ and the requirement to verify and commit each bounded batch before continuing.
 - Development defaults to the development service. Occasional production testing
   is allowed by explicitly changing the service address; keep the production warning
   visible and remember that server-side operations then affect real production data.
-  Keep the development-mode label and current service address visible on the login
-  landing page and in the login dialog, including when connecting to production.
+  Show the development-mode label, saved service address and address-change guidance
+  in the login dialog and top environment bar, including when connecting to production.
+  Keep the login landing body free of a duplicate development information panel.
   To change the default development service, click **登录… → 连接设置 → 服务端地址
   → 保存并返回登录**. Tell colleagues this path; changing the address affects only
   the selected app variant's saved settings.

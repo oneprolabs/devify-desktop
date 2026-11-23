@@ -5,7 +5,7 @@ import { sameServiceUrl } from '../../shared/api/serviceUrl';
 import { t } from '../../shared/i18n/locale';
 
 /** Development-only local status. No network request or polling timer. */
-export function DevelopmentEnvironment() {
+export function DevelopmentEnvironment({ authenticated }: { authenticated: boolean }) {
   const [base, setBase] = useState('');
   useEffect(() => {
     let active = true;
@@ -26,6 +26,7 @@ export function DevelopmentEnvironment() {
   const production = sameServiceUrl(base, 'https://aimychats.com');
   return <div className={`development-environment${production ? ' production' : ''}`} role="status">
     <strong>AIMyChats Dev</strong><span>{base || t('正在读取服务地址…')}</span>
+    <span className="development-environment-hint">{authenticated ? t('修改地址：设置 → 账户') : t('修改地址：登录… → 连接设置')}</span>
     {production && <strong>{t('当前连接正式服务，操作会影响正式数据。')}</strong>}
   </div>;
 }

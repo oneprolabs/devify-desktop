@@ -2807,4 +2807,7 @@ export const en: Record<string, string> = {
   "开发模式": "Development mode",
   "正式服务": "Production service",
   "当前服务": "Current service",
+  "修改地址：在登录弹窗底部点击「连接设置」。": "To change the address, click Connection settings at the bottom of this dialog.",
+  "修改地址：登录… → 连接设置": "Change address: Sign in… → Connection settings",
+  "修改地址：设置 → 账户": "Change address: Settings → Account",
 };

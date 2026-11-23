@@ -371,7 +371,7 @@ export default function PrototypeShell() {
   }, [wechatGuide, whatsappGuide, wizardStep]);
   const openEvent = (eventId: number) => { setEventFocusId(eventId); setSection('events'); };
   return <main className={`prototype-shell${DEVELOPMENT_APP ? ' prototype-shell-dev' : ''}${isTauri() && /Mac/.test(navigator.platform) ? ' prototype-shell-macos' : ''}`} onMouseDown={handleWindowDrag}>
-    {DEVELOPMENT_APP && <DevelopmentEnvironment />}
+    {DEVELOPMENT_APP && <DevelopmentEnvironment authenticated={authState === 'authed'} />}
     <div className="prototype-titlebar" aria-hidden="true" />
     <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
       updateVersion={update.status === 'available' ? update.version : undefined}

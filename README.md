@@ -474,7 +474,7 @@ are real, and the development app displays a production warning. App-owned data 
 
 **修改服务地址：** 开发版默认连接 `http://192.168.8.182:7000`。在登录页面点击
 **登录… → 连接设置 → 服务端地址**，修改后点击 **保存并返回登录**。
-这是当前客户端保存的地址，不会修改另一版本的设置。登录首页和弹窗会显示实际保存的地址；
+这是当前客户端保存的地址，不会修改另一版本的设置。顶部环境栏和登录弹窗会显示实际保存的地址与修改入口；
 如果切换到正式服务，会提示操作将影响正式数据。
 
 Grant Full Disk Access to AIMyChats Dev once. Keep its signing identity stable across rebuilds.

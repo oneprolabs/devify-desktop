@@ -28,6 +28,7 @@ function DevelopmentLoginService({ baseUrl }: { baseUrl: string }) {
   return <aside className={`auth-development-service${production ? ' production' : ''}`} aria-label={t('开发模式')}>
     <div><strong>{t('开发模式')}</strong><span>{production ? t('正式服务') : t('当前服务')}</span></div>
     <code>{baseUrl || t('正在读取服务地址…')}</code>
+    <small>{t('修改地址：在登录弹窗底部点击「连接设置」。')}</small>
     {production && <small>{t('当前连接正式服务，操作会影响正式数据。')}</small>}
   </aside>;
 }
@@ -362,7 +363,6 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       <span className="auth-gate-mark"><img src={brandMark} alt=""/></span>
       <h1>{t("需要登录")}</h1>
       <p>{t("登录后才能连接聊天来源、备份和使用智能分析。")}</p>
-      <DevelopmentLoginService baseUrl={baseUrl}/>
       {notice && <p className="auth-gate-error" role="alert">{notice}</p>}
       {busy === 'browser'
         ? <div className="auth-gate-waiting" role="status"><span className="auth-gate-pulse"/><span>{t("正在等待浏览器完成授权…")}</span></div>
