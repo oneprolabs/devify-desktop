@@ -8,7 +8,7 @@ const MODES = {
   auto: {
     icon: Icons.networkAuto,
     label: '自动（默认）',
-    hint: '官方服务优先直连，连接失败时尝试系统代理。自托管服务使用系统代理。',
+    hint: '官方服务优先直连，连接失败时可重试的请求会尝试系统代理。自托管服务使用系统代理。',
   },
   system_proxy: {
     icon: Icons.networkProxy,

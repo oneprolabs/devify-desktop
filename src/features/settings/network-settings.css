@@ -278,10 +278,12 @@
 }
 
 .auth-connection-recovery .network-connection label {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 8px;
+  gap: 4px 8px;
   font-size: 12.5px;
+}
+
+.auth-connection-recovery .network-connection-choice {
+  flex: 1 0 auto;
 }
 
 .auth-connection-recovery .network-connection select {
@@ -330,9 +332,8 @@
 }
 
 @media (max-width: 520px) {
-  .auth-connection-recovery .network-connection label {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
+  .auth-connection-recovery .network-connection-choice {
+    flex-basis: 100%;
   }
 
   .auth-connection-retry {

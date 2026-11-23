@@ -156,6 +156,20 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   assert.equal(await page.evaluate(() => document.querySelector('.auth-alt-help').textContent), 'Finish signing in in your browser, then return to the app.');
   assert.equal(await page.evaluate(() => document.querySelector('.auth-divider').textContent), 'or');
   await page.screenshot({path:'/tmp/aimychats-login-v7-english-small.png'});
+  await page.evaluate(() => {
+    window.__E2E__.authStartError = '读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
+  });
+  await page.click('.auth-alt');
+  await page.waitForSelector('.auth-connection-recovery select:not(:disabled)');
+  await fits();
+  assert.ok(await page.evaluate(() => {
+    const select = document.querySelector('.auth-connection-recovery select');
+    const style = getComputedStyle(select);
+    const context = document.createElement('canvas').getContext('2d');
+    context.font = style.font;
+    const availableWidth = select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    return Array.from(select.options).every(option => context.measureText(option.text).width + 4 <= availableWidth);
+  }), 'the compact recovery control fits every English connection label beside its icon and arrow');
   await clean();
   console.log('PASS V7 login UI: inline proxy recovery, shared settings, browser stages, password and browser retry, keyboard focus, first-use setup, English and 940×640 layout');
   console.log(await page.snapshot());

@@ -2023,7 +2023,7 @@ export const en: Record<string, string> = {
   "自动（默认）": "Automatic (default)",
   "使用系统代理": "Use system proxy",
   "直接连接": "Direct connection",
-  "官方服务优先直连，连接失败时尝试系统代理。自托管服务使用系统代理。": "Connect directly to the official service first, then try the system proxy if the connection fails. Self-hosted services use the system proxy.",
+  "官方服务优先直连，连接失败时可重试的请求会尝试系统代理。自托管服务使用系统代理。": "Connect directly to the official service first. If a connection fails, requests that can be retried use the system proxy. Self-hosted services use the system proxy.",
   "客户端遵循系统代理设置。": "The app follows your system proxy settings.",
   "客户端连接服务时绕过系统代理。": "The app connects to the service directly.",
   "无法保存网络连接设置：{0}": "Couldn't save the network connection setting: {0}",
