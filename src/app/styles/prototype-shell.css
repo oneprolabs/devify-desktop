@@ -775,8 +775,8 @@
 .chat-event-divider span { flex: 1; height: 1px; background: #eaeae7; }
 
 .chat-event { display: grid; grid-template-columns: 76px minmax(0, 1fr); column-gap: 10px; padding-bottom: 16px; }
-.chat-event-gutter { display: flex; flex-direction: column; align-items: flex-end; padding-top: 14px; }
-.chat-event-tag { padding: 1px 6px; border-radius: 4px; background: #f0f0ee; color: #46463f; font-size: 12px; white-space: nowrap; }
+.chat-event-gutter { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; padding-top: 14px; }
+.chat-event-tag { padding: 1px 6px; border-radius: 4px; background: #f0f0ee; color: #46463f; font-size: 12px; max-width: 100%; text-align: right; }
 .chat-event-tag.done { background: #eaf6ef; color: #16834d; }
 
 .chat-event-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid #eaeae7; border-radius: 12px; background: #fff; font: inherit; text-align: left; cursor: pointer; }

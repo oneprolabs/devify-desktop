@@ -2,6 +2,7 @@ import { t, dateLocale, sortLocale } from '../i18n/locale';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isViewerEvidence, viewerRelevanceLabel, type ViewerEventRelevance } from '../api/eventRelevance';
 
 /** Where a citation points. Mirrors the server's evidence targets so the same
  *  drawer serves answers, reports, topics and the chat event feed. */
@@ -22,7 +23,7 @@ type EvidenceRow = {
   reference_key?: string | null;
 };
 
-type DrawerEvent = {
+type DrawerEvent = ViewerEventRelevance & {
   id: number;
   title: string;
   content?: string | null;
@@ -215,6 +216,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
     : event?.title || note?.title || target.title || KIND_LABEL[target.kind];
   const subtitle = target.kind === 'message' && messages.length ? t("引用消息已高亮") : '';
   const longNote = (note?.content ?? '').length > 600;
+  const eventRelevance = event ? viewerRelevanceLabel(event) : '';
 
   return createPortal(<aside className="evidence-drawer" role="dialog" aria-modal="true" aria-label={t("查看依据")}>
     <div className="evidence-scrim" onClick={onClose}/>
@@ -303,6 +305,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
         {!loading && !error && target.kind === 'event' && event && <>
           <div className="evidence-meta">
             <span className={`evidence-tag ${event.status === 'done' ? 'done' : event.status === 'in_progress' ? 'rel' : ''}`}>{statusLabel(event.status)}</span>
+            {eventRelevance && <span className="evidence-tag">{eventRelevance}</span>}
             {(event.tags ?? []).map((tag, index) => tag.label ? <span className="evidence-tag ac" key={`${tag.label}-${index}`}>{t(tag.label)}</span> : null)}
             {event.last_activity_at && <span>{stamp(event.last_activity_at)}</span>}
           </div>
@@ -338,7 +341,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
               >
                 <span className="evidence-row-main">
                   <span className="evidence-row-title">{stamp(row.occurred_at)}{row.sender_name ? ` · ${row.sender_name}` : ''}</span>
-                  <span className="evidence-row-sub">{row.reference_key || t("原始消息")}</span>
+                  <span className="evidence-row-sub">{isViewerEvidence(event, row.message_id) ? t("原文依据") : row.reference_key || t("原始消息")}</span>
                 </span>
                 <span className="evidence-row-action">{t("查看原文 →")}</span>
               </button>)}</div>}

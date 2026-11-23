@@ -18,6 +18,9 @@ export function resolve(specifier, context, nextResolve) {
 }
 
 export function load(url, context, nextLoad) {
+  if (url.startsWith('file:') && url.endsWith('.css')) {
+    return { format: 'module', shortCircuit: true, source: '' };
+  }
   if (url.startsWith('file:') && /\.tsx?$/.test(url)) {
     const source = fs.readFileSync(fileURLToPath(url), 'utf8');
     return { format: 'module', shortCircuit: true, source: ts.transpileModule(source, { compilerOptions: {

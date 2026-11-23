@@ -4,12 +4,13 @@ import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
+import { isViewerEvidence, viewerRelevanceLabel, type ViewerEventRelevance } from '../../shared/api/eventRelevance';
 import { reportPresentation } from './reportPresentation';
 import { renderAgentMarkdown } from '../../shared/content/summary';
 import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from '../../shared/state/pageSnapshots';
 
 type Kind = 'events' | 'reports';
-type EventItem = { id: number; title: string; content: string; status?: string | null; tags?: Array<{ label?: string }>; last_activity_at?: string | null; opened_at?: string | null; updated_at?: string | null };
+type EventItem = ViewerEventRelevance & { id: number; title: string; content: string; status?: string | null; tags?: Array<{ label?: string }>; last_activity_at?: string | null; opened_at?: string | null; updated_at?: string | null };
 type RelatedEvent = { id: number; title?: string; status?: string | null; relation_type?: string; type?: string; label?: string; relation_id?: number };
 type EventRelation = Omit<RelatedEvent, 'id'> & { id?: number; event_id?: number; related_event_id?: number; source_event_id?: number; target_event_id?: number };
 type EventRelationRecord = { id: number; space_id: string; left_event_id: number; right_event_id: number; relation_kind: string; decision: string; reason?: string };
@@ -17,7 +18,7 @@ type ReportSection = { id: number; title: string; position: number; items?: Arra
 type ReportItem = { id: number; title: string; body?: string; content?: unknown; status: string; period_start?: string | null; period_end?: string | null; generated_at?: string | null; updated_at?: string | null; sections?: ReportSection[] };
 type EventNote = { id: number; title: string; content: string; start_at?: string | null; end_at?: string | null; origin?: string | null };
 type EventDetail = EventItem & {
-  evidence?: Array<{ id: number; sender_name?: string; occurred_at?: string | null; content?: string }>;
+  evidence?: Array<{ id: number; message_id?: number; sender_name?: string; occurred_at?: string | null; content?: string }>;
   note_ids?: number[] | string;
   relation_ids?: number[] | string;
   related_event_ids?: number[];
@@ -331,6 +332,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const reload = () => setReloadKey(key => key + 1);
   const report = kind === 'reports' ? displayedDetail as ReportItem | null : null;
   const event = kind === 'events' ? displayedDetail as EventDetail | null : null;
+  const eventRelevance = event ? viewerRelevanceLabel(event) : '';
   const relatedEvents = useMemo(() => {
     if (!event) return [];
     const byId = new Map<number, RelatedEvent>();
@@ -599,6 +601,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       <div className="analysis-items">
         {filteredItems.map(item => {
           const status = kind === 'events' ? (item as EventItem).status : (item as ReportItem).status;
+          const relevance = kind === 'events' ? viewerRelevanceLabel(item as EventItem) : '';
           const when = kind === 'events' ? (item as EventItem).last_activity_at : (item as ReportItem).generated_at;
           return <button key={item.id}
             type="button"
@@ -611,7 +614,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
               : <span className="event-list-icon" aria-hidden="true"><DoneDot done={isDone(status)}/></span>}
             <span>
               <strong>{item.title || `${pageTitle} #${item.id}`}</strong>
-              {kind === 'events' ? <small className="event-list-meta"><span>{status === 'open' ? t("待跟进") : statusLabel(status)}</span>{when && <time dateTime={when}>{shortDate(when)}</time>}</small>
+              {kind === 'events' ? <small className="event-list-meta"><span>{[status === 'open' ? t("待跟进") : statusLabel(status), relevance].filter(Boolean).join(' · ')}</span>{when && <time dateTime={when}>{shortDate(when)}</time>}</small>
                 : <small>{reportType(item as ReportItem)}{when ? ` · ${shortDate(when)}` : ''}</small>}
             </span>
             </button>;
@@ -709,7 +712,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
             <div className="event-heading-meta"><div className="analysis-status">
               <DoneDot done={isDone(event.status)}/>
               <span>{event.status === 'open' ? t("待跟进") : statusLabel(event.status)}</span>
-            </div><span className="analysis-meta">{[eventNotes.length ? tf("{0} 条进展", eventNotes.length) : '', eventPeople ? tf("{0} 人", eventPeople) : '', event.last_activity_at ? tf("最近活动 {0}", shortDate(event.last_activity_at)) : ''].filter(Boolean).join(' · ')}</span></div></div></div>
+            </div>{eventRelevance && <span>{eventRelevance}</span>}<span className="analysis-meta">{[eventNotes.length ? tf("{0} 条进展", eventNotes.length) : '', eventPeople ? tf("{0} 人", eventPeople) : '', event.last_activity_at ? tf("最近活动 {0}", shortDate(event.last_activity_at)) : ''].filter(Boolean).join(' · ')}</span></div></div></div>
             <nav className="event-section-nav" aria-label={t("待办详情")}>
               <button type="button" aria-pressed={eventTab === 'overview'} onClick={() => setEventTab('overview')}>{t("概览")}</button>
               <button type="button" aria-pressed={eventTab === 'sources'} onClick={() => setEventTab('sources')}>{t("进展与原文")}</button>
@@ -725,7 +728,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
             <div className="analysis-block-head"><h2>{t("时间线")}</h2>{eventTab === 'sources' && eventNotes.length > 0 && !event.evidence?.length && <button type="button" className="analysis-raw-toggle" onClick={toggleAllRaw}>{allRawOpen ? t("收起全部原文") : t("查看全部原文")}</button>}</div>
             {eventTab === 'sources' && !!event.evidence?.length && <div className="analysis-raw event-source-list">
               {event.evidence.map(source => <div className="analysis-raw-item" key={source.id}>
-                <span>{[source.sender_name, shortDate(source.occurred_at)].filter(Boolean).join(' · ')}</span>
+                <span>{[source.sender_name, shortDate(source.occurred_at), isViewerEvidence(event, source.message_id) && t('原文依据')].filter(Boolean).join(' · ')}</span>
                 <p>{source.content}</p>
               </div>)}
             </div>}
