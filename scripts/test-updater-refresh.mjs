@@ -41,9 +41,18 @@ assert.equal(useUpdater().version, '0.1.10');
 assert.deepEqual(closed, ['0.1.9']);
 assert.equal(new Headers(options.headers).get('cache-control'), 'no-cache');
 
-next = offer('0.1.11');
+let resolveRefresh;
+next = () => new Promise(done => { resolveRefresh = done; });
+const refresh = checkForUpdates(true);
 await downloadUpdate();
-assert.deepEqual(downloaded, ['0.1.11']);
+// Downloading uses the offer that was already checked. A second manifest request
+// would make a slow or unavailable update service look like an inert button.
+assert.deepEqual(downloaded, ['0.1.10']);
+assert.equal(calls, 4);
+resolveRefresh(offer('0.1.11'));
+await refresh;
+// A refresh that was already in flight must not overwrite a download in progress
+// or close the object selected by that download.
 assert.equal(useUpdater().status, 'downloaded');
-assert.equal(useUpdater().version, '0.1.11');
+assert.equal(useUpdater().version, '0.1.10');
 console.log('Updater refresh checks passed');

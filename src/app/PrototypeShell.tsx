@@ -397,7 +397,15 @@ export default function PrototypeShell() {
     <div className="prototype-titlebar" aria-hidden="true" />
     <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
       updateVersion={update.status === 'available' ? update.version : undefined}
-      onUpdate={() => { setUpdateDialogOpen(true); void checkForUpdates(true); }}
+      onUpdate={() => {
+        setUpdateDialogOpen(true);
+        // The rail button is rendered only for an already discovered release.
+        // Rechecking here introduced a race with the download action and made a
+        // valid update appear to do nothing when GitHub was slow.
+        if (!['available', 'checking', 'downloading', 'installing', 'downloaded', 'installed'].includes(update.status)) {
+          void checkForUpdates();
+        }
+      }}
       onNavigate={next => { if (next !== 'events') setEventFocusId(null); setStartTaskCreate(false); setSection(next); }} />
     <section className="prototype-content">
       {updateDialogOpen && <div className="auth-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setUpdateDialogOpen(false); }}>

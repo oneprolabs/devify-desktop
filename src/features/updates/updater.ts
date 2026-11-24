@@ -11,6 +11,7 @@ type Snapshot = { status: Status; version?: string; currentVersion?: string; not
 let snapshot: Snapshot = { status: DEVELOPMENT_APP ? 'disabled' : 'idle' };
 let update: Update | null = null;
 let checkInFlight: Promise<void> | undefined;
+let refreshGeneration = 0;
 const listeners = new Set<() => void>();
 function setSnapshot(next: Snapshot) { snapshot = next; listeners.forEach(listener => listener()); }
 
@@ -40,17 +41,38 @@ export function checkForUpdates(silent = false): Promise<void> {
 }
 
 async function refreshUpdate(silent: boolean) {
+  const generation = ++refreshGeneration;
   const previous = update;
+  const previousSnapshot = snapshot;
+  // Keep an already discovered offer visible while a background refresh runs. The
+  // rail action remains available, and downloadUpdate no longer waits on this
+  // refresh before starting the download.
   if (!previous) setSnapshot({ status: 'checking' });
   try {
     // The manifest lives on github.com; the plugin uses the system proxy settings.
     const next = await check({ timeout: 30000, headers: { 'Cache-Control': 'no-cache' } });
+    // A download may have started while this background refresh was in flight.
+    // Its result is stale and must not replace the download state or close the
+    // Update object that the download is using.
+    if (generation !== refreshGeneration || ['downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) {
+      if (next && next !== update) await next.close().catch(() => {});
+      return;
+    }
     update = next;
     setSnapshot(next ? { status: 'available', version: next.version, currentVersion: next.currentVersion, notes: next.body } : { status: 'latest' });
     if (previous) await previous.close().catch(() => {});
   } catch (error) {
+    if (generation !== refreshGeneration || ['downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) return;
     if (previous) {
-      if (!silent) setSnapshot({ ...snapshot, error: friendlyUpdateError(error) });
+      // A transient refresh failure must not discard a valid offer. Keep it
+      // actionable and expose the failure only for an explicit check.
+      setSnapshot({
+        status: 'available',
+        version: previousSnapshot.version ?? previous.version,
+        currentVersion: previousSnapshot.currentVersion ?? previous.currentVersion,
+        notes: previousSnapshot.notes ?? previous.body,
+        ...(silent ? {} : { error: friendlyUpdateError(error) }),
+      });
     } else {
       setSnapshot(silent ? { status: 'idle' } : { status: 'error', error: friendlyUpdateError(error) });
     }
@@ -60,9 +82,14 @@ async function refreshUpdate(silent: boolean) {
 export async function downloadUpdate() {
   if (DEVELOPMENT_APP) return;
   if (snapshot.status !== 'available') return;
-  // A newer release may have replaced the offer while the dialog was open.
-  await checkForUpdates(true);
-  if (!update || snapshot.status !== 'available') return;
+  // The available Update object was already verified by checkForUpdates. Do not
+  // perform another network check here: a slow or unavailable manifest used to
+  // leave the button apparently inert even though the current offer was ready to
+  // download.
+  if (!update) return;
+  // Invalidate any background manifest check that started before this click. Its
+  // result must not overwrite the download state or close the selected object.
+  refreshGeneration += 1;
   const selected = update;
   const base = { version: selected.version, currentVersion: selected.currentVersion, notes: selected.body };
   setSnapshot({ status: 'downloading', ...base, progress: 0 });
