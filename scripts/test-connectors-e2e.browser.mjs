@@ -600,8 +600,15 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   });
   await page.click(refresh, {label:'刷新当前微信会话'});
   await page.waitForSelector(alert);
-  assert.match(await page.evaluate(selector => document.querySelector(selector).textContent, alert), /密钥.*连接器/);
-  assert.ok(!await page.evaluate(selector => document.querySelector(selector).textContent.includes('sensitive-test-salt'), alert));
+  assert.deepEqual(await page.evaluate(selector => {
+    const card = document.querySelector(selector);
+    return {
+      title: card.querySelector('[role="alert"] strong').textContent,
+      action: card.querySelector('button').textContent,
+      mainPane: Boolean(card.closest('.chat-workbench-main')),
+      rawDetail: card.textContent.includes('sensitive-test-salt'),
+    };
+  }, alert), {title:'微信密钥需要更新',action:'恢复微信密钥',mainPane:true,rawDetail:false});
   assert.ok(await page.evaluate(selector => document.querySelector(selector).textContent.includes('的测试消息'), message));
   const calls = () => page.evaluate(start => window.__E2E__.calls.slice(start), start);
   assert.deepEqual((await calls()).filter(c => c.command === 'wechat_sync').map(c => c.args), [{accountId:wx}]);
@@ -614,6 +621,7 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   };
   await page.click(`${alert} button`, {label:'前往连接器恢复密钥'});
   await page.waitForSelector('.wechat-wizard #wizard-method');
+  assert.match(await page.evaluate(() => document.querySelector('#wizard-method h2').textContent), /恢复微信密钥/);
   await page.click('loc=css:.wizard-method-option >> nth=1', {label:'选择手动导入微信密钥'});
   await click('下一步');
   await ready('下一步：连接微信');
@@ -625,17 +633,38 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   await click('导入并校验');
   await ready('返回聊天');
   await click('返回聊天');
-  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息')
+    && !document.querySelector('.chat-workbench-refresh-error'));
+  assert.equal(await sessionKey(), original, 'returning from recovery preserves the selected chat');
   assert.deepEqual((await calls()).filter(c => c.command === 'wechat_import_keys').map(c => c.args), [{accountId:wx,targetOnly:true}]);
   assert.ok(!(await calls()).some(c => c.command === 'connector_setup_state'), 'key recovery preserves connector setup and backup settings');
   await page.waitForSelector(`${refresh}:not(:disabled)`);
   await page.evaluate(() => { window.__E2E__.wechatSyncError = '该账号正在同步，请稍后重试。'; });
-  await page.click(refresh, {label:'验证微信同步拒绝提示'});
+  await page.click(refresh, {label:'验证同步暂忙时可重试'});
   await page.waitForSelector(alert);
-  assert.match(await page.evaluate(selector => document.querySelector(selector).textContent, alert), /正在同步/);
+  assert.match(await page.evaluate(selector => document.querySelector(selector).querySelector('[role="alert"]').textContent, alert), /稍等片刻.*重试/);
+  await page.evaluate(() => {
+    window.__E2E__.wechatSyncError = '';
+    window.__E2E__.wechatSyncOutcomes = [
+      {rel:'session/session.db',status:'cached',error:null},
+      {rel:'message/message_0.db',status:'failed',error:'WAL 第 2 页 HMAC 校验失败'},
+    ];
+  });
+  await page.click(refresh, {label:'验证日志读取失败提示'});
+  await page.waitForFunction(selector => document.querySelector(selector + ' strong')?.textContent.includes('部分微信'), alert);
+  assert.deepEqual(await page.evaluate(selector => {
+    const card = document.querySelector(selector);
+    return {
+      title: card.querySelector('strong').textContent,
+      action: card.querySelector('button').textContent,
+      expanded: card.querySelector('details').open,
+      readableHistory: card.querySelector('[role="alert"]').textContent.includes('仍可查看'),
+    };
+  }, alert), {title:'部分微信聊天记录未能刷新',action:'重试刷新',expanded:false,readableHistory:true});
+  await page.click(`${alert} summary`, {label:'展开技术错误详情'});
+  await page.waitForFunction(selector => document.querySelector(selector + ' details[open] p')?.textContent.includes('HMAC'), alert);
   await page.evaluate(() => {
     const state = window.__E2E__;
-    state.wechatSyncError = '';
     state.wechatSyncPaused = true;
     state.wechatSyncOutcomes = [
       {rel:'session/session.db',status:'ok',error:null},
@@ -643,9 +672,10 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
       {rel:'message/media_0.db',status:'no-key',error:'fixture media error'},
     ];
   });
-  await page.click(refresh, {label:'重新同步并刷新微信'});
+  await page.click(`${alert} button`, {label:'从提示卡重试刷新'});
   await page.waitForFunction(() => window.__E2E__.wechatSyncResolvers.length === 1);
   assert.ok(await page.evaluate(selector => document.querySelector(selector).disabled, refresh));
+  assert.ok(await page.evaluate(selector => document.querySelector(selector + ' button').disabled, alert));
   const retry = await page.evaluate(accountId => {
     const state = window.__E2E__;
     state.chatMessageOverrides[accountId] = [{local_id:2,source_shard:'synthetic',time:1795000100,sender:'tester',sender_name:'测试联系人',kind:1,text:'微信同步后收到的新消息',is_self:false}];
@@ -672,7 +702,7 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('WhatsApp 刷新后的新消息'));
   assert.deepEqual(await page.evaluate(start => window.__E2E__.calls.slice(start).filter(c => c.command === 'wechat_sync'), whatsappStart), []);
   assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
-  return 'PASS chat refresh: partial key failure, key reimport without resetting setup, IPC rejection, refreshed WeChat messages, WhatsApp local reload';
+  return 'PASS chat refresh: prominent key recovery, preserved setup and selection, retry with collapsed diagnostics, refreshed WeChat messages, WhatsApp local reload';
 }
 
 export async function runChatMessageRetryUiE2E(task, base, pageLabel = 'p1') {

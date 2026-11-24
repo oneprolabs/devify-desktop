@@ -127,6 +127,41 @@ fn failed(account: &str, rel: &str, error: impl Into<String>) -> DecryptOutcome 
     }
 }
 
+fn validated_key<'a>(
+    db: &DbFile,
+    account: &str,
+    store: &'a KeyStore,
+) -> Result<(&'a keys::KeyEntry, [u8; crypto::KEY_LEN]), DecryptOutcome> {
+    let no_key = |message| {
+        let mut outcome = failed(account, &db.rel, message);
+        outcome.status = "no-key".into();
+        outcome
+    };
+    let entry = keys::lookup(store, account, &db.rel)
+        .ok_or_else(|| no_key("没有该数据库的密钥。请先用密钥工具提取并导入。"))?;
+    if db.salt.as_ref().is_some_and(|salt| *salt != entry.salt) {
+        return Err(no_key("数据库已重新加密，需重新提取密钥。"));
+    }
+    let enc_key: [u8; crypto::KEY_LEN] = hex::decode(&entry.enc_key)
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| no_key("保存的密钥格式无效。"))?;
+
+    // A matching salt identifies the database, but doesn't prove the saved key can read it.
+    // Verify the first page before accepting a cached copy or trying incremental WAL replay.
+    let mut page = [0; crypto::PAGE_SIZE];
+    File::open(&db.path)
+        .and_then(|mut source| source.read_exact(&mut page))
+        .map_err(|error| failed(account, &db.rel, format!("无法读取数据库首页：{error}")))?;
+    if crypto::read_salt(&page).map(hex::encode).as_ref() != Some(&entry.salt) {
+        return Err(no_key("数据库已重新加密，需重新提取密钥。"));
+    }
+    if !crypto::verify_key(&page, &enc_key) {
+        return Err(no_key("已保存的密钥未通过数据库首页校验。"));
+    }
+    Ok((entry, enc_key))
+}
+
 /// Copy a plaintext database together with its WAL so SQLite can see the latest committed state.
 fn copy_plaintext(db: &DbFile, out: &Path) -> Result<u64, String> {
     let size = fs::copy(&db.path, out).map_err(|e| format!("复制明文数据库失败：{e}"))?;
@@ -371,6 +406,17 @@ pub fn decrypt_account(
         let src_mtime = mtime_nanos(Path::new(&db.path));
         let (wal_size, wal_mtime) = file_signature(&wal_path(&db.path));
         let replay_wal = apply_wal && db.encrypted && wal_size > 0;
+        let key = if db.encrypted {
+            match validated_key(db, &account.id, store) {
+                Ok(key) => Some(key),
+                Err(outcome) => {
+                    outcomes.push(outcome);
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
 
         if let Some(entry) = meta.entries.get(&db.rel) {
             let matching_key = cache_matches_key(db, entry, store, &account.id);
@@ -395,23 +441,13 @@ pub fn decrypt_account(
                 continue;
             }
 
-            if replay_wal
-                && matching_key
-                && entry.src_size == src_size
-                && entry.src_mtime == src_mtime
-                && base_path(&out).exists()
-            {
-                let Some(key) = keys::lookup(store, &account.id, &db.rel) else {
-                    let mut outcome = failed(&account.id, &db.rel, "没有该数据库的密钥。请先用密钥工具提取并导入。");
-                    outcome.status = "no-key".into();
-                    outcomes.push(outcome);
-                    continue;
-                };
-                let Ok(enc_key) = hex::decode(&key.enc_key) else {
-                    outcomes.push(failed(&account.id, &db.rel, "保存的密钥格式无效。"));
-                    continue;
-                };
-                match refresh_wal(db, &out, &enc_key, &base_path(&out)) {
+            if let Some((key, enc_key)) = key.as_ref().filter(|_| {
+                replay_wal && matching_key
+                    && entry.src_size == src_size
+                    && entry.src_mtime == src_mtime
+                    && base_path(&out).exists()
+            }) {
+                match refresh_wal(db, &out, enc_key, &base_path(&out)) {
                     Ok(wal) => {
                         meta.entries.insert(db.rel.clone(), SyncEntry {
                             src_size,
@@ -442,7 +478,7 @@ pub fn decrypt_account(
             }
         }
 
-        if !db.encrypted {
+        let Some((entry, enc_key)) = key else {
             match copy_plaintext(db, &out) {
                 Ok(size) => {
                     meta.entries.insert(
@@ -471,38 +507,6 @@ pub fn decrypt_account(
                 Err(error) => outcomes.push(failed(&account.id, &db.rel, error)),
             }
             continue;
-        }
-
-        let Some(entry) = keys::lookup(store, &account.id, &db.rel) else {
-            let mut outcome = failed(
-                &account.id,
-                &db.rel,
-                "没有该数据库的密钥。请先用密钥工具提取并导入。",
-            );
-            outcome.status = "no-key".into();
-            outcomes.push(outcome);
-            continue;
-        };
-
-        if let Some(current_salt) = &db.salt {
-            if &entry.salt != current_salt {
-                let mut outcome = failed(
-                    &account.id,
-                    &db.rel,
-                    "数据库已重新加密，需重新提取密钥。",
-                );
-                outcome.status = "no-key".into();
-                outcomes.push(outcome);
-                continue;
-            }
-        }
-
-        let enc_key = match hex::decode(&entry.enc_key) {
-            Ok(key) if key.len() == crypto::KEY_LEN => key,
-            _ => {
-                outcomes.push(failed(&account.id, &db.rel, "保存的密钥格式无效。"));
-                continue;
-            }
         };
 
         let mut outcome = decrypt_file(db, &out, &enc_key, replay_wal);
@@ -723,6 +727,27 @@ mod tests {
         assert_eq!(previous.len(), 2 * crypto::PAGE_SIZE);
         let previous_base = fs::read(base_path(&out)).unwrap();
         let previous_meta = fs::read(meta_path(&cache)).unwrap();
+
+        // An incorrect saved key with the original salt must be reported even when the
+        // snapshot could be reused or when only the WAL grew.
+        let mut wrong_store = store.clone();
+        keys::store_key(
+            &mut wrong_store,
+            &account.id,
+            &account.dbs[0].rel,
+            &[1; crypto::KEY_LEN],
+            salt.as_bytes(),
+            "test",
+        );
+        for wal_changed in [false, true] {
+            if wal_changed {
+                fs::write(&wal, [committed.as_slice(), &frame[..12]].concat()).unwrap();
+            }
+            let result = decrypt_account(temp.path(), &account, &wrong_store, true, true);
+            assert_eq!(result[0].status, "no-key");
+            assert_eq!(fs::read(&out).unwrap(), previous);
+            assert_eq!(fs::read(meta_path(&cache)).unwrap(), previous_meta);
+        }
 
         for main_file_changed in [false, true] {
             if main_file_changed {
