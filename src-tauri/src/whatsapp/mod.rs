@@ -591,7 +591,12 @@ fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<Message
             ))
         })
         .map_err(|error| format!("读取 WhatsApp 消息失败：{error}"))?;
-    let raw: Vec<_> = rows.flatten().collect();
+    let raw: Vec<_> = if ascending || selection.is_some() {
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取 WhatsApp 备份消息失败：{error}"))?
+    } else {
+        rows.flatten().collect()
+    };
     let media = media_info(conn, &raw.iter().filter_map(|row| row.6).collect::<Vec<_>>());
     let names = name_map(conn);
     let partner = session_partner(conn, session_pk);
@@ -1309,6 +1314,21 @@ mod tests {
         assert_eq!(messages.iter().map(|message| message.local_id).collect::<Vec<_>>(), vec![2, 1]);
         let end = messages_from(&conn, "8613800000000@s.whatsapp.net", 10, None, Some(start), Some(start + 1)).unwrap();
         assert_eq!(end.iter().map(|message| message.local_id).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn backup_reads_do_not_skip_undecodable_rows_or_treat_them_as_deleted() {
+        let (_root, conn) = fixture();
+        let chat = "8613800000000@s.whatsapp.net";
+        let messages = messages_from(&conn, chat, 10, None, None, None).unwrap();
+        let refs: Vec<_> = messages.iter().map(|message| crate::settings::MessageRef {
+            local_id: message.local_id, time: message.time, source_shard: String::new(),
+        }).collect();
+        conn.execute("UPDATE ZWAMESSAGE SET ZTEXT = x'68656c6c6f' WHERE Z_PK = 1", []).unwrap();
+        let error = messages_ordered(&conn, chat, 10, None, None, None, false, Some(&refs)).unwrap_err();
+        assert_ne!(error, "部分待上传消息已变化，请重新读取。");
+        assert!(messages_ordered(&conn, chat, 10, None, None, None, true, None).is_err());
+        assert_eq!(messages_from(&conn, chat, 10, None, None, None).unwrap().len(), 1);
     }
 
 
