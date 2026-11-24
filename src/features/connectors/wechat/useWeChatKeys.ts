@@ -4,8 +4,8 @@ import { t, tf } from '../../../shared/i18n/locale';
 import type { Account, KeyStatus, SavedKeySource, KeyImportResult } from './nativeTypes';
 import type { ConnectionFeedback } from './connectionTypes';
 
-export function useWeChatKeys({ account, wizard, setNotice, setError, setBusy }: ConnectionFeedback & {
-  account: Account | null; wizard: boolean;
+export function useWeChatKeys({ account, wizard, recoveringKeys, setNotice, setError, setBusy }: ConnectionFeedback & {
+  account: Account | null; wizard: boolean; recoveringKeys?: boolean;
 }) {
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
   const [savedKeySource, setSavedKeySource] = useState<SavedKeySource | null>(null);
@@ -16,6 +16,7 @@ export function useWeChatKeys({ account, wizard, setNotice, setError, setBusy }:
   const [keyImport, setKeyImport] = useState<KeyImportResult | null>(null);
   const [freshSource, setFreshSource] = useState(false);
   const [fixingPermissions, setFixingPermissions] = useState(false);
+  const importScope = { accountId: account?.id ?? null, ...(recoveringKeys && { targetOnly: true }) };
   const sourceSeen = useRef<{ exists: boolean; modifiedAt: number | null } | null>(null);
   const encryptedDbs = useMemo(() => account?.dbs.filter(db => db.encrypted) ?? [], [account]);
   const keyedCount = useMemo(
@@ -112,7 +113,7 @@ export function useWeChatKeys({ account, wizard, setNotice, setError, setBusy }:
     try {
       const result = await invoke<KeyImportResult>('wechat_import_keys', {
         text,
-        accountId: account?.id ?? null
+        ...importScope,
       });
       await applyImportResult(result);
     } catch(e) {
@@ -125,7 +126,7 @@ export function useWeChatKeys({ account, wizard, setNotice, setError, setBusy }:
   const scanWindowsKeys = async () => {
     setWindowsScanBusy(true); setError(''); setNotice('');
     try {
-      const result = await invoke<KeyImportResult>('wechat_windows_key_scan', { accountId: account?.id ?? null });
+      const result = await invoke<KeyImportResult>('wechat_windows_key_scan', importScope);
       setKeyImport(result); await refreshKeys();
       setNotice(result.message || t("Windows 密钥已校验并导入。"));
     } catch(reason) { setError(String(reason)); }
@@ -137,9 +138,7 @@ export function useWeChatKeys({ account, wizard, setNotice, setError, setBusy }:
     setNotice('');
     setBusy('import');
     try {
-      const result = await invoke<KeyImportResult>('wechat_import_saved_key', {
-        accountId: account?.id ?? null
-      });
+      const result = await invoke<KeyImportResult>('wechat_import_saved_key', importScope);
       await applyImportResult(result);
       await refreshSavedKeySource();
     } catch(e) {

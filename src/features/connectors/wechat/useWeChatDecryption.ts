@@ -3,18 +3,21 @@ import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import { t, tf } from '../../../shared/i18n/locale';
 import type { Account, DecryptOutcome } from './nativeTypes';
 import type { ConnectionFeedback } from './connectionTypes';
+import { syncWechatForRefresh } from './refresh';
 
-export function useWeChatDecryption({ account, accountSwitching, clearing, resetReader, clearMessageCache, resetKeys, refreshKeys, loadSessions, requireKeys, setNotice, setError, setBusy }: ConnectionFeedback & {
+export function useWeChatDecryption({ account, accountSwitching, clearing, resetReader, clearMessageCache, resetKeys, refreshKeys, loadSessions, requireKeys, setNotice, setError, setBusy, recoveringKeys }: ConnectionFeedback & {
   account: Account | null; accountSwitching: boolean; clearing: MutableRefObject<boolean>;
   resetReader: () => void; clearMessageCache: () => void; resetKeys: () => void;
   refreshKeys: () => Promise<void>; loadSessions: (id: string) => Promise<unknown>;
   requireKeys: () => void;
+  recoveringKeys?: boolean;
 }) {
   const [applyWal, setApplyWal] = useState(true);
   const [onlyChat, setOnlyChat] = useState(true);
 
   const [decrypting, setDecrypting] = useState(false);
   const [outcomes, setOutcomes] = useState<DecryptOutcome[]>([]);
+  const [recovered, setRecovered] = useState(false);
   const [showLog, setShowLog] = useState(false);
 
   // `window.confirm` is not surfaced by the macOS webview (it silently returns false), so a
@@ -75,6 +78,16 @@ export function useWeChatDecryption({ account, accountSwitching, clearing, reset
     setNotice('');
     setDecrypting(true);
     try {
+      if (recoveringKeys) {
+        const issue = await syncWechatForRefresh(account.id);
+        if (issue) {
+          if (issue.needsKeys) resetKeys();
+          setError(issue.message);
+          return;
+        }
+        setRecovered(true);
+        return;
+      }
       const result = await invoke<DecryptOutcome[]>('wechat_decrypt', {
         accountId: account.id,
         applyWal,
@@ -83,7 +96,7 @@ export function useWeChatDecryption({ account, accountSwitching, clearing, reset
       setOutcomes(result);
       const ok = result.filter(o => o.status === 'ok' || o.status === 'cached').length;
       const failed = result.length - ok;
-      setNotice(tf("解密完成：{0} 个数据库可用{1}。", ok, failed ? `，${failed} 个失败或缺少密钥` : ''));
+      setNotice(failed ? tf("解密完成：{0} 个数据库可用，{1} 个失败或缺少密钥。", ok, failed) : tf("解密完成：{0} 个数据库可用。", ok));
       if(ok > 0) {
         await loadSessions(account.id);
       } else if(result.length > 0) {
@@ -99,8 +112,8 @@ export function useWeChatDecryption({ account, accountSwitching, clearing, reset
     }
   };
 
-  const resetResult = useCallback(() => setOutcomes([]), []);
-  const decrypted = outcomes.some(item => item.rel === 'session/session.db' && (item.status === 'ok' || item.status === 'cached')) &&
+  const resetResult = useCallback(() => { setOutcomes([]); setRecovered(false); }, []);
+  const decrypted = recoveringKeys ? recovered : outcomes.some(item => item.rel === 'session/session.db' && (item.status === 'ok' || item.status === 'cached')) &&
     outcomes.some(item => /^message\/message_\d+\.db$/.test(item.rel) && (item.status === 'ok' || item.status === 'cached'));
 
   return {

@@ -1,4 +1,5 @@
 import { t, tf } from '../../../shared/i18n/locale';
+import { errorText } from '../../../shared/i18n/errorText';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { DiskAccessCard, type DiskAccessCheck } from '../Permission';
@@ -18,6 +19,7 @@ type Props = {
   savedKey: { exists: boolean; modified_at: number | null; secure: boolean } | null;
   freshKey: boolean;
   decrypted: boolean;
+  recoveringKeys?: boolean;
   capture: SetupCapture | null;
   captureChecking: boolean;
   captureError: string;
@@ -96,7 +98,7 @@ export function WeChatSetupChecklist(p: Props) {
   const actionLock = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const sectionRef = useRef<HTMLElement | null>(null);
+  const currentStepRef = useRef<HTMLLIElement | null>(null);
   const actions = useRef(p);
   actions.current = p;
   const attempts = useRef(new Set<string>());
@@ -178,7 +180,7 @@ export function WeChatSetupChecklist(p: Props) {
   useEffect(() => { if (p.capture?.pending) startedCapture.current = true; }, [p.capture?.pending]);
   useEffect(() => { setOpenedWechat(false); setLoggedOut(false); }, [p.capture?.stage]);
   useEffect(() => {
-    if (!p.permissionPhase) sectionRef.current?.querySelector('[aria-label="微信操作步骤"] > .current')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (!p.permissionPhase) currentStepRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [p.permissionPhase, current]);
 
   useEffect(() => {
@@ -201,7 +203,7 @@ export function WeChatSetupChecklist(p: Props) {
     }} />
   </label>;
   const stepError = current === 'recover' ? p.recoveryError : p.error;
-  const errorDetails = stepError && <details className="wx-setup-details"><summary>{t("查看错误详情")}</summary><p>{stepError}</p></details>;
+  const errorDetails = stepError && <details className="wx-setup-details"><summary>{t("查看错误详情")}</summary><p>{errorText(stepError)}</p></details>;
   const accountChoices = <div className="wx-setup-accounts"><p>{t("选择要连接的微信账号：")}</p>{p.accounts.map(account => <label key={account.id}><input type="radio" name="setup-account" checked={p.accountId === account.id} disabled={working || Boolean(p.capture?.pending)} onChange={() => { setChoosingAccount(false); p.onChooseAccount(account.id); }} />{account.id}</label>)}<button className="wxv-btn primary" disabled={!hasAccount || working} onClick={() => { setConfirmedAccount(p.accountId); setChoosingAccount(false); }}>{t("使用此账号")}</button></div>;
   const failure = (message: string) => stepError && !working ? <p className="wx-setup-error" role="alert">{message}</p> : null;
 
@@ -312,9 +314,11 @@ export function WeChatSetupChecklist(p: Props) {
   const systemRows = [
     { id: 'os', title: '系统版本', detail: systemInfo?.os_version ?? '', passed: false, information: Boolean(systemInfo?.os_version), checking: systemInfoChecking, skipped: false, status: systemInfo?.os_version ? '兼容性待验证' : '' },
     { id: 'arch', title: '芯片架构', detail: archLabel, passed: permission.platform === 'windows' || Boolean(p.capture?.platform_supported), checking: (!systemInfoError && !systemInfo) || (permission.platform !== 'windows' && captureCheckPending), skipped: skipCaptureChecks },
-    { id: 'install', title: '微信安装', detail: p.capture?.wechat_version ? `微信 ${p.capture.wechat_version}${p.capture.wechat_build ? `（${p.capture.wechat_build}）` : ''}${temporaryWechat ? ' · 本次连接的临时版本' : p.capture.wechat_official ? ' · 官方签名' : ''}` : '', passed: installReady && !temporaryWechat, information: temporaryWechat, checking: p.install.ready === null, skipped: false },
+    { id: 'install', title: '微信安装', detail: p.capture?.wechat_version ? [tf("微信 {0}", p.capture.wechat_version + (p.capture.wechat_build ? ` (${p.capture.wechat_build})` : '')),
+      temporaryWechat ? t("本次连接的临时版本") : p.capture.wechat_official ? t("官方签名") : ''].filter(Boolean).join(' · ') : '', passed: installReady && !temporaryWechat, information: temporaryWechat, checking: p.install.ready === null, skipped: false },
     { id: 'permission', title: '完全磁盘访问权限', passed: done[0], checking: permission.granted === null && !permission.error, skipped: false },
-    { id: 'data', title: '微信数据目录', detail: dataReady ? `已找到 ${p.accounts.length} 个账号目录${databaseCount ? ` · ${databaseCount} 个数据库` : ''}` : '', passed: dataReady, checking: p.busy === 'scan', skipped: false, status: !done[0] ? '等待授权' : '' },
+    { id: 'data', title: '微信数据目录', detail: dataReady ? databaseCount ? tf("已找到 {0} 个账号目录 · {1} 个数据库", p.accounts.length, databaseCount)
+      : tf("已找到 {0} 个账号目录", p.accounts.length) : '', passed: dataReady, checking: p.busy === 'scan', skipped: false, status: !done[0] ? '等待授权' : '' },
     { id: 'tools', title: '系统工具', detail: p.capture?.lldb_available && !skipCaptureChecks ? 'LLDB 与 Python 运行检查通过' : '', passed: Boolean(p.capture?.lldb_available) && !p.captureError, checking: captureCheckPending, skipped: skipCaptureChecks },
     { id: 'write', title: '安装目录读写权限', passed: Boolean(p.capture?.user_can_write) && !p.captureError, checking: captureCheckPending, skipped: skipCaptureChecks },
     { id: 'readonly', title: '数据访问方式', detail: '只读检查，不修改原始微信数据库。', passed: false, information: true, checking: false, skipped: false, status: '只读' },
@@ -341,7 +345,7 @@ export function WeChatSetupChecklist(p: Props) {
     </div>
   </div>;
 
-  return <section ref={sectionRef} className="wx-setup" aria-label={p.permissionPhase ? t("系统检查") : t("连接微信")}>
+  return <section className="wx-setup" aria-label={p.permissionPhase ? t("系统检查") : t("连接微信")}>
     <header><h2>{p.permissionPhase ? t("系统检查") : t("连接微信")}</h2><p>{p.permissionPhase ? t("检查完成后，再开始连接微信。") : t("按顺序操作，完成当前一步后会显示下一步。")}</p></header>
     {p.recoveryNotice && <p className="wx-setup-passed" role="status">{p.recoveryNotice}</p>}
     {p.permissionPhase && stepProblem}
@@ -351,9 +355,9 @@ export function WeChatSetupChecklist(p: Props) {
         return <li key={row.id} className={`wx-setup-item ${completed ? 'done' : 'current'}`}>
         <div className="wx-setup-row"><span className="wx-setup-indicator" aria-hidden="true">{completed ? Icons.check : Icons.clock}</span><span className="wx-setup-row-copy"><strong>{t(row.title)}</strong>{row.detail && <small>{t(row.detail)}</small>}{row.status && <small>{t(row.status)}</small>}</span><span className="wx-setup-status">{row.checking && !completed && <svg className="wizard-button-spinner" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>}{completed && <span className="wizard-status-check" aria-hidden="true">{Icons.check}</span>}{completed ? t("已完成") : t("未完成")}</span></div>
         <div className="wx-setup-body" hidden={row.passed || row.skipped || row.information}>
-          {row.id === 'os' && systemInfoError && <><p role="alert">{systemInfoError}</p><button className="wxv-btn" disabled={systemInfoChecking} onClick={() => void refreshSystemInfo()}>{t("重新读取系统版本")}</button></>}
+          {row.id === 'os' && systemInfoError && <><p role="alert">{errorText(systemInfoError)}</p><button className="wxv-btn" disabled={systemInfoChecking} onClick={() => void refreshSystemInfo()}>{t("重新读取系统版本")}</button></>}
           {row.id === 'arch' && !row.checking && <><p>{t("当前架构暂不支持自动取钥。请使用 Apple Silicon 版本的应用，或返回接入方式选择导入文件。")}</p><button className="wxv-btn" onClick={p.onBack}>{t("返回接入方式")}</button></>}
-          {row.id === 'install' && !row.checking && <><p>{p.install.message || "请安装官方微信后重新检查。"}</p><WizardActionButton className="wxv-btn" busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查微信…")} onAction={p.onInstallRecheck}>{t("重新检查微信")}</WizardActionButton></>}
+          {row.id === 'install' && !row.checking && <><p>{p.install.message ? t(p.install.message) : t("请安装官方微信后重新检查。")}</p><WizardActionButton className="wxv-btn" busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查微信…")} onAction={p.onInstallRecheck}>{t("重新检查微信")}</WizardActionButton></>}
           {row.id === 'permission' && <DiskAccessCard compact checkOnEntry={p.permissionPhase} onCheck={onPermission} />}
           {row.id === 'data' && done[0] && !row.checking && <><p>{t("未找到可读取的微信数据目录。请先打开微信并登录一次，再重新检查。")}</p><WizardActionButton className="wxv-btn" busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在查找数据目录…")} disabled={working} onAction={p.onScan}>{t("重新查找数据目录")}</WizardActionButton></>}
           {(row.id === 'tools' || row.id === 'write') && <>{!row.checking && <p role="alert">{p.captureError ? t("检查未完成，请重试。") : row.id === 'tools' ? t("请安装或修复 Xcode Command Line Tools 后，重新检查系统工具。") : t("请确认当前用户对微信及其安装目录有读写权限，再重新检查。")}</p>}<WizardActionButton className="wxv-btn" loading={p.captureChecking} busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查…")} onAction={p.onCaptureRefresh}>{t("重新检查")}{row.id === 'tools' ? t("系统工具") : t("目录权限")}</WizardActionButton></>}
@@ -372,7 +376,7 @@ export function WeChatSetupChecklist(p: Props) {
           const passed = (current === 'recover' ? id === 'account' && done[1] : current === 'complete' || index < currentIndex) && (missingIndex < 0 || index < missingIndex);
           const completed = reused ? done[3] && passed : passed;
           const expanded = id === current;
-          return <li key={id} className={`wx-setup-item ${completed ? 'done' : expanded ? 'current' : 'waiting'}`}>
+          return <li key={id} ref={expanded ? currentStepRef : undefined} className={`wx-setup-item ${completed ? 'done' : expanded ? 'current' : 'waiting'}`}>
             <div className="wx-setup-row" aria-current={expanded ? 'step' : undefined}><span className="wx-setup-indicator" aria-hidden="true">{completed ? Icons.check : index + 1}</span><strong>{t(title)}</strong><span className="wx-setup-status">{expanded && working && <svg className="wizard-button-spinner" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>}{completed && <span className="wizard-status-check" aria-hidden="true">{Icons.check}</span>}{completed ? t("已完成") : t("未完成")}</span></div>
             {expanded && <div className="wx-setup-body">{stepIssue && current !== 'recover' ? stepProblem : connectionBody(id)}{!stepIssue && errorDetails}
               {p.capture?.pending && id !== 'recover' && <button className="wx-setup-cancel" disabled={Boolean(p.captureBusy)} onClick={() => { void recover(p.onRestore); }}>{t("取消连接并恢复微信")}</button>}
@@ -384,6 +388,6 @@ export function WeChatSetupChecklist(p: Props) {
       {choosingAccount && accountChoices}
       {allDone && <p className="wx-setup-passed" role="status">{t("微信已连接，聊天记录已就绪。")}</p>}
     </>}
-    <footer><button className="wxv-btn" disabled={working || Boolean(p.capture?.pending)} onClick={p.onBack}>{t("上一步")}</button><WizardActionButton className="wxv-btn primary" loading={checkingStep || p.finishing} busyLabel={p.finishing ? t("正在保存…") : t("正在检查前置条件…")} disabled={working || choosingAccount || Boolean(stepIssue) || (p.permissionPhase ? !systemReady : !allDone)} onAction={() => runStep(p.permissionPhase ? 'connect' : 'complete', p.permissionPhase ? p.onPermissionNext : p.onComplete)}>{p.permissionPhase ? current === 'recover' ? t("下一步：处理微信恢复") : t("下一步：连接微信") : t("下一步：选择会话")}</WizardActionButton></footer>
+    <footer><button className="wxv-btn" disabled={working || Boolean(p.capture?.pending)} onClick={p.onBack}>{t("上一步")}</button><WizardActionButton className="wxv-btn primary" loading={checkingStep || p.finishing} busyLabel={p.finishing ? t("正在保存…") : t("正在检查前置条件…")} disabled={working || choosingAccount || Boolean(stepIssue) || (p.permissionPhase ? !systemReady : !allDone)} onAction={() => runStep(p.permissionPhase ? 'connect' : 'complete', p.permissionPhase ? p.onPermissionNext : p.onComplete)}>{p.permissionPhase ? current === 'recover' ? t("下一步：处理微信恢复") : t("下一步：连接微信") : p.recoveringKeys ? t("返回聊天") : t("下一步：选择会话")}</WizardActionButton></footer>
   </section>;
 }

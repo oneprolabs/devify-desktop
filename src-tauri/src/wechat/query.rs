@@ -715,7 +715,7 @@ pub fn sessions_filtered(
 pub fn sessions_page(cache:&Path,allowed_usernames:Option<&HashSet<String>>,limit:Option<usize>,offset:usize)->Result<Vec<SessionItem>,String>{
     let path = cache.join("session").join("session.db");
     if !path.exists() {
-        return Err("未找到解密后的 session.db，请先完成解密。".into());
+        return Err("WECHAT_SESSION_DB_MISSING: 未找到解密后的 session.db，请先完成解密。".into());
     }
     let conn = open_readonly(&path)?;
     let available = tables(&conn);

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import type { AppSettings } from '../settings/settingsModel';
 
@@ -48,7 +49,7 @@ export function AgentVoiceSettings({ settings, saving, onSave }: { settings: App
           finally { if (active.current) setEngineSaving(false); }
         }}>{t('保存转写设置')}</WizardActionButton></div>
       </details>}
-      {message && <p className="integration-success" role="status">{message}</p>}{error && <p className="integration-error" role="alert">{error}</p>}
+      {message && <p className="integration-success" role="status">{message}</p>}{error && <p className="integration-error" role="alert">{errorText(error)}</p>}
     </div>}
   </section>;
 }

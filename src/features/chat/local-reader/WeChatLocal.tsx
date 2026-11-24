@@ -1,5 +1,5 @@
 import { formatSize } from '../../../shared/content/localDataFormat';
-import type { Account, ScanResult, DecryptOutcome } from '../../connectors/wechat/nativeTypes';
+import type { Account, ScanResult } from '../../connectors/wechat/nativeTypes';
 import { useWeChatConnection } from '../../connectors/wechat/useWeChatConnection';
 import { WeChatConnectionPanel } from '../../connectors/wechat/WeChatConnectionPanel';
 import { WeChatConnectionWizard } from '../../connectors/wechat/WeChatConnectionWizard';
@@ -18,7 +18,9 @@ import type {
 } from './nativeTypes';
 import { toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, messageAvatar, Highlight } from './presentation';
 import { isSummaryText } from '../summary/summaryInput';
+import { localRefreshError, syncWechatForRefresh, type WechatRefreshIssue } from '../../connectors/wechat/refresh';
 import { t, tf, dateLocale } from '../../../shared/i18n/locale';
+import { errorText, nativeErrorCode } from '../../../shared/i18n/errorText';
 import { RemoteChatFallback } from '../RemoteChatFallback';
 import { LoadingSkeleton } from '../../../shared/ui/LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -145,6 +147,7 @@ export default function WeChatLocal({
   searchKeyword = '',
   onClearSearch,
   sessionRevision = 0,
+  messageRevision = 0,
   accountId: pinnedAccountId,
   accountDisplay,
   onChatState,
@@ -168,6 +171,7 @@ export default function WeChatLocal({
   searchKeyword?: string;
   onClearSearch?: () => void;
   sessionRevision?: number;
+  messageRevision?: number;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
   accountDisplay?: string | null;
@@ -183,8 +187,11 @@ export default function WeChatLocal({
   const { allowed: canConfigureAgent } = useCapability('ai.local_agent');
   const canOrganize = internalAccount && workDigestGranted;
   const canUseAi = internalAccount && aiSummaryGranted;
+  const recoveryAccountId = wizard ? pinnedAccountId : null;
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [accountId, setAccountId] = useState('');
+  const readerAccount = useRef(accountId);
+  readerAccount.current = accountId;
   const settingsRef = useRef<AppSettings | null>(null);
   const accountSwitchLock = useRef(false);
   const [accountSwitching, setAccountSwitching] = useState(false);
@@ -199,6 +206,8 @@ export default function WeChatLocal({
   const messagesRef = useRef<MessageItem[]>([]);
   const recentMessages = useRef(new Map<string, { messages: MessageItem[]; hasMore: boolean }>());
   const sessionRequest = useRef(0);
+  const messageRefreshRequest = useRef<number | null>(null);
+  const [refreshingMessages, setRefreshingMessages] = useState(false);
   const deepSearchKey = useRef('');
   /** Real avatars by WeChat username; a missing entry keeps the letter avatar. */
   const [avatars, setAvatars] = useState<Record<string, string>>({});
@@ -230,11 +239,18 @@ export default function WeChatLocal({
   const [liveSync, setLiveSync] = useState(false);
   const [wechatEnabled, setWechatEnabled] = useState(true);
   const [syncIntervalSeconds, setSyncIntervalSeconds] = useState(30);
-  const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'ready' | 'error'>('idle');
-  const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+  const [syncingAccount, setSyncingAccount] = useState<string | null>(null);
+  const [syncIssue, setSyncIssue] = useState<{ accountId: string; issue: WechatRefreshIssue } | null>(null);
+  const [lastSync, setLastSync] = useState<{ accountId: string; at: number } | null>(null);
+  const shownSyncIssue = syncIssue?.accountId === accountId ? syncIssue.issue : null;
+  const lastSyncAt = lastSync?.accountId === accountId ? lastSync.at : null;
+  const isSyncing = syncingAccount === accountId;
   const [whitelistConfigured, setWhitelistConfigured] = useState<boolean | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [messageRefreshError, setMessageRefreshError] = useState<{ accountId: string; username: string; message: string } | null>(null);
+  const shownError = error || (messageRefreshError?.accountId === accountId && messageRefreshError.username === active?.username
+    ? messageRefreshError.message : '');
   const [mobilePane, setMobilePane] = useState<'list' | 'chat'>('list');
 
   const messageRef = useRef<HTMLDivElement | null>(null);
@@ -334,15 +350,25 @@ export default function WeChatLocal({
         setWhitelistConfigured(null);
         // Before the first decrypt there is simply no session.db; that is the
         // onboarding state, not an error worth covering the key guide with.
-        if (!message.includes(t("未找到解密后的"))) setError(message);
+        if (nativeErrorCode(message) !== 'WECHAT_SESSION_DB_MISSING') setError(message);
         return [];
       }
     },
     [],
   );
 
+  const resetMessageRefresh = useCallback(() => {
+    messageRefreshRequest.current = null;
+    setRefreshingMessages(false);
+    setMessageRefreshError(null);
+  }, []);
+
   /** Drop every view derived from the decrypted snapshot (used when that snapshot is deleted). */
   const resetDecryptedView = useCallback(() => {
+    sessionRequest.current++;
+    activeRef.current = null;
+    resetMessageRefresh();
+    setBusy(current => current === 'messages' ? null : current);
     setSessions([]);
     // With no decrypted copy left, the page must fall back to the unlock panel instead of
     // the "正在准备…" placeholder. `locked` is derived from sessionsLoaded + an empty list.
@@ -358,10 +384,11 @@ export default function WeChatLocal({
     setSearch(null);
     setQuery('');
     setWhitelistConfigured(null);
-  }, []);
+  }, [resetMessageRefresh]);
 
   const connection = useWeChatConnection({
     account, accountId, accountSwitching, mode, wizard, wizardStep, wizardManual, onWizardStep,
+    recoveringKeys: Boolean(recoveryAccountId),
     setNotice, setError, setBusy, loadSessions, resetReader: resetDecryptedView,
     clearMessageCache: () => recentMessages.current.clear(), clearing: clearingRef,
   });
@@ -372,53 +399,79 @@ export default function WeChatLocal({
     if (sessionRevision > 0 && accountId) void loadSessions(accountId);
   }, [sessionRevision, accountId, loadSessions]);
 
-  const syncLatest = useCallback(async () => {
-    if (!account || syncLock.current || clearingRef.current) return;
-    syncLock.current = true;
-    setSyncState('syncing');
+  const refreshMessageWindow = useCallback(async (id: string, username: string | null) => {
+    if (!username || readerAccount.current !== id || activeRef.current !== username) return true;
+    const request = ++sessionRequest.current;
+    const currentRequest = () => request === sessionRequest.current && readerAccount.current === id
+      && activeRef.current === username && !clearingRef.current;
+    messageRefreshRequest.current = request;
+    setRefreshingMessages(true);
     try {
-      // WhatsApp's store is already plaintext: there is nothing to decrypt, so the tick
-      // only re-reads the snapshot-backed session and message lists.
-      if (!account.id.endsWith('@s.whatsapp.net')) {
-        const outcomes = await invoke<DecryptOutcome[]>('wechat_sync', { accountId: account.id });
-        const usable = outcomes.some(outcome => outcome.status === 'ok' || outcome.status === 'cached');
-        if (!usable) {
-          setSyncState('error');
-          return;
-        }
+      const latest = await invoke<MessageItem[]>('wechat_messages', { accountId: id, username, limit: PAGE });
+      if (!currentRequest()) return true;
+      const root = messageRef.current;
+      scrollIntent.current = followNewest.current ? 'bottom' : 'preserve';
+      scrollSnapshot.current = root ? { top: root.scrollTop, height: root.scrollHeight } : null;
+      setMessages(current => {
+        const key = (message: MessageItem) => `${message.source_shard}:${message.local_id}:${message.time}`;
+        const keys = new Set(latest.map(key));
+        const overlaps = current.some(message => keys.has(key(message)));
+        // Retain older loaded pages when they adjoin the refreshed page.
+        const merged = latest.length < PAGE || overlaps
+          ? [...latest, ...current.filter(message => !keys.has(key(message)))]
+          : latest;
+        return merged.slice(0, 200);
+      });
+      setLocalMissing(null);
+      setHasMore(current => current || latest.length >= PAGE);
+      setMessageRefreshError(null);
+      return true;
+    } catch (reason) {
+      if (!currentRequest()) return true;
+      setMessageRefreshError({ accountId: id, username, message: localRefreshError(reason).message });
+      return false;
+    } finally {
+      if (messageRefreshRequest.current === request) {
+        messageRefreshRequest.current = null;
+        setRefreshingMessages(false);
       }
-      const list = await invoke<SessionItem[]>('chat_sessions', { accountId: account.id, focusUsername: focusConversationRef.current || undefined });
+      if (currentRequest()) setBusy(current => current === 'messages' ? null : current);
+    }
+  }, []);
+
+  const appliedMessageRevision = useRef(messageRevision);
+  useEffect(() => {
+    if (messageRevision === appliedMessageRevision.current) return;
+    appliedMessageRevision.current = messageRevision;
+    void refreshMessageWindow(accountId, activeRef.current);
+  }, [messageRevision, accountId, refreshMessageWindow]);
+
+  const syncLatest = useCallback(async () => {
+    if (!account || !wechatEnabled || syncLock.current || accountSwitchLock.current || clearingRef.current) return;
+    const id = account.id;
+    const isCurrent = () => readerAccount.current === id && !accountSwitchLock.current && !clearingRef.current;
+    syncLock.current = true;
+    setSyncingAccount(id);
+    setSyncIssue(null);
+    try {
+      if (!id.endsWith('@s.whatsapp.net')) {
+        const issue = await syncWechatForRefresh(id);
+        if (!isCurrent()) return;
+        if (issue) { setSyncIssue({ accountId: id, issue }); return; }
+      }
+      const list = await invoke<SessionItem[]>('chat_sessions', { accountId: id, focusUsername: focusConversationRef.current || undefined });
+      if (!isCurrent()) return;
       setSessions(list);
       setSessionsLoaded(true);
-      if (active) {
-        const latest = await invoke<MessageItem[]>('wechat_messages', {
-          accountId: account.id,
-          username: active.username,
-          limit: PAGE,
-        });
-        if (activeRef.current !== active.username) return;
-        const changed = latest.length !== Math.min(messages.length, PAGE)
-          || latest[0]?.local_id !== messages[0]?.local_id
-          || latest[0]?.time !== messages[0]?.time;
-        if (changed) {
-          const root = messageRef.current;
-          scrollIntent.current = root && root.scrollHeight - root.scrollTop - root.clientHeight > 80 ? 'preserve' : 'bottom';
-          if (root) scrollSnapshot.current = { top: root.scrollTop, height: root.scrollHeight };
-          setMessages(current => {
-            const keys = new Set(latest.map(message => `${message.source_shard}:${message.local_id}:${message.time}`));
-            return [...latest, ...current.filter(message => !keys.has(`${message.source_shard}:${message.local_id}:${message.time}`))].slice(0, 200);
-          });
-          setHasMore(current => current || latest.length >= PAGE);
-        }
-      }
-      setLastSyncAt(new Date());
-      setSyncState('ready');
-    } catch {
-      setSyncState('error');
+      const refreshed = await refreshMessageWindow(id, activeRef.current);
+      if (refreshed && isCurrent()) setLastSync({ accountId: id, at: Date.now() / 1000 });
+    } catch (reason) {
+      if (isCurrent()) setSyncIssue({ accountId: id, issue: localRefreshError(reason) });
     } finally {
       syncLock.current = false;
+      setSyncingAccount(null);
     }
-  }, [account, active, messages]);
+  }, [account, wechatEnabled, refreshMessageWindow]);
 
   useEffect(() => {
     if (!liveSync || !account || !ready || !wechatEnabled) return;
@@ -476,6 +529,13 @@ export default function WeChatLocal({
     }
   }, []);
 
+  const scanAccounts = useCallback(async () => {
+    const result = await invoke<ScanResult>('wechat_scan');
+    const scoped = recoveryAccountId ? { ...result, accounts: result.accounts.filter(item => item.id === recoveryAccountId) } : result;
+    setScan(scoped);
+    return scoped;
+  }, [recoveryAccountId]);
+
   const doScan = useCallback(async (preferredId?: string) => {
     if (accountSwitchLock.current) return;
     accountSwitchLock.current = true;
@@ -484,8 +544,7 @@ export default function WeChatLocal({
     setError('');
     try {
       const detect = await invoke<{ state: string }>('connector_detect', { kind: 'wechat' });
-      const result = await invoke<ScanResult>('wechat_scan');
-      setScan(result);
+      const result = await scanAccounts();
       const nextId = pinnedAccountId
         ? result.accounts.find(item => item.id === pinnedAccountId)?.id ?? ''
         : currentAccount(result.accounts, preferredId ?? settingsRef.current?.active_account_id ?? '')?.id ?? '';
@@ -503,7 +562,7 @@ export default function WeChatLocal({
       setAccountSwitching(false);
       setBusy(null);
     }
-  }, [loadSessions, refreshKeys, rememberAccount, pinnedAccountId]);
+  }, [loadSessions, refreshKeys, rememberAccount, pinnedAccountId, scanAccounts]);
 
   useEffect(() => {
     void (async () => {
@@ -530,7 +589,7 @@ export default function WeChatLocal({
         settingsRef.current = requireSettingsRevision(await invoke<AppSettings>('app_settings_get'));
         await doScan(settingsRef.current.active_account_id || undefined);
       } catch (reason) {
-        setError(tf("设置加载失败，无法选择微信账号：{0}。请重新打开页面。", String(reason)));
+        setError(tf("设置加载失败，无法选择微信账号：{0}。请重新打开页面。", errorText(reason)));
       }
     })();
     // Scan once per pinned account; account switching and manual rescans call doScan directly.
@@ -556,6 +615,10 @@ export default function WeChatLocal({
       setError('');
       try {
         await rememberAccount(nextId);
+        sessionRequest.current++;
+        activeRef.current = null;
+        resetMessageRefresh();
+        setBusy(current => current === 'messages' ? null : current);
         setAccountId(nextId);
         setSessions([]);
         setSessionsLoaded(false);
@@ -576,13 +639,14 @@ export default function WeChatLocal({
         setAccountSwitching(false);
       }
     },
-    [accountId, loadSessions, rememberAccount, resetAccountResult],
+    [accountId, loadSessions, rememberAccount, resetAccountResult, resetMessageRefresh],
   );
 
   const openSession = useCallback(
     async (session: SessionItem, keyword = '', focusMessageId?: string | number) => {
       if (!account) return;
       const request = ++sessionRequest.current;
+      resetMessageRefresh();
       const cacheKey = `${account.id}\u0000${session.username}`;
       const cached = recentMessages.current.get(cacheKey);
       if (cached) {
@@ -650,7 +714,7 @@ export default function WeChatLocal({
         if (request === sessionRequest.current && activeRef.current === session.username) setBusy(null);
       }
     },
-    [account],
+    [account, resetMessageRefresh],
   );
 
   useEffect(() => {
@@ -792,32 +856,38 @@ export default function WeChatLocal({
     setImageViewer({ src: null, error: '' });
     void invoke<string>('wechat_media_open_image', { accountId: account.id, paths })
       .then(path => { if (imageViewerRequest.current === request) setImageViewer({ src: convertFileSrc(path), error: '' }); })
-      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: tf("无法查看图片：{0}", String(reason)) }); });
+      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: tf("无法查看图片：{0}", errorText(reason)) }); });
   };
 
   const loadOlder = async () => {
-    if (!account || !active || !messages.length) return;
+    if (!account || !active || !messages.length || busy === 'messages' || messageRefreshRequest.current !== null) return;
+    const id = account.id;
+    const username = active.username;
+    const request = sessionRequest.current;
+    const currentRequest = () => request === sessionRequest.current && readerAccount.current === id
+      && activeRef.current === username && !clearingRef.current;
+    if (!currentRequest()) return;
     const last = messages[messages.length - 1];
     setBusy('messages');
     try {
       const older = await invoke<MessageItem[]>('wechat_messages', {
-        accountId: account.id,
-        username: active.username,
+        accountId: id,
+        username,
         limit: PAGE,
         before: last.time,
         beforeId: last.local_id,
         beforeShard: last.source_shard,
       });
-      if (activeRef.current !== active.username) return;
+      if (!currentRequest()) return;
       const root = messageRef.current;
       scrollIntent.current = 'preserve';
       if (root) scrollSnapshot.current = { top: root.scrollTop, height: root.scrollHeight };
       setMessages(current => [...current, ...older].slice(-200));
       setHasMore(older.length >= PAGE);
     } catch (e) {
-      setError(String(e));
+      if (currentRequest()) setError(String(e));
     } finally {
-      setBusy(null);
+      if (currentRequest()) setBusy(current => current === 'messages' ? null : current);
     }
   };
 
@@ -1159,7 +1229,7 @@ export default function WeChatLocal({
       await invoke<SummaryRecord[]>('summary_history_add', { record });
       setNotice(tf("{0}已保存到本机，可在左侧「总结记录」查看。", HISTORY_KIND_LABEL[record.kind]));
     } catch (e) {
-      setError(tf("保存总结记录失败：{0}", String(e)));
+      setError(tf("保存总结记录失败：{0}", errorText(e)));
     }
   };
 
@@ -1547,7 +1617,7 @@ export default function WeChatLocal({
           <small>
             {tab === 'group'
               ? tf("扫描最近 {0} 个群聊（未检索单聊）", search.scanned)
-              : tf("扫描最近 {0} 个会话{1}", search.scanned, search.skipped ? `，另有 ${search.skipped} 个未扫描` : '')}
+              : search.skipped ? tf("扫描了最近 {0} 个会话，另有 {1} 个未扫描。", search.scanned, search.skipped) : tf("扫描了最近 {0} 个会话。", search.scanned)}
           </small>
         </div>
         {search.hits.map(hit => (
@@ -1622,8 +1692,8 @@ export default function WeChatLocal({
       {busy === 'messages' && !messages.length && <LoadingSkeleton label={t("正在加载聊天记录")} kind="messages" />}
       {localMissing && account && <RemoteChatFallback key={`${account.id}:${localMissing}`} accountId={account.id} username={localMissing} />}
       {!localMissing && hasMore && (
-        <button type="button" className="wxv-more" onClick={() => void loadOlder()} disabled={busy === 'messages'}>
-          {busy === 'messages' ? t("加载中…") : t("加载更早的消息")}
+        <button type="button" className="wxv-more" onClick={() => void loadOlder()} disabled={busy === 'messages' || refreshingMessages}>
+          {busy === 'messages' || refreshingMessages ? t("加载中…") : t("加载更早的消息")}
         </button>
       )}
       {orderedWithDates.map(({ message, divider, stamp }) => {
@@ -2176,10 +2246,10 @@ export default function WeChatLocal({
     </aside>
   );
 
-  const checkAccountExists = async () => { const result = await invoke<ScanResult>('wechat_scan'); setScan(result); return result.accounts.some(item => item.id === accountId); };
+  const checkAccountExists = async () => (await scanAccounts()).accounts.some(item => item.id === accountId);
   const accountSelection = { accountId, scan, accountSwitching, busy, doScan, switchAccount };
   const connectionWizard = {
-    enabled: wizard, step: wizardStep, manual: wizardManual, finishing: wizardFinishing,
+    enabled: wizard, step: wizardStep, manual: wizardManual, finishing: wizardFinishing, recoveringKeys: Boolean(recoveryAccountId),
     install: wizardInstall, onInstallRecheck: onWizardInstallRecheck, onStep: onWizardStep,
   };
 
@@ -2198,11 +2268,12 @@ export default function WeChatLocal({
                   ? tf("密钥 {0}/{1}", keyedCount, encryptedDbs.length)
                   : t("等待扫描")}
             </small>
-            {ready && (
-              <small className={`wxv-sync-status ${wechatEnabled ? syncState : 'error'}`}>
+            {(ready || shownSyncIssue) && (
+              <small className={`wxv-sync-status ${!wechatEnabled || shownSyncIssue ? 'error' : isSyncing ? 'syncing' : lastSyncAt ? 'ready' : 'idle'}`}>
                 {!wechatEnabled
                   ? t("已断开 · 到「连接器」重新连接")
-                  : syncState === 'syncing' ? t("正在同步最新消息…") : syncState === 'error' ? t("同步暂不可用") : lastSyncAt ? tf("准实时同步 · {0}", timeOnly(Math.floor(lastSyncAt.getTime() / 1000))) : t("准实时同步已开启")}
+                  : isSyncing ? t("正在同步最新消息…") : shownSyncIssue ? shownSyncIssue.message : lastSyncAt ? tf("最近同步 · {0}", timeOnly(lastSyncAt)) : liveSync ? t("准实时同步已开启") : null}
+                {shownSyncIssue?.needsKeys && wechatEnabled && onOpenData && <> <button type="button" className="wxv-btn" onClick={onOpenData}>{t("打开微信连接器")}</button></>}
               </small>
             )}
           </div>
@@ -2219,10 +2290,10 @@ export default function WeChatLocal({
           )}
           <button
             type="button"
-            className={`wxv-icon ${busy === 'scan' ? 'spin' : ''}`}
-            onClick={() => void doScan(accountId)}
-            disabled={busy === 'scan'}
-            title={t("重新扫描")}
+            className={`wxv-icon ${busy === 'scan' || isSyncing ? 'spin' : ''}`}
+            onClick={() => void (account ? syncLatest() : doScan(accountId))}
+            disabled={busy === 'scan' || isSyncing || (Boolean(account) && !wechatEnabled)}
+            title={t("刷新会话")}
           >
             {Icons.refresh}
           </button>
@@ -2297,10 +2368,10 @@ export default function WeChatLocal({
           </div>
         )}
         {notice && !wizard && <div className="wxv-toast">{notice}</div>}
-        {error && isTauri() && !wizard && (
+        {shownError && isTauri() && !wizard && (
           <div className="wxv-toast error">
-            <span>{t(error)}</span>
-            <button type="button" className="wxv-icon" onClick={() => setError('')} aria-label={t("关闭提示")}>
+            <span>{errorText(shownError)}</span>
+            <button type="button" className="wxv-icon" onClick={() => error ? setError('') : setMessageRefreshError(null)} aria-label={t("关闭提示")}>
               {Icons.close}
             </button>
           </div>
@@ -2309,7 +2380,7 @@ export default function WeChatLocal({
 
       {imageViewer && createPortal(<div className="wxv-image-viewer" role="dialog" aria-modal="true" aria-label={t("查看图片")} onClick={closeImage}>
         <button type="button" className="wxv-image-viewer-close" aria-label={t("关闭图片")} onClick={closeImage} autoFocus>×</button>
-        {imageViewer.error ? <p role="alert">{imageViewer.error}</p> : imageViewer.src ? <img src={imageViewer.src} alt={t("聊天图片原图")} onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: t("图片加载失败。") })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{t("正在加载原图…")}</p>}
+        {imageViewer.error ? <p role="alert">{errorText(imageViewer.error)}</p> : imageViewer.src ? <img src={imageViewer.src} alt={t("聊天图片原图")} onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: t("图片加载失败。") })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{t("正在加载原图…")}</p>}
       </div>, document.body)}
       {/* The capture guide needs the full column width; the digest drawer would clip it. */}
       {workOpen && !forceUnlock && renderWorkSelector()}

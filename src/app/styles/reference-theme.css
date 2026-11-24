@@ -199,7 +199,6 @@
 .analysis-page, .topic-page, .ask-page { --accent-magenta:#a3279a; --accent-magenta-tint:#f5f5f3; }
 .analysis-items button.on, .topic-side-list > section > button.on, .topic-side-new.on, .analysis-side-new.on, .ask-threads > button.on { background:#e9e9e6; }
 .analysis-items button:hover, .topic-side-list > section > button:hover, .ask-threads > button:hover { background:#f5f5f3; }
-.analysis-side input, .topic-side-search { border:1px solid #e9e9e6; background:#fbfafe; }
 .analysis-main, .topic-main, .ask-main { background:#fafafa; }
 .analysis-doc, .report-doc, .topic-detail-wrap, .ask-scroll { color:#3a3a37; }
 .analysis-summary, .ask-quote, .topic-def-card { border:1px solid #e9e9e6; border-radius:10px; background:#fbfafe; }
@@ -218,7 +217,7 @@
 .chat-workbench-refresh { display:grid; place-items:center; width:30px; height:32px; border-radius:7px; }
 .chat-workbench-refresh:hover { background:#f5f5f3; color:#76216f; }
 .chat-workbench-add:focus-visible, .chat-workbench-refresh:focus-visible { outline:2px solid #a3279a; outline-offset:2px; }
-.chat-workbench-search:focus, .chat-workbench-head-search:focus, .topic-side-search:focus, .analysis-search:focus { outline:2px solid #a3279a; outline-offset:1px; }
+.chat-workbench-search:focus, .chat-workbench-head-search:focus { outline:2px solid #a3279a; outline-offset:1px; }
 .chat-workbench-session { border-radius:9px; }
 .chat-workbench-banner { border:1px solid #e9e9e6; }
 
@@ -317,7 +316,6 @@
 }
 
 /* Event workspace: compact list, one overview and a scan-friendly timeline. */
-.event-workspace .analysis-side-row { display:none; }
 .event-workspace .analysis-items button > span:last-child { flex:1; gap:3px; }
 .event-list-icon, .event-heading-icon { display:grid; place-items:center; flex:none; border-radius:50%; background:#f5f5f3; color:#a3279a; }
 .event-list-icon { width:36px; height:36px; }

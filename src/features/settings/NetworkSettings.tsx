@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { t, tf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { Icons } from '../../shared/ui/icons';
 import './network-settings.css';
 
@@ -56,7 +57,7 @@ export function NetworkConnectionControl({ disabled = false, compact = false, on
     let active = true;
     void invoke<ConnectionMode>('network_connection_get')
       .then(value => { if (active) setMode(value); })
-      .catch(reason => { if (active) setError(tf('无法加载设置：{0}', String(reason))); })
+      .catch(reason => { if (active) setError(tf('无法加载设置：{0}', errorText(reason))); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [loadAttempt]);
@@ -70,7 +71,7 @@ export function NetworkConnectionControl({ disabled = false, compact = false, on
     try {
       setMode(await invoke<ConnectionMode>('network_connection_set', { mode: next }));
     } catch (reason) {
-      setError(tf('无法保存网络连接设置：{0}', String(reason)));
+      setError(tf('无法保存网络连接设置：{0}', errorText(reason)));
     } finally {
       saveLock.current = false;
       setSaving(false);
@@ -93,7 +94,7 @@ export function NetworkConnectionControl({ disabled = false, compact = false, on
     </label>
     {saving && <p role="status">{t('正在保存…')}</p>}
     {mode && !compact && <p>{t(MODES[mode].hint)}</p>}
-    {error && <p className="error" role="alert">{error}</p>}
+    {error && <p className="error" role="alert">{errorText(error)}</p>}
     {!mode && !loading && <button type="button" className="auth-gate-secondary" onClick={() => {
       setLoading(true); setError(''); setLoadAttempt(attempt => attempt + 1);
     }}>{t('重新加载')}</button>}

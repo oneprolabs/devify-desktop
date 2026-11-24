@@ -3,6 +3,8 @@ import { LocalChatAvatar } from './LocalChatAvatar';
 import { LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { ChatPlatformBar } from './ChatPlatformBar';
 import { syncErrorMessage } from './chatPresentation';
+import { errorText, nativeErrorCode } from '../../shared/i18n/errorText';
+import { syncWechatForRefresh, type WechatRefreshIssue } from '../connectors/wechat/refresh';
 import { ChatEventsPane, type EventItem } from './ChatEventsPane';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -46,7 +48,7 @@ const timeLabel = (value?: number | null) => {
   return date.toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
 };
 
-export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent, onAddPlatform }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void; onAddPlatform?: () => void }) {
+export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onRecoverWechatKeys, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent, onAddPlatform }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onRecoverWechatKeys: (accountId: string) => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void; onAddPlatform?: () => void }) {
   const runtime = useTaskRuntime();
   const configuredKey = JSON.stringify(runtime.sources?.filter(source => source.setup_complete).map(source => source.account_id).sort() ?? null);
   const [view, setView] = useState<View>('raw');
@@ -79,11 +81,15 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
   const [syncNoticeError, setSyncNoticeError] = useState(false);
+  const [syncNoticeUploading, setSyncNoticeUploading] = useState(false);
   const [syncScopeConfirmation, setSyncScopeConfirmation] = useState<string | null>(null);
   const [syncNoticePending, setSyncNoticePending] = useState(false);
   const [syncToastVisible, setSyncToastVisible] = useState(false);
   const [syncBatchIds, setSyncBatchIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<{ accountId: string; issue: WechatRefreshIssue } | null>(null);
+  const [messageRevisions, setMessageRevisions] = useState<Record<string, number>>({});
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventRefresh, setEventRefresh] = useState(0);
   const [error, setError] = useState('');
@@ -91,6 +97,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [rawFocus, setRawFocus] = useState<{ conversationId: string; messageId?: string | number } | null>(null);
   const [rawMounted, setRawMounted] = useState(false);
   const loadGeneration = useRef(0);
+  const refreshLock = useRef(false);
   // The raw pane reports loaded and selected messages to the conversation header.
   const [chatState, setChatState] = useState({ active: false, messages: 0, selected: 0, agentReady: false, agentName: '', agentModel: '' });
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
@@ -159,6 +166,34 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     if (visible) void load();
     return () => { loadGeneration.current += 1; };
   }, [load, visible]);
+
+  const refreshAccount = connectedAccounts.find(account => account.id === accountId)
+    ?? pickAccount(connectedAccounts.filter(account => (account.source ?? 'wechat') === activeSource), settings?.active_account_id);
+  const refreshIssue = refreshError?.accountId === refreshAccount?.id ? refreshError?.issue : undefined;
+  const refreshSessions = async () => {
+    if (!isTauri() || !visible || loading || refreshLock.current) return;
+    if (!refreshAccount) { await load(); return; }
+    refreshLock.current = true;
+    setRefreshing(true);
+    setRefreshError(null);
+    const id = refreshAccount.id;
+    const generation = loadGeneration.current;
+    try {
+      if ((refreshAccount.source ?? 'wechat') === 'wechat') {
+        const issue = await syncWechatForRefresh(id);
+        if (generation !== loadGeneration.current) return;
+        if (issue) { setRefreshError({ accountId: id, issue }); return; }
+      }
+      await load();
+      if (generation + 1 === loadGeneration.current) {
+        setMessageRevisions(current => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+      }
+    } finally {
+      refreshLock.current = false;
+      setRefreshing(false);
+    }
+  };
+
   const loadMoreSessions = async (source: string) => {
     if (moreLock.current) return;
     moreLock.current = true; setLoading(true); setMoreSessionsErrors(current => ({ ...current, [source]: '' })); setLoadingSource(source);
@@ -318,7 +353,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
 
   const syncNow = async (scopeConfirmation?: string) => {
     if (syncing) return;
-    setSyncScopeConfirmation(null); setSyncBatchIds([]); setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticePending(false); setSyncToastVisible(true);
+    setSyncScopeConfirmation(null); setSyncBatchIds([]); setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticeUploading(false); setSyncNoticePending(false); setSyncToastVisible(true);
     try {
       const result = await invoke<SyncResult>('devify_sync_now', { scopeConfirmation });
       setSyncNoticeError(Boolean(result.error));
@@ -326,14 +361,18 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       setSyncBatchIds(result.error ? [] : ids);
       setSyncNoticePending(!result.error && ids.length > 0);
       setSyncNotice(result.error
-        ? (result.message_count ? tf("已提交 {0} 条记录，部分会话未完成。 ", result.message_count) : t("本次未提交记录。")) + syncErrorMessage(result.error)
+        ? result.message_count
+          ? tf("已提交 {0} 条记录，部分会话未完成。{1}", result.message_count, syncErrorMessage(result.error))
+          : tf("本次未提交记录。{0}", syncErrorMessage(result.error))
         : result.message_count
           ? ids.length ? tf("已提交 {0} 条记录，等待服务端处理。", result.message_count) : tf("已提交 {0} 条记录，请在任务中查看状态。", result.message_count)
           : t("没有需要提交的新记录。"));
       await refreshUploadState();
     } catch (reason) {
       const confirmation = /^SYNC_SCOPE_CONFIRM:([a-f0-9]{64})$/.exec(String(reason));
-      setSyncNoticeError(!String(reason).includes(t("该账号正在上传")));
+      const uploading = nativeErrorCode(reason) === 'ACCOUNT_UPLOAD_BUSY';
+      setSyncNoticeUploading(uploading);
+      setSyncNoticeError(!uploading);
       if (confirmation) {
         setSyncScopeConfirmation(confirmation[1]);
         setSyncNotice(t("当前账号和空间没有可用的同步进度。请先检查首次上传范围，再开始同步。"));
@@ -369,7 +408,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         } else {
           setSyncNoticeError(true);
           const failed = batches.find(batch => ['failed', 'cancelled'].includes(batch.status));
-          setSyncNotice(status === 'unknown' ? t("暂时无法确认服务端处理状态，请查看任务。") : failed?.error_message ? tf("服务端处理未完成：{0}", failed.error_message) : t("服务端处理未完成，请查看任务。"));
+          setSyncNotice(status === 'unknown' ? t("暂时无法确认服务端处理状态，请查看任务。") : failed?.error_message ? tf("服务端处理未完成：{0}", errorText(failed.error_message)) : t("服务端处理未完成，请查看任务。"));
         }
       } catch {
         if (!active) return;
@@ -453,10 +492,13 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         <button type="button" className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>{t("全部")} <small>{platformSessions.length}</small></button>
         <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>{t("待传")} <small>{pendingCount}</small></button>
       </div>
-      <div className="chat-workbench-session-label"><span>{t("会话 ·")} {visibleSessions.length}</span><span className="chat-workbench-list-tools">{t("按最后更新")} <button type="button" className="chat-workbench-refresh" onClick={() => void load()} aria-label={t("刷新会话")} title={t("刷新会话")}>↻</button></span></div>
+      <div className="chat-workbench-session-label"><span>{t("会话 ·")} {visibleSessions.length}</span><span className="chat-workbench-list-tools">{refreshing ? <span role="status">{t("正在刷新…")}</span> : t("按最后更新")} <button type="button" className="chat-workbench-refresh" onClick={() => void refreshSessions()} disabled={loading || refreshing} aria-label={t("刷新会话")} title={t("刷新会话")}>↻</button></span></div>
+      {refreshAccount && refreshIssue && <p className="chat-workbench-load-error chat-workbench-refresh-error" role="alert">
+        {refreshIssue.message} {refreshIssue.needsKeys && <button type="button" onClick={() => onRecoverWechatKeys(refreshAccount.id)}>{t("打开微信连接器")}</button>}
+      </p>}
       <div className="chat-workbench-sessions" ref={sessionList} aria-busy={loading} onScroll={event => {
         const list = event.currentTarget;
-        if (!visible || !hasMoreSessions || loading) return;
+        if (!visible || !hasMoreSessions || loading || refreshing) return;
         const viewport = list.getBoundingClientRect();
         for (const marker of list.querySelectorAll<HTMLElement>('[data-more-source]')) {
           const source = marker.dataset.moreSource!;
@@ -465,7 +507,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         }
       }}>
         {loading && !sessions.length && <LoadingSkeleton label={t("正在加载会话")} />}
-        {error && <p className="chat-workbench-load-error" role="alert">{t(error)} <button type="button" onClick={() => void load()}>{t("重试")}</button></p>}
+        {error && <p className="chat-workbench-load-error" role="alert">{errorText(error)} <button type="button" disabled={loading || refreshing} onClick={() => void load()}>{t("重试")}</button></p>}
         <div className="chat-workbench-source-section" key={activeSource}>
             {groupSessions(visibleSessions).map(item => <Fragment key={item.key}>
               {item.name && <div className="chat-workbench-community-label">{item.name} {t("· 社区")}</div>}
@@ -486,7 +528,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             </Fragment>)}
             {[...sessionOffsets.current.values()].some(entry => (entry.account.source ?? 'wechat') === activeSource) && <div className="chat-workbench-source-more" data-more-source={activeSource}>
               {loadingSource === activeSource && <p className="chat-workbench-empty" role="status">{t('正在读取会话…')}</p>}
-              {moreSessionsErrors[activeSource] && <p className="chat-workbench-load-error" role="alert">{t(moreSessionsErrors[activeSource])} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(activeSource)}>{t('重试')}</button></p>}
+              {moreSessionsErrors[activeSource] && <p className="chat-workbench-load-error" role="alert">{errorText(moreSessionsErrors[activeSource])} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(activeSource)}>{t('重试')}</button></p>}
               {!loading && !moreSessionsErrors[activeSource] && (query.trim() || filter !== 'all') && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions(activeSource)}>{t('加载更多会话')}</button>}
             </div>}
           </div>
@@ -540,7 +582,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             <button type="button" onClick={onOpenWhitelist}>{t("检查上传范围")}</button>
             <button type="button" onClick={() => void syncNow(syncScopeConfirmation)}>{t("确认并开始同步")}</button>
           </div> : <>
-            {!syncing && (syncNoticeError || syncNotice.includes(t("后台上传"))) && <button type="button" onClick={onOpenTasks}>{t("查看任务")}</button>}
+            {!syncing && (syncNoticeError || syncNoticeUploading) && <button type="button" onClick={onOpenTasks}>{t("查看任务")}</button>}
             {syncNoticeError && <button type="button" onClick={() => requestFeedback('upload', 'chat', syncBatchIds.slice(0, 20))}>{t("反馈此问题")}</button>}
           </>}
           <button type="button" className="sync-feedback-close" onClick={() => setSyncToastVisible(false)} aria-label={t("关闭提示")}>×</button>
@@ -550,6 +592,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           accountId={accountId}
           accountDisplay={connectedAccounts.find(account => account.id === accountId)?.display}
           sessionRevision={sessionRevision}
+          messageRevision={messageRevisions[accountId] ?? 0}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
           focusMessageId={rawFocus?.messageId}
           searchKeyword={view === 'raw' ? detailQuery : ''}

@@ -39,6 +39,9 @@ struct SyncEntry {
     wal_size: u64,
     #[serde(default)]
     wal_mtime: u64,
+    /// Older entries and snapshots made with WAL replay disabled must retry a nonempty WAL.
+    #[serde(default)]
+    wal_replayed: bool,
     /// Salt of the key that produced this decrypted copy. The cache is only reusable while the
     /// same salt still unlocks the database: entries written before this field existed carry an
     /// empty value and therefore force one re-decryption instead of trusting a stale copy.
@@ -54,7 +57,8 @@ fn cache_matches_key(db: &DbFile, entry: &SyncEntry, store: &KeyStore, account: 
         return true;
     }
     match keys::lookup(store, account, &db.rel) {
-        Some(key) => !entry.key_salt.is_empty() && entry.key_salt == key.salt,
+        Some(key) => !entry.key_salt.is_empty() && entry.key_salt == key.salt
+            && db.salt.as_deref() == Some(key.salt.as_str()),
         None => false,
     }
 }
@@ -143,7 +147,7 @@ fn copy_plaintext(db: &DbFile, out: &Path) -> Result<u64, String> {
     Ok(size)
 }
 
-fn decrypt_file(db: &DbFile, out: &Path, enc_key: &[u8], apply_wal: bool) -> DecryptOutcome {
+fn decrypt_file(db: &DbFile, out: &Path, enc_key: &[u8], replay_wal: bool) -> DecryptOutcome {
     let account = String::new();
     let mut pages: u64 = 0;
 
@@ -213,30 +217,29 @@ fn decrypt_file(db: &DbFile, out: &Path, enc_key: &[u8], apply_wal: bool) -> Dec
 
     let base = base_path(out);
     let base_part = sidecar(&tmp, ".base.part");
-    if let Err(error) = fs::copy(&tmp, &base_part).and_then(|_| fs::rename(&base_part, &base)) {
+    if let Err(error) = fs::copy(&tmp, &base_part) {
         remove_if_exists(&tmp);
         remove_if_exists(&base_part);
         return failed(&account, &db.rel, format!("保存解密基线失败：{error}"));
     }
 
-    let mut wal_outcome = None;
-    if apply_wal && db.has_wal {
-        let wal_path = sidecar(Path::new(&db.path), "-wal");
-        match File::options().read(true).write(true).open(&tmp) {
-            Ok(mut handle) => {
-                wal_outcome = Some(wal::apply(&mut handle, &wal_path, enc_key, &mac_key));
-            }
+    let wal_outcome = if replay_wal {
+        match replay_snapshot_wal(db, &tmp, enc_key, &mac_key) {
+            Ok(outcome) => Some(outcome),
             Err(error) => {
-                wal_outcome = Some(wal::WalOutcome {
-                    present: true,
-                    frames_read: 0,
-                    frames_applied: 0,
-                    final_pages: None,
-                    status: format!("无法打开解密文件以重放 WAL：{error}"),
-                    complete: false,
-                });
+                remove_if_exists(&tmp);
+                remove_if_exists(&base_part);
+                return failed(&account, &db.rel, error);
             }
         }
+    } else {
+        None
+    };
+
+    if let Err(error) = fs::rename(&base_part, &base) {
+        remove_if_exists(&tmp);
+        remove_if_exists(&base_part);
+        return failed(&account, &db.rel, format!("保存解密基线失败：{error}"));
     }
 
     if let Err(error) = fs::rename(&tmp, out) {
@@ -258,33 +261,37 @@ fn decrypt_file(db: &DbFile, out: &Path, enc_key: &[u8], apply_wal: bool) -> Dec
     }
 }
 
+fn replay_snapshot_wal(db: &DbFile, tmp: &Path, enc_key: &[u8], mac_key: &[u8]) -> Result<wal::WalOutcome, String> {
+    let mut handle = File::options()
+        .read(true)
+        .write(true)
+        .open(tmp)
+        .map_err(|error| format!("无法打开解密文件以重放 WAL：{error}"))?;
+    wal::apply(&mut handle, &wal_path(&db.path), enc_key, mac_key)
+}
+
 fn refresh_wal(
     db: &DbFile,
     out: &Path,
     enc_key: &[u8],
     base: &Path,
 ) -> Result<wal::WalOutcome, String> {
-    let tmp = out.with_extension("db.refresh.part");
-    remove_if_exists(&tmp);
-    fs::copy(base, &tmp).map_err(|e| format!("复制解密基线失败：{e}"))?;
     let salt = salt_bytes(db.salt.as_deref()).ok_or("数据库 salt 不可读")?;
     let mac_key = crypto::derive_mac_key(enc_key, &salt)?;
-    let wal = wal_path(&db.path);
-    let outcome = {
-        let mut handle = File::options()
-            .read(true)
-            .write(true)
-            .open(&tmp)
-            .map_err(|e| format!("打开增量解密文件失败：{e}"))?;
-        wal::apply(&mut handle, &wal, enc_key, &mac_key)
-    };
-    fs::rename(&tmp, out).map_err(|e| {
+    let tmp = out.with_extension("db.refresh.part");
+    let result = (|| {
+        fs::copy(base, &tmp).map_err(|e| format!("复制解密基线失败：{e}"))?;
+        let outcome = replay_snapshot_wal(db, &tmp, enc_key, &mac_key)?;
+        fs::rename(&tmp, out).map_err(|e| format!("替换增量解密文件失败：{e}"))?;
+        Ok(outcome)
+    })();
+    if result.is_err() {
         remove_if_exists(&tmp);
-        format!("替换增量解密文件失败：{e}")
-    })?;
+        return result;
+    }
     remove_if_exists(&sidecar(out, "-wal"));
     remove_if_exists(&sidecar(out, "-shm"));
-    Ok(outcome)
+    result
 }
 
 fn salt_bytes(salt_hex: Option<&str>) -> Option<Vec<u8>> {
@@ -363,14 +370,17 @@ pub fn decrypt_account(
         let src_size = db.size;
         let src_mtime = mtime_nanos(Path::new(&db.path));
         let (wal_size, wal_mtime) = file_signature(&wal_path(&db.path));
+        let replay_wal = apply_wal && db.encrypted && wal_size > 0;
 
         if let Some(entry) = meta.entries.get(&db.rel) {
+            let matching_key = cache_matches_key(db, entry, store, &account.id);
             if entry.src_size == src_size
                 && entry.src_mtime == src_mtime
                 && entry.wal_size == wal_size
                 && entry.wal_mtime == wal_mtime
+                && (!replay_wal || entry.wal_replayed)
                 && out.exists()
-                && cache_matches_key(db, entry, store, &account.id)
+                && matching_key
             {
                 outcomes.push(DecryptOutcome {
                     account: account.id.clone(),
@@ -385,11 +395,10 @@ pub fn decrypt_account(
                 continue;
             }
 
-            if apply_wal
-                && wal_size > 0
+            if replay_wal
+                && matching_key
                 && entry.src_size == src_size
                 && entry.src_mtime == src_mtime
-                && (entry.wal_size != wal_size || entry.wal_mtime != wal_mtime)
                 && base_path(&out).exists()
             {
                 let Some(key) = keys::lookup(store, &account.id, &db.rel) else {
@@ -410,6 +419,7 @@ pub fn decrypt_account(
                             out_size: fs::metadata(&out).map(|m| m.len()).unwrap_or(entry.out_size),
                             wal_size,
                             wal_mtime,
+                            wal_replayed: true,
                             key_salt: key.salt.clone(),
                         });
                         outcomes.push(DecryptOutcome {
@@ -443,6 +453,7 @@ pub fn decrypt_account(
                             out_size: size,
                             wal_size,
                             wal_mtime,
+                            wal_replayed: false,
                             key_salt: String::new(),
                         },
                     );
@@ -478,10 +489,7 @@ pub fn decrypt_account(
                 let mut outcome = failed(
                     &account.id,
                     &db.rel,
-                    format!(
-                        "已保存的密钥对应 salt {}，当前数据库 salt 为 {}：数据库已重新加密，需重新提取密钥。",
-                        entry.salt, current_salt
-                    ),
+                    "数据库已重新加密，需重新提取密钥。",
                 );
                 outcome.status = "no-key".into();
                 outcomes.push(outcome);
@@ -497,7 +505,7 @@ pub fn decrypt_account(
             }
         };
 
-        let mut outcome = decrypt_file(db, &out, &enc_key, apply_wal);
+        let mut outcome = decrypt_file(db, &out, &enc_key, replay_wal);
         outcome.account = account.id.clone();
         if outcome.status == "ok" {
             let out_size = fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
@@ -509,6 +517,7 @@ pub fn decrypt_account(
                     out_size,
                     wal_size,
                     wal_mtime,
+                    wal_replayed: replay_wal,
                     key_salt: entry.salt.clone(),
                 },
             );
@@ -578,7 +587,7 @@ mod tests {
             path: "/tmp/message_0.db".into(),
             size: 4096,
             encrypted,
-            salt: Some("aa".into()),
+            salt: Some("6161".into()),
             has_wal: false,
         }
     }
@@ -590,6 +599,7 @@ mod tests {
             out_size: 4096,
             wal_size: 0,
             wal_mtime: 0,
+            wal_replayed: false,
             key_salt: key_salt.into(),
         }
     }
@@ -618,12 +628,122 @@ mod tests {
 
     #[test]
     fn cached_copy_is_not_usable_after_rekeying() {
-        assert!(!cache_matches_key(&db(true), &cached("aa"), &store_with(Some("bb")), "acct"));
+        let mut rotated = db(true);
+        rotated.salt = Some("6262".into());
+        // The old cache and saved key agree, but neither matches the source.
+        assert!(!cache_matches_key(&rotated, &cached("6161"), &store_with(Some("aa")), "acct"));
+        // Updating the saved key still requires rebuilding the old cache.
+        assert!(!cache_matches_key(&rotated, &cached("6161"), &store_with(Some("bb")), "acct"));
+    }
+
+    #[test]
+    fn changed_salt_bypasses_cache_and_wal_shortcuts() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("message_0.db");
+        fs::write(&source, [0u8; crypto::PAGE_SIZE]).unwrap();
+        let mut rotated = db(true);
+        rotated.path = source.to_string_lossy().into();
+        rotated.salt = Some("62".repeat(crypto::SALT_LEN));
+        rotated.has_wal = true;
+        let account = Account {
+            id: "acct".into(), dir: temp.path().to_string_lossy().into(), db_count: 1,
+            encrypted_count: 1, total_bytes: rotated.size, modified_at: None, dbs: vec![rotated.clone()],
+        };
+        let cache = cache_dir(temp.path(), &account.id);
+        let out = cache.join(&rotated.rel);
+        fs::create_dir_all(out.parent().unwrap()).unwrap();
+        fs::write(&out, b"previous snapshot").unwrap();
+        fs::write(base_path(&out), b"previous base").unwrap();
+        let salt = "a".repeat(crypto::SALT_LEN);
+        let mut entry = cached(&"61".repeat(crypto::SALT_LEN));
+        entry.src_mtime = mtime_nanos(&source);
+        save_meta(&cache, &SyncMeta { entries: BTreeMap::from([(rotated.rel, entry)]) });
+
+        for wal_changed in [false, true] {
+            if wal_changed {
+                fs::write(wal_path(&account.dbs[0].path), b"new WAL").unwrap();
+            }
+            let outcome = decrypt_account(temp.path(), &account, &store_with(Some(&salt)), true, true);
+            assert_eq!(outcome[0].status, "no-key");
+            assert_eq!(fs::read(&out).unwrap(), b"previous snapshot");
+        }
     }
 
     #[test]
     fn cached_copy_is_usable_with_the_same_key() {
         assert!(cache_matches_key(&db(true), &cached("6161"), &store_with(Some("aa")), "acct"));
+    }
+
+    #[test]
+    fn failed_wal_keeps_last_snapshot_and_can_be_retried() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("message_0.db");
+        let salt = "a".repeat(crypto::SALT_LEN);
+        let key = [0; crypto::KEY_LEN];
+        let page = crypto::authenticated_fixture_page(&key, salt.as_bytes(), 1);
+        fs::write(&source, page).unwrap();
+        let mut account = Account {
+            id: "acct".into(),
+            dir: temp.path().to_string_lossy().into(),
+            db_count: 1,
+            encrypted_count: 1,
+            total_bytes: page.len() as u64,
+            modified_at: None,
+            dbs: vec![DbFile {
+                path: source.to_string_lossy().into(),
+                salt: Some(hex::encode(salt.as_bytes())),
+                has_wal: true,
+                ..db(true)
+            }],
+        };
+        let cache = cache_dir(temp.path(), &account.id);
+        let out = cache.join(&account.dbs[0].rel);
+        let wal = wal_path(&account.dbs[0].path);
+        let store = store_with(Some(&salt));
+        fs::write(&wal, []).unwrap();
+        assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "ok");
+
+        // One committed frame makes the current snapshot newer than its base.
+        let mut header = [0; 32];
+        header[..4].copy_from_slice(&0x377f_0682u32.to_be_bytes());
+        header[8..12].copy_from_slice(&(crypto::PAGE_SIZE as u32).to_be_bytes());
+        let mut frame = [0; 24];
+        frame[..4].copy_from_slice(&2u32.to_be_bytes());
+        frame[4..8].copy_from_slice(&2u32.to_be_bytes());
+        let page2 = crypto::authenticated_fixture_page(&key, salt.as_bytes(), 2);
+        let committed = [header.as_slice(), frame.as_slice(), page2.as_slice()].concat();
+        fs::write(&wal, &committed).unwrap();
+        // The WAL signature alone doesn't prove it was replayed. Old metadata has no flag.
+        assert_eq!(decrypt_account(temp.path(), &account, &store, false, true)[0].status, "ok");
+        let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(meta_path(&cache)).unwrap()).unwrap();
+        legacy["entries"][&account.dbs[0].rel].as_object_mut().unwrap().remove("wal_replayed");
+        fs::write(meta_path(&cache), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "ok");
+        let previous = fs::read(&out).unwrap();
+        assert_eq!(previous.len(), 2 * crypto::PAGE_SIZE);
+        let previous_base = fs::read(base_path(&out)).unwrap();
+        let previous_meta = fs::read(meta_path(&cache)).unwrap();
+
+        for main_file_changed in [false, true] {
+            if main_file_changed {
+                fs::write(&wal, b"interrupted header").unwrap();
+                fs::write(&source, [page.as_slice(), page2.as_slice()].concat()).unwrap();
+                account.dbs[0].size = (2 * crypto::PAGE_SIZE) as u64;
+            } else {
+                fs::write(&wal, [committed.as_slice(), &frame[..12]].concat()).unwrap();
+            }
+            let result = decrypt_account(temp.path(), &account, &store, true, true);
+            assert_eq!(result[0].status, "failed");
+            assert!(result[0].error.as_deref().unwrap().contains("WAL"));
+            assert_eq!(fs::read(&out).unwrap(), previous);
+            assert_eq!(fs::read(base_path(&out)).unwrap(), previous_base);
+            assert_eq!(fs::read(meta_path(&cache)).unwrap(), previous_meta);
+        }
+
+        // A valid WAL with no committed frames is a successful refresh.
+        fs::write(&wal, header).unwrap();
+        assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "ok");
+        assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "cached");
     }
 
     #[test]

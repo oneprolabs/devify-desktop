@@ -8,7 +8,7 @@
 
 use serde::Serialize;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::crypto;
@@ -41,28 +41,35 @@ impl WalOutcome {
 }
 
 fn be_u32(buf: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+    u32::from_be_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
 }
 
 /// Replay the committed prefix of `wal_path` into the already-decrypted database file.
-pub fn apply(db: &mut File, wal_path: &Path, enc_key: &[u8], mac_key: &[u8]) -> WalOutcome {
-    let file = match File::open(wal_path) {
-        Ok(file) => file,
-        Err(error) => return WalOutcome::new(format!("无法打开 WAL：{error}")),
-    };
+pub fn apply(
+    db: &mut File,
+    wal_path: &Path,
+    enc_key: &[u8],
+    mac_key: &[u8],
+) -> Result<WalOutcome, String> {
+    let file = File::open(wal_path).map_err(|error| format!("无法打开 WAL：{error}"))?;
     let mut reader = BufReader::new(file);
 
     let mut header = [0u8; WAL_HEADER_LEN];
-    if reader.read_exact(&mut header).is_err() {
-        return WalOutcome::new("WAL 头部不完整，已跳过");
-    }
+    reader
+        .read_exact(&mut header)
+        .map_err(|error| format!("读取 WAL 头部失败：{error}"))?;
     let magic = be_u32(&header, 0);
     if magic != 0x377f_0682 && magic != 0x377f_0683 {
-        return WalOutcome::new(format!("WAL magic 0x{magic:08x} 不受支持"));
+        return Err(format!("WAL magic 0x{magic:08x} 不受支持"));
     }
     let page_size = be_u32(&header, 8) as usize;
     if page_size != crypto::PAGE_SIZE {
-        return WalOutcome::new(format!("WAL 页大小 {page_size} 不等于 4096，未重放"));
+        return Err(format!("WAL 页大小 {page_size} 不等于 4096，未重放"));
     }
     let wal_salt1 = be_u32(&header, 16);
     let wal_salt2 = be_u32(&header, 20);
@@ -78,36 +85,39 @@ pub fn apply(db: &mut File, wal_path: &Path, enc_key: &[u8], mac_key: &[u8]) -> 
     let mut stop_reason: Option<String> = None;
 
     loop {
-        let mut frame_header = [0u8; FRAME_HEADER_LEN];
-        match reader.read_exact(&mut frame_header) {
-            Ok(()) => {}
-            Err(_) => break,
-        }
-        let mut page = vec![0u8; page_size];
-        if reader.read_exact(&mut page).is_err() {
-            stop_reason = Some("WAL 尾部帧不完整（截断）".to_string());
+        if reader
+            .fill_buf()
+            .map_err(|error| format!("读取 WAL 失败：{error}"))?
+            .is_empty()
+        {
             break;
         }
+        let mut frame_header = [0u8; FRAME_HEADER_LEN];
+        reader
+            .read_exact(&mut frame_header)
+            .map_err(|error| format!("读取 WAL 帧头失败：{error}"))?;
         let pgno = be_u32(&frame_header, 0);
         let db_size = be_u32(&frame_header, 4);
         let salt1 = be_u32(&frame_header, 8);
         let salt2 = be_u32(&frame_header, 12);
 
         if salt1 != wal_salt1 || salt2 != wal_salt2 {
-            stop_reason = Some("帧 salt 与 WAL 头不一致（疑似上一代残留帧），候选前缀到此结束".to_string());
+            stop_reason =
+                Some("帧 salt 与 WAL 头不一致（疑似上一代残留帧），候选前缀到此结束".to_string());
             break;
         }
         if pgno == 0 {
-            stop_reason = Some("帧页码为 0，格式不合法".to_string());
-            break;
+            return Err("WAL 帧页码为 0，格式不合法".into());
         }
         if pgno == 1 {
-            stop_reason = Some("遇到第 1 页的 WAL 帧，受限重放不支持该布局".to_string());
-            break;
+            return Err("遇到第 1 页的 WAL 帧，受限重放不支持该布局".into());
         }
+        let mut page = vec![0u8; page_size];
+        reader
+            .read_exact(&mut page)
+            .map_err(|error| format!("读取 WAL 第 {pgno} 页失败：{error}"))?;
         if !crypto::verify_page(&page, mac_key, pgno) {
-            stop_reason = Some(format!("第 {pgno} 页 HMAC 校验失败，停止重放"));
-            break;
+            return Err(format!("WAL 第 {pgno} 页 HMAC 校验失败"));
         }
         if db_size != 0 {
             last_commit = Some(frames.len());
@@ -127,49 +137,36 @@ pub fn apply(db: &mut File, wal_path: &Path, enc_key: &[u8], mac_key: &[u8]) -> 
             "WAL 中没有已提交帧，未重放任何内容".to_string()
         });
         outcome.frames_read = frames_read;
-        return outcome;
+        return Ok(outcome);
     };
 
     let final_pages = frames[commit_index].commit_pages as u64;
     let mut applied = 0u64;
     for frame in &frames[..=commit_index] {
         let offset = (frame.pgno as u64 - 1) * crypto::PAGE_SIZE as u64;
-        if db.seek(SeekFrom::Start(offset)).is_err() {
-            return WalOutcome::new("写入解密库时定位失败");
-        }
-        let plain = if frame.pgno == 1 {
-            // Unreachable: page-1 frames stop the prefix above.
-            continue;
-        } else {
-            match crypto::decrypt_page(&frame.page, enc_key, frame.pgno) {
-                Ok(plain) => plain,
-                Err(error) => return WalOutcome::new(error),
-            }
-        };
-        if db.write_all(&plain).is_err() {
-            return WalOutcome::new("写入解密库失败");
-        }
+        db.seek(SeekFrom::Start(offset))
+            .map_err(|error| format!("重放 WAL 时定位失败：{error}"))?;
+        let plain = crypto::decrypt_page(&frame.page, enc_key, frame.pgno)
+            .map_err(|error| format!("解密 WAL 帧失败：{error}"))?;
+        db.write_all(&plain)
+            .map_err(|error| format!("重放 WAL 时写入失败：{error}"))?;
         applied += 1;
     }
 
-    if final_pages > 0 {
-        let target = final_pages * crypto::PAGE_SIZE as u64;
-        if db.set_len(target).is_err() {
-            return WalOutcome::new("按 dbsize 调整解密库大小时失败");
-        }
-    }
-    let _ = db.flush();
+    let target = final_pages * crypto::PAGE_SIZE as u64;
+    db.set_len(target)
+        .map_err(|error| format!("重放 WAL 后调整解密库大小失败：{error}"))?;
+    db.flush()
+        .map_err(|error| format!("刷新 WAL 解密数据失败：{error}"))?;
 
     let mut outcome = WalOutcome::new(match stop_reason {
         Some(reason) => format!(
             "已回填 {applied} 帧（受限恢复；{reason}；未校验 WAL 校验和，可能缺少最新事务）"
         ),
-        None => format!(
-            "已回填 {applied} 帧（受限恢复；未校验 WAL 校验和，可能缺少最新事务）"
-        ),
+        None => format!("已回填 {applied} 帧（受限恢复；未校验 WAL 校验和，可能缺少最新事务）"),
     });
     outcome.frames_read = frames_read;
     outcome.frames_applied = applied;
     outcome.final_pages = Some(final_pages);
-    outcome
+    Ok(outcome)
 }

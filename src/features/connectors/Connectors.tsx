@@ -1,4 +1,5 @@
 import { t, tf, ctf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type AppSettings, mergeSettings, requireSettingsRevision, settingsSaveError } from '../settings/settingsModel';
@@ -97,7 +98,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
         setEnabled(settings.connectors.wechat_enabled);
         setWhatsappEnabled(settings.connectors.whatsapp_enabled !== false);
       })
-      .catch(reason => setError(tf("设置加载失败：{0}，请重新打开页面。", String(reason))));
+      .catch(reason => setError(tf("设置加载失败：{0}，请重新打开页面。", errorText(reason))));
   }, []);
 
   /** Each action is explicit, but rapid actions must use the last confirmed revision. */
@@ -149,7 +150,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
       setProbe({ accounts: scan.accounts.length, verifiedAccounts: scan.accounts.filter(account => verified.has(account.id)).length });
     } catch (e) {
       setProbe(null);
-      setError(tf("无法检查微信连接状态：{0}", String(e)));
+      setError(tf("无法检查微信连接状态：{0}", errorText(e)));
     } finally {
       setLoading(false);
     }
@@ -163,7 +164,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
       setWhatsapp(await invoke<WhatsAppStatus>('whatsapp_status'));
     } catch (e) {
       setWhatsapp(null);
-      setError(tf("无法检查 WhatsApp 连接状态：{0}", String(e)));
+      setError(tf("无法检查 WhatsApp 连接状态：{0}", errorText(e)));
     } finally {
       setWhatsappBusy(false);
     }
@@ -185,7 +186,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
   const interestButton = (name: string) => <button
     type="button"
     className={`connector-notify${waitlist.includes(name) ? ' on' : ''}`}
-    aria-label={`${waitlist.includes(name) ? t("取消关注") : t("关注")}${name}`}
+    aria-label={waitlist.includes(name) ? tf("取消关注 {0}", name) : tf("关注 {0}", name)}
     aria-pressed={waitlist.includes(name)}
     disabled={!settingsLoaded}
     onClick={() => toggleWaitlist(name)}
@@ -281,7 +282,7 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
               : t("已断开读取；本机聊天数据不会被修改，重新连接即可继续读取。")}
           </p>}
           {!whatsappMissing && whatsappInstall.detect?.version && <details className="connector-install-details"><summary>WhatsApp {whatsappInstall.detect.version} {t("· 官方签名")}</summary><p className="connector-install-meta">{whatsappInstall.detect.app_path}</p><button type="button" className="connector-quiet" onClick={() => { void whatsappInstall.recheck(); void refreshWhatsapp(); }} disabled={whatsappBusy || whatsappInstall.checking}>{t("重新检查")}</button></details>}
-          {whatsapp?.error && <p className="connector-error" role="alert">{whatsapp.error}</p>}
+          {whatsapp?.error && <p className="connector-error" role="alert">{errorText(whatsapp.error)}</p>}
           <p className="connector-capabilities">{t("历史记录 · 群聊 · 增量同步")}</p>
           {whatsappEnabled && whatsappIncomplete && <p className="connector-setup-state" role="status">{t("配置未完成，备份已暂停。")}</p>}
           <div className="connector-actions">
@@ -295,8 +296,8 @@ export function Connectors({ onOpenWechat, onOpenWhatsApp }: { onOpenWechat: (co
           </div>
         </article>
       </div>
-      {error && <p className="connector-error" role="alert">{t(error)}</p>}
-      {saveError && <p className="connector-error" role="alert">{saveError}</p>}
+      {error && <p className="connector-error" role="alert">{errorText(error)}</p>}
+      {saveError && <p className="connector-error" role="alert">{errorText(saveError)}</p>}
     </section>
     <section aria-labelledby="connector-upcoming">
       <div className="connector-section-head"><h2 id="connector-upcoming">{t("即将支持")}</h2><p className="connector-section-description">{t("关注你期待的来源")}</p></div>

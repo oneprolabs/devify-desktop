@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t, tf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import type { AppSettings } from '../settings/settingsModel';
 import { AGENTS, ACCESS_AGENTS, agentById, agentInvocationNotice, profileFor, type AccessStatus, type AgentProfile } from './agentCatalog';
@@ -53,6 +54,6 @@ export function AgentAdvanced({ id, agent, access, saving, canSummarize, onSelec
         return list.length ? tf('已读取 {0} 个模型。', list.length) : t('未读取到模型，可手动填写或沿用默认配置。');
       })}>{t('刷新模型')}</WizardActionButton>}
     </div>
-    {message && <p className="integration-success" role="status">{message}</p>}{error && <p className="integration-error" role="alert">{error}</p>}
+    {message && <p className="integration-success" role="status">{message}</p>}{error && <p className="integration-error" role="alert">{errorText(error)}</p>}
   </section>;
 }

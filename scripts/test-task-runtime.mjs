@@ -1,3 +1,5 @@
+import * as nativeErrors from '../src/shared/i18n/errorText.ts';
+import * as locale from '../src/shared/i18n/locale.tsx';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -20,7 +22,8 @@ const module={exports:{}};
 new Function('require','module','exports',output)(id=>{
  if(id==='react')return react;
  if(id==='react/jsx-runtime')return jsx;
- if(id==='../../shared/i18n/locale')return {t:s=>s,tf:(s,...args)=>s.replace(/\{(\d+)\}/g,(_,n)=>String(args[Number(n)]))};
+ if (id.endsWith('/i18n/errorText')) return nativeErrors;
+ if (id === '../../shared/i18n/locale') return locale;
  if(id==='../../shared/api/desktopInvoke')return {desktopInvoke:invoke};
  if(id==='./taskRuntime')return {useTaskRuntime:()=>runtime,refreshTaskRuntime:async()=>{}};
  if(id==='../../shared/ui/WizardActionButton')return {WizardActionButton:()=>null};

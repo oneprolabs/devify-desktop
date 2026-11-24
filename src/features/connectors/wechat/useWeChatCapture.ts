@@ -6,8 +6,8 @@ import type { Account, CaptureStatus, CaptureImport, LaunchDiagnosis, PrepareRes
 import type { ConnectionFeedback } from './connectionTypes';
 import type { WeChatKeys } from './useWeChatKeys';
 
-export function useWeChatCapture({ account, wizard, wizardStep, onWizardStep, showKeyGuide, noKeysYet, refreshKeys, refreshSavedKeySource, recordCaptureResult, setNotice, setError }: Pick<ConnectionFeedback, 'setNotice' | 'setError'> & Pick<WeChatKeys, 'showKeyGuide' | 'noKeysYet' | 'refreshKeys' | 'refreshSavedKeySource' | 'recordCaptureResult'> & {
-  account: Account | null; wizard: boolean; wizardStep: string;
+export function useWeChatCapture({ account, wizard, wizardStep, recoveringKeys, onWizardStep, showKeyGuide, noKeysYet, refreshKeys, refreshSavedKeySource, recordCaptureResult, setNotice, setError }: Pick<ConnectionFeedback, 'setNotice' | 'setError'> & Pick<WeChatKeys, 'showKeyGuide' | 'noKeysYet' | 'refreshKeys' | 'refreshSavedKeySource' | 'recordCaptureResult'> & {
+  account: Account | null; wizard: boolean; wizardStep: string; recoveringKeys?: boolean;
   onWizardStep?: (step: string) => void;
 }) {
   /** In-app capture: environment/state from the backend plus the step currently running. */
@@ -183,7 +183,8 @@ export function useWeChatCapture({ account, wizard, wizardStep, onWizardStep, sh
     try {
       const result = await invoke<CaptureImport>('wechat_capture_start', {
         accountId: account.id,
-        timeoutSecs: 300
+        timeoutSecs: 300,
+        ...(recoveringKeys && { targetOnly: true }),
       });
       setCaptureOutcome(result);
       recordCaptureResult({
@@ -233,8 +234,8 @@ export function useWeChatCapture({ account, wizard, wizardStep, onWizardStep, sh
     setError(''); setRecoveryError(''); setRecoveryNotice(''); setLaunchDiagnosis(null); setCaptureBusy('accept-official');
     try {
       await invoke('wechat_capture_accept_official');
-      setNotice('已保留当前官方微信和原备份，可以重新连接。');
-      setRecoveryNotice('已校验并保留当前官方微信，原备份已保留。请完成系统检查后继续连接。');
+      setNotice(t("已保留当前官方微信和原备份，可以重新连接。"));
+      setRecoveryNotice(t("已校验并保留当前官方微信，原备份已保留。请完成系统检查后继续连接。"));
       await refreshCaptureStatus();
       onWizardStep?.('wizard-permission');
     } catch(e) { setError(captureErrorText(e)); setRecoveryError(captureErrorText(e)); }

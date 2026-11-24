@@ -1,3 +1,4 @@
+import * as nativeErrors from '../src/shared/i18n/errorText.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -112,6 +113,7 @@ const mockedRequire = id => {
   };
   if (id.endsWith('.svg') || id.endsWith('.png')) return id;
   if (id.endsWith('.css')) return {};
+  if (id.endsWith('/i18n/errorText')) return nativeErrors;
   throw Error(`unexpected import ${id}`);
 };
 const serviceUrlSource = fs.readFileSync(new URL('../src/shared/api/serviceUrl.ts', import.meta.url), 'utf8');
@@ -250,6 +252,10 @@ assert.ok(start >= 0 && end > start && switchStart >= 0 && switchEnd > switchSta
 const wxBody = wxSource.slice(start, end) + wxSource.slice(switchStart, switchEnd) + '\nreturn { switchAccount };';
 const wxCode = ts.transpileModule(wxBody, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
 const wxContext = { settingsRef: { current: { ...defaultSettings(), active_account_id: 'old', user_settings_revision: 4 } }, accountSwitchLock: { current: false }, accountId: 'old', avatarAsked: { current: new Set() } };
+wxContext.sessionRequest = { current: 42 };
+wxContext.activeRef = { current: 'open-chat' };
+wxContext.resetMessageRefresh = () => { wxContext.messageRefreshReset = true; };
+wxContext.setBusy = update => { wxContext.busy = update(wxContext.busy); };
 for (const name of ['setAccountSwitching','setError','setAccountId','setSessions','setSessionsLoaded','setActive','setMessages','setSelectedMessages','setSelectionAnchor','setWorkGroups','setWorkInsights','setAvatars']) wxContext[name] = value => { wxContext[name + 'Value'] = value; };
 wxContext.resetAccountResult = () => { wxContext.connectionResultsReset = true; };
 wxContext.loadSessions = async () => [];
@@ -267,6 +273,7 @@ assert.equal(wxContext.sent.user_settings_revision, 4);
 wxSave.reject('SETTINGS_CONFLICT: switched'); await switching;
 assert.equal(wxContext.setAccountIdValue, undefined);
 assert.equal(wxContext.connectionResultsReset, undefined);
+assert.equal(wxContext.sessionRequest.current, 42);
 assert.match(wxContext.setErrorValue, /账号未切换/);
 assert.equal(wxContext.settingsRef.current, null);
 // Reopening the page establishes a new context before retrying.
@@ -276,6 +283,9 @@ switching = wx.switchAccount('new');
 wxSave.resolve({ ...wxContext.sent, user_settings_revision: 5 }); await switching;
 assert.equal(wxContext.setAccountIdValue, 'new');
 assert.equal(wxContext.connectionResultsReset, true);
+assert.equal(wxContext.sessionRequest.current, 43);
+assert.equal(wxContext.activeRef.current, null);
+assert.equal(wxContext.messageRefreshReset, true);
 assert.equal(wxContext.settingsRef.current.user_settings_revision, 5);
 // Waitlist writes are ordered and distinguish unsaved drafts after a conflict.
 const { Connectors } = loadModule('../src/features/connectors/Connectors.tsx');
@@ -741,7 +751,7 @@ invoke = async command => {
 const completeProps = { edit: false, onFinish() {}, onBack() {} };
 render(complete, () => WeChatWizardComplete(completeProps)); await flush();
 tree = render(complete, () => WeChatWizardComplete(completeProps));
-assert.ok(elements(tree).some(node => node.type === 'li' && Array.isArray(node.props.children) && node.props.children.join('') === '已选择 2 个会话导入'));
+assert.ok(elements(tree).some(node => node.type === 'li' && node.props.children === '已选择 2 个会话导入'));
 await find(tree, node => node.type === WizardActionButton && node.props.children === '打开微信').props.onAction();
 assert.equal(officialOpens, 0, 'a pending recovery cannot launch a temporary app from completion');
 officialState = { ...officialState, pending: false, needs_cleanup: false, wechat_official: false };

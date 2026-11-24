@@ -130,6 +130,27 @@ assert.deepEqual([...timers.values()].map(x => x.interval), [1500]);
 captured.resolve({ matched: 2, already: 0, accounts: [], message: 'captured' }); await capturing; connection = render();
 assert.equal(connection.keys.keyImport.matched, 2); assert.equal(timers.size, 0);
 
+// All recovery entry points request the same account-restricted native import.
+options.recoveringKeys = true; connection = render();
+const recoveryStart = calls.length;
+const imported = { matched: 1, already: 0, unmatched: [], accounts: [{ account: 'A', matched: 1, already: 0 }], message: 'recovered' };
+for (const command of ['wechat_import_keys', 'wechat_import_saved_key', 'wechat_windows_key_scan', 'wechat_capture_start']) {
+  handlers[command] = async () => imported;
+}
+await connection.keys.importKeys(undefined, 'synthetic-key');
+await connection.keys.importSavedKey();
+await connection.keys.scanWindowsKeys();
+await connection.capture.startCapture();
+assert.deepEqual(calls.slice(recoveryStart)
+  .filter(({ command }) => ['wechat_import_keys', 'wechat_import_saved_key', 'wechat_windows_key_scan', 'wechat_capture_start'].includes(command))
+  .map(({ command, args }) => [command, args.accountId, args.targetOnly]), [
+    ['wechat_import_keys', 'A', true],
+    ['wechat_import_saved_key', 'A', true],
+    ['wechat_windows_key_scan', 'A', true],
+    ['wechat_capture_start', 'A', true],
+  ]);
+options.recoveringKeys = false; connection = render();
+
 // Structured failures preserve prerequisite guidance and a usable retry state.
 handlers.wechat_capture_prepare = async () => { throw { code: 'in_place_capture_not_prepared', message: 'prepare again' }; };
 assert.equal((await connection.capture.prepareCapture()).target, 'prepare'); connection = render();

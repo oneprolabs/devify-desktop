@@ -1,4 +1,5 @@
 import { t, tf, ctf } from '../../../shared/i18n/locale';
+import { errorText } from '../../../shared/i18n/errorText';
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -126,7 +127,7 @@ export function HistoryPage() {
         </div>
       )}
 
-      {error && <div className="error">{t(error)}</div>}
+      {error && <div className="error">{errorText(error)}</div>}
 
       {loading ? (
         <p className="settings-empty">{t("正在读取本机总结记录…")}</p>

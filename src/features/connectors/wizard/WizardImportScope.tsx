@@ -18,6 +18,7 @@ export function WizardImportScope(p: Props) {
   const groups = p.catalog.filter(item => item.is_group);
   const privateCount = direct.filter(item => p.selected.has(item.username)).length;
   const groupCount = groups.filter(item => p.selected.has(item.username)).length;
+  const source = p.sourceName ?? t("微信");
   const privateOn = direct.length > 0 && privateCount === direct.length;
   const groupOn = groups.length > 0 && groupCount === groups.length;
   const openCustom = () => { setCustom(true); p.onClearIssue(); };
@@ -31,10 +32,10 @@ export function WizardImportScope(p: Props) {
       </div>
     </div>
     {p.selectionIssue && <div className="wizard-scope-warning" role="alert">
-      <div><strong>{t("本次选择未生效")}</strong><p>{t("最多可导入 1000 个会话，本次选择了")}{p.selectionIssue.attempted} {t("个。已保留原来的")}{privateCount + groupCount} {t("个会话。")}</p></div>
+      <div><strong>{t("本次选择未生效")}</strong><p>{tf("最多可导入 1000 个会话，本次选择了 {0} 个。已保留原来的 {1} 个会话。", p.selectionIssue.attempted, privateCount + groupCount)}</p></div>
       <button type="button" disabled={p.disabled || p.loading} onClick={openCustom}>{t("自定义选择")}</button>
     </div>}
-      <div className="wizard-scope-row"><span>{t("预计导入")}</span><span className="wizard-scope-value" role="status">{p.loading ? t("正在读取会话…") : `${privateCount + groupCount} 个会话（私聊 ${privateCount} · 群聊 ${groupCount}）`}</span></div>
+      <div className="wizard-scope-row"><span>{t("预计导入")}</span><span className="wizard-scope-value" role="status">{p.loading ? t("正在读取会话…") : tf("{0} 个会话（私聊 {1} · 群聊 {2}）", privateCount + groupCount, privateCount, groupCount)}</span></div>
       <div className="wizard-scope-row">
         <div className="wizard-scope-label"><span>{t("新增的私聊和群聊")}</span><small>{t("新会话需在「导入管理」中手动选择。")}</small></div>
         <div className="wizard-scope-pills" role="group" aria-label={t("新增会话的导入方式")}>
@@ -44,7 +45,7 @@ export function WizardImportScope(p: Props) {
         </div>
       </div>
       <div className="wizard-scope-row">
-        <div className="wizard-scope-label"><span>{t("会话读取状态")}</span><small>{p.loading ? `正在读取当前${p.sourceName ?? "微信"}账号的会话。` : p.catalog.length ? `已读取 ${p.catalog.length} 个会话；保存后按所选范围导入。` : `未读取到会话，请返回连接${p.sourceName ?? "微信"}。`}</small></div>
+        <div className="wizard-scope-label"><span>{t("会话读取状态")}</span><small>{p.loading ? tf("正在读取当前 {0} 账号的会话。", source) : p.catalog.length ? tf("已读取 {0} 个会话，保存后按所选范围导入。", p.catalog.length) : tf("未读取到会话，请返回连接 {0}。", source)}</small></div>
         <span className="wizard-scope-value wizard-read-status" data-completed={!p.loading && p.catalog.length > 0}>{!p.loading && p.catalog.length > 0 && <span className="wizard-status-check" aria-hidden="true">{Icons.check}</span>}{!p.loading && p.catalog.length > 0 ? t("已完成") : t("未完成")}</span>
       </div>
     {custom && <div className="wizard-scope-custom">{p.children}</div>}

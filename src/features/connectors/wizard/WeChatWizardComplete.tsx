@@ -1,4 +1,5 @@
 import { t, tf } from '../../../shared/i18n/locale';
+import { errorText } from '../../../shared/i18n/errorText';
 import { useEffect, useRef, useState } from 'react';
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import { mergeSettings, type AppSettings } from '../../settings/settingsModel';
@@ -35,16 +36,19 @@ export function WeChatWizardComplete({ edit, onFinish, onBack }: { edit: boolean
   };
   const count = settings?.chat.allowed_usernames[settings.active_account_id]?.length ?? 0;
   const plan = settings?.backup;
-  const frequency = !settings?.sync.enabled ? '自动备份已关闭，可手动备份'
-    : plan?.mode === 'manual' ? '仅手动备份' : plan?.mode === 'times' ? `每天 ${plan.times.join('、')}`
-      : `每 ${settings.chat.sync_interval_seconds % 3600 === 0 ? `${settings.chat.sync_interval_seconds / 3600} 小时` : `${Math.round(settings.chat.sync_interval_seconds / 60)} 分钟`}`;
+  const seconds = settings?.chat.sync_interval_seconds ?? 0;
+  const frequency = !settings?.sync.enabled ? t("自动备份已关闭，可手动备份")
+    : plan?.mode === 'manual' ? t("仅手动备份")
+    : plan?.mode === 'times' ? tf("每天 {0}", plan.times.join(', '))
+    : seconds % 3600 === 0 ? tf("每 {0} 小时", seconds / 3600)
+    : tf("每 {0} 分钟", Math.round(seconds / 60));
   return <section className="wizard-complete wizard-finish-v7">
     <header><h2>{edit ? t("配置已更新") : t("微信已配置完成")}</h2><p>{edit ? t("设置已保存并生效。") : t("之后可以随时回来重新配置。")}</p></header>
-    {settings && <ul className="wizard-finish-facts"><li>{t("已选择")} {count} {t("个会话导入")}</li><li>{t("备份周期：")}{frequency}</li><li>{t("智能分析是统一设置，可在「智能分析」中调整")}</li></ul>}
+    {settings && <ul className="wizard-finish-facts"><li>{tf("已选择 {0} 个会话导入", count)}</li><li>{tf("备份周期：{0}", frequency)}</li><li>{t("智能分析是统一设置，可在「智能分析」中调整")}</li></ul>}
     {!settings && !error && <p role="status">{t("正在确认已保存的设置…")}</p>}
-    {error && <div role="alert"><p>{error}</p><WizardActionButton className="wxv-btn" onAction={load}>{t("重新检查")}</WizardActionButton></div>}
+    {error && <div role="alert"><p>{errorText(error)}</p><WizardActionButton className="wxv-btn" onAction={load}>{t("重新检查")}</WizardActionButton></div>}
     {platform === 'macos' && <div className="wizard-open-wechat"><div><strong>{t("继续使用微信")}</strong><p>{openRequested ? t("已请求打开官方微信，请在微信中确认登录。") : t("连接设置完成后，重新打开官方微信即可继续使用。")}</p></div><WizardActionButton className="wxv-btn" busyLabel={t("正在检查并打开微信…")} onAction={openOfficial}>{openRequested || openingError ? t("重新打开微信") : t("打开微信")}</WizardActionButton></div>}
-    {openingError && <div role="alert"><p>{openingError}</p><button type="button" className="wizard-history-toggle" onClick={onBack}>{t("返回连接步骤")}</button></div>}
+    {openingError && <div role="alert"><p>{errorText(openingError)}</p><button type="button" className="wizard-history-toggle" onClick={onBack}>{t("返回连接步骤")}</button></div>}
     <footer className="wizard-finish-actions"><button type="button" className="wizard-next" disabled={!settings || Boolean(error)} onClick={onFinish}>{edit ? t("保存") : t("完成")}</button></footer>
   </section>;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import { mergeSettings, requireSettingsRevision, settingsSaveError, type AppSettings } from '../settings/settingsModel';
 
@@ -25,6 +26,6 @@ export function AgentSummaryInstructions({ settings, onSaved }: { settings: AppS
       } catch (reason) { if (mounted.current) setError(settingsSaveError(reason)); }
     }}>{t('保存补充要求')}</WizardActionButton>
     </div>
-    {message && <p role="status">{message}</p>}{error && <p role="alert" className="error">{error}</p>}
+    {message && <p role="status">{message}</p>}{error && <p role="alert" className="error">{errorText(error)}</p>}
   </div>;
 }

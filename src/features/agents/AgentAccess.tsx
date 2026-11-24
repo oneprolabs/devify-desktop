@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t, tf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import { ACCESS_AGENTS, type AccessStatus } from './agentCatalog';
 import { AgentUsage } from './AgentUsage';
@@ -38,14 +39,14 @@ export function AgentAccess({ status, disabled, error, onConfigure, onRefresh }:
     try {
       await copyInstallationPrompt();
       if (active.current) setCopyMessage(t('已复制安装提示词。粘贴到你的智能体，按引导完成安装。'));
-    } catch (reason) { if (active.current) setCopyFailure(tf('未能复制安装提示词，请重试：{0}', String(reason))); }
+    } catch (reason) { if (active.current) setCopyFailure(tf('未能复制安装提示词，请重试：{0}', errorText(reason))); }
     finally { lock.current = false; if (active.current) setCopying(false); }
   };
   const unavailable = disabled || Boolean(installing) || copying || !status?.running || !status?.wxq || Boolean(error);
   return <section className="integration-skills" aria-labelledby="integration-skills-title">
     <div className="integration-section-heading"><h3 id="integration-skills-title">{t('使用智能体访问聊天记录')}</h3></div>
     <p>{t('为常用智能体安装 Skills，从它们的会话中读取聊天记录并继续处理。')}</p>
-    {error && <p className="integration-error" role="alert">{error} <button className="integration-text" type="button" disabled={disabled} onClick={() => void onRefresh()}>{t('重试')}</button></p>}
+    {error && <p className="integration-error" role="alert">{errorText(error)} <button className="integration-text" type="button" disabled={disabled} onClick={() => void onRefresh()}>{t('重试')}</button></p>}
     {status && !status.running && <p className="integration-error" role="alert">{t('本机接入暂不可用，请确认已登录并重新打开智能体集成。')}</p>}
     {status && !status.wxq && <p className="integration-error" role="alert">{t('缺少本机读取工具，请重新安装完整版 AIMyChats。')}</p>}
     <div className="integration-directory">{ACCESS_AGENTS.map(tool => {
@@ -64,7 +65,7 @@ export function AgentAccess({ status, disabled, error, onConfigure, onRefresh }:
             <button type="button" className="integration-text" onClick={() => onConfigure(tool.id)} disabled={disabled || Boolean(installing) || copying}>{t('修改安装目录')}</button></div></details></div>
       </article>;
     })}</div>
-    {message && <p className="integration-success" role="status">{message}</p>}{failure && <p className="integration-error" role="alert">{failure}</p>}
+    {message && <p className="integration-success" role="status">{message}</p>}{failure && <p className="integration-error" role="alert">{errorText(failure)}</p>}
     <div className="integration-generic">
       <p>{t('使用其他智能体？复制通用安装提示词，交给它自行识别目录并安装。')}</p>
       <div className="integration-actions"><button type="button" className="secondary" disabled={unavailable} aria-busy={copying} onClick={() => void copy()}>{t(copying ? '正在准备…' : '复制通用安装提示词')}</button><span>{t('粘贴到你的智能体，按引导完成安装。')}</span></div>

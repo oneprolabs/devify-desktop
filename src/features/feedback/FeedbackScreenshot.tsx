@@ -1,4 +1,5 @@
 import { t } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { imageSource } from './feedbackTypes';
 
@@ -66,7 +67,7 @@ export function FeedbackScreenshot({ data, onSave, onCancel }: { data: string; o
   return <section className="feedback-editor" aria-label={t("编辑截图")}>
     <div className="feedback-editor-toolbar"><strong>{t("裁剪与遮盖")}</strong><span>{t("拖动框选区域")}</span><button type="button" disabled={!rect || !ready} onClick={() => apply(false)}>{t("实心遮盖")}</button><button type="button" disabled={!rect || !ready} onClick={() => apply(true)}>{t("裁剪选区")}</button><button type="button" disabled={working === data} onClick={() => { setWorking(data); setStart(null); setEnd(null); }}>{t("重置")}</button></div>
     <div className="feedback-canvas-wrap"><canvas ref={canvas} aria-label={t("拖动选择截图区域")} onPointerDown={event => { if (!ready) return; event.currentTarget.setPointerCapture(event.pointerId); setStart(point(event)); setEnd(point(event)); }} onPointerMove={event => { if (event.buttons === 1 && start) setEnd(point(event)); }} onPointerUp={event => { if (start) setEnd(point(event)); }}/>{rect && <div className="feedback-selection" style={{ left: `${rect.left * 100}%`, top: `${rect.top * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` }}/>}</div>
-    {error && <p role="alert">{t(error)}</p>}
+    {error && <p role="alert">{errorText(error)}</p>}
     <div className="feedback-actions"><button type="button" onClick={onCancel}>{t("取消编辑")}</button><button type="button" className="primary" disabled={!ready} onClick={() => onSave(working)}>{t("保存图片")}</button></div>
   </section>;
 }

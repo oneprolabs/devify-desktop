@@ -15,6 +15,7 @@ type ConnectionOptions = ConnectionFeedback & {
   wizard: boolean;
   wizardStep: string;
   wizardManual: boolean;
+  recoveringKeys?: boolean;
   onWizardStep?: (step: string) => void;
   loadSessions: (id: string) => Promise<unknown>;
   resetReader: () => void;
@@ -28,6 +29,10 @@ export function useWeChatConnection(options: ConnectionOptions) {
   const [env, setEnv] = useState<WechatEnv | null>(null);
   const [forceUnlock, setForceUnlock] = useState(mode === 'settings');
   const keys = useWeChatKeys(options);
+  // Recovery requires a new validation for this account; a key listed in the
+  // store or an existing decrypted copy only proves that it worked before.
+  const verifiedImport = keys.keyImport?.accounts.some(match => match.account === accountId && match.matched + match.already > 0);
+  const reuseSavedConnection = !options.recoveringKeys || Boolean(verifiedImport);
   const capture = useWeChatCapture({ ...options, ...keys });
   const decryption = useWeChatDecryption({
     ...options,
@@ -50,7 +55,7 @@ export function useWeChatConnection(options: ConnectionOptions) {
 
   const checkStep = (action: WeChatAction, context: StepContext, accountExists: () => Promise<boolean>) => checkWeChatStep(action, {
     ...context, accountId, transactionId: capture.captureStatus?.transaction_id ?? null,
-    manual: wizardManual, reuseConnection: keys.keyedCount > 0 || Boolean(keys.savedKeySource?.exists),
+    manual: wizardManual, reuseConnection: reuseSavedConnection && (keys.keyedCount > 0 || Boolean(keys.savedKeySource?.exists)),
     capture: async () => { const status = await capture.refreshCaptureStatus(); if(!status) throw new Error('连接状态检查未完成'); return status; },
     accountExists,
     keys: () => keys.checkKeys(accountId),
@@ -63,7 +68,7 @@ export function useWeChatConnection(options: ConnectionOptions) {
   };
 
   return {
-    account, env, forceUnlock, setForceUnlock, keys, capture, decryption,
+    account, env, forceUnlock, setForceUnlock, keys, capture, decryption, reuseSavedConnection,
     initialize, resetAccountResult, checkStep, checkConnectionResult
   };
 }

@@ -38,6 +38,10 @@ const state = {
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
  chatPageError:'', chatPageAccount:'', chatBadgeDelay:0,
  chatMessageOverrides:{} as Record<string,any[]>,
+ chatMessagesError:'', chatOlderPaused:false, chatOlderResolvers:[] as Array<()=>void>,
+ chatLatestPaused:false, chatLatestResolvers:[] as Array<()=>void>,
+ wechatSyncOutcomes:null as Array<{rel:string;status:string;error:string|null}> | null,
+ wechatSyncError:'', wechatSyncPaused:false, wechatSyncResolvers:[] as Array<()=>void>,
  summaries:[] as any[],summaryLocal:[] as any[],summaryError:'',
  voiceStatus:{settings:{engine:'',model:'',language:'zh'},engines:[{id:'whisper',label:'Whisper',available:true}],selected:'whisper'},voiceError:'',voiceSaveError:'',
  agentApps:query.has('no-agents')?[]:['workbuddy'], agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
@@ -61,7 +65,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
  transformCallback(fn:Function){const id=++callbackId;callbacks.set(id,fn);return id;},
  unregisterCallback(id:number){callbacks.delete(id);},convertFileSrc:(path:string)=>path,
  invoke:async(command:string,args:any={})=>{
-  const loggedArgs = command === 'wechat_import_keys' ? { accountId: args.accountId } : args;
+  const loggedArgs = command === 'wechat_import_keys' ? { accountId: args.accountId, targetOnly: args.targetOnly } : args;
   state.calls.push({command,args:structuredClone(loggedArgs)});
   const clone=<T,>(x:T):T=>structuredClone(x);
   switch(command){
@@ -262,11 +266,23 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'wechat_capture_preflight':Object.assign(state.capture,{stage:'preflight_passed'});return {transaction_id:'e2e-transaction',pid:1234,pbkdf_locations:1};
    case 'wechat_capture_start':state.keys=1;Object.assign(state.capture,{pending:false,needs_cleanup:false,stage:'idle',wechat_official:true,wechat_ad_hoc:false});return {matched:1,already:0,accounts:[{account:wx,matched:1,total:1}],message:'E2E connection complete',restored:true,validated_roles:['message']};
    case 'wechat_capture_restore':Object.assign(state.capture,{pending:false,needs_cleanup:false,stage:'idle',wechat_official:true,wechat_ad_hoc:false});return {restored:true,verified:true};
-   case 'wechat_decrypt':case 'wechat_sync':return ['session/session.db','message/message_0.db'].map(rel=>({account:wx,rel,status:'ok',pages:1,error:null}));
+   case 'wechat_sync':{
+    if(state.wechatSyncPaused)await new Promise<void>(resolve=>state.wechatSyncResolvers.push(resolve));
+    if(state.wechatSyncError)throw state.wechatSyncError;
+    if(state.wechatSyncOutcomes)return clone(state.wechatSyncOutcomes);
+    return ['session/session.db','message/message_0.db'].map(rel=>({account:args.accountId,rel,status:'ok',pages:1,error:null}));
+   }
+   case 'wechat_decrypt':return ['session/session.db','message/message_0.db'].map(rel=>({account:wx,rel,status:'ok',pages:1,error:null}));
    case 'wechat_messages':{
-    if(state.chatMessageOverrides[args.accountId]) return clone(state.chatMessageOverrides[args.accountId])
-      .filter((message:any)=>!args.before||message.time<args.before||(message.time===args.before&&message.local_id<args.beforeId))
-      .slice(0,args.limit??50);
+    if(state.chatMessagesError)throw state.chatMessagesError;
+    if(state.chatMessageOverrides[args.accountId]) {
+     const rows=clone(state.chatMessageOverrides[args.accountId])
+       .filter((message:any)=>!args.before||message.time<args.before||(message.time===args.before&&message.local_id<args.beforeId))
+       .slice(0,args.limit??50);
+     if(args.before&&state.chatOlderPaused)await new Promise<void>(resolve=>state.chatOlderResolvers.push(resolve));
+     if(!args.before&&state.chatLatestPaused)await new Promise<void>(resolve=>state.chatLatestResolvers.push(resolve));
+     return rows;
+    }
     if(localSnapshot) return (localSnapshot.messages[`${args.accountId}:${args.username}`]??[])
       .filter((message:any)=>!args.before||message.time<args.before||(message.time===args.before&&message.local_id<args.beforeId))
       .slice(0,args.limit??50);
