@@ -123,6 +123,27 @@ pub(crate) fn agent_access_prompt(
     })
 }
 
+/// Prepare an app-scoped access kit; the receiver chooses its own Skills directory.
+#[tauri::command]
+pub(crate) async fn agent_access_installation_prompt(
+    app: AppHandle,
+    state: State<'_, McpState>,
+) -> Result<String, String> {
+    let data = app_data(&app);
+    let value = settings::load(&data)?;
+    require_internal_agent(&data, &value.devify.base_url)?;
+    let service = access_state(&state)?;
+    if !service.running {
+        return Err("本机接入暂不可用，请确认已登录并重新打开智能体集成。".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let cli = access::resolve_wxq(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
+        let endpoint = access::client_base(&service.address);
+        let kit = access::install::prepare_prompt_kit(&data, &cli, &endpoint)?;
+        Ok(access::prompt::build(&kit, &data, &endpoint))
+    }).await.map_err(|error| format!("准备安装提示词失败：{error}"))?
+}
+
 /// Rebuild `wxq` from the source checkout so the download endpoint has something to serve.
 /// Packaged installs without source get a clear error instead of a silent failure.
 #[tauri::command]

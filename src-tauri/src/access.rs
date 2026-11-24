@@ -7,6 +7,7 @@
 
 use crate::agent;
 pub mod install;
+pub mod prompt;
 mod discovery;
 use serde::Serialize;
 use std::env;
