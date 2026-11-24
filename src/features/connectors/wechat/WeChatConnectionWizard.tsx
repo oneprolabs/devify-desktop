@@ -14,8 +14,9 @@ export function WeChatConnectionWizard({ connection, selection, wizard, ready, e
   const { captureStatus, captureStatusChecking, captureStatusError, captureBusy, launchDiagnosis, recoveryError, recoveryNotice, refreshCaptureStatus, prepareCapture, openCaptureWeChat, confirmCaptureLaunch, runCapturePreflight, startCapture, restoreWeChat, acceptOfficialWeChat, openPrivacySecuritySettings } = capture;
   return <WeChatSetupChecklist
     accountId={accountId} accounts={scan?.accounts ?? []} scanLoaded={scan !== null}
-    busy={busy} switching={accountSwitching} keyedCount={keyedCount} keyStatusLoaded={keyStatus !== null}
-    savedKey={savedKeySource} freshKey={freshSource} decrypted={ready || decryption.decrypted}
+    busy={busy} switching={accountSwitching} keyedCount={connection.reuseSavedConnection ? keyedCount : 0} keyStatusLoaded={keyStatus !== null}
+    savedKey={connection.reuseSavedConnection ? savedKeySource : null} freshKey={freshSource}
+    decrypted={(!wizard.recoveringKeys && ready) || decryption.decrypted} recoveringKeys={wizard.recoveringKeys}
     capture={captureStatus} captureChecking={captureStatusChecking} captureError={captureStatusError} captureBusy={captureBusy} windowsBusy={windowsScanBusy}
     install={wizardInstall} onInstallRecheck={() => onWizardInstallRecheck?.()}
     launchDiagnosis={launchDiagnosis} error={error} recoveryError={recoveryError} recoveryNotice={recoveryNotice} manual={wizardManual} permissionPhase={wizardStep === 'wizard-permission'} finishing={wizardFinishing}

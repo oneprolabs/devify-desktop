@@ -28,6 +28,59 @@ fn summary_names_the_selected_account() {
 }
 
 #[test]
+fn recovery_import_does_not_store_keys_for_another_account() {
+    let temp = tempfile::tempdir().unwrap();
+    let target_key = [1; crypto::KEY_LEN];
+    let other_key = [2; crypto::KEY_LEN];
+    let rel = "message/message_0.db";
+    let account = |id: &str, key: &[u8], salt: &[u8]| {
+        let path = temp.path().join(id);
+        let page = crypto::authenticated_fixture_page(key, salt, 1);
+        fs::write(&path, page).unwrap();
+        discover::Account {
+            id: id.into(),
+            dir: temp.path().to_string_lossy().into(),
+            db_count: 1,
+            encrypted_count: 1,
+            total_bytes: page.len() as u64,
+            modified_at: None,
+            dbs: vec![discover::DbFile {
+                rel: rel.into(),
+                path: path.to_string_lossy().into(),
+                size: page.len() as u64,
+                encrypted: true,
+                salt: Some(hex::encode(salt)),
+                has_wal: false,
+            }],
+        }
+    };
+    let scan = ScanResult {
+        roots: vec![],
+        skipped: vec![],
+        accounts: vec![
+            account("target", &target_key, &[3; crypto::SALT_LEN]),
+            account("other", &other_key, &[4; crypto::SALT_LEN]),
+        ],
+    };
+    let other = keys::parse_candidates(&hex::encode(other_key)).unwrap();
+    let target = keys::parse_candidates(&hex::encode(target_key)).unwrap();
+    let mut store = KeyStore::default();
+
+    let mistaken = apply_candidates(&mut store, &scan, &other, Some("target"), true);
+    assert_eq!(mistaken.matched, 0);
+    assert!(keys::lookup(&store, "other", rel).is_none());
+
+    let recovered = apply_candidates(&mut store, &scan, &target, Some("target"), true);
+    assert_eq!(recovered.matched, 1);
+    assert!(keys::lookup(&store, "target", rel).is_some());
+    assert!(keys::lookup(&store, "other", rel).is_none());
+
+    let legacy = apply_candidates(&mut store, &scan, &other, Some("target"), false);
+    assert_eq!(legacy.matched, 1);
+    assert!(keys::lookup(&store, "other", rel).is_some());
+}
+
+#[test]
 fn summary_explains_an_account_mismatch() {
     let message = import_summary(
         Some("acct-a"),
@@ -132,14 +185,14 @@ fn real_extracted_passphrase_imports_and_is_idempotent() {
     let selected = scan.accounts[0].id.clone();
     let mut store = KeyStore::default();
 
-    let first = apply_candidates(&mut store, &scan, &candidates, Some(&selected));
+    let first = apply_candidates(&mut store, &scan, &candidates, Some(&selected), false);
     assert!(
         first.matched > 0,
         "passphrase must unlock at least one database"
     );
     assert_eq!(first.already, 0);
 
-    let second = apply_candidates(&mut store, &scan, &candidates, Some(&selected));
+    let second = apply_candidates(&mut store, &scan, &candidates, Some(&selected), false);
     assert_eq!(second.matched, 0, "second import must not rewrite keys");
     assert!(
         second.already > 0,
