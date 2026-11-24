@@ -501,6 +501,9 @@ export async function runEnglishWechatWizardE2E(task, base = 'http://127.0.0.1:1
   await ready('Next');
   await click('Next');
   await ready('Next: connect WeChat');
+  const systemCheck = await page.evaluate(() => document.querySelector('.wx-setup').innerText);
+  assert.match(systemCheck, /Compatibility not yet verified/);
+  assert.doesNotMatch(systemCheck, /\p{Script=Han}/u, 'system checks use English UI copy');
   await page.evaluate(() => {
     window.__wizardScrolls = [];
     const original = HTMLElement.prototype.scrollIntoView;
