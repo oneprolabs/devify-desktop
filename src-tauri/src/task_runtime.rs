@@ -9,6 +9,48 @@ pub(super) enum RetryRemoteAction {
     Reconcile,
 }
 
+/// A frozen selection can become unavailable before any create request was sent.
+/// Only retire a provably local automatic plan; sent/unknown and manual jobs must
+/// retain their original identity and recovery rules. Cursors advance on server
+/// completion only, so a fresh bounded scan cannot skip the abandoned selection.
+pub(super) fn retire_stale_plan(
+    value: &mut settings::AppSettings,
+    expected: &settings::UploadJob,
+    owner: &settings::UploadOwner,
+) -> bool {
+    if !config_runtime::backup_enabled(value) || !config_runtime::ready(value, owner) {
+        return false;
+    }
+    let Some(job) = value.upload_queue.iter_mut().find(|job| job.id == expected.id) else {
+        return false;
+    };
+    if job.status != "failed"
+        || job.message != "部分待上传消息已变化，请重新读取。"
+        || job.owner.as_ref() != Some(owner)
+        || job.account_id != owner.account_id
+        || job.space_id != owner.space_id
+        || job.scope != expected.scope
+        || job.continuation_manual != Some(false)
+        || job.initial_chunks.is_empty()
+        || job.batch_id.is_some()
+        || job.create_started != Some(false)
+        || job.create_key.is_some()
+        || job.package_digest.is_some()
+    {
+        return false;
+    }
+    job.status = "cancelled".into();
+    job.message = "本机消息已变化，旧任务未发送；将重新读取后自动备份。".into();
+    job.updated_at = Utc::now().to_rfc3339();
+    let source = value.runtime.sources.get_mut(&owner.account_id).unwrap();
+    source.scan_index = 0;
+    source.scan_remaining = value.chat.allowed_usernames.get(&owner.account_id).map_or(0, Vec::len);
+    source.retry_after = None;
+    source.failures = 0;
+    source.last_error = None;
+    true
+}
+
 pub(super) fn retry_remote_action(status: &str) -> Result<RetryRemoteAction, String> {
     match status {
         "created" | "uploading" => Ok(RetryRemoteAction::ResumeArchive),
@@ -130,6 +172,9 @@ pub(super) async fn task_runtime_retry(app: AppHandle, job_id: String) -> Result
         validate_owner_state(s, &owner, &token)?;
         if desktop_credentials::load(&data, &owner.base_url)?.access != token {
             return Err("登录状态已改变。".into());
+        }
+        if retire_stale_plan(s, job, &owner) {
+            return Ok(());
         }
         let live = s
             .upload_queue
@@ -862,6 +907,7 @@ async fn run_automatic_job(
         )
         .await
     };
+    let mut retired = false;
     settings::update(&data, |s| {
         validate_owner_state(s, owner, token)?;
         if desktop_credentials::load(&data, &owner.base_url)?.access != token {
@@ -872,8 +918,10 @@ async fn run_automatic_job(
             .iter_mut()
             .find(|j| j.id == job.id)
             .ok_or("任务已移除。")?;
-        apply_manual_upload_outcome(live, job, &result, "已提交，等待服务端处理")
+        apply_manual_upload_outcome(live, job, &result, "已提交，等待服务端处理")?;
+        retired = retire_stale_plan(s, job, owner);
+        Ok(())
     })?;
     emit_task_runtime(app);
-    result.map(|_| ())
+    if retired { Ok(()) } else { result.map(|_| ()) }
 }

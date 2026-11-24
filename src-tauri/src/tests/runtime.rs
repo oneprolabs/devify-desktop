@@ -106,6 +106,85 @@ fn identity(data: &Path, user: i64) -> settings::UploadOwner {
     .unwrap();
     owner
 }
+
+#[test]
+fn stale_unsent_automatic_selection_is_replanned_without_advancing_upload_progress() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let owner = identity(data, 1);
+    let cache = decrypt::cache_dir(data, &owner.account_id);
+    fs::create_dir_all(cache.join("session")).unwrap();
+    fs::create_dir_all(cache.join("message")).unwrap();
+    let sessions = rusqlite::Connection::open(cache.join("session/session.db")).unwrap();
+    sessions.execute_batch("CREATE TABLE Session(username TEXT,display_name TEXT,last_timestamp INTEGER); INSERT INTO Session VALUES('chat','Chat',300);").unwrap();
+    let messages = rusqlite::Connection::open(cache.join("message/message_0.db")).unwrap();
+    let table = format!("Msg_{}", query::md5_hex("chat"));
+    messages.execute_batch(&format!("CREATE TABLE {table}(local_id INTEGER,server_id INTEGER,create_time INTEGER,message_content TEXT,local_type INTEGER); INSERT INTO {table} VALUES(1,1,100,'old',1),(2,2,200,'retained',1);")).unwrap();
+    let mut value = settings::load(data).unwrap();
+    value.chat.allowed_usernames.insert(owner.account_id.clone(), vec!["chat".into()]);
+    value.chat.initial_ranges.insert(owner.account_id.clone(), HashMap::from([
+        ("chat".into(), settings::InitialRange { since: Some(1), until: None }),
+    ]));
+    config_runtime::set_backup_enabled(&mut value, true);
+    value.runtime.sources.insert(owner.account_id.clone(), config_runtime::Source {
+        owner: Some(owner.clone()), completed: true, acknowledged: Some(serde_json::json!({})),
+        last_run_at: Some(Utc::now().to_rfc3339()), ..Default::default()
+    });
+    let mut old = plan_automatic_batch(data, &value, &owner, &["chat".into()]).unwrap().unwrap();
+    let scope = old.scope.as_ref().unwrap();
+    // The frozen references no longer describe the current local snapshot.
+    messages.execute_batch(&format!("DELETE FROM {table} WHERE local_id=1; INSERT INTO {table} VALUES(3,3,300,'new',1);")).unwrap();
+    let error = query::messages_selected(&cache, "chat", &scope.message_selection["chat"]).unwrap_err();
+    assert_eq!(error, "部分待上传消息已变化，请重新读取。");
+    old.status = "failed".into();
+    old.message = error;
+    value.upload_queue.push(old.clone());
+    let progress = serde_json::to_value(&value.sync).unwrap();
+    assert!(task_runtime::retire_stale_plan(&mut value, &old, &owner));
+    assert_eq!(value.upload_queue[0].status, "cancelled");
+    assert_eq!(value.upload_queue[0].scope, old.scope);
+    assert_eq!(serde_json::to_value(&value.sync).unwrap(), progress);
+    assert_eq!(value.runtime.sources[&owner.account_id].scan_remaining, 1);
+    assert!(task_runtime::source_needs_execution(&value, &owner, Local::now()));
+    assert!(!task_runtime::retire_stale_plan(&mut value, &old, &owner));
+    settings::save(data, &value).unwrap();
+    value = settings::load(data).unwrap();
+    assert_eq!(value.upload_queue[0].status, "cancelled");
+    assert_eq!(serde_json::to_value(&value.sync).unwrap(), progress);
+    assert!(task_runtime::source_needs_execution(&value, &owner, Local::now()));
+    let new = plan_automatic_batch(data, &value, &owner, &["chat".into()]).unwrap().unwrap();
+    assert_ne!(new.id, old.id);
+    let refs = &new.scope.as_ref().unwrap().message_selection["chat"];
+    let rows = query::messages_selected(&cache, "chat", refs).unwrap();
+    assert_eq!(rows.iter().map(|row| row.local_id).collect::<HashSet<_>>(), HashSet::from([2, 3]));
+
+    // The scheduler must not retire sent/uncertain/manual/foreign or changed work.
+    for case in 0..13 {
+        let mut guarded = value.clone();
+        guarded.upload_queue = vec![old.clone()];
+        let job = &mut guarded.upload_queue[0];
+        match case {
+            0 => job.create_started = Some(true),
+            1 => job.create_started = None,
+            2 => job.batch_id = Some(99),
+            3 => job.package_digest = Some("digest".into()),
+            4 => job.create_key = Some("key".into()),
+            5 => job.continuation_manual = None,
+            6 => job.initial_chunks.clear(),
+            7 => job.owner.as_mut().unwrap().user_id += 1,
+            8 => job.message = "database unreadable".into(),
+            9 => job.scope.as_mut().unwrap().since = Some(99),
+            10 => guarded.runtime.paused = true,
+            11 => guarded.runtime.sources.get_mut(&owner.account_id).unwrap().draft = true,
+            12 => guarded.sync.enabled = false,
+            _ => unreachable!(),
+        }
+        let before = serde_json::to_value(&guarded).unwrap();
+        assert!(!task_runtime::retire_stale_plan(&mut guarded, &old, &owner), "case {case}");
+        assert_eq!(serde_json::to_value(&guarded).unwrap(), before, "case {case}");
+    }
+}
+
 #[test]
 fn keys_and_plaintext_are_separate_after_account_switch_and_signout() {
     let temp = tempfile::tempdir().unwrap();
@@ -649,6 +728,33 @@ fn backup_changes_only_invalidate_affected_accounts() {
     assert!(shared_backup_changed(&before, &after));
     assert!(account_backup_changed(&before, &after, whatsapp));
     assert!(account_backup_changed(&before, &after, wechat));
+}
+
+#[test]
+fn changing_interval_releases_an_unsent_stale_plan_but_preserves_unknown_uploads() {
+    let mut before = settings::AppSettings::default();
+    before.sync.cursors.insert("account".into(), HashMap::from([
+        ("chat".into(), settings::SyncCursor { time: 100, local_id: 1, boundary_count: Some(1) }),
+    ]));
+    before.runtime.sources.insert("account".into(), config_runtime::Source {
+        last_run_at: Some(Utc::now().to_rfc3339()), scan_remaining: 8,
+        retry_after: Some(Utc::now().to_rfc3339()), ..Default::default()
+    });
+    before.upload_queue = [Some(false), Some(true), None].into_iter().enumerate()
+        .map(|(index, create_started)| settings::UploadJob {
+            id: format!("old-{index}"), account_id: "account".into(),
+            status: "failed".into(), create_started,
+            message: "部分待上传消息已变化，请重新读取。".into(), ..Default::default()
+        }).collect();
+    let mut after = before.clone();
+    after.chat.sync_interval_seconds = before.chat.sync_interval_seconds + 300;
+    invalidate_unsent_backups(&before, &mut after);
+    assert_eq!(after.upload_queue[0].status, "cancelled");
+    assert_eq!(after.upload_queue[1].status, "failed");
+    assert_eq!(after.upload_queue[2].status, "failed");
+    assert_eq!(serde_json::to_value(&after.sync).unwrap(), serde_json::to_value(&before.sync).unwrap());
+    assert!(after.runtime.sources["account"].last_run_at.is_none());
+    assert!(after.runtime.sources["account"].retry_after.is_none());
 }
 
 
