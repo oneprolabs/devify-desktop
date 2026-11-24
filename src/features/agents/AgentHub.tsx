@@ -8,7 +8,7 @@ import { AgentAdvanced } from './AgentAdvanced';
 import { AgentAccess } from './AgentAccess';
 import { AgentVoiceSettings } from './AgentVoiceSettings';
 import { useAgentIntegration } from './useAgentIntegration';
-import { effectiveAgent, localSummaryEnabled, profileFor, selectAgent, type AgentProfile } from './agentCatalog';
+import { effectiveAgent, summaryConfigurationAgent, localSummaryEnabled, profileFor, selectAgent, type AgentProfile } from './agentCatalog';
 import './agent-integration.css';
 
 export function AgentHub({ onOpenAnalysis }: { onOpenAnalysis?: () => void }) {
@@ -56,7 +56,7 @@ export function AgentHub({ onOpenAnalysis }: { onOpenAnalysis?: () => void }) {
           <option value="default">{t('自动 · 沿用工具默认')}</option>{selectedProfile?.model && <option value="configured">{selectedProfile.model}</option>}<option value="manual">{t('手动指定…')}</option>
         </select></label>}
         <WizardActionButton className="secondary" disabled={scanning || locked} loading={scanning} busyLabel={t('扫描中…')} onAction={model.scan}>{t('重新扫描 CLI')}</WizardActionButton>
-        <button type="button" className="secondary" disabled={locked} onClick={() => configure(effective || automatic || 'codex')}>{t('高级配置')}</button>
+        <button type="button" className="secondary" disabled={locked} onClick={() => configure(summaryConfigurationAgent(settings.agent, agents))}>{t('高级配置')}</button>
       </div>
       {model.scanError && <p className="integration-error" role="alert">{tf('扫描失败，已保留上次结果：{0}', model.scanError)}</p>}
       {!effective && !scanning && <div className="integration-empty"><strong>{t('未发现可用于总结的本地智能体')}</strong><p>{t('安装智能体后，点击「重新扫描 CLI」。已安装但未识别？可在「高级配置」中指定路径。')}</p><p>{t('你仍可直接使用上方的线上总结。')}</p></div>}

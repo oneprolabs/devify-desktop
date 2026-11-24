@@ -23,7 +23,7 @@ function load(path){const file=new URL(path,import.meta.url).href;if(cache.has(f
  },module,module.exports);cache.set(file,module.exports);return module.exports;
 }
 const {defaultSettings}=load('../src/features/settings/settingsModel.ts');
-const {AGENTS,profileFor,selectAgent,effectiveAgent,localSummaryEnabled,agentInvocationNotice}=load('../src/features/agents/agentCatalog.ts');
+const {AGENTS,profileFor,selectAgent,effectiveAgent,summaryConfigurationAgent,localSummaryEnabled,agentInvocationNotice}=load('../src/features/agents/agentCatalog.ts');
 const {useAgentIntegration}=load('../src/features/agents/useAgentIntegration.ts');
 const base=defaultSettings();base.agent.provider_id='codex';base.agent.model='legacy';base.agent.command='/custom/codex';
 assert.equal(localSummaryEnabled(base.agent),true,'existing configured users stay enabled');
@@ -32,7 +32,12 @@ const claude=selectAgent(base.agent,'claude-code');
 assert.equal(claude.model,'');assert.equal(claude.command,'');assert.equal(profileFor(claude,'codex').model,'legacy');
 const auto=selectAgent(claude,'');assert.equal(auto.enabled,true,'switching an existing user to automatic keeps summaries enabled');assert.equal(selectAgent(defaultSettings().agent,'codex').enabled,false,'choosing a host does not turn on summaries');assert.equal(auto.model,'');assert.equal(profileFor(auto,'codex').command,'/custom/codex');
 const found=[{id:'codex',available:true},{id:'claude-code',available:true}];
-assert.equal(effectiveAgent(auto,found),'codex');assert.equal(effectiveAgent({...auto,provider_id:'missing'},found),null);
+assert.equal(effectiveAgent(auto,found),'codex');
+assert.equal(summaryConfigurationAgent({...auto,provider_id:'opencode'},found),'opencode','a missing selected CLI opens its own path editor');
+assert.equal(summaryConfigurationAgent({...auto,provider_id:'claude-code'},[]),'claude-code','the configured profile remains editable with no detected CLIs');
+assert.equal(summaryConfigurationAgent({...auto,provider_id:'workbuddy'},found),'codex','a legacy Skills-only choice cannot become the summary editor');
+assert.equal(summaryConfigurationAgent(auto,[]),'codex');
+assert.equal(effectiveAgent({...auto,provider_id:'missing'},found),null);
 for(const id of ['workbuddy','deepseek-harness']) {
  assert.equal(effectiveAgent({...auto,provider_id:id},[{id,available:true}]),null,'Skills-only discovery cannot enable direct summaries');
 }

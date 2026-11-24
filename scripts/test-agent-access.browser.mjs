@@ -61,3 +61,16 @@ export async function runAgentLayoutChecks(page) {
   assert.ok(await page.evaluate(()=>{const footer=document.querySelector('.integration-voice-footer').getBoundingClientRect(),button=document.querySelector('.integration-voice-footer button').getBoundingClientRect();return button.top-footer.top>=16&&footer.bottom-button.bottom>=15;}),'save button has space above and below');
   return {shortcut:'shared page, single highlight',usage:'visible with two working examples',voice:'lazy detection, advanced save, separated footer'};
 }
+
+export async function runMissingAgentConfigurationCheck(page) {
+  await page.click('loc=role:button[name="任务"]');
+  await page.evaluate(()=>{window.__E2E__.settings.agent.provider_id='opencode';});
+  await page.click('loc=role:button[name="智能体"]');
+  await page.waitForSelector('.integration-defaults .secondary:not(:disabled)');
+  await page.click('loc=role:button[name="高级配置"]');
+  await page.waitForSelector('.integration-advanced');
+  assert.ok(await page.evaluate(()=>document.querySelector('.integration-advanced h3').textContent.includes('OpenCode CLI')));
+  assert.equal(await page.evaluate(()=>document.querySelector('.integration-advanced select').value),'opencode');
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(x=>x.command==='app_settings_save').length),0,'opening a missing CLI profile does not save or switch providers');
+  return {missingSelectedCLI:'OpenCode profile remains editable',settings:'unchanged'};
+}

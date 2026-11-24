@@ -49,3 +49,10 @@ export function effectiveAgent(agent: AppSettings['agent'], detected: AgentInfo[
   return SUMMARY_AGENTS.find(item => detected.some(found => found.id === item.id && found.available))?.id ?? null;
 }
 export const localSummaryEnabled = (agent: AppSettings['agent']) => agent.enabled ?? Boolean(agent.provider_id);
+
+// A missing executable still needs its own path editor, rather than another
+// detected provider's profile. Skills-only legacy choices cannot drive summaries.
+export function summaryConfigurationAgent(agent: AppSettings['agent'], detected: AgentInfo[]): string {
+  if (SUMMARY_AGENTS.some(item => item.id === agent.provider_id)) return agent.provider_id;
+  return effectiveAgent({ ...agent, provider_id: '' }, detected) ?? 'codex';
+}
