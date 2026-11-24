@@ -1,3 +1,4 @@
+import * as nativeErrors from '../src/shared/i18n/errorText.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -87,6 +88,7 @@ const load = path => {
     if (id === '../../shared/content/summary') return { renderAgentMarkdown: value => value };
     if (id in mocks) return mocks[id];
     if (id === '../../shared/i18n/locale' || id === '../i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+  if (id.endsWith('/i18n/errorText')) return nativeErrors;
     throw Error(`unexpected import: ${id}`);
   };
   new Function('require', 'module', 'exports', compiled)(requireMock, module, module.exports);
@@ -183,6 +185,8 @@ async function mount(report, failDetail = false) {
   assert.deepEqual(calls.map(call => call.command), ['app_settings_get', 'devify_analysis_list', 'devify_analysis_detail']);
   return { instance, tree, calls };
 }
+const weeklyEnglish = await mount(fixture({ title: 'Weekly · week 48', body: 'Report body' }));
+assert.ok(text(weeklyEnglish.tree).includes('周报 ·'), 'English-generated reports keep their cadence in the Chinese interface');
 const summaryOf = tree => byClass(tree, 'report-summary');
 const assertNotice = (tree, role, expected) => {
   const summary = summaryOf(tree);

@@ -1,4 +1,5 @@
 import { t, tf, ctf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useCallback, useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
@@ -70,7 +71,7 @@ export function DiskAccessCard({ onRescan, compact = false, checkOnEntry = true,
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch (e) {
-      setError(tf("复制失败：{0}", String(e)));
+      setError(tf("复制失败：{0}", errorText(e)));
     }
   };
 
@@ -78,7 +79,7 @@ export function DiskAccessCard({ onRescan, compact = false, checkOnEntry = true,
   if (platform?.platform === 'windows') return <div className="wxv-keyguide attention perm-card">
     <div className="wxv-keyguide-head"><div><strong>{t("Windows 权限检查")}</strong><p className="wxv-muted">{t("Windows 不需要 macOS 的「完全磁盘访问权限」。请保持微信已登录，并确保 AIMyChats 与微信使用同一 Windows 用户；如果读取进程内存失败，请用管理员身份重新启动本应用。")}</p></div><div className="perm-badge">Windows</div></div>
     <div className="perm-actions"><button type="button" className="wxv-btn primary" onClick={() => { void refresh(); onRescan?.(); }}>{t("重新检测")}</button><span className="perm-poll">{t("密钥方式：")}{platform.key_acquisition}</span></div>
-    {error && <p className="wxv-keyguide-warn">{t(error)}</p>}
+    {error && <p className="wxv-keyguide-warn">{errorText(error)}</p>}
   </div>;
   if (platform && platform.platform !== 'macos') return <div className="wxv-keyguide attention perm-card"><div className="wxv-keyguide-head"><div><strong>{t("当前系统使用导入模式")}</strong><p className="wxv-muted">{t("当前平台不提供应用内密钥捕获，请导入可信工具导出的密钥 JSON，再由本地数据库第 1 页 HMAC 校验。")}</p></div><div className="perm-badge">{platform.platform}</div></div></div>;
 
@@ -180,7 +181,7 @@ export function DiskAccessCard({ onRescan, compact = false, checkOnEntry = true,
       </details>
 
       {access?.detail && <p className="perm-detail">{t("判定依据：")}{t(access.detail)}</p>}
-      {error && isTauri() && <p className="wxv-keyguide-warn">{t(error)}</p>}
+      {error && isTauri() && <p className="wxv-keyguide-warn">{errorText(error)}</p>}
     </div>
   );
 }

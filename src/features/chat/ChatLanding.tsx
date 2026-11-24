@@ -1,4 +1,4 @@
-import { t, tf, ctf } from '../../shared/i18n/locale';
+import { t, tf } from '../../shared/i18n/locale';
 import { useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { ConnectorIcon } from '../connectors/Connectors';
@@ -10,10 +10,10 @@ type KeyStatus = { keys?: Array<{ account: string }> };
 type Settings = { connectors?: { wechat_enabled?: boolean; whatsapp_enabled?: boolean }; active_account_id?: string; chat?: { allowed_usernames?: Record<string, string[]>; sync_interval_seconds?: number }; devify?: { active_space_id?: string | null } };
 
 type Step = { number: string; title: string; description: string; state: 'current' | 'next' | 'done' };
-type Connector = { name: string; description: string };
+type Connector = { source: 'wechat' | 'whatsapp'; name: string; description: string };
 const connectors: Connector[] = [
-  { name: '微信', description: '读取本机微信聊天记录，也可以导入 JSON 文件' },
-  { name: 'WhatsApp', description: '读取本机 WhatsApp 聊天记录，无需密钥' },
+  { source: 'wechat', name: '微信', description: '读取本机微信聊天记录，也可以导入 JSON 文件' },
+  { source: 'whatsapp', name: 'WhatsApp', description: '读取本机 WhatsApp 聊天记录，无需密钥' },
 ];
 
 function steps(mode: HomeMode, source: string, sessions = 0, syncIntervalSeconds = 1800): Step[] {
@@ -28,7 +28,7 @@ function steps(mode: HomeMode, source: string, sessions = 0, syncIntervalSeconds
   ];
 }
 
-export function ChatLanding({ mode, source = t("微信"), sessionCount, syncIntervalSeconds, onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule }: { mode: HomeMode; source?: string; sessionCount: number; syncIntervalSeconds: number; onConnect: (connector?: string) => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void }) {
+export function ChatLanding({ mode, source = t("微信"), sessionCount, syncIntervalSeconds, onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule }: { mode: HomeMode; source?: string; sessionCount: number; syncIntervalSeconds: number; onConnect: () => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void }) {
   const isNew = mode === 'new';
   const wechat = useConnectorDetect('wechat');
   const whatsapp = useConnectorDetect('whatsapp');
@@ -48,25 +48,25 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
 
       {isNew ? <section className="chat-landing-connectors" aria-label={t("连接聊天来源")}>
         {connectors.map(connector => {
-          const isWechat = connector.name === "微信";
-          const isWhatsApp = connector.name === 'WhatsApp';
+          const isWhatsApp = connector.source === 'whatsapp';
+          const name = t(connector.name);
           const detect = isWhatsApp ? whatsapp : wechat;
-          const canProceed = isWechat ? detect.canProceed : detect.usable;
+          const canProceed = isWhatsApp ? detect.usable : detect.canProceed;
           const missing = !detect.checking && !canProceed ? detect.detect : null;
-          return <article className={`chat-landing-connector${missing ? ' blocked' : ''}`} key={connector.name}>
+          return <article className={`chat-landing-connector${missing ? ' blocked' : ''}`} key={connector.source}>
             <ConnectorIcon name={connector.name} />
             <div>
-              <h2>{connector.name}</h2>
-              {missing ? <p className="chat-landing-install"><span />{detectTitleFor(connector.name, missing.state)}：{t(missing.message)}</p>
-                : <p>{detect.checking ? tf("正在检测本机{0}…", connector.name) : connector.description}</p>}
+              <h2>{name}</h2>
+              {missing ? <p className="chat-landing-install"><span />{tf("{0}：{1}", detectTitleFor(name, missing.state), t(missing.message))}</p>
+                : <p>{detect.checking ? tf("正在检测本机{0}…", name) : t(connector.description)}</p>}
               {missing && <p className="chat-landing-install-actions">
                 <button type="button" onClick={() => void detect.recheck()}>{t("重新检查")}</button>
-                {missing.state === 'not_installed' && <a href={isWhatsApp ? 'https://www.whatsapp.com/download' : 'https://pc.weixin.qq.com/'} target="_blank" rel="noreferrer">{t("前往下载")}{connector.name} ↗</a>}
+                {missing.state === 'not_installed' && <a href={isWhatsApp ? 'https://www.whatsapp.com/download' : 'https://pc.weixin.qq.com/'} target="_blank" rel="noreferrer">{tf("下载 {0} ↗", name)}</a>}
               </p>}
             </div>
             {isWhatsApp
               ? <button type="button" className="chat-landing-primary" onClick={onConnectWhatsApp}>{t("打开连接向导")}</button>
-              : <button type="button" className="chat-landing-primary" onClick={() => onConnect(connector.name)} disabled={isWechat && !detect.canProceed && isTauri()}>{isWechat ? t("打开连接向导") : t("查看连接器")}</button>}
+              : <button type="button" className="chat-landing-primary" onClick={onConnect} disabled={!detect.canProceed && isTauri()}>{t("打开连接向导")}</button>}
           </article>;
         })}
       </section> : <section className="chat-landing-first-backup">
@@ -85,11 +85,11 @@ export function ChatLanding({ mode, source = t("微信"), sessionCount, syncInte
   </div>;
 }
 
-export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule, onReady, onUnlock }: { visible: boolean; onConnect: (connector?: string) => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void; onReady: (source: string) => void; onUnlock: () => void }) {
+export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onBackup, onSchedule, onReady, onUnlock }: { visible: boolean; onConnect: () => void; onConnectWhatsApp: () => void; onImport: () => void; onBackup: () => void; onSchedule: () => void; onReady: (source: string) => void; onUnlock: () => void }) {
   const runtime = useTaskRuntime();
   const configuredKey = JSON.stringify(runtime.sources?.filter(source => source.setup_complete).map(source => source.account_id).sort() ?? null);
   const [mode, setMode] = useState<HomeMode | null>(isTauri() ? null : 'new');
-  const [source, setSource] = useState(t("微信"));
+  const [source, setSource] = useState<Connector['source']>('wechat');
   const [syncIntervalSeconds, setSyncIntervalSeconds] = useState(1800);
   const [sessionCount, setSessionCount] = useState(0);
 
@@ -115,7 +115,7 @@ export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onB
         const account = currentAccount(accounts, settings.active_account_id);
         if (!account) { setMode('new'); return; }
         const interval = settings.chat?.sync_interval_seconds ?? 1800;
-        setSource(account.source === 'whatsapp' ? 'WhatsApp' : t("微信"));
+        setSource(account.source === 'whatsapp' ? 'whatsapp' : 'wechat');
         let sessions = 0;
         let sessionsFailed = false;
         try { sessions = (await invoke<Array<{ username: string }>>('chat_sessions', { accountId: account.id, limit: 1 })).length; } catch { sessionsFailed = true; }
@@ -137,5 +137,5 @@ export function ChatEntry({ visible, onConnect, onConnectWhatsApp, onImport, onB
   }, [visible, onReady, onUnlock, configuredKey]);
 
   if (!mode) return <div className="chat-landing chat-landing-checking"><div className="chat-landing-checking-card"><span className="chat-landing-checking-dot" /><p>{t("正在检查本地聊天数据…")}</p></div></div>;
-  return <ChatLanding mode={mode} source={source} sessionCount={sessionCount} syncIntervalSeconds={syncIntervalSeconds} onConnect={onConnect} onConnectWhatsApp={onConnectWhatsApp} onImport={onImport} onBackup={onBackup} onSchedule={onSchedule} />;
+  return <ChatLanding mode={mode} source={source === 'whatsapp' ? 'WhatsApp' : t("微信")} sessionCount={sessionCount} syncIntervalSeconds={syncIntervalSeconds} onConnect={onConnect} onConnectWhatsApp={onConnectWhatsApp} onImport={onImport} onBackup={onBackup} onSchedule={onSchedule} />;
 }

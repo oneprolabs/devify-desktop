@@ -1,4 +1,5 @@
 import { t } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { ReportSchedules } from './ReportSchedules';
 import { AgentSummaryInstructions } from '../agents/AgentSummaryInstructions';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -107,7 +108,7 @@ export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, can
   const rangeSummary = kinds.length === 2 ? t('私聊和群聊') : kinds.includes('group') ? t('群聊') : t('私聊');
   const lengthSummary = preferences ? t({ short: '简短', standard: '标准', detailed: '详细' }[preferences.summary_length]) : '';
 
-  if (!ready) return <div className="settings-page analysis-settings analysis-simple"><h2>{t('智能分析')}</h2><p>{loading ? t('正在加载设置…') : t('设置尚未加载，无法安全保存。')}</p>{error && <p role="alert" className="error">{error}</p>}{!loading && <button type="button" onClick={() => void load()}>{t('重新加载')}</button>}</div>;
+  if (!ready) return <div className="settings-page analysis-settings analysis-simple"><h2>{t('智能分析')}</h2><p>{loading ? t('正在加载设置…') : t('设置尚未加载，无法安全保存。')}</p>{error && <p role="alert" className="error">{errorText(error)}</p>}{!loading && <button type="button" onClick={() => void load()}>{t('重新加载')}</button>}</div>;
 
   return <div className="settings-page analysis-settings analysis-simple">
     <header className="page-head"><h2>{t('智能分析')}</h2><p className="help">{t('按功能管理聊天总结、聊天待办分析和定期报告。')}</p></header>
@@ -137,7 +138,7 @@ export function AnalysisSettings({ onOpenReports, onOpenTopics, onOpenChats, can
         </div>}
       </section>
       <div className="analysis-preference-feedback" role="status" aria-live="polite">{preferencesNotice}</div>
-      {preferencesError && <p className="error" role="alert">{preferencesError} {!preferences && <button type="button" onClick={() => setPreferencesRefresh(value => value + 1)}>{t('重试')}</button>}</p>}
+      {preferencesError && <p className="error" role="alert">{errorText(preferencesError)} {!preferences && <button type="button" onClick={() => setPreferencesRefresh(value => value + 1)}>{t('重试')}</button>}</p>}
       </section>
       <ReportSchedules key={spaceId} spaceId={spaceId} onOpenReports={onOpenReports} onOpenTopics={onOpenTopics}/>
       <section className="analysis-feature-entry" aria-label={t('主题订阅')}>

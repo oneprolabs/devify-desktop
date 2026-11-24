@@ -1,4 +1,5 @@
 import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { LoadingPage } from '../../shared/ui/LoadingSkeleton';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -285,7 +286,7 @@ export function AskPage({ onOpenEvent }: { onOpenEvent?: (eventId: number) => vo
 
       <div className="ask-scroll" ref={scrollRef}>
         {!spaceId && <div className="ask-welcome"><h3>{t("还没有选择空间")}</h3><p>{t("请先在「设置 / 账户」中登录并选择空间。")}</p></div>}
-        {error && <p className="ask-error" role="alert">{t(error)}</p>}
+        {error && <p className="ask-error" role="alert">{errorText(error)}</p>}
 
         {spaceId && !threadTurns.length && !pending && <>
           <div className="ask-welcome">

@@ -1,4 +1,5 @@
 import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -46,7 +47,7 @@ function useWechatProfiles(accounts: Account[]) {
 
 function WechatIdentity({ account, profile, source }: { account: Account; profile?: WechatProfile; source?: string }) {
   const whatsapp = source === 'whatsapp';
-  return <><span className={`wechat-account-avatar${whatsapp ? ' whatsapp' : ''}`}>{profile?.avatar ? <img src={profile.avatar} alt="" /> : <ConnectorIcon name={whatsapp ? 'WhatsApp' : '微信'} />}</span><span className="wechat-account-details"><strong>{profile?.nickname || (whatsapp ? 'WhatsApp' : t("微信账号"))}</strong><small>{whatsapp ? `WhatsApp${profile?.alias ? ` · ${profile.alias}` : ''}` : profile?.alias ? tf("微信号：{0}", profile.alias) : t("微信号暂不可用")}</small><small>{t("本机标识：")}{account.id}</small></span></>;
+  return <><span className={`wechat-account-avatar${whatsapp ? ' whatsapp' : ''}`}>{profile?.avatar ? <img src={profile.avatar} alt="" /> : <ConnectorIcon name={whatsapp ? 'WhatsApp' : '微信'} />}</span><span className="wechat-account-details"><strong>{profile?.nickname || (whatsapp ? 'WhatsApp' : t("微信账号"))}</strong><small>{whatsapp ? `WhatsApp${profile?.alias ? ` · ${profile.alias}` : ''}` : profile?.alias ? tf("微信号：{0}", profile.alias) : t("微信号暂不可用")}</small><small>{tf("本机标识：{0}", account.id)}</small></span></>;
 }
 type DevifySpace = { id: string; name: string; kind: string; status: string; role?: string };
 
@@ -132,7 +133,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
   const loadDates = async (username: string) => {
     setDateLoading(username); setError('');
     try { const dates = await invoke<Array<[string, number]>>('wechat_catalog_dates', { accountId, username }); setDateDetails(current => ({ ...current, [accountId]: { ...current[accountId], [username]: dates } })); }
-    catch (reason) { if (accountIdRef.current === accountId) setError(`读取有记录的日期失败：${String(reason)}`); }
+    catch (reason) { if (accountIdRef.current === accountId) setError(tf("读取有记录的日期失败：{0}", errorText(reason))); }
     finally { if (accountIdRef.current === accountId) setDateLoading(''); }
   };
 
@@ -232,7 +233,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
       .catch(e => {
         if (!active || accountIdRef.current !== accountId) return;
         setCatalog([]);
-        setError(tf("无法读取该账号的会话候选：{0}", String(e)));
+        setError(tf("无法读取该账号的会话候选：{0}", errorText(e)));
       })
       .finally(() => {
         if (!active || accountIdRef.current !== accountId) return;
@@ -332,7 +333,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
       const saved = mergeSettings(requireSettingsRevision(await invoke<AppSettings>('app_settings_save', { value: submitted })));
       confirmedRevision.current = saved.user_settings_revision;
       setSettings(current => mergeSavedSettings(saved, settings, current));
-      setNotice(`已保存 ${(keep ?? []).length} 个会话，重新打开聊天记录页面后生效。`);
+      setNotice(tf("已保存 {0} 个会话，重新打开聊天记录页面后生效。", (keep ?? []).length));
       onSaved?.((keep ?? []).length);
     } catch (e) {
       setSaveError(settingsSaveError(e));
@@ -396,7 +397,7 @@ export function WhitelistSettings({ onSaved, wizard = false, wizardSource = 'wec
     {!catalogLoading && accountId && (historyLoading
       ? <p className="help" role="status">{t("正在核对备份进度…")}</p>
       : historyEditor)}
-    {error && <div className="error">{error}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}{allowedCount > 1000 && <div className="error" role="alert">{t("已超出")}{allowedCount - 1000} {t("个会话，请取消选择后保存。")}</div>}
+    {error && <div className="error">{errorText(error)}</div>}{saveError && <div className="error" role="alert">{errorText(saveError)}</div>}{allowedCount > 1000 && <div className="error" role="alert">{tf("超出上限 {0} 个会话，请取消选择后保存。", allowedCount - 1000)}</div>}
     <div className="page-actions">{notice && <span className="imports-save-status" role="status">{Icons.check}<span>{notice}</span></span>}{wizard && onBack && <button type="button" className="wxv-btn" disabled={saving} onClick={onBack}>{t("上一步")}</button>}<button className="primary" aria-busy={saving} disabled={saving || !accountId || catalogLoading || historyLoading || allowedCount > 1000 || (wizard && allowedCount === 0)} onClick={() => void save()}>{saving ? t("正在保存…") : wizardWechat ? t("下一步") : wizard ? t("保存并继续") : t("保存所选会话")}</button></div>
   </>;
   return <div className={`settings-page imports-page imports-v7${wizard ? ' wizard-imports' : ' imports-management'}`}>
@@ -453,7 +454,7 @@ export function StrategySettings({ title = t("本地自动化"), description = t
         const status = await invoke<{ message?: string }>('devify_daily_schedule_sync');
         setNotice(status?.message || t("日报计划已同步到服务端。"));
       } catch (syncError) {
-        setError(tf("设置已保存，但日报计划同步失败：{0}", String(syncError)));
+        setError(tf("设置已保存，但日报计划同步失败：{0}", errorText(syncError)));
       }
     } catch (e) {
       setSaveError(settingsSaveError(e));
@@ -463,7 +464,7 @@ export function StrategySettings({ title = t("本地自动化"), description = t
     }
   };
 
-  if (!loaded) return <div className="settings-page">{error ? <div className="error">{t("设置加载失败：")}{t(error)} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
+  if (!loaded) return <div className="settings-page">{error ? <div className="error">{tf("设置加载失败：{0} 请重新打开页面。", errorText(error))}</div> : <p>{t("正在加载设置…")}</p>}</div>;
 
   return <div className="settings-page">
     <header className="page-head">
@@ -489,7 +490,7 @@ export function StrategySettings({ title = t("本地自动化"), description = t
       {settings.automation.last_schedule_error && <div className="config warn">{t("计划同步失败：")}{settings.automation.last_schedule_error}</div>}
     </section>
     {notice && <div className="notice">{notice}</div>}
-    {error && <div className="error">{t(error)}</div>}{saveError && <div className="error" role="alert">{saveError}</div>}
+    {error && <div className="error">{errorText(error)}</div>}{saveError && <div className="error" role="alert">{errorText(saveError)}</div>}
     <div className="page-actions">
       <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? t("正在保存…") : t("保存并同步日报计划")}</button>
     </div>
@@ -658,7 +659,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     }).finally(() => { pendingSaves.current -= 1; });
   };
 
-  if (!loaded) return <div className="settings-page settings-refreshed account-settings">{error ? <div className="error">{t("设置加载失败：")}{t(error)} {t("请重新打开页面。")}</div> : <p>{t("正在加载设置…")}</p>}</div>;
+  if (!loaded) return <div className="settings-page settings-refreshed account-settings">{error ? <div className="error">{tf("设置加载失败：{0} 请重新打开页面。", errorText(error))}</div> : <p>{t("正在加载设置…")}</p>}</div>;
 
   return <div className="settings-page settings-refreshed account-settings">
     <header className="page-head">
@@ -714,7 +715,7 @@ export function DevifySettings({ initialUser = '', initialAuthenticated = false,
     </div></section>
 
     {notice && <div className="notice">{notice}</div>}
-    {error && <div className="error" role="alert">{t(error)}</div>}
-    {saveError && <div className="error" role="alert">{saveError}</div>}
+    {error && <div className="error" role="alert">{errorText(error)}</div>}
+    {saveError && <div className="error" role="alert">{errorText(saveError)}</div>}
   </div>;
 }

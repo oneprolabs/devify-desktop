@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from './settingsModel';
 import { applyLanguage, t, tf, ctf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { createSettingsSaveQueue, settingsSaveFailure, settingsUserRevision, type SettingsSaveQueue } from '../../shared/state/settingsSaveQueue';
 
 type Option = { label: string; disabled?: boolean; hint?: string };
@@ -18,9 +19,9 @@ const SUMMARY_OPTIONS: Option[] = [
 ];
 
 function Pills({ options, value, onChange, label }: { options: Option[]; value: string; onChange: (next: string) => void; label: string }) {
-  return <div className="plan-pills" role="group" aria-label={t(label)}>
+  return <div className="plan-pills" role="group" aria-label={label}>
     {options.map(option => <button
-      key={t(option.label)}
+      key={option.label}
       type="button"
       aria-pressed={option.label === value}
       className={option.label === value ? 'on' : ''}
@@ -65,7 +66,7 @@ export function LanguageSettings() {
       setReady(true);
       applyLanguage(mergeSettings(stored).language);
     } catch (e) {
-      if (active.current && request === loadId.current) setError(tf("无法加载设置：{0}", String(e)));
+      if (active.current && request === loadId.current) setError(tf("无法加载设置：{0}", errorText(e)));
     } finally {
       if (active.current && request === loadId.current) setLoading(false);
     }
@@ -87,7 +88,7 @@ export function LanguageSettings() {
     return { ...current, language };
   });
 
-  if (!ready) return <div className="settings-page settings-refreshed language-settings"><h2>{t("语言")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{t(error)}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
+  if (!ready) return <div className="settings-page settings-refreshed language-settings"><h2>{t("语言")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{errorText(error)}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
 
   return <div className="settings-page settings-refreshed language-settings">
     <header className="page-head">
@@ -99,13 +100,13 @@ export function LanguageSettings() {
     <section className="settings-group" aria-label={t('界面语言')}>
       <div className="settings-row">
         <div className="settings-row-label"><span>{t('界面语言')}</span><small>{t('菜单、按钮和提示的显示语言。')}</small></div>
-        <Pills label="界面语言" options={UI_OPTIONS} value={settings.language.ui} onChange={ui => setLanguage({ ui })}/>
+        <Pills label={t("界面语言")} options={UI_OPTIONS} value={settings.language.ui} onChange={ui => setLanguage({ ui })}/>
       </div>
     </section>
     <section className="settings-group" aria-label={t('内容语言')}>
       <div className="settings-row">
         <div className="settings-row-label"><span>{t('聊天总结语言')}</span><small>{t('云端与本地聊天总结共用，生成时可以单独选择。')}</small></div>
-        <Pills label="聊天总结语言" options={SUMMARY_OPTIONS} value={settings.language.summary} onChange={summary => setLanguage({ summary })}/>
+        <Pills label={t("聊天总结语言")} options={SUMMARY_OPTIONS} value={settings.language.summary} onChange={summary => setLanguage({ summary })}/>
       </div>
       <div className="settings-row">
         <div className="settings-row-label"><span>{t('服务端内容语言')}</span><small>{t('待办、报告与问答由服务端生成，使用服务端的语言设置。')}</small></div>
@@ -114,7 +115,7 @@ export function LanguageSettings() {
     </section>
     <p className="settings-footnote">{t('更改后自动保存。')}</p>
     </fieldset>
-    {error && <div className="error" role="alert">{t(error)}</div>}
+    {error && <div className="error" role="alert">{errorText(error)}</div>}
     {blocked && <div><p>{t("当前修改未确认保存；重新加载会放弃这些修改。")}</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? t("正在加载…") : t("放弃未保存修改并重新加载")}</button></div>}
   </div>;
 }

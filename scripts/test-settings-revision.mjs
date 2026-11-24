@@ -1,3 +1,4 @@
+import * as nativeErrors from '../src/shared/i18n/errorText.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -112,6 +113,7 @@ const mockedRequire = id => {
   };
   if (id.endsWith('.svg') || id.endsWith('.png')) return id;
   if (id.endsWith('.css')) return {};
+  if (id.endsWith('/i18n/errorText')) return nativeErrors;
   throw Error(`unexpected import ${id}`);
 };
 const serviceUrlSource = fs.readFileSync(new URL('../src/shared/api/serviceUrl.ts', import.meta.url), 'utf8');
@@ -741,7 +743,7 @@ invoke = async command => {
 const completeProps = { edit: false, onFinish() {}, onBack() {} };
 render(complete, () => WeChatWizardComplete(completeProps)); await flush();
 tree = render(complete, () => WeChatWizardComplete(completeProps));
-assert.ok(elements(tree).some(node => node.type === 'li' && Array.isArray(node.props.children) && node.props.children.join('') === '已选择 2 个会话导入'));
+assert.ok(elements(tree).some(node => node.type === 'li' && node.props.children === '已选择 2 个会话导入'));
 await find(tree, node => node.type === WizardActionButton && node.props.children === '打开微信').props.onAction();
 assert.equal(officialOpens, 0, 'a pending recovery cannot launch a temporary app from completion');
 officialState = { ...officialState, pending: false, needs_cleanup: false, wechat_official: false };

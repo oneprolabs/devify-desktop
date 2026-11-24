@@ -1,4 +1,5 @@
 import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { LoadingPage, LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -163,7 +164,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
       <input className="topic-side-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("搜索主题")} spellCheck={false}/>
       <button type="button" className={`topic-side-new${creating ? ' on' : ''}`} onClick={() => { setCreating(true); setError(''); }}>{t("＋ 新建主题订阅")}</button>
       <div className="topic-side-list">
-        {groups.map(group => <section key={t(group.label)}>
+        {groups.map(group => <section key={group.label}>
           <h3>{t(group.label)} · {group.items.length}</h3>
           {group.items.map(topic => <button
             type="button"
@@ -198,7 +199,7 @@ export function TopicsPage({ userId, onOpenEvent }: { userId: number | null; onO
       </header>
 
       {!spaceId && <div className="topic-empty"><h2>{t("还没有选择空间")}</h2><p>{t("请先在「设置 / 账户」中登录并选择空间。")}</p></div>}
-      {error && <p className="topic-error" role="alert">{t(error)}</p>}
+      {error && <p className="topic-error" role="alert">{errorText(error)}</p>}
 
       {spaceId && creating && <div className="topic-create-wrap">
         <header>

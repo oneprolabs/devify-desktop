@@ -220,6 +220,8 @@
 
 .auth-login-modal .auth-browser-option.auth-connection-recovery {
   display: grid;
+  --recovery-label-line: 18px;
+  --recovery-label-gap: 4px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   gap: 8px;
@@ -278,12 +280,11 @@
 }
 
 .auth-connection-recovery .network-connection label {
-  gap: 4px 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--recovery-label-gap);
   font-size: 12.5px;
-}
-
-.auth-connection-recovery .network-connection-choice {
-  flex: 1 0 auto;
+  line-height: var(--recovery-label-line);
 }
 
 .auth-connection-recovery .network-connection select {
@@ -291,6 +292,7 @@
 }
 
 .auth-connection-retry {
+  margin-block-start: calc(var(--recovery-label-line) + var(--recovery-label-gap));
   min-width: 60px;
   min-height: 32px;
   padding: 4px 10px;
@@ -329,14 +331,4 @@
 
 .auth-login-modal:has(.auth-browser-option .auth-error) .auth-login-fields {
   gap: 10px;
-}
-
-@media (max-width: 520px) {
-  .auth-connection-recovery .network-connection-choice {
-    flex-basis: 100%;
-  }
-
-  .auth-connection-retry {
-    align-self: end;
-  }
 }

@@ -1,4 +1,5 @@
 import { t, tf, ctf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import appIcon from '../../assets/app-icon.png';
@@ -101,7 +102,7 @@ export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void
       <progress value={update.progress} max={100} aria-label={t("下载进度")} />
       {update.progress != null && <span>{update.progress}%</span>}
     </div>}
-    {(update.error || error) && <p className="about-update-sub is-error" role="alert">{update.error || error}</p>}
+    {(update.error || error) && <p className="about-update-sub is-error" role="alert">{errorText(update.error || error)}</p>}
     {update.blockers?.length ? <div className="about-update-blocked" role="alert">
       <span>{t("有上传正在进行。现在安装会中断上传，重启后可在「任务」页重试。")}</span>
       <button type="button" onClick={dismissInstallBlockers}>{t("稍后")}</button>
@@ -113,7 +114,7 @@ export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void
         const releaseUrl = update.version && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(update.version)
           ? RELEASE_URL.replace(/alpha$/, `v${update.version}`)
           : RELEASE_URL;
-        void invoke('devify_auth_open', { url: releaseUrl }).catch(value => setError(tf("打开下载页面失败：{0}", String(value))));
+        void invoke('devify_auth_open', { url: releaseUrl }).catch(value => setError(tf("打开下载页面失败：{0}", errorText(value))));
       }}>{t("手动下载")}</button>
     </div>}
   </div>;
@@ -131,13 +132,13 @@ export function About() {
   useEffect(() => {
     invoke<AppInfo>('app_info')
       .then(setInfo)
-      .catch(value => setError(tf("读取版本信息失败：{0}", String(value))));
+      .catch(value => setError(tf("读取版本信息失败：{0}", errorText(value))));
   }, []);
 
 
   return <div className="settings-page settings-refreshed about-page">
     <header className="page-head"><h2>{t("关于")}</h2><p className="help">{t("了解 AIMyChats 应用和版本信息。")}</p></header>
-    {error && <div className="error" role="alert">{t(error)}</div>}
+    {error && <div className="error" role="alert">{errorText(error)}</div>}
 
     <div className="about-details">
     <section className="panel about-product-panel">

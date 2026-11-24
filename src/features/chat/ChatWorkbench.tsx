@@ -3,6 +3,7 @@ import { LocalChatAvatar } from './LocalChatAvatar';
 import { LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { ChatPlatformBar } from './ChatPlatformBar';
 import { syncErrorMessage } from './chatPresentation';
+import { errorText, nativeErrorCode } from '../../shared/i18n/errorText';
 import { ChatEventsPane, type EventItem } from './ChatEventsPane';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -79,6 +80,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
   const [syncNoticeError, setSyncNoticeError] = useState(false);
+  const [syncNoticeUploading, setSyncNoticeUploading] = useState(false);
   const [syncScopeConfirmation, setSyncScopeConfirmation] = useState<string | null>(null);
   const [syncNoticePending, setSyncNoticePending] = useState(false);
   const [syncToastVisible, setSyncToastVisible] = useState(false);
@@ -318,7 +320,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
 
   const syncNow = async (scopeConfirmation?: string) => {
     if (syncing) return;
-    setSyncScopeConfirmation(null); setSyncBatchIds([]); setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticePending(false); setSyncToastVisible(true);
+    setSyncScopeConfirmation(null); setSyncBatchIds([]); setSyncing(true); setSyncNotice(''); setSyncNoticeError(false); setSyncNoticeUploading(false); setSyncNoticePending(false); setSyncToastVisible(true);
     try {
       const result = await invoke<SyncResult>('devify_sync_now', { scopeConfirmation });
       setSyncNoticeError(Boolean(result.error));
@@ -326,14 +328,18 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       setSyncBatchIds(result.error ? [] : ids);
       setSyncNoticePending(!result.error && ids.length > 0);
       setSyncNotice(result.error
-        ? (result.message_count ? tf("已提交 {0} 条记录，部分会话未完成。 ", result.message_count) : t("本次未提交记录。")) + syncErrorMessage(result.error)
+        ? result.message_count
+          ? tf("已提交 {0} 条记录，部分会话未完成。{1}", result.message_count, syncErrorMessage(result.error))
+          : tf("本次未提交记录。{0}", syncErrorMessage(result.error))
         : result.message_count
           ? ids.length ? tf("已提交 {0} 条记录，等待服务端处理。", result.message_count) : tf("已提交 {0} 条记录，请在任务中查看状态。", result.message_count)
           : t("没有需要提交的新记录。"));
       await refreshUploadState();
     } catch (reason) {
       const confirmation = /^SYNC_SCOPE_CONFIRM:([a-f0-9]{64})$/.exec(String(reason));
-      setSyncNoticeError(!String(reason).includes(t("该账号正在上传")));
+      const uploading = nativeErrorCode(reason) === 'ACCOUNT_UPLOAD_BUSY';
+      setSyncNoticeUploading(uploading);
+      setSyncNoticeError(!uploading);
       if (confirmation) {
         setSyncScopeConfirmation(confirmation[1]);
         setSyncNotice(t("当前账号和空间没有可用的同步进度。请先检查首次上传范围，再开始同步。"));
@@ -369,7 +375,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         } else {
           setSyncNoticeError(true);
           const failed = batches.find(batch => ['failed', 'cancelled'].includes(batch.status));
-          setSyncNotice(status === 'unknown' ? t("暂时无法确认服务端处理状态，请查看任务。") : failed?.error_message ? tf("服务端处理未完成：{0}", failed.error_message) : t("服务端处理未完成，请查看任务。"));
+          setSyncNotice(status === 'unknown' ? t("暂时无法确认服务端处理状态，请查看任务。") : failed?.error_message ? tf("服务端处理未完成：{0}", errorText(failed.error_message)) : t("服务端处理未完成，请查看任务。"));
         }
       } catch {
         if (!active) return;
@@ -465,7 +471,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         }
       }}>
         {loading && !sessions.length && <LoadingSkeleton label={t("正在加载会话")} />}
-        {error && <p className="chat-workbench-load-error" role="alert">{t(error)} <button type="button" onClick={() => void load()}>{t("重试")}</button></p>}
+        {error && <p className="chat-workbench-load-error" role="alert">{errorText(error)} <button type="button" onClick={() => void load()}>{t("重试")}</button></p>}
         <div className="chat-workbench-source-section" key={activeSource}>
             {groupSessions(visibleSessions).map(item => <Fragment key={item.key}>
               {item.name && <div className="chat-workbench-community-label">{item.name} {t("· 社区")}</div>}
@@ -486,7 +492,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             </Fragment>)}
             {[...sessionOffsets.current.values()].some(entry => (entry.account.source ?? 'wechat') === activeSource) && <div className="chat-workbench-source-more" data-more-source={activeSource}>
               {loadingSource === activeSource && <p className="chat-workbench-empty" role="status">{t('正在读取会话…')}</p>}
-              {moreSessionsErrors[activeSource] && <p className="chat-workbench-load-error" role="alert">{t(moreSessionsErrors[activeSource])} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(activeSource)}>{t('重试')}</button></p>}
+              {moreSessionsErrors[activeSource] && <p className="chat-workbench-load-error" role="alert">{errorText(moreSessionsErrors[activeSource])} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(activeSource)}>{t('重试')}</button></p>}
               {!loading && !moreSessionsErrors[activeSource] && (query.trim() || filter !== 'all') && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions(activeSource)}>{t('加载更多会话')}</button>}
             </div>}
           </div>
@@ -540,7 +546,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             <button type="button" onClick={onOpenWhitelist}>{t("检查上传范围")}</button>
             <button type="button" onClick={() => void syncNow(syncScopeConfirmation)}>{t("确认并开始同步")}</button>
           </div> : <>
-            {!syncing && (syncNoticeError || syncNotice.includes(t("后台上传"))) && <button type="button" onClick={onOpenTasks}>{t("查看任务")}</button>}
+            {!syncing && (syncNoticeError || syncNoticeUploading) && <button type="button" onClick={onOpenTasks}>{t("查看任务")}</button>}
             {syncNoticeError && <button type="button" onClick={() => requestFeedback('upload', 'chat', syncBatchIds.slice(0, 20))}>{t("反馈此问题")}</button>}
           </>}
           <button type="button" className="sync-feedback-close" onClick={() => setSyncToastVisible(false)} aria-label={t("关闭提示")}>×</button>

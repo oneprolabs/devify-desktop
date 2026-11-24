@@ -4,6 +4,7 @@ import { DailyTimePicker } from '../../shared/ui/DailyTimePicker';
 import { analysisSettingsError } from './analysisSettingsText';
 import { REPORT_PLANS, reportPlanSelection, type ReportDefinition } from './reportPlans';
 import { t, tf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 
 function readPlan(value: unknown, definition: ReportDefinition) {
   try { return { ...reportPlanSelection(value, definition), error: '' }; }
@@ -89,7 +90,7 @@ export function ReportSchedules({ spaceId, onOpenReports, onOpenTopics }: { spac
   }, [spaceId, revision]);
   return <section className="analysis-report-settings" aria-label={t('定期报告')}>
     <div className="analysis-section-head"><div><h3>{t('定期报告')}</h3><p>{t('根据已生成的笔记与待办汇总。客户端关闭后仍会按计划生成。')}</p></div><button type="button" onClick={onOpenReports}>{t('查看报告')}</button></div>
-    {!plans ? error ? <p role="alert" className="analysis-report-error">{error} <button type="button" onClick={() => setRevision(value => value + 1)}>{t('重新读取')}</button></p> : <p role="status" className="analysis-report-note">{t('正在读取报告计划…')}</p>
+    {!plans ? error ? <p role="alert" className="analysis-report-error">{errorText(error)} <button type="button" onClick={() => setRevision(value => value + 1)}>{t('重新读取')}</button></p> : <p role="status" className="analysis-report-note">{t('正在读取报告计划…')}</p>
       : <div className="analysis-main-settings">{REPORT_PLANS.map(definition => <ReportScheduleRow key={definition.period} spaceId={spaceId} plans={plans} definition={definition} onOpenTopics={onOpenTopics}/>)}</div>}
     <p className="analysis-quiet-note">{t('按计划时间之后生成第一份报告；该时段暂无可用内容时跳过。')}</p>
   </section>;

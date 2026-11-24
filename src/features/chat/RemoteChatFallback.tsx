@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { t } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 
 type Part = { id: number; kind: string; text?: string; upload_item_id?: number | null; media_url?: string };
@@ -64,7 +65,7 @@ export function RemoteChatFallback({ accountId, username }: { accountId: string;
   };
   return <section className="remote-chat-fallback">
     {busy && <div className="remote-chat-state" role="status"><span className="wizard-action-spinner" aria-hidden="true"/><h3>{t('正在查找云端备份')}</h3><p>{t('本地暂时无法读取这段记录，正在检查已备份的内容。')}</p></div>}
-    {!busy && error && <div className="remote-chat-state" role="alert"><h3>{t('读取备份失败')}</h3><p>{error}</p><WizardActionButton className="connector-quiet" onAction={() => load()}>{t('重试')}</WizardActionButton></div>}
+    {!busy && error && <div className="remote-chat-state" role="alert"><h3>{t('读取备份失败')}</h3><p>{errorText(error)}</p><WizardActionButton className="connector-quiet" onAction={() => load()}>{t('重试')}</WizardActionButton></div>}
     {!busy && !error && !messages.length && <div className="remote-chat-state" role="status">
       <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M6 5.5h20a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H13l-7 5v-5a2 2 0 0 1-2-2v-14a2 2 0 0 1 2-2Z"/><path d="M10 12h12M10 17h8"/></svg>
       <h3>{t('暂时没有可查看的记录')}</h3><p>{t('本地暂时无法读取这段记录，当前空间也未找到云端备份。')}</p>

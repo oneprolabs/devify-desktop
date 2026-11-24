@@ -243,16 +243,20 @@ async fn devify_auth_config(
         .get(format!("{}/api/v1/auth/desktop/config", base_url))
         .send_traced_retrying(data, diagnostics::Module::Auth, RetryPolicy::READ)
         .await
-        .map_err(|e| devify_network_message("读取服务端登录配置失败", &e))?;
+        .map_err(|error| {
+            let code = if devify_unreachable(&error) { "AUTH_CONFIG_UNAVAILABLE" } else { "AUTH_CONFIG_INVALID" };
+            let message = devify_network_message("读取服务端登录配置失败", &error);
+            format!("{code}: {message}")
+        })?;
     if !response.status().is_success() {
-        return Err(format!("读取服务端登录配置失败：{}", response.status()));
+        return Err(format!("AUTH_CONFIG_INVALID: 读取服务端登录配置失败：{}", response.status()));
     }
     let payload: serde_json::Value = response
         .json()
         .await
-        .map_err(|_| "服务端登录配置响应无效，请检查服务地址并稍后重试。".to_string())?;
+        .map_err(|_| "AUTH_CONFIG_INVALID: 服务端登录配置响应无效，请检查服务地址并稍后重试。".to_string())?;
     serde_json::from_value(payload.get("data").unwrap_or(&payload).clone())
-        .map_err(|e| format!("服务端登录配置格式无效：{e}"))
+        .map_err(|e| format!("AUTH_CONFIG_INVALID: 服务端登录配置格式无效：{e}"))
 }
 
 /// Read a string claim from a JWT without verifying it. The server remains the
@@ -409,7 +413,7 @@ async fn devify_access_token_resolve(app_data: &Path, base_url: &str, cleared_ge
     // local credential persistence impossible. The response still uses CAS below
     // in case the identity changes after this availability check.
     drop(UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| DevifyTokenError::Unavailable(
-        "备份正在使用登录状态，请在当前上传结束后重试。".into(),
+        "AUTH_UPLOAD_BUSY: 备份正在使用登录状态，请在当前上传结束后重试。".into(),
     ))?);
     let response = http_client::strict()
         .post(format!("{}{path}", base_url.trim_end_matches('/')))

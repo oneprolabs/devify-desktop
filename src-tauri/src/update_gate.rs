@@ -18,7 +18,7 @@ impl UpdateGate {
     pub fn begin_upload(&self, account: &str) -> Result<UploadGuard<'_>, String> {
         let mut state = self.0.lock().map_err(|_| "无法检查上传状态。")?;
         if state.installing { return Err("正在安装更新，请稍后重试。".into()); }
-        if !state.accounts.insert(account.to_string()) { return Err("该账号正在上传，请稍后重试。".into()); }
+        if !state.accounts.insert(account.to_string()) { return Err("ACCOUNT_UPLOAD_BUSY: 该账号正在上传，请稍后重试。".into()); }
         Ok(UploadGuard { gate: self, account: account.to_string() })
     }
 

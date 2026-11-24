@@ -1,4 +1,5 @@
 import { t, tf, ctf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FeedbackScreenshot, readScreenshot } from './FeedbackScreenshot';
@@ -47,7 +48,7 @@ export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [
   }, [category, page]);
   useEffect(() => {
     if (!draft || draft.attempted || busy) return;
-    const timer = window.setTimeout(() => { void save(draft).catch(value => setError(tf("草稿未保存：{0}", String(value)))); }, 700);
+    const timer = window.setTimeout(() => { void save(draft).catch(value => setError(tf("草稿未保存：{0}", errorText(value)))); }, 700);
     return () => window.clearTimeout(timer);
   }, [draft, busy]);
   useEffect(() => { if (onClose && dialog.current && !dialog.current.open) dialog.current.showModal(); }, [onClose]);
@@ -112,7 +113,7 @@ export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [
   }}>
     {!pageMode && <header className="feedback-header"><div><h2 id="feedback-title">{t("问题反馈")}</h2><p>{t("描述遇到的问题，帮助我们改进 AIMyChats。")}</p></div>{onClose && <button type="button" className="feedback-close" disabled={busy || adding} onClick={() => void close()} aria-label={t("保存并关闭反馈")}>×</button>}</header>}
     <nav className="feedback-tabs" aria-label={t("反馈导航")}><button type="button" disabled={busy || editing !== null} aria-current={tab === 'new' ? 'page' : undefined} onClick={() => { setTab('new'); setError(''); }}>{t("提交问题")}</button><button type="button" disabled={busy || editing !== null} aria-current={tab === 'history' ? 'page' : undefined} onClick={() => void loadHistory()}>{t("我的反馈")}</button></nav>
-    {error && <div className="feedback-error" role="alert">{t(error)}{tab === 'history' && !busy && <button type="button" onClick={() => void loadHistory(historyPage)}>{t("重试")}</button>}{closeFailed && onClose && <button type="button" onClick={onClose}>{t("不保存本次修改并关闭")}</button>}</div>}{notice && <div className="feedback-notice" role="status">{notice}</div>}
+    {error && <div className="feedback-error" role="alert">{errorText(error)}{tab === 'history' && !busy && <button type="button" onClick={() => void loadHistory(historyPage)}>{t("重试")}</button>}{closeFailed && onClose && <button type="button" onClick={onClose}>{t("不保存本次修改并关闭")}</button>}</div>}{notice && <div className="feedback-notice" role="status">{notice}</div>}
     {loading && <p role="status">{t("正在读取反馈草稿…")}</p>}
     {!loading && !draft && tab === 'new' && <button type="button" onClick={() => void newDraft()}>{t("重新加载")}</button>}
     {tab === 'new' && draft && <>
@@ -133,7 +134,7 @@ export function Feedback({ category = 'other', page = 'app', relatedBatchIds = [
         <footer className="feedback-actions"><small>{t("草稿自动保存在本机")}</small>{draft.attempted && <button type="button" disabled={busy} onClick={() => void newDraft()}>{t("新建反馈")}</button>}<button type="submit" className="primary" disabled={busy || adding || editing !== null || !draft.description.trim() || !draft.owner_id || !draft.receiver}>{busy ? t("正在处理…") : draft.attempted ? t("重试提交") : t("提交反馈")}</button></footer>
       </form>
     </>}
-    {tab === 'history' && <section className="feedback-history" aria-label={t("我的反馈")}>{busy ? <p role="status">{t("正在读取反馈…")}</p> : <>{!history.length && !error && <p className="feedback-empty">{t("还没有提交过反馈。")}</p>}{history.map(item => <article key={item.id}><header><strong>{t(feedbackCategories[item.category] || item.category)}</strong><span className={`feedback-status ${item.status}`}>{t(feedbackStatuses[item.status] || item.status)}</span></header><p>{t(item.description)}</p><small>{new Date(item.created_at).toLocaleString()} · {feedbackCode(item.id)}</small>{item.reply && <blockquote><strong>{t("处理回复")}{item.fix_version ? tf(" · 修复版本 {0}", item.fix_version) : ''}</strong><p>{item.reply}</p></blockquote>}</article>)}{!error && <div className="feedback-actions"><button type="button" disabled={historyPage === 1} onClick={() => void loadHistory(historyPage - 1)}>{t("上一页")}</button><span>{t("第")} {historyPage} {t("页")}</span><button type="button" disabled={!hasNext} onClick={() => void loadHistory(historyPage + 1)}>{t("下一页")}</button><button type="button" onClick={() => void loadHistory(historyPage)}>{t("刷新")}</button></div>}</>}</section>}
+    {tab === 'history' && <section className="feedback-history" aria-label={t("我的反馈")}>{busy ? <p role="status">{t("正在读取反馈…")}</p> : <>{!history.length && !error && <p className="feedback-empty">{t("还没有提交过反馈。")}</p>}{history.map(item => <article key={item.id}><header><strong>{t(feedbackCategories[item.category] || item.category)}</strong><span className={`feedback-status ${item.status}`}>{t(feedbackStatuses[item.status] || item.status)}</span></header><p>{item.description}</p><small>{new Date(item.created_at).toLocaleString()} · {feedbackCode(item.id)}</small>{item.reply && <blockquote><strong>{t("处理回复")}{item.fix_version ? tf(" · 修复版本 {0}", item.fix_version) : ''}</strong><p>{item.reply}</p></blockquote>}</article>)}{!error && <div className="feedback-actions"><button type="button" disabled={historyPage === 1} onClick={() => void loadHistory(historyPage - 1)}>{t("上一页")}</button><span>{tf("第 {0} 页", historyPage)}</span><button type="button" disabled={!hasNext} onClick={() => void loadHistory(historyPage + 1)}>{t("下一页")}</button><button type="button" onClick={() => void loadHistory(historyPage)}>{t("刷新")}</button></div>}</>}</section>}
   </div>;
   return onClose ? <dialog ref={dialog} className="feedback-dialog" aria-labelledby="feedback-title" onCancel={event => { event.preventDefault(); void close(); }}>{content}</dialog> : content;
 }

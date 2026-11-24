@@ -1,4 +1,5 @@
 import { t, dateLocale, sortLocale } from '../../../shared/i18n/locale';
+import { errorText } from '../../../shared/i18n/errorText';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -48,7 +49,7 @@ export function CollectionMessages({ accountId, username, since, until, selected
       <button type="button" disabled={busy || !selected.length} onClick={() => onChange([])}>{t("清空")}</button>
     </div>
     {loading && <p>{t("正在读取所选日期内的消息…")}</p>}
-    {error && <p className="collection-error" role="alert">{t(error)}</p>}
+    {error && <p className="collection-error" role="alert">{errorText(error)}</p>}
     {!loading && !error && !visible.length && <p>{messages.length ? t("没有匹配的消息。") : t("此范围内没有消息。")}</p>}
     <div className="collection-message-list" ref={listRef}>{visible.map((message, index) => <label className="collection-message" key={`${message.local_id}-${message.time}-${index}`}>
       <input type="checkbox" checked={chosen(message)} disabled={busy} onChange={() => toggle(message)} />

@@ -1,3 +1,4 @@
+import * as nativeErrors from '../src/shared/i18n/errorText.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -20,6 +21,7 @@ new Function('require','module','exports',code)(id=>{
  if(id==='../../shared/api/desktopInvoke')return {desktopInvoke:invoke};
  if(id==='../../shared/i18n/locale')return {t:s=>s};
  if(id==='../../shared/ui/WizardActionButton')return {WizardActionButton:()=>null};
+  if (id.endsWith('/i18n/errorText')) return nativeErrors;
  throw Error(id);
 },mod,mod.exports);
 instance={hooks:[]};

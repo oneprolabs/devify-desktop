@@ -19,6 +19,7 @@ import type {
 import { toDate, pad, dayKey, dayLabel, timeOnly, listTime, avatarColor, initial, messageAvatar, Highlight } from './presentation';
 import { isSummaryText } from '../summary/summaryInput';
 import { t, tf, dateLocale } from '../../../shared/i18n/locale';
+import { errorText, nativeErrorCode } from '../../../shared/i18n/errorText';
 import { RemoteChatFallback } from '../RemoteChatFallback';
 import { LoadingSkeleton } from '../../../shared/ui/LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -334,7 +335,7 @@ export default function WeChatLocal({
         setWhitelistConfigured(null);
         // Before the first decrypt there is simply no session.db; that is the
         // onboarding state, not an error worth covering the key guide with.
-        if (!message.includes(t("未找到解密后的"))) setError(message);
+        if (nativeErrorCode(message) !== 'WECHAT_SESSION_DB_MISSING') setError(message);
         return [];
       }
     },
@@ -530,7 +531,7 @@ export default function WeChatLocal({
         settingsRef.current = requireSettingsRevision(await invoke<AppSettings>('app_settings_get'));
         await doScan(settingsRef.current.active_account_id || undefined);
       } catch (reason) {
-        setError(tf("设置加载失败，无法选择微信账号：{0}。请重新打开页面。", String(reason)));
+        setError(tf("设置加载失败，无法选择微信账号：{0}。请重新打开页面。", errorText(reason)));
       }
     })();
     // Scan once per pinned account; account switching and manual rescans call doScan directly.
@@ -792,7 +793,7 @@ export default function WeChatLocal({
     setImageViewer({ src: null, error: '' });
     void invoke<string>('wechat_media_open_image', { accountId: account.id, paths })
       .then(path => { if (imageViewerRequest.current === request) setImageViewer({ src: convertFileSrc(path), error: '' }); })
-      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: tf("无法查看图片：{0}", String(reason)) }); });
+      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: tf("无法查看图片：{0}", errorText(reason)) }); });
   };
 
   const loadOlder = async () => {
@@ -1159,7 +1160,7 @@ export default function WeChatLocal({
       await invoke<SummaryRecord[]>('summary_history_add', { record });
       setNotice(tf("{0}已保存到本机，可在左侧「总结记录」查看。", HISTORY_KIND_LABEL[record.kind]));
     } catch (e) {
-      setError(tf("保存总结记录失败：{0}", String(e)));
+      setError(tf("保存总结记录失败：{0}", errorText(e)));
     }
   };
 
@@ -1547,7 +1548,7 @@ export default function WeChatLocal({
           <small>
             {tab === 'group'
               ? tf("扫描最近 {0} 个群聊（未检索单聊）", search.scanned)
-              : tf("扫描最近 {0} 个会话{1}", search.scanned, search.skipped ? `，另有 ${search.skipped} 个未扫描` : '')}
+              : search.skipped ? tf("扫描了最近 {0} 个会话，另有 {1} 个未扫描。", search.scanned, search.skipped) : tf("扫描了最近 {0} 个会话。", search.scanned)}
           </small>
         </div>
         {search.hits.map(hit => (
@@ -2299,7 +2300,7 @@ export default function WeChatLocal({
         {notice && !wizard && <div className="wxv-toast">{notice}</div>}
         {error && isTauri() && !wizard && (
           <div className="wxv-toast error">
-            <span>{t(error)}</span>
+            <span>{errorText(error)}</span>
             <button type="button" className="wxv-icon" onClick={() => setError('')} aria-label={t("关闭提示")}>
               {Icons.close}
             </button>
@@ -2309,7 +2310,7 @@ export default function WeChatLocal({
 
       {imageViewer && createPortal(<div className="wxv-image-viewer" role="dialog" aria-modal="true" aria-label={t("查看图片")} onClick={closeImage}>
         <button type="button" className="wxv-image-viewer-close" aria-label={t("关闭图片")} onClick={closeImage} autoFocus>×</button>
-        {imageViewer.error ? <p role="alert">{imageViewer.error}</p> : imageViewer.src ? <img src={imageViewer.src} alt={t("聊天图片原图")} onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: t("图片加载失败。") })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{t("正在加载原图…")}</p>}
+        {imageViewer.error ? <p role="alert">{errorText(imageViewer.error)}</p> : imageViewer.src ? <img src={imageViewer.src} alt={t("聊天图片原图")} onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: t("图片加载失败。") })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{t("正在加载原图…")}</p>}
       </div>, document.body)}
       {/* The capture guide needs the full column width; the digest drawer would clip it. */}
       {workOpen && !forceUnlock && renderWorkSelector()}

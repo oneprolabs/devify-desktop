@@ -1,4 +1,5 @@
 import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { LoadingPage, LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -144,9 +145,10 @@ function isoWeek(date: Date): number {
 }
 
 function reportKind(report: ReportItem): string {
-  if (report.title.includes("周报")) return "周报";
-  if (report.title.includes("月报")) return "月报";
-  if (report.title.includes("日报")) return "日报";
+  // Older reports have no cadence field. Recognize titles generated in either supported language.
+  if (/周报|^Weekly\s*·/i.test(report.title)) return "周报";
+  if (/月报|^Monthly\s*·/i.test(report.title)) return "月报";
+  if (/日报|^Daily\s*·/i.test(report.title)) return "日报";
   return "报告";
 }
 function reportType(report: ReportItem): string {
@@ -623,7 +625,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   if (listError && !items.length && (kind !== 'events' || !sourceScope)) return <div className="analysis-page">
     <div className="analysis-empty error" role="alert">
       <h2>{t("同步失败")}</h2>
-      <p>{listError}</p>
+      <p>{errorText(listError)}</p>
       <button type="button" className="event-empty-action" onClick={reload}>{t("重试")}</button>
     </div>
   </div>;
@@ -632,7 +634,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     <aside className="analysis-side" aria-label={tf("{0}列表", pageTitle)}>
       <h1>{pageTitle}</h1>
       {kind === 'events' && legacyEvents && <p role="status">{t('当前服务暂不支持个人分类，暂时显示全部待办。')}</p>}
-      {listError && <p role="status">{items.length ? t("暂时无法更新，显示上次读取的内容。") : listError}<button type="button" onClick={reload}>{t("重试")}</button></p>}
+      {listError && <p role="status">{items.length ? t("暂时无法更新，显示上次读取的内容。") : errorText(listError)}<button type="button" onClick={reload}>{t("重试")}</button></p>}
       <p className="analysis-side-count">{kind === 'events' ? tf("{0} 个待办 · 跨全部会话", allCount ?? '—') : tf("{0} 份报告", items.length)}</p>
 
       <div className="analysis-search">
@@ -733,7 +735,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
               <small>{t(genRange(genType).hint)}</small>
             </div>
           </div>
-          {genError && <p className="analysis-empty error" role="alert">{genError}</p>}
+          {genError && <p className="analysis-empty error" role="alert">{errorText(genError)}</p>}
           <button type="button" className="report-create-submit" disabled={generating} onClick={() => void generateReport()}>{generating ? t("正在提交…") : t("生成")}</button>
           <p className="report-create-note">{t("会按所选区间重新汇总待办；生成完成后会出现在左侧列表，标题为「")}{genRange(genType).title}」。</p>
         </div>}
@@ -741,7 +743,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         {!(kind === 'reports' && creating) && <>
         {(detailLoading || (kind === 'events' && loading)) && !currentDetail && <LoadingSkeleton label={t("正在加载详情")} kind="detail" />}
         {error && <div className="analysis-action-error" role="alert">
-          <span>{error}</span>{' '}
+          <span>{errorText(error)}</span>{' '}
           <button type="button" className="event-empty-action" onClick={reload}>{t("重试")}</button>
         </div>}
         {kind === 'events' && selectedId == null && !detailLoading && !loading && !listError && <div className="analysis-empty event-empty" role="status">
@@ -766,7 +768,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
               rows={4}
               onChange={change => setEditContent(change.target.value)}
             />
-            {actionError && <p className="analysis-action-error" role="alert">{actionError}</p>}
+            {actionError && <p className="analysis-action-error" role="alert">{errorText(actionError)}</p>}
             <div className="analysis-edit-foot">
               <span>{t("保存后以你的版本为准，云端不会覆盖")}</span>
               <button type="button" disabled={actionBusy === 'save'} onClick={() => { setEditing(false); setActionError(''); }}>{t("取消")}</button>
@@ -787,7 +789,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
               <p className="analysis-summary">{event.content || t("尚未返回待办内容。")}</p>
             </section>}
           </header>}
-          {actionError && !editing && <p className="analysis-action-error" role="alert">{actionError}</p>}
+          {actionError && !editing && <p className="analysis-action-error" role="alert">{errorText(actionError)}</p>}
 
           <section className="analysis-timeline" id="event-timeline">
             <div className="analysis-block-head"><h2>{t("时间线")}</h2>{eventTab === 'sources' && eventNotes.length > 0 && !event.evidence?.length && <button type="button" className="analysis-raw-toggle" onClick={toggleAllRaw}>{allRawOpen ? t("收起全部原文") : t("查看全部原文")}</button>}</div>
@@ -939,7 +941,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         </header>
         <div className="analysis-picker-list">
           {linkList.loading && <p className="analysis-list-empty" role="status">{t('正在加载待办')}</p>}
-          {linkList.error && <p role="alert">{linkList.error} <button type="button" onClick={() => setPickerReload(value => value + 1)}>{t('重试')}</button></p>}
+          {linkList.error && <p role="alert">{errorText(linkList.error)} <button type="button" onClick={() => setPickerReload(value => value + 1)}>{t('重试')}</button></p>}
           {linkCandidates.map(item => <div className="analysis-picker-row" key={item.id}>
             <DoneDot done={isDone(item.status)}/>
             <span>

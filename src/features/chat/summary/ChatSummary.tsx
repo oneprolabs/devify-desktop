@@ -1,4 +1,5 @@
 import { t, tf, ctf, cf } from '../../../shared/i18n/locale';
+import { errorText } from '../../../shared/i18n/errorText';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -517,7 +518,7 @@ export function ChatSummary({
           {t("只保存在本机，最多 50 条 ·")} {t(bounds.label)} · {session?.display ?? t("请选择会话")}
         </p>
 
-        {error && <p className="chat-summary-error">{t(error)}</p>}
+        {error && <p className="chat-summary-error">{errorText(error)}</p>}
 
         {confirmAi && <div className="chat-summary-confirm">
           <span>{t("用本机 Agent「")}{agent?.agent_name}{t("」整理。")}</span>
@@ -534,7 +535,7 @@ export function ChatSummary({
       </section>}
 
       {notice && <p className="chat-summary-notice">{notice}</p>}
-      {error && !open && <p className="chat-summary-error">{t(error)}</p>}
+      {error && !open && <p className="chat-summary-error">{errorText(error)}</p>}
 
       {busy && <article className="chat-summary-card doing" aria-live="polite">
         <header className="chat-summary-card-head">

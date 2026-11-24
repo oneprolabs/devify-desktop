@@ -1,4 +1,5 @@
 import { t, dateLocale, sortLocale } from '../i18n/locale';
+import { errorText } from '../i18n/errorText';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -236,7 +237,7 @@ export function EvidenceDrawer({ spaceId, target, onClose, onNavigate, onOpenDet
 
       <div className="evidence-body">
         {loading && <p className="evidence-hint" aria-busy="true">{t("正在加载依据…")}</p>}
-        {!loading && error && <p className="evidence-hint bad" role="alert">{t(error)}</p>}
+        {!loading && error && <p className="evidence-hint bad" role="alert">{errorText(error)}</p>}
 
         {!loading && !error && target.kind === 'message' && !target.conversation_id &&
           <p className="evidence-hint bad" role="alert">{t("这条消息缺少所属会话，无法展示原文。")}</p>}

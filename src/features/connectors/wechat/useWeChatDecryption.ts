@@ -83,7 +83,7 @@ export function useWeChatDecryption({ account, accountSwitching, clearing, reset
       setOutcomes(result);
       const ok = result.filter(o => o.status === 'ok' || o.status === 'cached').length;
       const failed = result.length - ok;
-      setNotice(tf("解密完成：{0} 个数据库可用{1}。", ok, failed ? `，${failed} 个失败或缺少密钥` : ''));
+      setNotice(failed ? tf("解密完成：{0} 个数据库可用，{1} 个失败或缺少密钥。", ok, failed) : tf("解密完成：{0} 个数据库可用。", ok));
       if(ok > 0) {
         await loadSessions(account.id);
       } else if(result.length > 0) {

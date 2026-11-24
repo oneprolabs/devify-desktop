@@ -179,10 +179,13 @@ pub fn source_db() -> Result<PathBuf, String> {
     let source = data_dir()
         .ok_or("找不到 WhatsApp 数据目录。")?
         .join(DB_FILE);
-    if !source.is_file() {
-        return Err("未找到 WhatsApp 的 ChatStorage.sqlite，请先打开并登录 WhatsApp。".into());
+    match fs::metadata(&source) {
+        Ok(metadata) if metadata.is_file() => Ok(source),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(format!("WHATSAPP_ACCESS_DENIED: 无法读取 WhatsApp 本地数据：{error}"))
+        }
+        _ => Err("未找到 WhatsApp 的 ChatStorage.sqlite，请先打开并登录 WhatsApp。".into()),
     }
-    Ok(source)
 }
 
 /// Copy the live store into the app data directory and return the copy's path.
@@ -275,7 +278,7 @@ fn require<'a>(columns: &'a [String], names: &[&str], table: &str) -> Result<&'a
             return Ok(found.as_str());
         }
     }
-    Err(format!("这个 WhatsApp 版本的 {table} 缺少 {names:?} 字段，暂不支持读取。"))
+    Err(format!("WHATSAPP_DATA_UNSUPPORTED: 这个 WhatsApp 版本的 {table} 缺少 {names:?} 字段，暂不支持读取。"))
 }
 
 fn core_data_time(value: f64) -> i64 {
@@ -313,7 +316,7 @@ fn sessions_from(conn: &Connection) -> Result<Vec<SessionItem>, String> {session
 pub fn sessions_page(data:&Path,allowed:&HashSet<String>,limit:usize,offset:usize)->Result<Vec<SessionItem>,String>{sessions_page_from(&*open(data)?,Some(allowed),Some(limit),offset)}
 fn sessions_page_from(conn:&Connection,allowed:Option<&HashSet<String>>,limit:Option<usize>,offset:usize)->Result<Vec<SessionItem>,String>{
     if !table_exists(conn, "ZWACHATSESSION") {
-        return Err("WhatsApp 数据版本不受支持（缺少 ZWACHATSESSION）。".into());
+        return Err("WHATSAPP_DATA_UNSUPPORTED: WhatsApp 数据版本不受支持（缺少 ZWACHATSESSION）。".into());
     }
     let cols = columns(conn, "ZWACHATSESSION");
     let jid = require(&cols, &["ZCONTACTJID"], "ZWACHATSESSION")?.to_string();
@@ -498,7 +501,7 @@ pub fn upload_page(data: &Path, chat: &str, since: i64, until: Option<i64>, afte
 
 fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<MessageCursor>,since:Option<i64>,until:Option<i64>,ascending:bool,selection:Option<&[crate::settings::MessageRef]>)->Result<Vec<MessageItem>,String>{
     if !table_exists(&conn, "ZWACHATSESSION") || !table_exists(&conn, "ZWAMESSAGE") {
-        return Err("WhatsApp 数据版本不受支持（缺少会话或消息表）。".into());
+        return Err("WHATSAPP_DATA_UNSUPPORTED: WhatsApp 数据版本不受支持（缺少会话或消息表）。".into());
     }
     let limit = limit.clamp(1, 5000);
     let session_pk: i64 = conn
@@ -814,7 +817,7 @@ pub fn message_dates(app_data: &Path, chat: &str) -> Result<Vec<(String, usize)>
 
 fn message_dates_from(conn: &Connection, chat: &str) -> Result<Vec<(String, usize)>, String> {
     if !table_exists(conn, "ZWACHATSESSION") || !table_exists(conn, "ZWAMESSAGE") {
-        return Err("WhatsApp 数据版本不受支持。".into());
+        return Err("WHATSAPP_DATA_UNSUPPORTED: WhatsApp 数据版本不受支持。".into());
     }
     let session_pk: i64 = conn
         .query_row(

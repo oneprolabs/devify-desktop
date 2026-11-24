@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import type { AppSettings } from '../settings/settingsModel';
 
@@ -32,7 +33,7 @@ export function AgentVoiceSettings({ settings, saving, onSave }: { settings: App
       </div><WizardActionButton className="primary" busyLabel={t('正在保存…')} onAction={async () => {
         setError(''); setMessage(''); try { setVoice(await invoke<VoiceStatus>('wechat_voice_settings_save', voice.settings)); setMessage(t('转写引擎设置已保存。')); } catch (reason) { setError(String(reason)); }
       }}>{t('保存转写设置')}</WizardActionButton></details>}
-      {message && <p className="integration-success" role="status">{message}</p>}{error && <p className="integration-error" role="alert">{error}</p>}
+      {message && <p className="integration-success" role="status">{message}</p>}{error && <p className="integration-error" role="alert">{errorText(error)}</p>}
     </div>}
   </details>;
 }

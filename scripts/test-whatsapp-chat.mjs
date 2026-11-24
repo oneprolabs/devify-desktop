@@ -1,3 +1,4 @@
+import * as nativeErrors from '../src/shared/i18n/errorText.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -86,6 +87,7 @@ const mockedRequire = id => {
   if (id === '../backup/syncFeedback') return { syncFeedback: () => 'completed' };
   if (id === './chatPresentation') return { eventViewState: () => 'empty', syncErrorMessage: String };
   if (id === '../../shared/i18n/locale' || id === '../../../shared/i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+  if (id.endsWith('/i18n/errorText')) return nativeErrors;
   if (id === '../../toast') return { exportNotSupported() {} };
   if (id.endsWith('.svg')) return id;
   return new Proxy({}, { get: () => component });
