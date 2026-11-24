@@ -10,22 +10,24 @@ import type { AppSettings } from '../settings/settingsModel';
 
 export type AgentProfile = { command: string; model: string; timeout_seconds: number; skills_dir: string };
 export type AgentInfo = { id: string; name: string; command: string | null; version: string | null; available: boolean; note: string };
-export type AccessTarget = { id: string; name: string; available: boolean; command: string | null; skills_dir: string; installed: string[] };
+export type AccessTarget = { id: string; name: string; available: boolean; command: string | null; desktop_app?: string | null; config_dir?: string | null; skills_dir: string; installed: string[] };
 export type AccessStatus = { running: boolean; reason: string | null; wxq: unknown | null; targets: AccessTarget[]; skills: { name: string }[] };
 export const AGENTS = [
-  { id: 'codex', name: 'OpenAI Codex', icon: codex, callable: true },
-  { id: 'claude-code', name: 'Claude Code', icon: claude, callable: true },
+  { id: 'codex', name: 'Codex CLI', icon: codex, callable: true },
+  { id: 'claude-code', name: 'Claude Code CLI', icon: claude, callable: true },
   { id: 'gemini-cli', name: 'Gemini CLI', icon: gemini, callable: true },
   { id: 'workbuddy', name: 'WorkBuddy', icon: workbuddy, callable: false },
   { id: 'deepseek-harness', name: 'DeepSeek Harness', icon: deepseek, callable: false },
-  { id: 'opencode', name: 'OpenCode', icon: opencode, callable: true },
+  { id: 'opencode', name: 'OpenCode CLI', icon: opencode, callable: true },
   { id: 'cursor-agent', name: 'Cursor CLI', icon: cursor, callable: true },
   { id: 'qwen-code', name: 'Qwen Code', icon: qwen, callable: true },
 ] as const;
+// Keep this short catalog separate from the CLI invocation adapters.
+export const ACCESS_AGENTS = ['codex', 'claude-code', 'opencode', 'workbuddy'].map(id => AGENTS.find(agent => agent.id === id)!);
 export const SUMMARY_AGENTS = AGENTS.filter(agent => agent.callable);
 export const agentById = (id: string) => AGENTS.find(agent => agent.id === id);
 export function agentInvocationNotice(id: string): string {
-  if (id === 'workbuddy') return '不支持 CLI 调用，仅支持 Skills 接入';
+  if (id === 'workbuddy') return '此处安装 Skills，直接总结仅支持上方已适配的 CLI。';
   if (id === 'deepseek-harness') return 'CLI 总结暂未适配，仅支持 Skills 接入';
   return '';
 }

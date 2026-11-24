@@ -34,17 +34,17 @@ export function AgentHub({ onOpenAnalysis }: { onOpenAnalysis?: () => void }) {
     return ok;
   };
   return <div className="settings-page agent-integration">
-    <header className="page-head"><h2>{t('智能体集成')}</h2><p className="help">{t('从直接总结，到使用自己的智能体，按需选择。')}</p></header>
+    <header className="page-head"><h2>{t('智能体集成')}</h2><p className="help">{t('在 AIMyChats 中生成总结，也可以让你的智能体读取聊天记录。')}</p></header>
     <section className="integration-online" aria-labelledby="integration-online-title">
-      <div className="integration-section-heading"><h3 id="integration-online-title"><span>1</span>{t('默认使用线上总结')}</h3><small className="integration-online-badge">{t('默认使用')}</small></div>
+      <div className="integration-section-heading"><h3 id="integration-online-title">{t('默认使用线上总结')}</h3><small className="integration-online-badge">{t('默认使用')}</small></div>
       <p>{t('在聊天中选择「生成总结」，使用 AIMyChats 提供的线上模型，无需安装智能体。')}</p>
     </section>
     {!ready && !model.error && <p role="status">{t('正在加载设置…')}</p>}
     {model.error && <p role="alert" className="integration-error">{model.error} <button type="button" className="integration-text" disabled={saving} onClick={() => void model.reload()}>{t('重新加载')}</button></p>}
     {ready && canSummary && <section className="integration-local" aria-labelledby="integration-local-title">
-      <div className="integration-section-heading"><div><h3 id="integration-local-title"><span>2</span>{t('使用本地智能体总结')}</h3><p>{t('开启后，可在聊天中调用本机智能体，生成聊天记录总结。')}</p></div>
+      <div className="integration-section-heading"><div><h3 id="integration-local-title">{t('通过 CLI 生成总结')}</h3><p>{t('AIMyChats 调用已适配的 CLI，生成你选中内容的总结。')}</p></div>
         <span className="integration-switch-state" role="status">{saving ? t('正在保存…') : enabled ? t(effective ? '已开启' : '等待可用工具') : t('未开启')}</span>
-        <button type="button" role="switch" className="integration-switch" aria-label={t('启用本地智能体总结')} aria-checked={enabled} disabled={locked}
+        <button type="button" role="switch" className="integration-switch" aria-label={t('启用 CLI 总结')} aria-checked={enabled} disabled={locked}
           onClick={() => void model.save(value => ({ ...value, agent: { ...value.agent, enabled: !enabled } }))}><span/></button>
       </div>
       <div className="integration-defaults">
@@ -54,19 +54,19 @@ export function AgentHub({ onOpenAnalysis }: { onOpenAnalysis?: () => void }) {
           onChange={event => event.target.value === 'manual' ? configure(effective) : event.target.value === 'default' ? void saveProfile(effective, { ...selectedProfile!, model: '' }) : undefined}>
           <option value="default">{t('自动 · 沿用工具默认')}</option>{selectedProfile?.model && <option value="configured">{selectedProfile.model}</option>}<option value="manual">{t('手动指定…')}</option>
         </select></label>}
-        <WizardActionButton className="secondary" disabled={scanning || locked} loading={scanning} busyLabel={t('扫描中…')} onAction={model.scan}>{t('扫描智能体')}</WizardActionButton>
+        <WizardActionButton className="secondary" disabled={scanning || locked} loading={scanning} busyLabel={t('扫描中…')} onAction={model.scan}>{t('重新扫描 CLI')}</WizardActionButton>
         <button type="button" className="secondary" disabled={locked} onClick={() => configure(effective || automatic || 'codex')}>{t('高级配置')}</button>
       </div>
       {model.scanError && <p className="integration-error" role="alert">{tf('扫描失败，已保留上次结果：{0}', model.scanError)}</p>}
-      {!effective && !scanning && <div className="integration-empty"><strong>{t('未发现可用于总结的本地智能体')}</strong><p>{t('安装智能体后，点击「扫描智能体」。已安装但未识别？可在「高级配置」中指定路径。')}</p><p>{t('你仍可直接使用上方的线上总结。')}</p></div>}
-      <p className="integration-help">{t('无需安装 Skills，沿用智能体已有的模型配置；也可以继续使用线上总结。')}</p>
-      <p className="integration-help">{t('本地智能体也可能使用线上模型，聊天内容将按它自己的模型配置处理。')}</p>
+      {!effective && !scanning && <div className="integration-empty"><strong>{t('未发现可用于总结的本地智能体')}</strong><p>{t('安装智能体后，点击「重新扫描 CLI」。已安装但未识别？可在「高级配置」中指定路径。')}</p><p>{t('你仍可直接使用上方的线上总结。')}</p></div>}
+      <p className="integration-help">{t('CLI 也可以使用 Skills，安装方式见下方「使用智能体访问聊天记录」。')}</p>
+      <p className="integration-help">{t('“本地 CLI”不代表“本地模型”，消息将按该 CLI 的模型配置处理。')}</p>
     </section>}
     {ready && editing && <div ref={advanced}><AgentAdvanced key={editing} id={editing} agent={settings.agent} access={access} saving={saving} canSummarize={canSummary}
       onSelect={setEditing} onClose={() => setEditing(null)} onSave={saveProfile}/></div>}
     {ready && canAccess && <>
-      {!canSummary && <div className="integration-actions"><WizardActionButton className="secondary" disabled={locked || scanning} loading={scanning} busyLabel={t('扫描中…')} onAction={model.scan}>{t('扫描智能体')}</WizardActionButton></div>}
-      <AgentAccess status={access} agents={agents} defaultId={effective} disabled={locked || scanning} error={model.accessError} onConfigure={configure} onRefresh={model.refreshAccess}/>
+      {!canSummary && <div className="integration-actions"><WizardActionButton className="secondary" disabled={locked || scanning} loading={scanning} busyLabel={t('扫描中…')} onAction={model.scan}>{t('重新扫描 CLI')}</WizardActionButton></div>}
+      <AgentAccess status={access} disabled={locked || scanning} error={model.accessError} onConfigure={configure} onRefresh={model.refreshAccess}/>
     </>}
     {ready && !canSummary && !canAccess && <p>{t('本地智能体集成暂未向当前账户开放，线上总结仍可使用。')}</p>}
     {ready && canSummary && <div className="integration-analysis-link"><span>{t('总结补充要求统一在「智能分析」中设置。')}</span>{onOpenAnalysis && <button type="button" className="integration-text" onClick={onOpenAnalysis}>{t('前往智能分析')} →</button>}</div>}

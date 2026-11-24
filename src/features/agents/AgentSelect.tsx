@@ -29,7 +29,7 @@ export function AgentSelect({ value, automatic, agents, disabled, onChange }: {
   const reveal = () => { setOpen(true); setActive(Math.max(0, options.findIndex(option => option.value === value && !option.disabled))); };
   const choose = (index: number) => { if (options[index].disabled) return; setOpen(false); onChange(options[index].value); trigger.current?.focus(); };
   return <div className="integration-select" ref={root}>
-    <span id={`${id}-label`}>{t('默认智能体')}</span>
+    <span id={`${id}-label`}>{t('默认 CLI')}</span>
     <button ref={trigger} type="button" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-controls={`${id}-options`}
       aria-labelledby={`${id}-label ${id}-value`} aria-activedescendant={open ? `${id}-${active}` : undefined}
       disabled={disabled} onClick={() => open ? setOpen(false) : reveal()}
@@ -45,7 +45,7 @@ export function AgentSelect({ value, automatic, agents, disabled, onChange }: {
       <span id={`${id}-value`}>{selected && <img src={selected.icon} alt=""/>}<span>{value ? selected?.name ?? t('请选择可用智能体') : automatic ? tf('自动 · {0}', selected!.name) : t('未发现可用智能体')}</span></span>
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg>
     </button>
-    {open && <div className="integration-select-options" id={`${id}-options`} role="listbox" aria-label={t('默认智能体')}>
+    {open && <div className="integration-select-options" id={`${id}-options`} role="listbox" aria-label={t('默认 CLI')}>
       {options.map((option, index) => <div id={`${id}-${index}`} key={option.value} role="option" aria-selected={option.value === value} aria-disabled={option.disabled}
         className={index === active ? 'keyboard-active' : ''} onClick={() => choose(index)}>
         {option.icon && <img src={option.icon} alt=""/>}<span><strong>{option.name}</strong><small>{option.note}</small></span>

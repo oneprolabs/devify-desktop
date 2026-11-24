@@ -74,7 +74,7 @@ src/
 ## Agent integration
 
 `features/agents/AgentHub.tsx` composes the online-default explanation, optional local
-summary controls, local Skills directory and lazy voice section. Discovery and confirmed
+summary controls, local Skills installation and lazy voice section. Discovery and confirmed
 settings saves are owned by `useAgentIntegration.ts`; there is no status/discovery interval.
 `AgentSelect.tsx` owns the logo-bearing keyboard-accessible selector. Each tool's path,
 model, timeout and Skills directory are kept in `agent.profiles`; the existing selected
@@ -83,16 +83,22 @@ previously configured installation; new users start with online summaries.
 
 `AgentSummaryInstructions.tsx` belongs to the chat-summary group of Intelligent analysis;
 it never scans tools. Shared instructions remain on `agent.instructions`, independent of
-tool profiles. `AgentVoiceSettings.tsx` detects engines only when expanded. WorkBuddy and
-DeepSeek retain Skills directory entries and explicitly mark direct summary calls pending.
-The existing six CLI adapters are unchanged.
+tool profiles. `AgentVoiceSettings.tsx` detects engines only when expanded. The Skills catalog lists Codex CLI, Claude Code CLI, OpenCode CLI and WorkBuddy,
+independently of the six existing direct-summary adapters. Only executable/app evidence
+counts as a detected host; configuration residue or Skill files alone do not.
 
 Native direct Skills installation lives in `src-tauri/src/access/install.rs`. It installs
 the bundled read-only CLI into app-owned storage and atomically writes each bundled
 Skill, preserving differing existing Skill files as backups. It does not run a downloaded
 installer or change unrelated global executables. Login/entitlement and live listener
 checks remain in `commands/agents.rs`; Skills use the current listener policy and token.
-The single canonical Skill is `aimychats`; reading, daily summaries and exploration are
+The generic copy entry uses `agent_access_installation_prompt` to stage the same bound
+Skill and reader under app-owned storage; the receiving Agent identifies its own Skills
+directory. It never installs into an inferred host directory or changes summary settings.
+`agentInstallationPrompt.ts` starts the clipboard write during the click so WebKit can
+resolve asynchronously prepared text without losing the user gesture.
+
+The single canonical Skill is `aimychats` (Dev uses `aimychats-dev`); reading, daily summaries and exploration are
 workflows within that same Skill. App-managed legacy directories move to
 app-data `legacy-skill-backups` after successful installation; custom legacy Skills stay
 untouched and produce a notice. Legacy download and MCP tool names remain aliases.

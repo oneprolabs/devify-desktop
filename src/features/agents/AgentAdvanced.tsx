@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { t, tf } from '../../shared/i18n/locale';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import type { AppSettings } from '../settings/settingsModel';
-import { AGENTS, agentById, agentInvocationNotice, profileFor, type AccessStatus, type AgentProfile } from './agentCatalog';
+import { AGENTS, ACCESS_AGENTS, agentById, agentInvocationNotice, profileFor, type AccessStatus, type AgentProfile } from './agentCatalog';
 
 type Props = { id: string; agent: AppSettings['agent']; access: AccessStatus | null; saving: boolean; canSummarize: boolean;
   onSelect: (id: string) => void; onClose: () => void; onSave: (id: string, profile: AgentProfile) => Promise<boolean> };
@@ -29,7 +29,7 @@ export function AgentAdvanced({ id, agent, access, saving, canSummarize, onSelec
     <div className="integration-section-heading"><h3 id="integration-config-title"><img src={tool.icon} alt=""/>{tool.name} · {t('高级配置')}</h3>
       <button type="button" className="integration-text" onClick={onClose} disabled={busy || saving}>{t('收起配置')}</button></div>
     <fieldset disabled={busy || saving}><div className="integration-config-grid">
-      <label>{t('智能体')}<select value={id} onChange={event => onSelect(event.target.value)}>{AGENTS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label>{t('智能体')}<select value={id} onChange={event => onSelect(event.target.value)}>{AGENTS.filter(item => item.callable || ACCESS_AGENTS.some(target => target.id === item.id)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {tool.callable && <><label>{t('可执行文件路径')}<input value={draft.command} onChange={event => patch({ command: event.target.value })}
         placeholder={t('留空自动识别')} spellCheck={false}/></label>
       <label>{t('默认模型')}<input value={draft.model} onChange={event => patch({ model: event.target.value })}

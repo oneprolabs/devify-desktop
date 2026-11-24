@@ -36,7 +36,7 @@ assert.equal(effectiveAgent(auto,found),'codex');assert.equal(effectiveAgent({..
 for(const id of ['workbuddy','deepseek-harness']) {
  assert.equal(effectiveAgent({...auto,provider_id:id},[{id,available:true}]),null,'Skills-only discovery cannot enable direct summaries');
 }
-assert.match(agentInvocationNotice('workbuddy'),/不支持 CLI/);
+assert.match(agentInvocationNotice('workbuddy'),/直接总结仅支持/);
 assert.match(agentInvocationNotice('deepseek-harness'),/暂未适配/);
 const {AgentSelect}=load('../src/features/agents/AgentSelect.tsx');
 owner={hooks:[{current:null},{current:null},true,0],index:0,effects:[]};
@@ -44,7 +44,7 @@ const dropdown=AgentSelect({value:'',automatic:'codex',agents:AGENTS.map(agent=>
 const nodes=[];function visit(node){if(Array.isArray(node))node.forEach(visit);else if(node&&typeof node==='object'){nodes.push(node);visit(node.props?.children);}}
 visit(dropdown);
 const optionNames=nodes.filter(node=>node.props?.role==='option').map(node=>node.props.children[1].props.children[0].props.children);
-assert.deepEqual(optionNames,['自动选择','OpenAI Codex','Claude Code','Gemini CLI','OpenCode','Cursor CLI','Qwen Code']);
+assert.deepEqual(optionNames,['自动选择','Codex CLI','Claude Code CLI','Gemini CLI','OpenCode CLI','Cursor CLI','Qwen Code']);
 
 const calls=[];let stored=structuredClone(base);stored.user_settings_revision=3;
 let scanFailure=false,saveFailure=false,hold,holdSave;let notifications=0;
@@ -93,3 +93,20 @@ for (const [file, setter, endMarker] of [
  assert.equal(listeners.get('agent-settings-changed').length,0);
 }
 console.log('Chat Agent refreshes reject out-of-order success/failure and detached responses');
+
+// Clipboard write begins before native text preparation resolves (WebKit activation).
+const {copyInstallationPrompt}=load('../src/features/agents/agentInstallationPrompt.ts');
+let prompt=deferred(), clipboardStarted=false, copied='';
+invoke=async command=>{assert.equal(command,'agent_access_installation_prompt');return prompt.promise;};
+globalThis.ClipboardItem=class {constructor(data){this.data=data;}};
+Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{async write(items){clipboardStarted=true;copied=await (await items[0].data['text/plain']).text();}}}});
+const copying=copyInstallationPrompt();
+assert.equal(clipboardStarted,true,'clipboard authorization starts in the click, before IPC completes');
+prompt.resolve('app-scoped prompt');await copying;assert.equal(copied,'app-scoped prompt');
+prompt=deferred();const nativeFailure=copyInstallationPrompt();prompt.resolve(Promise.reject(Error('listener unavailable')));
+await assert.rejects(nativeFailure,/listener unavailable/);
+invoke=async()=> 'another prompt';navigator.clipboard.write=async()=>{throw Error('clipboard denied');};
+await assert.rejects(copyInstallationPrompt(),/clipboard denied/);
+delete globalThis.ClipboardItem;navigator.clipboard.writeText=async text=>{copied=text;};
+await copyInstallationPrompt();assert.equal(copied,'another prompt','writeText fallback copies the generated prompt');
+console.log('Installation prompt clipboard activation, native failure and clipboard failure passed');
