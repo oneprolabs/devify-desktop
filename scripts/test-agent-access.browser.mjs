@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict';
+
+// Run through Ego against connectors-e2e.html?internal. Native IPC is synthetic;
+// this verifies the production React page, not actual host permission or installation.
+export async function runAgentAccessChecks(page) {
+  const before=await page.evaluate(()=>JSON.stringify(window.__E2E__.settings.agent));
+  assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('.integration-tool strong')].map(x=>x.textContent)),['Codex CLI','Claude Code CLI','OpenCode CLI','WorkBuddy']);
+  assert.equal(await page.evaluate(()=>document.querySelector('.integration-skills').textContent.includes('ChatGPT')),false);
+  assert.equal(await page.evaluate(()=>document.querySelector('[aria-label="OpenCode CLI"] button').disabled),true);
+  assert.ok(await page.evaluate(()=>document.querySelector('[aria-label="WorkBuddy"]').textContent.includes('已安装客户端')));
+  await page.click('[aria-label="Codex CLI"] .wizard-action');
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Codex CLI"] .wizard-action').textContent.includes('更新 Skills'));
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(x=>x.command==='agent_access_install').length),1);
+  assert.equal(await page.evaluate(()=>JSON.stringify(window.__E2E__.settings.agent)),before,'installation does not enable summaries or change provider');
+  await page.evaluate(()=>{
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{async write(items){if(window.__clipboardFailure)throw Error('clipboard denied');window.__copied=await(await items[0].getType('text/plain')).text();},async writeText(text){if(window.__clipboardFailure)throw Error('clipboard denied');window.__copied=text;}}});
+  });
+  await page.click('.integration-generic button');
+  await page.waitForFunction(()=>window.__copied?.includes('identify your own Skills directory'));
+  assert.equal(await page.evaluate(()=>document.querySelector('.integration-generic textarea')),null,'prompt body remains hidden');
+  assert.equal(await page.evaluate(()=>JSON.stringify(window.__E2E__.settings.agent)),before);
+  await page.evaluate(()=>{window.__clipboardFailure=true;});
+  await page.click('.integration-generic button');
+  await page.waitForFunction(()=>document.querySelector('.integration-generic [role="alert"]')?.textContent.includes('clipboard denied'));
+  await page.evaluate(()=>{window.__clipboardFailure=false;window.__E2E__.agentInstallError='Synthetic kit unavailable';});
+  await page.click('.integration-generic button');
+  await page.waitForFunction(()=>document.querySelector('.integration-generic [role="alert"]')?.textContent.includes('Synthetic kit unavailable'));
+  await page.click('[aria-label="Claude Code CLI"] .wizard-action');
+  await page.waitForFunction(()=>document.querySelector('.integration-skills>[role="alert"]')?.textContent.includes('Synthetic kit unavailable'));
+  assert.equal(await page.evaluate(()=>Boolean(window.__E2E__.agentSkills['claude-code'])),false,'failed install does not claim installed');
+  await page.evaluate(()=>{window.__E2E__.agentInstallError='';});
+  await page.click('[aria-label="Claude Code CLI"] .wizard-action');
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Claude Code CLI"] .wizard-action').textContent.includes('更新 Skills'));
+  await page.click('.integration-generic button');
+  await page.waitForFunction(()=>!document.querySelector('.integration-generic [role="alert"]'));
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(x=>x.command==='app_settings_save').length),0,'Skills operations never save summary settings');
+  assert.deepEqual(await page.evaluate(()=>window.__E2E__.errors),[]);
+  return {catalog:4,installation:'simulated',clipboard:'stubbed',failures:'verified',summarySettings:'unchanged'};
+}
+
+export async function runAgentLayoutChecks(page) {
+  await page.click('loc=role:button[name="智能体"]');
+  await page.waitForSelector('.integration-usage');
+  assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('.prototype-nav-item[aria-current="page"]')].map(x=>x.textContent.trim())),['智能体'],'shortcut shares the settings page without two active rail items');
+  assert.equal(await page.evaluate(()=>document.querySelectorAll('.integration-usage-examples button').length),2);
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(x=>x.command==='wechat_voice_status').length),0,'collapsed voice section does not probe engines');
+  assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('.integration-voice h3')).fontSize),'16px');
+  await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{async writeText(text){window.__exampleCopied=text;}}}));
+  await page.click('.integration-usage-examples button >> nth=0');
+  await page.waitForFunction(()=>window.__exampleCopied?.includes('产品讨论群'));
+  const agentBefore=await page.evaluate(()=>JSON.stringify(window.__E2E__.settings.agent));
+  await page.click('.integration-disclosure');
+  await page.waitForFunction(()=>document.querySelector('.integration-voice-body [role="status"]')?.textContent==='Whisper');
+  await page.click('.integration-voice-advanced summary');
+  await page.fill('.integration-voice-advanced input >> nth=0','/tmp/synthetic-voice-model');
+  await page.fill('.integration-voice-advanced input >> nth=1','en');
+  await page.click('.integration-voice-footer button');
+  await page.waitForFunction(()=>document.querySelector('.integration-voice-body .integration-success')?.textContent.includes('已保存'));
+  assert.deepEqual(await page.evaluate(()=>window.__E2E__.voiceStatus.settings),{engine:'',model:'/tmp/synthetic-voice-model',language:'en'});
+  assert.equal(await page.evaluate(()=>JSON.stringify(window.__E2E__.settings.agent)),agentBefore,'voice config cannot change the Agent provider');
+  assert.ok(await page.evaluate(()=>{const footer=document.querySelector('.integration-voice-footer').getBoundingClientRect(),button=document.querySelector('.integration-voice-footer button').getBoundingClientRect();return button.top-footer.top>=16&&footer.bottom-button.bottom>=15;}),'save button has space above and below');
+  return {shortcut:'shared page, single highlight',usage:'visible with two working examples',voice:'lazy detection, advanced save, separated footer'};
+}
+
+export async function runMissingAgentConfigurationCheck(page) {
+  await page.click('loc=role:button[name="任务"]');
+  await page.evaluate(()=>{window.__E2E__.settings.agent.provider_id='opencode';});
+  await page.click('loc=role:button[name="智能体"]');
+  await page.waitForSelector('.integration-defaults .secondary:not(:disabled)');
+  await page.click('loc=role:button[name="高级配置"]');
+  await page.waitForSelector('.integration-advanced');
+  assert.ok(await page.evaluate(()=>document.querySelector('.integration-advanced h3').textContent.includes('OpenCode CLI')));
+  assert.equal(await page.evaluate(()=>document.querySelector('.integration-advanced select').value),'opencode');
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(x=>x.command==='app_settings_save').length),0,'opening a missing CLI profile does not save or switch providers');
+  return {missingSelectedCLI:'OpenCode profile remains editable',settings:'unchanged'};
+}

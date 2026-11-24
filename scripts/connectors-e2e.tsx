@@ -43,7 +43,8 @@ const state = {
  wechatSyncOutcomes:null as Array<{rel:string;status:string;error:string|null}> | null,
  wechatSyncError:'', wechatSyncPaused:false, wechatSyncResolvers:[] as Array<()=>void>,
  summaries:[] as any[],summaryLocal:[] as any[],summaryError:'',
- agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
+ voiceStatus:{settings:{engine:'',model:'',language:'zh'},engines:[{id:'whisper',label:'Whisper',available:true}],selected:'whisper'},voiceError:'',voiceSaveError:'',
+ agentApps:query.has('no-agents')?[]:['workbuddy'], agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
  agents: query.has('no-agents')?[]:['codex','claude-code','gemini-cli'].map(id=>({id,name:id,command:'/e2e/'+id,version:'1.0 (fixture)',available:true,note:'Synthetic tool'})),
  analysisEvents:[] as any[],analysisNotes:{} as Record<number,any[]>,analysisReports:[] as any[],questions:[] as any[],analysisLegacy:false,analysisSearch:false,
  analysisPreferences:{event_granularity:'balanced',summary_length:'standard',summary_style:'concise',conversation_types:['direct','group'],lookback_days:0,auto_analyze:true},
@@ -209,13 +210,14 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     if(state.agentScanDelay)await new Promise(resolve=>setTimeout(resolve,state.agentScanDelay));
     if(state.agentScanError)throw state.agentScanError;return clone(state.agents);
    }
-   case 'agent_access_status':return {running:true,reason:null,wxq:{path:'/e2e/wxq'},skills:[{name:'aimychats'}],targets:['codex','claude-code','gemini-cli','workbuddy','deepseek-harness','opencode','cursor-agent','qwen-code'].map(id=>({id,name:id,available:state.agents.some(agent=>agent.id===id),command:'/e2e/'+id,skills_dir:state.settings.agent.profiles?.[id]?.skills_dir||'/e2e/'+id+'/skills',installed:state.agentSkills[id]??[]}))};
+   case 'agent_access_installation_prompt':if(state.agentInstallError)throw state.agentInstallError;return 'Synthetic AIMyChats installation prompt: identify your own Skills directory; preserve existing content; check health.';
+   case 'agent_access_status':return {running:true,reason:null,wxq:{path:'/e2e/wxq'},skills:[{name:'aimychats'}],targets:['codex','claude-code','gemini-cli','workbuddy','deepseek-harness','opencode','cursor-agent','qwen-code'].map(id=>({id,name:id,available:state.agents.some(agent=>agent.id===id&&agent.available)||state.agentApps.includes(id),command:state.agents.some(agent=>agent.id===id&&agent.available)?'/e2e/'+id:null,desktop_app:state.agentApps.includes(id)?'/e2e/'+id+'.app':null,skills_dir:state.settings.agent.profiles?.[id]?.skills_dir||'/e2e/'+id+'/skills',installed:state.agentSkills[id]??[]}))};
    case 'agent_access_install': {
     if(state.agentInstallError)throw state.agentInstallError;
     await new Promise(resolve=>setTimeout(resolve,150));state.agentSkills[args.tool]=['aimychats'];return {tool:args.tool,installed:clone(state.agentSkills[args.tool]),skills_dir:'/e2e/'+args.tool+'/skills'};
    }
-   case 'wechat_voice_status':return {settings:{engine:'',model:'',language:''},engines:[],selected:null};
-   case 'wechat_voice_settings_save':return {settings:args,engines:[],selected:null};
+   case 'wechat_voice_status':if(state.voiceError)throw state.voiceError;return clone(state.voiceStatus);
+   case 'wechat_voice_settings_save':if(state.voiceSaveError)throw state.voiceSaveError;state.voiceStatus.settings=clone(args);return clone(state.voiceStatus);
    case 'agent_models':return [];
    case 'agent_test':return {output:'OK',elapsed_ms:30,command:'Codex CLI'};
    case 'plugin:event|listen':eventHandlers.set(args.event,[...(eventHandlers.get(args.event)??[]),args.handler]);return ++callbackId;

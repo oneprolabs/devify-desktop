@@ -49,6 +49,12 @@ export const Icons = {
   agent: stroke(<>
     <path d="M8 2.6 9.4 6.6 13.4 8 9.4 9.4 8 13.4 6.6 9.4 2.6 8 6.6 6.6z" />
   </>),
+  agentAccess: stroke(<>
+    <rect x="2.5" y="5" width="11" height="8.5" rx="2" />
+    <path d="M8 2.3V5M1 8.2v2.5M15 8.2v2.5M6 11h4" />
+    <circle cx="5.8" cy="8.3" r=".55" fill="currentColor" stroke="none" />
+    <circle cx="10.2" cy="8.3" r=".55" fill="currentColor" stroke="none" />
+  </>),
   send: stroke(<>
     <path d="M13.4 2.9 2.9 6.9l4 1.9 1.9 4z" />
     <path d="M13.4 2.9 6.9 8.8" />
@@ -126,6 +132,12 @@ const rail = (children: ReactNode) => (
 );
 
 export const RailIcons = {
+  agent: rail(<>
+    <rect x="4" y="7" width="16" height="13" rx="3" />
+    <path d="M12 3v4M2 11.5v4M22 11.5v4M9 16h6" />
+    <circle cx="8.5" cy="12" r=".9" fill="currentColor" stroke="none" />
+    <circle cx="15.5" cy="12" r=".9" fill="currentColor" stroke="none" />
+  </>),
   chat: rail(<path d="M4 5.5h16v10H9l-4 3.5v-3.5H4z" />),
   events: rail(<>
     <rect x="4.5" y="4.5" width="15" height="15" rx="2.5" />
