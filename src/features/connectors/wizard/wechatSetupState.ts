@@ -9,6 +9,7 @@ export type SetupCapture = {
   capture_phase: string | null;
   platform_supported: boolean;
   lldb_available: boolean;
+  wechat_present: boolean;
   wechat_official: boolean;
   wechat_ad_hoc?: boolean;
   wechat_version?: string | null;
