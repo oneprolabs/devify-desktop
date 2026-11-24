@@ -1,4 +1,15 @@
 export const en: Record<string, string> = {
+  "转写引擎高级配置": "Advanced transcription settings",
+  "留空使用引擎默认配置": "Leave blank to use the engine defaults",
+  "选择上方常用智能体，或复制通用安装提示词。": "Choose a common Agent above, or copy the universal installation prompt.",
+  "新建会话": "Start a new session",
+  "在你的智能体中打开一个新会话，让技能生效。": "Open a new session in your Agent to load the Skill.",
+  "说明你要读什么": "Describe what to read",
+  "告诉它聊天名称、时间范围，以及要做的事。": "Specify the chat name, time range and what you want done.",
+  "复制示例": "Copy example",
+  "示例已复制，可粘贴到智能体的新会话中。": "Example copied. Paste it into a new Agent session.",
+  "复制失败，请重试或手动复制示例文字。": "Copy failed. Retry or copy the example text manually.",
+
   "安装智能体后，点击「重新扫描 CLI」。已安装但未识别？可在「高级配置」中指定路径。": "After installing a CLI, select Rescan CLIs. If it is not detected, specify its path in Advanced configuration.",
   "此处安装 Skills，直接总结仅支持上方已适配的 CLI。": "Install Skills here. Direct summaries use only the supported CLIs above.",
   "在 AIMyChats 中生成总结，也可以让你的智能体读取聊天记录。": "Generate summaries in AIMyChats, or let your Agent read chat records.",

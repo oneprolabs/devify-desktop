@@ -76,7 +76,10 @@ src/
 `features/agents/AgentHub.tsx` composes the online-default explanation, optional local
 summary controls, local Skills installation and lazy voice section. Discovery and confirmed
 settings saves are owned by `useAgentIntegration.ts`; there is no status/discovery interval.
-`AgentSelect.tsx` owns the logo-bearing keyboard-accessible selector. Each tool's path,
+`AgentSelect.tsx` owns the logo-bearing keyboard-accessible selector. `AgentUsage.tsx`
+keeps the visible Skills steps and copyable examples; `AgentVoiceSettings.tsx` owns its
+independent disclosure, lazy engine discovery and transcription form. The rail shortcut
+opens this same settings page under the same entitlements and has one active rail item. Each tool's path,
 model, timeout and Skills directory are kept in `agent.profiles`; the existing selected
 fields remain compatible with older settings. A missing `enabled` value preserves a
 previously configured installation; new users start with online summaries.

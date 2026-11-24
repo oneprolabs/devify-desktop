@@ -66,8 +66,6 @@
 .agent-integration p.integration-success { color:#347552; }
 .agent-integration p.integration-error { color:#a23e42; overflow-wrap:anywhere; }
 .agent-integration .integration-voice { margin-top:18px; border-top:1px solid var(--integration-line); padding-top:15px; }
-.agent-integration .integration-voice>summary { display:flex; align-items:center; justify-content:space-between; gap:12px; cursor:pointer; font-size:13px; }
-.agent-integration .integration-voice>summary>span+span { font-size:12px; color:var(--integration-sub); }
 .agent-integration .integration-voice-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid var(--integration-line); font-size:13px; }
 .agent-integration button:disabled { opacity:.65; cursor:default; }
 .agent-integration .integration-tool-actions button:disabled { color:#707068; background:#f0f0ec; border-color:#dcdcd5; opacity:1; }
@@ -89,3 +87,35 @@
 .agent-integration .integration-generic .secondary { height:auto; min-height:34px; padding:6px 10px; }
 .agent-integration p.integration-success,.agent-integration p.integration-error { max-width:none; padding:11px 13px; border:1px solid #d1e4d8; background:#f3f8f5; border-radius:6px; }
 .agent-integration p.integration-error { border-color:#ead4d6; background:#fcf5f5; }
+
+.agent-integration .integration-disclosure { display:inline-flex; align-items:center; gap:6px; padding:6px 0 6px 12px; border:0; background:transparent; box-shadow:none; color:var(--integration-sub); font:inherit; font-size:12px; cursor:pointer; }
+.agent-integration .integration-disclosure svg,.agent-integration .integration-voice-advanced summary svg { width:18px; height:18px; flex:none; transition:transform .16s ease-out; }
+.agent-integration .integration-disclosure[aria-expanded=true] svg,.agent-integration .integration-voice-advanced[open] summary svg { transform:rotate(180deg); }
+.agent-integration .integration-voice { padding-top:24px; margin-top:24px; }
+.agent-integration .integration-voice h3 small { font-weight:400; font-size:12px; }
+.agent-integration .integration-voice-body { margin-top:16px; }
+.agent-integration .integration-voice-row { padding:16px 0; min-height:42px; }
+.agent-integration .integration-voice-row strong { font-size:13px; font-weight:500; }
+.agent-integration .integration-voice-row p { margin:3px 0 0; }
+.agent-integration .integration-voice-row .secondary { margin:0; height:auto; min-height:34px; padding:6px 12px; font-size:12px; flex:none; }
+.agent-integration .integration-voice-advanced { margin-top:16px; border:1px solid var(--integration-line); border-radius:8px; padding:0 16px; }
+.agent-integration .integration-voice-advanced>summary { display:flex; align-items:center; justify-content:space-between; gap:12px; list-style:none; padding:15px 0; font-size:13px; cursor:pointer; }
+.agent-integration .integration-voice-advanced>summary::-webkit-details-marker { display:none; }
+.agent-integration .integration-voice-advanced fieldset { padding:0; margin:0; border:0; min-width:0; }
+.agent-integration .integration-voice-advanced .integration-config-grid { grid-template-columns:repeat(2,minmax(0,1fr)); margin:0 0 18px; gap:16px; }
+.agent-integration .integration-voice-footer { display:flex; justify-content:flex-end; padding:16px 0; border-top:1px solid var(--integration-line); }
+.agent-integration .integration-voice-footer .wizard-action { margin:0; min-height:34px; height:auto; padding:7px 16px; font-size:12px; }
+.agent-integration .integration-usage { margin-top:24px; padding-top:20px; border-top:1px solid var(--integration-line); }
+.agent-integration .integration-usage h4 { font-size:14px; }
+.agent-integration .integration-usage-steps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; padding-left:20px; margin:16px 0 20px; color:var(--integration-sub); font-size:12px; }
+.agent-integration .integration-usage-steps strong { font-weight:500; color:#1a1a19; }
+.agent-integration .integration-usage-steps p { font-size:12px; margin:4px 0 0; }
+.agent-integration .integration-usage-examples { display:grid; gap:8px; }
+.agent-integration .integration-usage-examples>div { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:13px 14px; background:#f7f7f5; border-radius:6px; }
+.agent-integration .integration-usage-examples p { margin:0; font-size:12px; }
+.agent-integration .integration-usage-examples button { display:inline-flex; align-items:center; gap:5px; flex:none; min-height:30px; }
+.agent-integration .integration-usage-examples svg { width:16px; height:16px; flex:none; }
+.agent-integration .integration-voice-advanced summary:focus-visible { outline:2px solid var(--integration-accent); outline-offset:3px; }
+@media(max-width:1000px) { .agent-integration .integration-usage-steps { grid-template-columns:1fr; gap:12px; } }
+@media(max-width:700px) { .agent-integration .integration-voice-advanced .integration-config-grid { grid-template-columns:1fr; } }
+@media(prefers-reduced-motion:reduce) { .agent-integration .integration-disclosure svg,.agent-integration .integration-voice-advanced summary svg { transition:none; } }

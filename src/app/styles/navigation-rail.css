@@ -124,6 +124,9 @@
   .prototype-rail-mark { margin-bottom: 0; }
   .prototype-nav { gap: 2px; }
   .prototype-rail-brand { gap: 2px; }
+  .prototype-nav-item { height:50px; gap:4px; }
+  .prototype-nav-icon { height:28px; }
+  .prototype-nav-icon svg { width:24px; height:24px; }
   .prototype-rail-update { min-height: 40px; padding-top: 4px; padding-bottom: 4px; }
 }
 .prototype-nav-item-tasks .prototype-nav-icon { position: relative; }
@@ -156,3 +159,6 @@
 .task-runtime-job small { display: block; margin: 6px 0; font-size: 12px; }
 .task-runtime-page .page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 24px; }
 @media (max-width: 700px) { .task-runtime-page { padding: 28px 24px; } .task-runtime-header { align-items: flex-start; } }
+@media (max-height: 680px) {
+  .prototype-rail .prototype-dev-badge { margin:0; }
+}

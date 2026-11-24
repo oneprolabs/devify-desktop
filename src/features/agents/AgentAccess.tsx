@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { t, tf } from '../../shared/i18n/locale';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import { ACCESS_AGENTS, type AccessStatus } from './agentCatalog';
+import { AgentUsage } from './AgentUsage';
 import { copyInstallationPrompt } from './agentInstallationPrompt';
 
 export function AgentAccess({ status, disabled, error, onConfigure, onRefresh }: {
@@ -71,5 +72,6 @@ export function AgentAccess({ status, disabled, error, onConfigure, onRefresh }:
       <p className="integration-help">{t('Skills 连接本机 AIMyChats，使用时请保持应用打开并登录。')}</p>
       <p className="integration-help">{t('安装成功表示文件已就位；实际访问仍由当前智能体的本机权限决定。')}</p>
     </div>
+    <AgentUsage/>
   </section>;
 }
