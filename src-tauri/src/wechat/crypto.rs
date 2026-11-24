@@ -137,6 +137,21 @@ pub fn verify_key(page1: &[u8], enc_key: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn authenticated_fixture_page(key: &[u8], salt: &[u8], pgno: u32) -> [u8; PAGE_SIZE] {
+    let mut page = [0; PAGE_SIZE];
+    if pgno == 1 {
+        page[..SALT_LEN].copy_from_slice(salt);
+    }
+    let mac_key = derive_mac_key(key, salt).unwrap();
+    let mut mac = Hmac::<Sha512>::new_from_slice(&mac_key).unwrap();
+    let start = if pgno == 1 { SALT_LEN } else { 0 };
+    mac.update(&page[start..PAGE_SIZE - HMAC_LEN]);
+    mac.update(&pgno.to_le_bytes());
+    page[PAGE_SIZE - HMAC_LEN..].copy_from_slice(&mac.finalize().into_bytes());
+    page
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -310,6 +310,7 @@ export default function PrototypeShell() {
   const [wizardResuming, setWizardResuming] = useState(false);
   const wizardResumeEpoch = useRef(0);
   const [wechatGuideEdit, setWechatGuideEdit] = useState(false);
+  const [wechatRecoveryAccount, setWechatRecoveryAccount] = useState<string | null>(null);
   const [wizardStep, setWizardStep] = useState('wizard-method');
   const [manualSelected, setWizardManual] = useState(false);
   const [wechatImportOnly, setWechatImportOnly] = useState(false);
@@ -334,8 +335,13 @@ export default function PrototypeShell() {
   const settingsNav = settingsPages
     .filter(item => !(wechatGuide || whatsappGuide) || item.group === 'main' || item.id === 'feedback' || item.id === 'about')
     .filter(item => item.id === 'agent' ? showAgentHub : item.id !== 'history' || internalAccount);
-  const openSettings = useCallback((page: SettingsPage, guide = false, edit = guide) => { wizardResumeEpoch.current += 1; setWizardResuming(false); setAnalysisFocus(undefined); setSettingsPage(page); setWhatsappGuide(false); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
-  const handleChatUnlock = useCallback(() => { setSettingsPage('connectors'); setWhatsappGuide(false); setWechatGuide(true); setWechatGuideEdit(true); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
+  const openSettings = useCallback((page: SettingsPage, guide = false, edit = guide) => { wizardResumeEpoch.current += 1; setWizardResuming(false); setWechatRecoveryAccount(null); setAnalysisFocus(undefined); setSettingsPage(page); setWhatsappGuide(false); setWechatGuide(guide); setWechatGuideEdit(edit); setWizardManual(false); setWizardStep('wizard-method'); setSection('settings'); }, []);
+  const handleChatUnlock = useCallback(() => openSettings('connectors', true), [openSettings]);
+  const recoverWechatKeys = (accountId: string) => {
+    openSettings('connectors', true);
+    setWechatRecoveryAccount(accountId);
+    setConnectionFinishError('');
+  };
   const openWhatsApp = (resumeAccountId?: string) => {
     wizardResumeEpoch.current += 1; setWizardResuming(false);
     const source = runtime.sources?.find(source => source.account_id === resumeAccountId && !source.setup_complete);
@@ -439,7 +445,7 @@ export default function PrototypeShell() {
             <div className="first-backup-actions"><button className="chat-landing-primary" onClick={() => { setStartFirstBackup(true); setFirstBackupStep('none'); setChatReady(true); }}>{t("立即开始首次备份")} <span aria-hidden="true">→</span></button><button className="first-backup-later" onClick={() => { setFirstBackupStep('none'); setChatReady(true); }}>{t("稍后自动备份")}</button></div>
           </section><p className="first-backup-note">{t("备份进度可以在「任务」中查看，首次备份时间取决于记录数量和网络情况。")}</p>
         </div></div>}
-        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench key={`workbench-${chatKey}`} visible={section === 'chat'} startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} onAddPlatform={() => openSettings('connectors')} />}
+        {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench key={`workbench-${chatKey}`} visible={section === 'chat'} startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onRecoverWechatKeys={recoverWechatKeys} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} onAddPlatform={() => openSettings('connectors')} />}
       </div>
       {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} onContinueSetup={continueSetup} />}
       {section === 'settings' && <div className="prototype-settings-layout">
@@ -471,11 +477,15 @@ export default function PrototypeShell() {
               <button type="button" className="wizard-skip" disabled={connectionFinishing} onClick={() => void finishWechatGuide(true)}>{t("暂不备份，进入聊天")}</button>
             </section> : wizardStep === 'wizard-backup' ? <section className="wizard-settings-step">
               <BackupSchedule wizard onBack={() => setWizard('wizard-sessions')} onOpenConnectors={() => setWizard('wizard-connect')} onContinue={async () => { const current = await invoke<AppSettings>('app_settings_get'); await invoke('connector_setup_state', { accountId: current.active_account_id, completed: true }); setWizard('wizard-done'); }} />
-            </section> : wizardStep === 'wizard-done' ? <WeChatWizardComplete edit={wechatGuideEdit} onBack={() => setWizard('wizard-connect')} onFinish={() => { setWechatGuide(false); setFirstBackupStep('none'); setChatReady(true); setChatKey(value => value + 1); setSection('chat'); }} /> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} wizardManual={wizardManual} wizardFinishing={connectionFinishing}
+            </section> : wizardStep === 'wizard-done' ? <WeChatWizardComplete edit={wechatGuideEdit} onBack={() => setWizard('wizard-connect')} onFinish={() => { setWechatGuide(false); setFirstBackupStep('none'); setChatReady(true); setChatKey(value => value + 1); setSection('chat'); }} /> : <WeChatLocal mode="settings" wizard wizardStep={wizardStep} wizardManual={wizardManual} wizardFinishing={connectionFinishing} accountId={wechatRecoveryAccount}
               wizardInstall={{ ready: wechatInstall.checking ? null : wechatInstall.canProceed, message: wechatInstall.detect?.message ?? '' }} onWizardInstallRecheck={() => wechatInstall.recheck()}
-              onWizardStep={step => { if (step === 'wizard-sessions') void finishWechatGuide(); else setWizard(step); }} onOpenChat={() => setSection('chat')} />}
+              onWizardStep={step => {
+                if (step !== 'wizard-sessions') { setWizard(step); return; }
+                if (wechatRecoveryAccount) { setWechatGuide(false); setWechatRecoveryAccount(null); setSection('chat'); }
+                else void finishWechatGuide();
+              }} onOpenChat={() => setSection('chat')} />}
             {connectionFinishError && <p className="wizard-save-error" role="alert">{connectionFinishError}</p>}
-          </div> : <Connectors onOpenWechat={(configured, resumeAccountId) => { if (resumeAccountId) { void resumeWechat(resumeAccountId); return; } setWechatGuide(true); setWechatGuideEdit(configured); setWizardManual(false); setWizardStep('wizard-method'); }} onOpenWhatsApp={openWhatsApp} />)}
+          </div> : <Connectors onOpenWechat={(configured, resumeAccountId) => { if (resumeAccountId) { void resumeWechat(resumeAccountId); return; } openSettings('connectors', true, configured); }} onOpenWhatsApp={openWhatsApp} />)}
           {settingsPage === 'imports' && <WhitelistSettings onSaved={count => { if (firstBackupStep === 'select' && count > 0) { setFirstBackupStep('schedule'); setSettingsPage('backup'); } }} />}
           {settingsPage === 'backup' && <BackupSchedule onOpenConnectors={() => { setWechatGuide(false); setSettingsPage('connectors'); }} onContinue={firstBackupStep === 'schedule' ? () => { setFirstBackupStep('confirm'); setSection('chat'); } : undefined} />}
           {settingsPage === 'analysis' && <AnalysisSettings focusSection={analysisFocus} onOpenReports={() => setSection('reports')} onOpenTopics={() => setSection('topics')} onOpenChats={() => setSection('chat')} canUseLocalSummary={showAgentHub && granted(entitlements, 'ai.local_agent') && granted(entitlements, 'ai.agent_summary')} />}

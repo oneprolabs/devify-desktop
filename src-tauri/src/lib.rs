@@ -5796,6 +5796,7 @@ async fn wechat_capture_start(
     app: AppHandle,
     account_id: String,
     timeout_secs: Option<u64>,
+    target_only: Option<bool>,
 ) -> Result<CaptureImport, capture::CaptureError> {
     let probes = account_capture_probes(&account_id)
         .map_err(|message| capture::CaptureError::new("account_probe_invalid", message))?;
@@ -5813,7 +5814,7 @@ async fn wechat_capture_start(
         })?
     }?;
 
-    let imported = import_key_text(&app, &outcome.passphrase_hex, Some(&account_id))
+    let imported = import_key_text(&app, &outcome.passphrase_hex, Some(&account_id), target_only.unwrap_or(false))
         .map_err(|message| capture::CaptureError::new("key_import_failed", message))?;
     Ok(CaptureImport {
         matched: imported.matched,
@@ -5961,6 +5962,7 @@ fn apply_candidates(
     scan: &ScanResult,
     candidates: &[keys::Candidate],
     selected: Option<&str>,
+    target_only: bool,
 ) -> ImportStats {
     let mut matched = 0usize;
     let mut already = 0usize;
@@ -5968,6 +5970,9 @@ fn apply_candidates(
     let mut unmatched: Vec<String> = Vec::new();
 
     for account in &scan.accounts {
+        if target_only && selected != Some(account.id.as_str()) {
+            continue;
+        }
         let encrypted: Vec<&discover::DbFile> =
             account.dbs.iter().filter(|db| db.encrypted).collect();
         if encrypted.is_empty() {
@@ -6034,22 +6039,23 @@ fn apply_candidates(
     }
 }
 
-/// Import key material (database keys or an account passphrase), verify it against every
-/// discovered database with a page-1 HMAC check, and keep only what actually matches.
-///
-/// `selected` is the account currently open in the UI. It is only used to explain the
-/// outcome: an import always verifies every account so a passphrase issued for another
-/// WeChat account is stored where it belongs instead of silently doing nothing.
+/// Verify candidates against the selected account during recovery. Ordinary imports can
+/// still discover the owning account and report how it differs from the current selection.
 fn import_key_text(
     app: &AppHandle,
     text: &str,
     selected: Option<&str>,
+    target_only: bool,
 ) -> Result<KeyImportResult, String> {
+    let selected = selected.map(str::trim).filter(|id| !id.is_empty());
+    if target_only && selected.is_none() {
+        return Err("恢复密钥前必须选择微信账号。".into());
+    }
     let candidates = keys::parse_candidates(text)?;
     let path = keys::store_path(&app_data(app));
     let mut store: KeyStore = keys::load(&path);
     let scan = discover::scan();
-    let stats = apply_candidates(&mut store, &scan, &candidates, selected);
+    let stats = apply_candidates(&mut store, &scan, &candidates, selected, target_only);
 
     if stats.matched > 0 {
         keys::save(&path, &store)?;
@@ -6132,8 +6138,9 @@ async fn wechat_import_keys(
     app: AppHandle,
     text: String,
     account_id: Option<String>,
+    target_only: Option<bool>,
 ) -> Result<KeyImportResult, String> {
-    import_key_text(&app, &text, account_id.as_deref())
+    import_key_text(&app, &text, account_id.as_deref(), target_only.unwrap_or(false))
 }
 
 /// The reference key extractor writes this verified passphrase file. Read only this
@@ -6142,6 +6149,7 @@ async fn wechat_import_keys(
 async fn wechat_import_saved_key(
     app: AppHandle,
     account_id: Option<String>,
+    target_only: Option<bool>,
 ) -> Result<KeyImportResult, String> {
     let path = saved_key_path();
     let text = std::fs::read_to_string(&path).map_err(|_| {
@@ -6150,7 +6158,7 @@ async fn wechat_import_saved_key(
             path.to_string_lossy()
         )
     })?;
-    import_key_text(&app, &text, account_id.as_deref())
+    import_key_text(&app, &text, account_id.as_deref(), target_only.unwrap_or(false))
 }
 
 #[derive(Serialize)]
@@ -6208,16 +6216,17 @@ fn wechat_platform_capabilities() -> WeChatPlatformCapabilities {
 async fn wechat_windows_key_scan(
     app: AppHandle,
     account_id: Option<String>,
+    target_only: Option<bool>,
 ) -> Result<KeyImportResult, String> {
     #[cfg(target_os = "windows")]
     {
         let candidates = windows_keys::scan()?;
         let text = candidates.join("\n");
-        return import_key_text(&app, &text, account_id.as_deref());
+        return import_key_text(&app, &text, account_id.as_deref(), target_only.unwrap_or(false));
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, account_id);
+        let _ = (app, account_id, target_only);
         Err("Windows 密钥扫描器只能在 Windows 上运行。".into())
     }
 }

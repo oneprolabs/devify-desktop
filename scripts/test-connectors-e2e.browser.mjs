@@ -570,6 +570,166 @@ export async function runBackupSwitchUiE2E(task, base = 'http://localhost:1434',
 
 
 // Real React shell with synthetic IPC, not a server integration test.
+export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const refresh = '.chat-workbench-refresh';
+  const selected = '.chat-workbench-session.selected';
+  const message = '.chat-workbench-raw-content .wxv-messages';
+  const alert = '.chat-workbench-refresh-error';
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  await page.snapshot();
+  const sessionKey = () => page.evaluate(selector => document.querySelector(selector)?.getAttribute('data-session-key'), selected);
+  const original = await sessionKey();
+  const wx = JSON.parse(original)[0];
+  const start = await page.evaluate(() => {
+    window.__E2E__.wechatSyncOutcomes = [
+      {rel:'contact/contact.db',status:'cached',error:null},
+      {rel:'session/session.db',status:'ok',error:null},
+      {rel:'message/message_0.db',status:'no-key',error:'旧 salt sensitive-test-salt：数据库已重新加密，需重新提取密钥。'},
+    ];
+    return window.__E2E__.calls.length;
+  });
+  await page.click(refresh, {label:'刷新当前微信会话'});
+  await page.waitForSelector(alert);
+  assert.match(await page.evaluate(selector => document.querySelector(selector).textContent, alert), /密钥.*连接器/);
+  assert.ok(!await page.evaluate(selector => document.querySelector(selector).textContent.includes('sensitive-test-salt'), alert));
+  assert.ok(await page.evaluate(selector => document.querySelector(selector).textContent.includes('的测试消息'), message));
+  const calls = () => page.evaluate(start => window.__E2E__.calls.slice(start), start);
+  assert.deepEqual((await calls()).filter(c => c.command === 'wechat_sync').map(c => c.args), [{accountId:wx}]);
+  const ready = name => page.waitForFunction(text => [...document.querySelectorAll('button')]
+    .some(button => button.textContent.trim() === text && !button.disabled && button.getClientRects().length), name);
+  const click = async name => {
+    await page.evaluate(text => [...document.querySelectorAll('.wechat-wizard button')]
+      .find(button => button.textContent.trim() === text)?.scrollIntoView({block:'center',behavior:'instant'}), name);
+    await page.click(`loc=role:button[name="${name}"]`, {label:name});
+  };
+  await page.click(`${alert} button`, {label:'前往连接器恢复密钥'});
+  await page.waitForSelector('.wechat-wizard #wizard-method');
+  await page.click('loc=css:.wizard-method-option >> nth=1', {label:'选择手动导入微信密钥'});
+  await click('下一步');
+  await ready('下一步：连接微信');
+  await click('下一步：连接微信');
+  await page.waitForSelector('.wx-setup-file');
+  await click('手动输入密钥');
+  await page.fill('#wx-manual-key', 'ab'.repeat(32));
+  await page.evaluate(() => { window.__E2E__.wechatSyncOutcomes = null; });
+  await click('导入并校验');
+  await ready('返回聊天');
+  await click('返回聊天');
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  assert.deepEqual((await calls()).filter(c => c.command === 'wechat_import_keys').map(c => c.args), [{accountId:wx,targetOnly:true}]);
+  assert.ok(!(await calls()).some(c => c.command === 'connector_setup_state'), 'key recovery preserves connector setup and backup settings');
+  await page.waitForSelector(`${refresh}:not(:disabled)`);
+  await page.evaluate(() => { window.__E2E__.wechatSyncError = '该账号正在同步，请稍后重试。'; });
+  await page.click(refresh, {label:'验证微信同步拒绝提示'});
+  await page.waitForSelector(alert);
+  assert.match(await page.evaluate(selector => document.querySelector(selector).textContent, alert), /正在同步/);
+  await page.evaluate(() => {
+    const state = window.__E2E__;
+    state.wechatSyncError = '';
+    state.wechatSyncPaused = true;
+    state.wechatSyncOutcomes = [
+      {rel:'session/session.db',status:'ok',error:null},
+      {rel:'message/message_0.db',status:'ok',error:null},
+      {rel:'message/media_0.db',status:'no-key',error:'fixture media error'},
+    ];
+  });
+  await page.click(refresh, {label:'重新同步并刷新微信'});
+  await page.waitForFunction(() => window.__E2E__.wechatSyncResolvers.length === 1);
+  assert.ok(await page.evaluate(selector => document.querySelector(selector).disabled, refresh));
+  const retry = await page.evaluate(accountId => {
+    const state = window.__E2E__;
+    state.chatMessageOverrides[accountId] = [{local_id:2,source_shard:'synthetic',time:1795000100,sender:'tester',sender_name:'测试联系人',kind:1,text:'微信同步后收到的新消息',is_self:false}];
+    state.wechatSyncPaused = false;
+    const start = state.calls.length;
+    state.wechatSyncResolvers.shift()();
+    return start;
+  }, wx);
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('微信同步后收到的新消息'));
+  assert.equal(await sessionKey(), original);
+  assert.ok(!await page.evaluate(selector => document.querySelector(selector), alert));
+  const reads = await page.evaluate(start => window.__E2E__.calls.slice(start), retry);
+  assert.ok(reads.some(c => c.command === 'chat_sessions' && c.args.accountId === wx));
+  assert.ok(reads.some(c => c.command === 'wechat_messages' && c.args.accountId === wx));
+  await page.click('[role="tab"][data-platform="whatsapp"]', {label:'切换到 WhatsApp 会话'});
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('WhatsApp ·'));
+  const wa = JSON.parse(await sessionKey())[0];
+  const whatsappStart = await page.evaluate(accountId => {
+    const state = window.__E2E__;
+    state.chatMessageOverrides[accountId] = [{local_id:2,source_shard:'whatsapp',time:1795000100,sender:'tester',sender_name:'测试联系人',kind:0,text:'WhatsApp 刷新后的新消息',is_self:false}];
+    return state.calls.length;
+  }, wa);
+  await page.click(refresh, {label:'刷新当前 WhatsApp 会话'});
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('WhatsApp 刷新后的新消息'));
+  assert.deepEqual(await page.evaluate(start => window.__E2E__.calls.slice(start).filter(c => c.command === 'wechat_sync'), whatsappStart), []);
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  return 'PASS chat refresh: partial key failure, key reimport without resetting setup, IPC rejection, refreshed WeChat messages, WhatsApp local reload';
+}
+
+export async function runChatMessageRetryUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const refresh = '.chat-workbench-refresh';
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  await page.evaluate(() => { window.__E2E__.chatMessagesError = '临时消息读取失败（模拟）'; });
+  await page.click(refresh, {label:'刷新并观察消息读取失败'});
+  await page.waitForFunction(() => document.querySelector('.wxv-toast.error')?.textContent.includes('临时消息读取失败'));
+  assert.ok(await page.evaluate(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息')));
+  await page.evaluate(() => {
+    window.__E2E__.chatMessagesError = '';
+    window.__E2E__.chatMessageOverrides['e2e-wechat'] = [{local_id:10,source_shard:'synthetic',time:1795000400,sender:'tester',kind:1,text:'消息读取恢复后的新消息',is_self:false}];
+  });
+  await page.click(refresh, {label:'重试并恢复消息读取'});
+  await page.waitForSelector('.wxv-messages #msg-10');
+  assert.ok(!await page.evaluate(() => Boolean(document.querySelector('.wxv-toast.error'))), 'a successful retry clears the previous refresh error');
+  return 'PASS chat message retry: recover messages and dismiss the old error';
+}
+
+export async function runChatRefreshPagingUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const refresh = '.chat-workbench-refresh';
+  const fillMessages = newest => page.evaluate(end => {
+    window.__E2E__.chatMessageOverrides['e2e-wechat'] = Array.from({length:end-100},(_,i) => {
+      const id = end - i;
+      return {local_id:id,source_shard:'synthetic',time:1795000000+id,sender:'tester',kind:1,text:`分页测试 ${id}`,is_self:false};
+    });
+  }, newest);
+  const older = async () => {
+    await page.waitForSelector('.wxv-more:not(:disabled)');
+    await page.evaluate(() => document.querySelector('.wxv-more').scrollIntoView({block:'center',behavior:'instant'}));
+    await page.click('.wxv-more', {label:'加载更早一页消息'});
+  };
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  await fillMessages(300);
+  await page.click(refresh, {label:'刷新初始消息窗口'});
+  await page.waitForSelector('.wxv-messages #msg-300');
+  await page.evaluate(() => { window.__E2E__.chatOlderPaused = true; });
+  await older();
+  await page.waitForFunction(() => window.__E2E__.chatOlderResolvers.length === 1);
+  await fillMessages(450);
+  await page.evaluate(() => { window.__E2E__.chatLatestPaused = true; });
+  await page.click(refresh, {label:'旧分页等待时刷新'});
+  await page.waitForFunction(() => window.__E2E__.chatLatestResolvers.length === 1);
+  await page.waitForSelector('.wxv-more:disabled');
+  await page.evaluate(() => {
+    window.__E2E__.chatLatestPaused = false;
+    window.__E2E__.chatLatestResolvers.shift()();
+  });
+  await page.waitForSelector('.wxv-messages #msg-450');
+  await page.evaluate(async () => {
+    window.__E2E__.chatOlderPaused = false;
+    window.__E2E__.chatOlderResolvers.shift()();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  await older();
+  await page.waitForFunction(() => !document.querySelector('.wxv-more:disabled'));
+  assert.ok(await page.evaluate(() => Boolean(document.querySelector('.wxv-messages #msg-350'))), 'pagination fills the page directly below the refreshed messages');
+  assert.ok(!await page.evaluate(() => Boolean(document.querySelector('.wxv-messages #msg-101'))), 'the old request cannot append a disconnected window');
+  return 'PASS chat refresh while paging: the older request cannot skip messages';
+}
+
 export async function runEventRelevanceUiE2E(task, base = 'http://localhost:1434', pageLabel = 'p1') {
   const page = task.page(pageLabel);
   await page.goto(`${base}/scripts/connectors-e2e.html?analysis`);

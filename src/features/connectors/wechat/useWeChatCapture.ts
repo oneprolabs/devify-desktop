@@ -6,8 +6,8 @@ import type { Account, CaptureStatus, CaptureImport, LaunchDiagnosis, PrepareRes
 import type { ConnectionFeedback } from './connectionTypes';
 import type { WeChatKeys } from './useWeChatKeys';
 
-export function useWeChatCapture({ account, wizard, wizardStep, onWizardStep, showKeyGuide, noKeysYet, refreshKeys, refreshSavedKeySource, recordCaptureResult, setNotice, setError }: Pick<ConnectionFeedback, 'setNotice' | 'setError'> & Pick<WeChatKeys, 'showKeyGuide' | 'noKeysYet' | 'refreshKeys' | 'refreshSavedKeySource' | 'recordCaptureResult'> & {
-  account: Account | null; wizard: boolean; wizardStep: string;
+export function useWeChatCapture({ account, wizard, wizardStep, recoveringKeys, onWizardStep, showKeyGuide, noKeysYet, refreshKeys, refreshSavedKeySource, recordCaptureResult, setNotice, setError }: Pick<ConnectionFeedback, 'setNotice' | 'setError'> & Pick<WeChatKeys, 'showKeyGuide' | 'noKeysYet' | 'refreshKeys' | 'refreshSavedKeySource' | 'recordCaptureResult'> & {
+  account: Account | null; wizard: boolean; wizardStep: string; recoveringKeys?: boolean;
   onWizardStep?: (step: string) => void;
 }) {
   /** In-app capture: environment/state from the backend plus the step currently running. */
@@ -183,7 +183,8 @@ export function useWeChatCapture({ account, wizard, wizardStep, onWizardStep, sh
     try {
       const result = await invoke<CaptureImport>('wechat_capture_start', {
         accountId: account.id,
-        timeoutSecs: 300
+        timeoutSecs: 300,
+        ...(recoveringKeys && { targetOnly: true }),
       });
       setCaptureOutcome(result);
       recordCaptureResult({

@@ -19,6 +19,7 @@ type Props = {
   savedKey: { exists: boolean; modified_at: number | null; secure: boolean } | null;
   freshKey: boolean;
   decrypted: boolean;
+  recoveringKeys?: boolean;
   capture: SetupCapture | null;
   captureChecking: boolean;
   captureError: string;
@@ -387,6 +388,6 @@ export function WeChatSetupChecklist(p: Props) {
       {choosingAccount && accountChoices}
       {allDone && <p className="wx-setup-passed" role="status">{t("微信已连接，聊天记录已就绪。")}</p>}
     </>}
-    <footer><button className="wxv-btn" disabled={working || Boolean(p.capture?.pending)} onClick={p.onBack}>{t("上一步")}</button><WizardActionButton className="wxv-btn primary" loading={checkingStep || p.finishing} busyLabel={p.finishing ? t("正在保存…") : t("正在检查前置条件…")} disabled={working || choosingAccount || Boolean(stepIssue) || (p.permissionPhase ? !systemReady : !allDone)} onAction={() => runStep(p.permissionPhase ? 'connect' : 'complete', p.permissionPhase ? p.onPermissionNext : p.onComplete)}>{p.permissionPhase ? current === 'recover' ? t("下一步：处理微信恢复") : t("下一步：连接微信") : t("下一步：选择会话")}</WizardActionButton></footer>
+    <footer><button className="wxv-btn" disabled={working || Boolean(p.capture?.pending)} onClick={p.onBack}>{t("上一步")}</button><WizardActionButton className="wxv-btn primary" loading={checkingStep || p.finishing} busyLabel={p.finishing ? t("正在保存…") : t("正在检查前置条件…")} disabled={working || choosingAccount || Boolean(stepIssue) || (p.permissionPhase ? !systemReady : !allDone)} onAction={() => runStep(p.permissionPhase ? 'connect' : 'complete', p.permissionPhase ? p.onPermissionNext : p.onComplete)}>{p.permissionPhase ? current === 'recover' ? t("下一步：处理微信恢复") : t("下一步：连接微信") : p.recoveringKeys ? t("返回聊天") : t("下一步：选择会话")}</WizardActionButton></footer>
   </section>;
 }
