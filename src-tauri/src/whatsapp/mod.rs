@@ -516,8 +516,32 @@ fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<Message
     let from_me = cols.iter().any(|column| column == "ZISFROMME");
     let sender = cols.iter().find(|column| *column == "ZFROMJID").cloned();
     let media = cols.iter().find(|column| *column == "ZMEDIAITEM").cloned();
+    let group = is_group(chat);
+    let member_columns = if group && cols.iter().any(|column| column == "ZGROUPMEMBER") {
+        columns(conn, "ZWAGROUPMEMBER")
+    } else {
+        Vec::new()
+    };
+    let has_member_relation = ["Z_PK", "ZCHATSESSION", "ZMEMBERJID"]
+        .iter()
+        .all(|required| member_columns.iter().any(|column| column == required));
+    let (member_jid, member_join) = if has_member_relation {
+        (
+            "g.ZMEMBERJID",
+            " LEFT JOIN ZWAGROUPMEMBER g ON g.Z_PK = m.ZGROUPMEMBER \
+             AND g.ZCHATSESSION = m.ZCHATSESSION",
+        )
+    } else {
+        ("NULL", "")
+    };
+    let push_name = if group && cols.iter().any(|column| column == "ZPUSHNAME") {
+        "m.ZPUSHNAME"
+    } else {
+        "NULL"
+    };
     let mut sql = format!(
-        "SELECT m.Z_PK, m.\"{time}\", m.\"{kind}\", m.\"{text}\", {}, {}, {} FROM ZWAMESSAGE m WHERE m.ZCHATSESSION = ?1 AND m.\"{time}\" IS NOT NULL",
+        "SELECT m.Z_PK, m.\"{time}\", m.\"{kind}\", m.\"{text}\", {}, {}, {}, {member_jid}, {push_name} \
+         FROM ZWAMESSAGE m{member_join} WHERE m.ZCHATSESSION = ?1 AND m.\"{time}\" IS NOT NULL",
         if from_me { "m.ZISFROMME" } else { "0" },
         sender.map(|value| format!("m.\"{value}\"")).unwrap_or_else(|| "NULL".into()),
         media.map(|value| format!("m.\"{value}\"")).unwrap_or_else(|| "NULL".into()),
@@ -562,6 +586,8 @@ fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<Message
                 row.get::<_, Option<i64>>(4)?.unwrap_or(0) == 1,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(|error| format!("读取 WhatsApp 消息失败：{error}"))?;
@@ -570,16 +596,33 @@ fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<Message
     let names = name_map(conn);
     let partner = session_partner(conn, session_pk);
     let mut items = Vec::new();
-    for (pk, time, kind, text, self_sent, from, media_pk) in raw {
+    for (pk, time, kind, text, self_sent, from, media_pk, member, push_name) in raw {
         let rendered = render_text(kind, &text, media_pk.and_then(|id| media.get(&id)));
         if rendered.is_empty() {
             continue;
         }
-        let sender = from.map(|value| clean(&value)).filter(|value| !value.is_empty());
+        let sender = if group {
+            // For group messages ZFROMJID can point to the conversation itself.
+            member
+                .into_iter()
+                .chain(from)
+                .map(|value| clean(&value))
+                .find(|jid| jid.ends_with("@s.whatsapp.net") || jid.ends_with("@lid"))
+        } else {
+            from.map(|value| clean(&value)).filter(|value| !value.is_empty())
+        };
         let sender_name = sender
             .as_ref()
             .and_then(|jid| names.get(jid).cloned())
-            .or_else(|| (!is_group(chat)).then(|| partner.clone()).flatten());
+            .or_else(|| {
+                if group {
+                    push_name
+                        .map(|value| clean(&value))
+                        .filter(|value| !value.is_empty())
+                } else {
+                    partner.clone()
+                }
+            });
         items.push(MessageItem {
             local_id: pk,
             server_id: 0,
@@ -1108,6 +1151,33 @@ mod tests {
         )
         .unwrap();
         (root, conn)
+    }
+
+    #[test]
+    fn group_messages_resolve_members_without_treating_group_ids_as_senders() {
+        let (_root, conn) = fixture();
+        let chat = "120363000000000001@g.us";
+        conn.execute_batch(
+            r#"
+            ALTER TABLE ZWAMESSAGE ADD COLUMN ZGROUPMEMBER INTEGER;
+            ALTER TABLE ZWAMESSAGE ADD COLUMN ZPUSHNAME VARCHAR;
+            ALTER TABLE ZWAGROUPMEMBER ADD COLUMN Z_PK INTEGER;
+            UPDATE ZWAGROUPMEMBER SET Z_PK = 17 WHERE ZISACTIVE = 1;
+            INSERT INTO ZWAGROUPMEMBER VALUES (1, 'foreign@lid', '另一会话', '', 1, 19);
+            INSERT INTO ZWAMESSAGE VALUES
+                (5, 2, 0, 0, 816590733, '120363000000000001@g.us', 'hello', NULL, 17, NULL),
+                (6, 2, 0, 0, 816590734, '120363000000000001@g.us', 'unknown', NULL, 19, NULL),
+                (7, 2, 0, 0, 816590735, 'member@lid', 'hello', NULL, NULL, '群成员');
+            "#,
+        )
+        .unwrap();
+        let page = messages_from(&conn, chat, 10, None, None, None).unwrap();
+        let find = |id| page.iter().find(|message| message.local_id == id).unwrap();
+        assert_eq!(find(5).sender.as_deref(), Some("8613800000000@s.whatsapp.net"));
+        assert_eq!(find(5).sender_name.as_deref(), Some("张杭"));
+        assert_eq!(find(6).sender, None);
+        assert_eq!(find(7).sender_name.as_deref(), Some("群成员"));
+        assert_eq!(find(4).sender, None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { t, tf } from '../../../shared/i18n/locale';
+import type { MessageItem, SessionItem } from './nativeTypes';
 
 export function toDate(seconds: number | null): Date | null {
   if (!seconds) return null;
@@ -52,6 +53,38 @@ export function avatarColor(seed: string): string {
 export function initial(name: string): string {
   const trimmed = name.trim();
   return trimmed ? Array.from(trimmed)[0] : '?';
+}
+
+export function messageAvatar(
+  message: Pick<MessageItem, 'source_shard' | 'is_self' | 'sender' | 'sender_name' | 'text'>,
+  session: Pick<SessionItem, 'username' | 'display' | 'is_group'> | null,
+  accountId: string,
+  accountDisplay?: string | null,
+) {
+  if (message.source_shard === 'whatsapp') {
+    if (message.is_self) {
+      // Native account discovery uses the phone number when no profile name is available.
+      const display = accountDisplay?.trim();
+      const nickname = display && display !== accountId.split('@')[0] ? display : t("我");
+      return { username: accountId, label: initial(nickname), color: avatarColor(accountId || 'whatsapp:self') };
+    }
+    if (session && !session.is_group) {
+      return {
+        username: session.username,
+        label: initial(session.display.trim() || message.sender_name || '?'),
+        color: avatarColor(session.username),
+      };
+    }
+    if (session?.is_group && (!message.sender || message.sender.endsWith('@g.us'))) {
+      const name = message.sender_name?.trim() || t("未知成员");
+      return { username: null, label: initial(name), color: avatarColor('whatsapp:unknown-member') };
+    }
+  }
+  return {
+    username: message.sender,
+    label: initial(message.sender_name || message.sender || (message.is_self ? t("我") : '?')),
+    color: avatarColor(message.sender ?? message.text),
+  };
 }
 
 export function Highlight({ text, keyword }: { text: string; keyword: string }) {

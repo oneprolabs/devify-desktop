@@ -85,20 +85,53 @@ const mockedRequire = id => {
   if (id === '../connectors/connectorDetect') return { currentAccount: (items, remembered) => items.find(item => item.id === remembered) ?? items[0] };
   if (id === '../backup/syncFeedback') return { syncFeedback: () => 'completed' };
   if (id === './chatPresentation') return { eventViewState: () => 'empty', syncErrorMessage: String };
-  if (id === '../../shared/i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+  if (id === '../../shared/i18n/locale' || id === '../../../shared/i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
   if (id === '../../toast') return { exportNotSupported() {} };
   if (id.endsWith('.svg')) return id;
   return new Proxy({}, { get: () => component });
 };
-const source = fs.readFileSync(new URL('../src/features/chat/ChatWorkbench.tsx', import.meta.url), 'utf8');
-const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
-const loaded = { exports: {} };
-new Function('require', 'module', 'exports', code)(mockedRequire, loaded, loaded.exports);
+function load(path) {
+  const source = fs.readFileSync(new URL(path, import.meta.url), 'utf8');
+  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText;
+  const module = { exports: {} };
+  new Function('require', 'module', 'exports', code)(mockedRequire, module, module.exports);
+  return module.exports;
+}
+const { ChatWorkbench } = load('../src/features/chat/ChatWorkbench.tsx');
+const { avatarColor, messageAvatar } = load('../src/features/chat/local-reader/presentation.tsx');
+const partner = { username: 'peer@s.whatsapp.net', display: '赵联系人', is_group: false };
+const outgoing = { source_shard: 'whatsapp', is_self: true, sender: null, sender_name: '赵联系人', text: '第一条' };
+const selfAvatar = { username: account, label: '林', color: avatarColor(account) };
+assert.deepEqual(messageAvatar(outgoing, partner, account, ' 林同学 '), selfAvatar);
+assert.deepEqual(messageAvatar({ ...outgoing, sender: partner.username, text: '第二条' }, partner, account, '林同学'), selfAvatar);
+for (const display of [undefined, '   ', account.split('@')[0]]) {
+  assert.deepEqual(messageAvatar(outgoing, partner, account, display), { ...selfAvatar, label: '我' });
+}
+const incoming = { ...outgoing, is_self: false };
+const peerAvatar = { username: partner.username, label: '赵', color: avatarColor(partner.username) };
+assert.deepEqual(messageAvatar(incoming, partner, account, '林同学'), peerAvatar);
+assert.deepEqual(messageAvatar({ ...incoming, sender: 'peer@lid', sender_name: null, text: '另一条' }, partner, account), peerAvatar);
+const groupMessage = { ...incoming, sender: 'member@lid', sender_name: '陈成员' };
+assert.deepEqual(messageAvatar(groupMessage, { ...partner, is_group: true }, account), {
+  username: groupMessage.sender, label: '陈', color: avatarColor(groupMessage.sender),
+});
+assert.deepEqual(messageAvatar({ ...outgoing, sender: 'group@g.us' }, { ...partner, is_group: true }, account, '林同学'), selfAvatar);
+assert.deepEqual(messageAvatar({ ...incoming, sender: null, sender_name: ' 陈成员 ' }, { ...partner, is_group: true }, account), {
+  username: null, label: '陈', color: avatarColor('whatsapp:unknown-member'),
+});
+assert.deepEqual(messageAvatar({ ...incoming, sender: 'group@g.us', sender_name: null }, { ...partner, is_group: true }, account), {
+  username: null, label: '未', color: avatarColor('whatsapp:unknown-member'),
+});
+const wechatMessage = { ...outgoing, source_shard: 'message_0', sender: wechat, sender_name: '周同学' };
+assert.deepEqual(messageAvatar(wechatMessage, wechatSession, account), {
+  username: wechat, label: '周', color: avatarColor(wechat),
+});
+console.log('WhatsApp direct message avatars follow stable account and contact identities');
 const instance = { hooks: [] };
 const props = { onOpenData() {}, onOpenWhitelist() {}, onNewUpload() {}, onOpenTasks() {}, onSchedule() {}, onOpenAccount() {} };
 function render() {
   current = instance; instance.index = 0; instance.effects = [];
-  const tree = loaded.exports.ChatWorkbench(props);
+  const tree = ChatWorkbench(props);
   for (const effect of instance.effects) effect();
   current = undefined;
   return tree;
@@ -111,7 +144,7 @@ function nodes(value) {
 render();
 if (timers.length) timers.shift()();
 assert.equal(nodes(render()).filter(node => node.type === MessagePane).length, 0, 'message pane must wait until account discovery completes');
-resolveAccounts([{ id: account, source: 'whatsapp' }, { id: wechat, source: 'wechat' }]);
+resolveAccounts([{ id: account, source: 'whatsapp', display: '林同学' }, { id: wechat, source: 'wechat' }]);
 for (let i = 0; i < 20; i++) await Promise.resolve();
 let initialTree = render();
 initialTree = render();
@@ -158,6 +191,7 @@ selectPlatform('whatsapp');
 assert.ok(rows().every(node=>textOf(node).includes('WhatsApp 测试会话')));
 let pane=nodes(tree).find(node=>node.type===MessagePane);
 assert.equal(pane.props.accountId,account);
+assert.equal(pane.props.accountDisplay, '林同学', 'the reader receives the selected account name, not the contact name');
 assert.equal(pane.key,account,'changing platforms replaces the owning message pane');
 assert.equal(pane.props.focusConversation,session.username);
 assert.equal(uploadStateCalls,1,'switching waits for the previous bounded badge scan');
@@ -175,6 +209,7 @@ assert.ok(!buttons().some(node=>textOf(node).includes('只在本机')));
 selectPlatform('wechat');
 assert.equal(scrollList().props.ref.current.scrollTop,120,'each platform restores its own scroll position');
 assert.equal(nodes(tree).find(node=>node.type===MessagePane).props.accountId,wechat,'identical IDs retain their owning account');
+assert.equal(nodes(tree).find(node => node.type === MessagePane).props.accountDisplay, undefined, 'switching accounts drops the WhatsApp display name');
 resolveUploadState([{username:wechatSession.username,state:'pending',new_messages:3}]);await flush();tree=render();
 assert.equal(textOf(pendingFilter()),'待传 1','new messages also belong to pending');
 selectPlatform('whatsapp');
