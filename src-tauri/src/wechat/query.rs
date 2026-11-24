@@ -881,6 +881,22 @@ fn message_shards(cache: &Path) -> Vec<PathBuf> {
     shards
 }
 
+/// Backups cannot treat a partial directory read as a complete message inventory.
+fn upload_message_shards(cache: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(cache.join("message"))
+        .map_err(|error| format!("读取备份消息目录失败：{error}"))?;
+    let mut shards = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("读取备份消息分片失败：{error}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if (name.starts_with("message") || name.starts_with("biz_message_")) && name.ends_with(".db") {
+            shards.push(entry.path());
+        }
+    }
+    shards.sort();
+    Ok(shards)
+}
+
 /// Pull a human-readable summary out of a WeChat app message (`<msg><appmsg>…`).
 ///
 /// Links, files, quotes, solitaire and transfers are all stored as XML. Showing the raw
@@ -1509,21 +1525,46 @@ fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<Mess
     let mut found_table = false;
     let names = contacts(cache);
     let group = is_group_username(username);
+    // Browsing remains best-effort; upload planning and exact-selection reads
+    // must fail closed rather than advancing coverage over an unreadable shard.
+    let strict = ascending || selected.is_some();
+    let shards = if strict { upload_message_shards(cache)? } else { message_shards(cache) };
+    if let Some(selected) = selected {
+        if selected.iter().any(|message| !message.source_shard.is_empty()
+            && !shards.iter().any(|path| path.file_name().is_some_and(|name| name.to_string_lossy() == message.source_shard))) {
+            return Err("待上传消息的本地分片不可用，请检查本机记录后重试。".into());
+        }
+    }
 
-    for shard in message_shards(cache) {
+    for shard in shards {
         let source_shard = shard.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
-        let Ok(conn) = open_readonly(&shard) else {
+        if selected.is_some_and(|messages| !messages.iter()
+            .any(|message| message.source_shard.is_empty() || message.source_shard == source_shard)) {
             continue;
+        }
+        let conn = match open_readonly(&shard) {
+            Ok(conn) => conn,
+            Err(error) if strict => return Err(error),
+            Err(_) => continue,
         };
-        if !tables(&conn).iter().any(|t| t == &table) {
+        let present = if strict {
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [&table], |row| row.get::<_, bool>(0))
+                .map_err(|error| format!("读取备份消息库失败：{error}"))?
+        } else { tables(&conn).iter().any(|t| t == &table) };
+        if !present {
+            if selected.is_some_and(|messages| messages.iter().any(|message| message.source_shard == source_shard)) {
+                return Err("待上传消息的本地会话表不可用，请检查本机记录后重试。".into());
+            }
             continue;
         }
         found_table = true;
         let cols = columns(&conn, &table);
         let Some(create_time) = pick(&cols, &["create_time", "createTime", "timestamp"]) else {
+            if strict { return Err("备份消息库缺少时间字段，请检查本机记录后重试。".into()); }
             continue;
         };
         let Some(content) = pick(&cols, &["message_content", "content"]) else {
+            if strict { return Err("备份消息库缺少内容字段，请检查本机记录后重试。".into()); }
             continue;
         };
         let local_id = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
@@ -1588,12 +1629,14 @@ fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<Mess
             limit, order=if ascending {"ASC"} else {"DESC"}
         ));
 
-        let Ok(mut stmt) = conn.prepare(&sql) else {
-            continue;
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(stmt) => stmt,
+            Err(error) if strict => return Err(format!("读取备份消息失败：{error}")),
+            Err(_) => continue,
         };
         let rows = stmt.query_map([], |row| {
-            let local: i64 = row.get(0).unwrap_or(0);
-            let time: i64 = row.get(1).unwrap_or(0);
+            let local: i64 = if strict { row.get(0)? } else { row.get(0).unwrap_or(0) };
+            let time: i64 = if strict { row.get(1)? } else { row.get(1).unwrap_or(0) };
             let raw = value_to_bytes(row.get_ref(2)?).filter(|b| !b.is_empty());
             let kind: i64 = row.get(3).unwrap_or(0);
             let sender_id: Option<i64> = row.get(4).ok();
@@ -1601,10 +1644,17 @@ fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<Mess
             let server: i64 = row.get(6).unwrap_or(0);
             Ok((local, time, raw, kind, sender_id, compress, server))
         });
-        let Ok(rows) = rows else {
-            continue;
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(error) if strict => return Err(format!("读取备份消息失败：{error}")),
+            Err(_) => continue,
         };
-        for (local, time, raw, kind, sender_id, compress, server) in rows.flatten() {
+        for row in rows {
+            let (local, time, raw, kind, sender_id, compress, server) = match row {
+                Ok(row) => row,
+                Err(error) if strict => return Err(format!("读取备份消息失败：{error}")),
+                Err(_) => continue,
+            };
             let stored = sender_id.and_then(|id| sender_map.get(&id).cloned());
             let (sender, text) = prepare_text(kind, raw, compress, group, stored);
             let sender_name = sender.as_ref().and_then(|s| names.get(s).cloned());

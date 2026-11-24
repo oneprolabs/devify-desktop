@@ -183,6 +183,33 @@ fn stale_unsent_automatic_selection_is_replanned_without_advancing_upload_progre
         assert!(!task_runtime::retire_stale_plan(&mut guarded, &old, &owner), "case {case}");
         assert_eq!(serde_json::to_value(&guarded).unwrap(), before, "case {case}");
     }
+
+    // A temporarily unreadable shard is not evidence that a message was deleted.
+    // Replanning from the healthy shard alone could advance past its missing rows.
+    let second_path = cache.join("message/message_1.db");
+    let second = rusqlite::Connection::open(&second_path).unwrap();
+    second.execute_batch(&format!("CREATE TABLE {table}(local_id INTEGER,create_time INTEGER,message_content TEXT,local_type INTEGER); INSERT INTO {table} VALUES(4,150,'older shard',1);")).unwrap();
+    let affected = plan_automatic_batch(data, &value, &owner, &["chat".into()]).unwrap().unwrap();
+    let refs = &affected.scope.as_ref().unwrap().message_selection["chat"];
+    second.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN message_content;")).unwrap();
+    let unreadable = query::messages_selected(&cache, "chat", refs).unwrap_err();
+    assert_ne!(unreadable, "部分待上传消息已变化，请重新读取。");
+    assert!(plan_automatic_batch(data, &value, &owner, &["chat".into()]).is_err());
+    let healthy_refs = &new.scope.as_ref().unwrap().message_selection["chat"];
+    assert_eq!(query::messages_selected(&cache, "chat", healthy_refs).unwrap().len(), 2);
+    let mut blocked = value.clone();
+    let mut failed = affected.clone();
+    failed.status = "failed".into();
+    failed.message = unreadable;
+    blocked.upload_queue = vec![failed];
+    assert!(!task_runtime::retire_stale_plan(&mut blocked, &affected, &owner));
+    second.execute_batch(&format!("DROP TABLE {table};")).unwrap();
+    let unavailable_table = query::messages_selected(&cache, "chat", refs).unwrap_err();
+    assert_ne!(unavailable_table, "部分待上传消息已变化，请重新读取。");
+    drop(second);
+    fs::remove_file(second_path).unwrap();
+    let unavailable = query::messages_selected(&cache, "chat", refs).unwrap_err();
+    assert_ne!(unavailable, "部分待上传消息已变化，请重新读取。");
 }
 
 #[test]
