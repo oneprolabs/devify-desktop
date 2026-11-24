@@ -2,6 +2,7 @@ import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
 import { LocalChatAvatar } from './LocalChatAvatar';
 import { LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { ChatPlatformBar } from './ChatPlatformBar';
+import { ChatRefreshNotice } from './ChatRefreshNotice';
 import { syncErrorMessage } from './chatPresentation';
 import { errorText, nativeErrorCode } from '../../shared/i18n/errorText';
 import { syncWechatForRefresh, type WechatRefreshIssue } from '../connectors/wechat/refresh';
@@ -48,7 +49,7 @@ const timeLabel = (value?: number | null) => {
   return date.toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
 };
 
-export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onRecoverWechatKeys, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent, onAddPlatform }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onRecoverWechatKeys: (accountId: string) => void; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void; onAddPlatform?: () => void }) {
+export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupStarted, onOpenData, onRecoverWechatKeys, wechatRecovery, onOpenWhitelist, onNewUpload, onOpenTasks, onSchedule, onOpenAccount, onOpenEvent, onAddPlatform }: { visible?: boolean; startFirstBackup?: boolean; onFirstBackupStarted?: () => void; onOpenData: () => void; onRecoverWechatKeys: (accountId: string) => void; wechatRecovery?: { accountId: string } | null; onOpenWhitelist: () => void; onNewUpload: () => void; onOpenTasks: () => void; onSchedule: () => void; onOpenAccount: () => void; onOpenEvent?: (eventId: number) => void; onAddPlatform?: () => void }) {
   const runtime = useTaskRuntime();
   const configuredKey = JSON.stringify(runtime.sources?.filter(source => source.setup_complete).map(source => source.account_id).sort() ?? null);
   const [view, setView] = useState<View>('raw');
@@ -90,6 +91,12 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<{ accountId: string; issue: WechatRefreshIssue } | null>(null);
   const [messageRevisions, setMessageRevisions] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!wechatRecovery) return;
+    const { accountId } = wechatRecovery;
+    setRefreshError(current => current?.accountId === accountId ? null : current);
+    setMessageRevisions(current => ({ ...current, [accountId]: (current[accountId] ?? 0) + 1 }));
+  }, [wechatRecovery]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventRefresh, setEventRefresh] = useState(0);
   const [error, setError] = useState('');
@@ -175,7 +182,6 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     if (!refreshAccount) { await load(); return; }
     refreshLock.current = true;
     setRefreshing(true);
-    setRefreshError(null);
     const id = refreshAccount.id;
     const generation = loadGeneration.current;
     try {
@@ -184,6 +190,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         if (generation !== loadGeneration.current) return;
         if (issue) { setRefreshError({ accountId: id, issue }); return; }
       }
+      setRefreshError(current => current?.accountId === id ? null : current);
       await load();
       if (generation + 1 === loadGeneration.current) {
         setMessageRevisions(current => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
@@ -493,9 +500,6 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         <button type="button" className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>{t("待传")} <small>{pendingCount}</small></button>
       </div>
       <div className="chat-workbench-session-label"><span>{t("会话 ·")} {visibleSessions.length}</span><span className="chat-workbench-list-tools">{refreshing ? <span role="status">{t("正在刷新…")}</span> : t("按最后更新")} <button type="button" className="chat-workbench-refresh" onClick={() => void refreshSessions()} disabled={loading || refreshing} aria-label={t("刷新会话")} title={t("刷新会话")}>↻</button></span></div>
-      {refreshAccount && refreshIssue && <p className="chat-workbench-load-error chat-workbench-refresh-error" role="alert">
-        {refreshIssue.message} {refreshIssue.needsKeys && <button type="button" onClick={() => onRecoverWechatKeys(refreshAccount.id)}>{t("打开微信连接器")}</button>}
-      </p>}
       <div className="chat-workbench-sessions" ref={sessionList} aria-busy={loading} onScroll={event => {
         const list = event.currentTarget;
         if (!visible || !hasMoreSessions || loading || refreshing) return;
@@ -559,6 +563,15 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         </div>
         {selectedSession && <p className="chat-workbench-conversation-meta"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">{selectedSession.is_group?<><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></>:<><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></>}</svg>{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}{view === 'raw' && chatState.active ? ` · ${tf('已加载 {0} 条消息', chatState.messages)}` : ''}</p>}
       </header>
+
+      {refreshAccount && refreshIssue && <ChatRefreshNotice
+        key={refreshAccount.id}
+        issue={refreshIssue}
+        busy={refreshing || loading}
+        hasHistory={sessions.some(session => session.accountId === refreshAccount.id)}
+        onRecover={() => onRecoverWechatKeys(refreshAccount.id)}
+        onRetry={() => void refreshSessions()}
+      />}
 
       <ChatEventsPane
         active={view === 'events'}

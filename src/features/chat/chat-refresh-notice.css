@@ -1,0 +1,44 @@
+.chat-refresh-notice {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+  margin: 12px 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--chat-refresh-border, #e7c48a);
+  border-radius: 8px;
+  background: var(--chat-refresh-surface, #fff7e8);
+  color: var(--chat-refresh-ink, #6f3c10);
+}
+
+.chat-refresh-notice-icon { flex: none; display: flex; margin-top: 2px; }
+.chat-refresh-notice-icon svg { width: 20px; height: 20px; }
+.chat-refresh-notice-copy { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.chat-refresh-notice-copy strong { display: block; font-size: 15px; line-height: 1.4; }
+.chat-refresh-notice-copy p, .chat-refresh-notice-detail p { margin: 4px 0 0; font-size: 14px; line-height: 1.5; }
+.chat-refresh-notice-action {
+  align-self: center;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--chat-refresh-action, #85450e);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.chat-refresh-notice-action:hover:not(:disabled) { background: var(--chat-refresh-action-hover, #6a3509); }
+.chat-refresh-notice-action:disabled { opacity: .6; cursor: default; }
+.chat-refresh-notice-action:focus-visible, .chat-refresh-notice-detail summary:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.chat-refresh-notice-action:focus-visible { outline-color: var(--chat-refresh-ink, #6f3c10); }
+.chat-refresh-notice-detail { flex: 1 0 100%; min-width: 0; padding-inline-start: 32px; font-size: 13px; }
+.chat-refresh-notice-detail summary { width: fit-content; cursor: pointer; text-decoration: underline; }
+.chat-refresh-notice-detail p { overflow-wrap: anywhere; }
