@@ -608,7 +608,7 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
       mainPane: Boolean(card.closest('.chat-workbench-main')),
       rawDetail: card.textContent.includes('sensitive-test-salt'),
     };
-  }, alert), {title:'微信密钥需要更新',action:'恢复微信密钥',mainPane:true,rawDetail:false});
+  }, alert), {title:'微信密钥需要更新',action:'更新微信密钥',mainPane:true,rawDetail:false});
   assert.ok(await page.evaluate(selector => document.querySelector(selector).textContent.includes('的测试消息'), message));
   const calls = () => page.evaluate(start => window.__E2E__.calls.slice(start), start);
   assert.deepEqual((await calls()).filter(c => c.command === 'wechat_sync').map(c => c.args), [{accountId:wx}]);
@@ -619,10 +619,10 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
       .find(button => button.textContent.trim() === text)?.scrollIntoView({block:'center',behavior:'instant'}), name);
     await page.click(`loc=role:button[name="${name}"]`, {label:name});
   };
-  await page.click(`${alert} button`, {label:'前往连接器恢复密钥'});
+  await page.click(`${alert} button`, {label:'打开微信密钥更新向导'});
   await page.waitForSelector('.wechat-wizard #wizard-method');
-  assert.match(await page.evaluate(() => document.querySelector('#wizard-method h2').textContent), /恢复微信密钥/);
-  await page.click('loc=css:.wizard-method-option >> nth=1', {label:'选择手动导入微信密钥'});
+  assert.equal(await page.evaluate(() => document.querySelector('#wizard-method h2').textContent), '更新微信密钥');
+  await page.click('loc=role:button[name*="导入密钥"]', {label:'选择导入新密钥'});
   await click('下一步');
   await ready('下一步：连接微信');
   await click('下一步：连接微信');

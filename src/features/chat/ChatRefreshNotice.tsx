@@ -17,7 +17,7 @@ export function ChatRefreshNotice({ issue, busy, hasHistory, onRecover, onRetry 
       <p>{hasHistory && <>{t("已加载的聊天记录仍可查看。")} </>}{issue.message}</p>
     </div>
     <button type="button" className="chat-refresh-notice-action" disabled={busy} onClick={issue.needsKeys ? onRecover : onRetry}>
-      {issue.needsKeys ? t("恢复微信密钥") : t("重试刷新")}
+      {issue.needsKeys ? t("更新微信密钥") : t("重试刷新")}
     </button>
     {issue.detail && <details className="chat-refresh-notice-detail" key={issue.detail}>
       <summary>{t("查看错误详情")}</summary>
