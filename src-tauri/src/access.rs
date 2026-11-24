@@ -102,7 +102,7 @@ fn skills_rel(id: &str) -> Option<&'static str> {
         "gemini-cli" => Some(".gemini/skills"),
         "qwen-code" => Some(".qwen/skills"),
         "cursor-agent" => Some(".cursor/skills"),
-        "workbuddy" => Some(".workbuddy/skills"),
+        "workbuddy" => Some(".workbuddy-ai/skills"),
         "deepseek-harness" => Some(".dsh/skills"),
         _ => None,
     }
@@ -157,7 +157,7 @@ pub fn targets() -> Vec<AccessTarget> {
         .collect();
 
     for (id, name, app_name, config) in [
-        ("workbuddy", "WorkBuddy", "WorkBuddy AI.app", ".workbuddy"),
+        ("workbuddy", "WorkBuddy", "WorkBuddy AI.app", ".workbuddy-ai"),
         ("deepseek-harness", "DeepSeek Harness", "DeepSeek.app", ".dsh"),
     ] {
         let custom_home = if id == "deepseek-harness" { env::var_os("DSH_HOME").map(PathBuf::from).filter(|path| path.is_absolute()) } else { None };
@@ -616,6 +616,7 @@ mod tests {
             assert!(skills_rel(id).is_some(), "{id}");
         }
         assert!(skills_rel("custom").is_none());
+        assert_eq!(skills_rel("workbuddy"), Some(".workbuddy-ai/skills"));
     }
 
     #[test]

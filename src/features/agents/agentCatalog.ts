@@ -22,7 +22,13 @@ export const AGENTS = [
   { id: 'cursor-agent', name: 'Cursor CLI', icon: cursor, callable: true },
   { id: 'qwen-code', name: 'Qwen Code', icon: qwen, callable: true },
 ] as const;
+export const SUMMARY_AGENTS = AGENTS.filter(agent => agent.callable);
 export const agentById = (id: string) => AGENTS.find(agent => agent.id === id);
+export function agentInvocationNotice(id: string): string {
+  if (id === 'workbuddy') return '不支持 CLI 调用，仅支持 Skills 接入';
+  if (id === 'deepseek-harness') return 'CLI 总结暂未适配，仅支持 Skills 接入';
+  return '';
+}
 export function profileFor(agent: AppSettings['agent'], id: string): AgentProfile {
   return agent.profiles?.[id] ?? (agent.provider_id === id
     ? { command: agent.command, model: agent.model, timeout_seconds: agent.timeout_seconds, skills_dir: '' }
@@ -37,7 +43,7 @@ export function selectAgent(agent: AppSettings['agent'], id: string): AppSetting
 
 }
 export function effectiveAgent(agent: AppSettings['agent'], detected: AgentInfo[]): string | null {
-  if (agent.provider_id) return detected.some(item => item.id === agent.provider_id && item.available) ? agent.provider_id : null;
-  return AGENTS.find(item => item.callable && detected.some(found => found.id === item.id && found.available))?.id ?? null;
+  if (agent.provider_id) return SUMMARY_AGENTS.some(item => item.id === agent.provider_id) && detected.some(item => item.id === agent.provider_id && item.available) ? agent.provider_id : null;
+  return SUMMARY_AGENTS.find(item => detected.some(found => found.id === item.id && found.available))?.id ?? null;
 }
 export const localSummaryEnabled = (agent: AppSettings['agent']) => agent.enabled ?? Boolean(agent.provider_id);

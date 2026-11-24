@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t, tf } from '../../shared/i18n/locale';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
-import { AGENTS, type AccessStatus, type AgentInfo } from './agentCatalog';
+import { AGENTS, agentInvocationNotice, type AccessStatus, type AgentInfo } from './agentCatalog';
 
 const EXAMPLES = [
   '通过 AIMyChats 读取「产品讨论群」昨天的聊天，整理结论、事情经过和待办。',
@@ -49,8 +49,9 @@ export function AgentAccess({ status, agents, defaultId, disabled, error, onConf
       return <article key={tool.id} className={`integration-tool${defaultId === tool.id ? ' is-default' : ''}`}>
         <div className="integration-tool-head"><img src={tool.icon} alt=""/><div><strong>{tool.name}</strong><small className={found ? 'found' : ''}>
           {found && <svg className="integration-check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>}{t(found ? '已安装' : '未安装')}
-          {!tool.callable && <span className="integration-pending">{t('调用待适配')}</span>}{defaultId === tool.id && <span className="integration-default">{t('默认')}</span>}
+          {defaultId === tool.id && <span className="integration-default">{t('默认')}</span>}
         </small></div></div>
+        {!tool.callable && <p className="integration-help">{t(agentInvocationNotice(tool.id))}</p>}
         <div className="integration-tool-actions"><WizardActionButton className={complete ? 'secondary' : 'primary'} disabled={disabled || Boolean(installing) || !target?.available || !status?.running || !status?.wxq || Boolean(error)} loading={installing === tool.id}
           busyLabel={t('安装中…')} onAction={() => install(tool.id)}>{t(complete ? '更新 Skills' : '安装 Skills')}</WizardActionButton>
           <button type="button" className="integration-text" onClick={() => onConfigure(tool.id)} disabled={disabled || Boolean(installing)}>{t('配置')}</button></div>

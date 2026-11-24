@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { t, tf } from '../../shared/i18n/locale';
-import { AGENTS, agentById, type AgentInfo } from './agentCatalog';
+import { SUMMARY_AGENTS, agentById, type AgentInfo } from './agentCatalog';
 
 export function AgentSelect({ value, automatic, agents, disabled, onChange }: {
   value: string; automatic: string | null; agents: AgentInfo[]; disabled: boolean; onChange: (id: string) => void;
@@ -10,12 +10,12 @@ export function AgentSelect({ value, automatic, agents, disabled, onChange }: {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const selected = agentById(value || automatic || '');
+  const selected = SUMMARY_AGENTS.find(agent => agent.id === (value || automatic || ''));
   const options = [
     { value: '', name: t('自动选择'), icon: agentById(automatic ?? '')?.icon, note: automatic ? tf('优先使用 {0}', agentById(automatic)!.name) : t('未发现可用智能体'), disabled: !automatic },
-    ...AGENTS.map(agent => ({ value: agent.id, name: agent.name, icon: agent.icon,
-      note: !agents.some(item => item.id === agent.id && item.available) ? t('未安装') : !agent.callable ? t('调用待适配') : t('已安装'),
-      disabled: !agent.callable || !agents.some(item => item.id === agent.id && item.available) })),
+    ...SUMMARY_AGENTS.map(agent => ({ value: agent.id, name: agent.name, icon: agent.icon,
+      note: !agents.some(item => item.id === agent.id && item.available) ? t('未安装') : t('已安装'),
+      disabled: !agents.some(item => item.id === agent.id && item.available) })),
   ];
   const enabled = options.map((option, index) => !option.disabled ? index : -1).filter(index => index >= 0);
   useEffect(() => {
@@ -42,7 +42,7 @@ export function AgentSelect({ value, automatic, agents, disabled, onChange }: {
           setActive(event.key === 'Home' ? enabled[0] : event.key === 'End' ? enabled[enabled.length - 1] : enabled[(position + (event.key === 'ArrowDown' ? 1 : -1) + enabled.length) % enabled.length]);
         } else if (open && ['Enter', ' '].includes(event.key)) { event.preventDefault(); choose(active); }
       }}>
-      <span id={`${id}-value`}>{selected && <img src={selected.icon} alt=""/>}<span>{value ? selected?.name ?? value : automatic ? tf('自动 · {0}', selected!.name) : t('未发现可用智能体')}</span></span>
+      <span id={`${id}-value`}>{selected && <img src={selected.icon} alt=""/>}<span>{value ? selected?.name ?? t('请选择可用智能体') : automatic ? tf('自动 · {0}', selected!.name) : t('未发现可用智能体')}</span></span>
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg>
     </button>
     {open && <div className="integration-select-options" id={`${id}-options`} role="listbox" aria-label={t('默认智能体')}>
