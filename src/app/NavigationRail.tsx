@@ -26,11 +26,12 @@ const primaryItems = [
   { id: 'ask', label: '问答', icon: RailIcons.ask },
 ] as const;
 const utilityItems = [
+  { id: 'agent', label: '智能体', icon: RailIcons.agent },
   { id: 'tasks', label: '任务', icon: RailIcons.tasks },
   { id: 'settings', label: '设置', icon: RailIcons.settings },
 ] as const;
 
-export function NavigationRail({ section, onNavigate, onAccount, authenticated, accountName = '', showBrand = true, updateVersion, onUpdate }: {
+export function NavigationRail({ section, onNavigate, onAccount, authenticated, accountName = '', showBrand = true, updateVersion, onUpdate, showAgent = false, agentActive = false, onAgent }: {
   section: Section;
   onNavigate: (section: Section) => void;
   onAccount: () => void;
@@ -39,6 +40,9 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
   showBrand?: boolean;
   updateVersion?: string;
   onUpdate?: () => void;
+  showAgent?: boolean;
+  agentActive?: boolean;
+  onAgent?: () => void;
 }) {
   const tasks = useTaskRuntime();
   const [currentVersion, setCurrentVersion] = useState('');
@@ -51,9 +55,10 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
     return () => { active = false; };
   }, [showBrand]);
   const avatar = accountAvatar(accountName);
+  const selected = (id: string) => id === 'agent' ? agentActive : section === id && !(id === 'settings' && agentActive);
   const navButton = (item: (typeof primaryItems)[number] | (typeof utilityItems)[number]) => <button
-    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : ''}` : ''}${section === item.id ? ' active' : ''}`}
-    title={t(item.label)} aria-current={section === item.id ? 'page' : undefined} onClick={() => onNavigate(item.id)}
+    key={item.id} type="button" className={`prototype-nav-item${item.id === 'tasks' ? ` prototype-nav-item-tasks${tasks.running ? ' task-running' : ''}` : ''}${selected(item.id) ? ' active' : ''}`}
+    title={t(item.label)} aria-current={selected(item.id) ? 'page' : undefined} onClick={() => item.id === 'agent' ? onAgent?.() : onNavigate(item.id)}
   ><span className="prototype-nav-icon">{item.icon}{item.id === 'tasks' && tasks.running && <svg className="task-runtime-ring" width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true" focusable="false">
     <circle cx="22" cy="22" r="20" stroke="currentColor" strokeOpacity=".22" strokeWidth="2" />
     <path className="task-runtime-ring-arc" d="M22 2a20 20 0 0 1 20 20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -71,7 +76,7 @@ export function NavigationRail({ section, onNavigate, onAccount, authenticated, 
         <span className="prototype-rail-update-label"><svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 14V4m-4 4 4-4 4 4M4 15v2h12v-2"/></svg>{t('更新')}</span>
         <span className="prototype-rail-update-version">v{updateVersion.replace(/^v/, '')}</span>
       </button>}
-      {utilityItems.map(navButton)}
+      {utilityItems.filter(item => item.id !== 'agent' || (showAgent && onAgent)).map(navButton)}
     </nav>
     {showBrand && <div className="prototype-rail-brand"><img src={brandMark} alt={APP_NAME} title={APP_NAME} /><span className="prototype-rail-version" title={currentVersion ? `${t('当前版本')} ${currentVersion}` : t('版本读取失败')}>{currentVersion ? `v${currentVersion.replace(/^v/, '')}` : '—'}</span></div>}
   </aside>;

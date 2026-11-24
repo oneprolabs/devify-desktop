@@ -52,6 +52,7 @@ pub(crate) async fn agent_access_install(
     app: AppHandle,
     state: State<'_, McpState>,
     tool: String,
+    skills_dir: Option<String>,
 ) -> Result<access::install::InstallResult, String> {
     let data = app_data(&app);
     let value = settings::load(&data)?;
@@ -71,10 +72,7 @@ pub(crate) async fn agent_access_install(
             ),
             &value.agent,
         );
-        let target = access::target_by_id(&status.targets, &tool).ok_or("不支持的智能体。")?;
-        if !target.available {
-            return Err("未检测到该智能体，请安装后重新扫描。".into());
-        }
+        let target = access::installation_target(&status.targets, &tool, skills_dir.as_deref())?;
         let cli =
             access::resolve_wxq(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
         access::install::install(&data, &target, &cli, &status.base_url)
@@ -123,6 +121,27 @@ pub(crate) fn agent_access_prompt(
         bin_dir: bin.to_string_lossy().to_string(),
         skills_dir: skills.to_string_lossy().to_string(),
     })
+}
+
+/// Prepare an app-scoped access kit; the receiver chooses its own Skills directory.
+#[tauri::command]
+pub(crate) async fn agent_access_installation_prompt(
+    app: AppHandle,
+    state: State<'_, McpState>,
+) -> Result<String, String> {
+    let data = app_data(&app);
+    let value = settings::load(&data)?;
+    require_internal_agent(&data, &value.devify.base_url)?;
+    let service = access_state(&state)?;
+    if !service.running {
+        return Err("本机接入暂不可用，请确认已登录并重新打开智能体集成。".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let cli = access::resolve_wxq(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
+        let endpoint = access::client_base(&service.address);
+        let kit = access::install::prepare_prompt_kit(&data, &cli, &endpoint)?;
+        Ok(access::prompt::build(&kit, &data, &endpoint))
+    }).await.map_err(|error| format!("准备安装提示词失败：{error}"))?
 }
 
 /// Rebuild `wxq` from the source checkout so the download endpoint has something to serve.

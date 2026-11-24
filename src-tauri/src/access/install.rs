@@ -84,29 +84,10 @@ pub fn install(
         .map_err(|_| "已有 Skills 安装正在执行，请稍后重试。")?;
     let skills =
         super::expand_path(&target.skills_dir).ok_or("Skills 目录必须是绝对路径或以 ~/ 开头。")?;
-    // Own a private CLI destination, so a user's unrelated PATH executable is never overwritten.
-    let installed_cli = data.join("bin").join(super::CLI_NAME);
-    let bytes = fs::read(cli).map_err(|e| format!("读取本机工具失败：{e}"))?;
-    write_owned(&installed_cli, &bytes, true)?;
-    let command = format!(
-        "{} --app-data {} --endpoint {}",
-        super::sh_quote(&installed_cli.to_string_lossy()),
-        super::sh_quote(&data.to_string_lossy()),
-        super::sh_quote(endpoint)
-    );
+    let installed_cli = prepare_cli(data, cli)?;
     for skill in SKILLS {
-        // Insert after YAML, preserving the host's mandatory frontmatter parsing.
-        let end = skill
-            .content
-            .strip_prefix("---\n")
-            .and_then(|body| body.find("\n---\n").map(|n| n + 9))
-            .ok_or("内置 Skill 格式无效。")?;
-        let content = format!("{}\n<!-- AIMyChats local access kit -->\n本机读取入口：所有下文的 `wxq` 命令请替换为 `{command}`。已由 AIMyChats 安装，无需下载或构建。保持 AIMyChats 打开并登录；Token 由 CLI 自动读取，不要回显或复制。只读取应用允许访问的会话。\n\n{}", &skill.content[..end], &skill.content[end..]);
-        write_owned(
-            &skills.join(skill.name).join("SKILL.md"),
-            content.as_bytes(),
-            false,
-        )?;
+        let content = bound_skill(skill, data, &installed_cli, endpoint)?;
+        write_owned(&skills.join(skill.name).join("SKILL.md"), content.as_bytes(), false)?;
     }
     // Retire only app-managed legacy Skills, after all replacements are installed.
     // Move them outside hosts' watched Skills directories; never discard user files.
@@ -142,9 +123,70 @@ pub fn install(
     })
 }
 
+fn prepare_cli(data: &Path, cli: &Path) -> Result<std::path::PathBuf, String> {
+    // App-owned destination: never replace an unrelated PATH executable.
+    let installed_cli = data.join("bin").join(super::CLI_NAME);
+    let bytes = fs::read(cli).map_err(|e| format!("读取本机工具失败：{e}"))?;
+    write_owned(&installed_cli, &bytes, true)?;
+    Ok(installed_cli)
+}
+
+fn bound_skill(skill: &super::SkillDoc, data: &Path, installed_cli: &Path, endpoint: &str) -> Result<String, String> {
+    let command = format!(
+        "{} --app-data {} --endpoint {}",
+        super::sh_quote(&installed_cli.to_string_lossy()),
+        super::sh_quote(&data.to_string_lossy()),
+        super::sh_quote(endpoint)
+    );
+    // Insert after YAML, preserving the host's mandatory frontmatter parsing.
+    let end = skill
+        .content
+        .strip_prefix("---\n")
+        .and_then(|body| body.find("\n---\n").map(|n| n + 9))
+        .ok_or("内置 Skill 格式无效。")?;
+    Ok(format!("{}\n<!-- AIMyChats local access kit -->\n本机读取入口：所有下文的 `wxq` 命令请替换为 `{command}`。已由 AIMyChats 安装，无需下载或构建。保持 AIMyChats 打开并登录；Token 由 CLI 自动读取，不要回显或复制。只读取应用允许访问的会话。\n\n{}", &skill.content[..end], &skill.content[end..]))
+}
+
+/// Stage the same bound Skill as direct installation, inside this app's storage only.
+pub fn prepare_prompt_kit(data: &Path, cli: &Path, endpoint: &str) -> Result<std::path::PathBuf, String> {
+    let _guard = INSTALL.try_lock().map_err(|_| "已有 Skills 安装正在执行，请稍后重试。")?;
+    let installed_cli = prepare_cli(data, cli)?;
+    let kit = data.join("agent-access-kit");
+    for skill in SKILLS {
+        let content = bound_skill(skill, data, &installed_cli, endpoint)?;
+        write_owned(&kit.join(skill.name).join("SKILL.md"), content.as_bytes(), false)?;
+    }
+    Ok(kit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prompt_kit_stays_app_owned_and_uses_the_same_skill_as_direct_install() {
+        let root = tempfile::tempdir().unwrap();
+        let cli = root.path().join("source-cli");
+        fs::write(&cli, b"fixture cli").unwrap();
+        let data = root.path().join("selected-app");
+        let other = root.path().join("other-app");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("keep"), b"other variant").unwrap();
+        let kit = prepare_prompt_kit(&data, &cli, "http://127.0.0.1:18766").unwrap();
+        let doc = kit.join(SKILLS[0].name).join("SKILL.md");
+        let staged = fs::read_to_string(&doc).unwrap();
+        assert!(staged.contains("--endpoint 'http://127.0.0.1:18766'"));
+        assert!(staged.contains(&data.to_string_lossy().to_string()));
+        assert!(!staged.contains(&other.to_string_lossy().to_string()));
+        assert_eq!(fs::read(other.join("keep")).unwrap(), b"other variant");
+        assert!(!data.join("legacy-skill-backups").exists());
+        let target = AccessTarget { id: "codex".into(), name: "Codex".into(),
+            available: true, command: None, desktop_app: None, config_dir: None,
+            skills_dir: root.path().join("host-skills").to_string_lossy().into(), installed: vec![] };
+        install(&data, &target, &cli, "http://127.0.0.1:18766").unwrap();
+        assert_eq!(fs::read(&doc).unwrap(), fs::read(Path::new(&target.skills_dir).join(SKILLS[0].name).join("SKILL.md")).unwrap());
+        prepare_prompt_kit(&data, &cli, "http://127.0.0.1:18766").unwrap();
+        assert_eq!(fs::read_dir(doc.parent().unwrap()).unwrap().count(), 1, "unchanged kits do not create backups");
+    }
     #[test]
     fn install_is_repeatable_and_preserves_unrelated_files() {
         let root =
@@ -174,11 +216,15 @@ mod tests {
             name: "Codex".into(),
             available: true,
             command: None,
+            desktop_app: None, config_dir: None,
             skills_dir: skills.to_string_lossy().into(),
             installed: vec![],
         };
         let data = root.join("app");
-        for _ in 0..2 {
+        // CLI and desktop modes that share a Skills directory install one copy.
+        for id in ["codex", "chatgpt-desktop"] {
+            let mut target = target.clone();
+            target.id = id.into();
             assert_eq!(
                 install(&data, &target, &cli, "http://127.0.0.1:18765")
                     .unwrap()

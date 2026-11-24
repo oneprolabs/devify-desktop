@@ -86,7 +86,7 @@ const settingsPages: { id: SettingsPage; label: string; group: 'main' | 'local' 
 const settingsIcons: Record<SettingsPage, ReactNode> = {
   connectors: Icons.key, imports: Icons.download, backup: Icons.clock,
   analysis: Icons.agent, language: Icons.list, account: Icons.allow, network: Icons.send,
-  history: Icons.history, agent: Icons.agent, feedback: Icons.chat, about: Icons.info,
+  history: Icons.history, agent: Icons.agentAccess, feedback: Icons.chat, about: Icons.info,
 };
 
 export default function PrototypeShell() {
@@ -396,6 +396,7 @@ export default function PrototypeShell() {
     {DEVELOPMENT_APP && <DevelopmentEnvironment authenticated={authState === 'authed'} />}
     <div className="prototype-titlebar" aria-hidden="true" />
     <NavigationRail section={section} authenticated={authState === 'authed'} accountName={currentUser} onAccount={() => openSettings('account')}
+      showAgent={authState === 'authed' && showAgentHub} agentActive={section === 'settings' && settingsPage === 'agent' && showAgentHub} onAgent={() => openSettings('agent')}
       updateVersion={update.status === 'available' ? update.version : undefined}
       onUpdate={() => {
         setUpdateDialogOpen(true);
