@@ -116,6 +116,9 @@ assert.deepEqual(messageAvatar(groupMessage, { ...partner, is_group: true }, acc
   username: groupMessage.sender, label: '陈', color: avatarColor(groupMessage.sender),
 });
 assert.deepEqual(messageAvatar({ ...outgoing, sender: 'group@g.us' }, { ...partner, is_group: true }, account, '林同学'), selfAvatar);
+assert.deepEqual(messageAvatar({ ...incoming, sender: null, sender_name: ' 陈成员 ' }, { ...partner, is_group: true }, account), {
+  username: null, label: '陈', color: avatarColor('whatsapp:unknown-member'),
+});
 assert.deepEqual(messageAvatar({ ...incoming, sender: 'group@g.us', sender_name: null }, { ...partner, is_group: true }, account), {
   username: null, label: '未', color: avatarColor('whatsapp:unknown-member'),
 });

@@ -76,7 +76,8 @@ export function messageAvatar(
       };
     }
     if (session?.is_group && (!message.sender || message.sender.endsWith('@g.us'))) {
-      return { username: null, label: initial(t("未知成员")), color: avatarColor('whatsapp:unknown-member') };
+      const name = message.sender_name?.trim() || t("未知成员");
+      return { username: null, label: initial(name), color: avatarColor('whatsapp:unknown-member') };
     }
   }
   return {
