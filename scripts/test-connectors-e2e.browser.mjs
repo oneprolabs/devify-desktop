@@ -478,7 +478,12 @@ export async function runConnectorEnglishSmoke(task, base = 'http://localhost:14
 // Real React UI with synthetic native IPC; native runtime tests cover durable state.
 export async function runEnglishWechatWizardE2E(task, base = 'http://127.0.0.1:1422', pageLabel = 'p1') {
   const page = task.page(pageLabel);
-  const click = name => page.click(`loc=role:button[name="${name}"]`);
+  const click = async name => {
+    await page.evaluate(text => [...document.querySelectorAll('button')]
+      .find(button => button.textContent.trim() === text && !button.disabled)
+      ?.scrollIntoView({ block: 'center' }), name);
+    return page.click(`loc=role:button[name="${name}"]`);
+  };
   const ready = name => page.waitForFunction(text => [...document.querySelectorAll('button')]
     .some(button => button.textContent.trim() === text && !button.disabled), name);
   const fit = async (selector, width, height) => {
