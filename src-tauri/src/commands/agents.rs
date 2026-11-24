@@ -52,6 +52,7 @@ pub(crate) async fn agent_access_install(
     app: AppHandle,
     state: State<'_, McpState>,
     tool: String,
+    skills_dir: Option<String>,
 ) -> Result<access::install::InstallResult, String> {
     let data = app_data(&app);
     let value = settings::load(&data)?;
@@ -71,10 +72,7 @@ pub(crate) async fn agent_access_install(
             ),
             &value.agent,
         );
-        let target = access::target_by_id(&status.targets, &tool).ok_or("不支持的智能体。")?;
-        if !target.available {
-            return Err("未检测到该智能体，请安装后重新扫描。".into());
-        }
+        let target = access::installation_target(&status.targets, &tool, skills_dir.as_deref())?;
         let cli =
             access::resolve_wxq(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
         access::install::install(&data, &target, &cli, &status.base_url)

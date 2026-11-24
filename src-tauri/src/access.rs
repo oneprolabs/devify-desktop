@@ -7,6 +7,7 @@
 
 use crate::agent;
 pub mod install;
+mod discovery;
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -38,6 +39,8 @@ pub struct AccessTarget {
     pub name: String,
     pub available: bool,
     pub command: Option<String>,
+    pub desktop_app: Option<String>,
+    pub config_dir: Option<String>,
     pub skills_dir: String,
     pub installed: Vec<String>,
 }
@@ -98,6 +101,7 @@ fn skills_rel(id: &str) -> Option<&'static str> {
     match id {
         "claude-code" => Some(".claude/skills"),
         "codex" => Some(".codex/skills"),
+        "chatgpt-desktop" => Some(".codex/skills"),
         "opencode" => Some(".config/opencode/skills"),
         "gemini-cli" => Some(".gemini/skills"),
         "qwen-code" => Some(".qwen/skills"),
@@ -137,51 +141,10 @@ fn installed_skills(skills_dir: &Path) -> Vec<String> {
 pub fn targets() -> Vec<AccessTarget> {
     let home = home_dir();
     let commands = agent::detected_commands();
-    let mut targets: Vec<AccessTarget> = agent::ids()
-        .filter_map(|id| {
-            let rel = skills_rel(id)?;
-            let command = commands.get(id).cloned();
-            let dir = home.as_ref().map(|home| home.join(rel));
-            Some(AccessTarget {
-                id: id.to_string(),
-                name: agent::agent_name(id),
-                available: command.is_some(),
-                command: command.map(|path| path.to_string_lossy().to_string()),
-                skills_dir: dir
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                installed: dir.as_deref().map(installed_skills).unwrap_or_default(),
-            })
-        })
-        .collect();
-
-    for (id, name, app_name, config) in [
-        ("workbuddy", "WorkBuddy", "WorkBuddy AI.app", ".workbuddy-ai"),
-        ("deepseek-harness", "DeepSeek Harness", "DeepSeek.app", ".dsh"),
-    ] {
-        let custom_home = if id == "deepseek-harness" { env::var_os("DSH_HOME").map(PathBuf::from).filter(|path| path.is_absolute()) } else { None };
-        let dir = custom_home.as_ref().map(|home| home.join("skills")).or_else(|| home.as_ref().map(|home| home.join(skills_rel(id).unwrap())));
-        let available = commands.contains_key(id) || custom_home.as_ref().is_some_and(|path| path.is_dir()) || home.as_ref().is_some_and(|home| home.join(config).is_dir())
-            || Path::new("/Applications").join(app_name).is_dir()
-            || home.as_ref().is_some_and(|home| home.join("Applications").join(app_name).is_dir());
-        targets.push(AccessTarget {
-            id: id.into(), name: name.into(), available, command: commands.get(id).map(|path| path.to_string_lossy().into()),
-            skills_dir: dir.as_ref().map(|path| path.to_string_lossy().to_string()).unwrap_or_default(),
-            installed: dir.as_deref().map(installed_skills).unwrap_or_default(),
-        });
-    }
-
-    let custom = default_skills_dir();
-    targets.push(AccessTarget {
-        id: "custom".to_string(),
-        name: "其他 Agent（自定义目录）".to_string(),
-        available: true,
-        command: None,
-        skills_dir: custom.to_string_lossy().to_string(),
-        installed: installed_skills(&custom),
-    });
-    targets
+    let mut applications = vec![PathBuf::from("/Applications")];
+    if let Some(home) = &home { applications.push(home.join("Applications")); }
+    let dsh_home = env::var_os("DSH_HOME").map(PathBuf::from).filter(|path| path.is_absolute());
+    discovery::targets(home.as_deref(), &commands, &applications, dsh_home.as_deref())
 }
 
 pub fn default_target(targets: &[AccessTarget], configured: &str) -> String {
@@ -198,6 +161,20 @@ pub fn default_target(targets: &[AccessTarget], configured: &str) -> String {
 
 pub fn target_by_id(targets: &[AccessTarget], id: &str) -> Option<AccessTarget> {
     targets.iter().find(|target| target.id == id).cloned()
+}
+
+/// Installing files does not require a detected CLI or desktop host. A custom
+/// destination must be explicit, and never changes the selected summary provider.
+pub fn installation_target(targets: &[AccessTarget], id: &str, directory: Option<&str>) -> Result<AccessTarget, String> {
+    let mut target = target_by_id(targets, id).ok_or("不支持的智能体。")?;
+    if id == "custom" && directory.is_none() {
+        return Err("请先填写智能体的 Skills 目录。".into());
+    }
+    if let Some(directory) = directory {
+        let path = expand_path(directory).ok_or("Skills 目录必须是绝对路径或以 ~/ 开头。")?;
+        target.skills_dir = path.to_string_lossy().into();
+    }
+    Ok(target)
 }
 
 /// Expand `~`, `~/…` and absolute paths. Relative paths and control characters are
@@ -528,6 +505,7 @@ mod tests {
             name: "Claude Code".into(),
             available: true,
             command: Some("/usr/local/bin/claude".into()),
+            desktop_app: None, config_dir: None,
             skills_dir: "/Users/me/.claude/skills".into(),
             installed: Vec::new(),
         }
@@ -617,6 +595,21 @@ mod tests {
         }
         assert!(skills_rel("custom").is_none());
         assert_eq!(skills_rel("workbuddy"), Some(".workbuddy-ai/skills"));
+    }
+
+    #[test]
+    fn custom_installation_is_explicit_and_independent_of_host_detection() {
+        let mut custom = target();
+        custom.id = "custom".into();
+        custom.available = false;
+        let targets = vec![custom];
+        assert!(installation_target(&targets, "custom", None).is_err());
+        assert!(installation_target(&targets, "custom", Some("relative/skills")).is_err());
+        assert!(installation_target(&targets, "custom", Some("/tmp/skills\nother")).is_err());
+        let installed = installation_target(&targets, "custom", Some("/tmp/my-harness/skills")).unwrap();
+        assert_eq!(installed.skills_dir, "/tmp/my-harness/skills");
+        assert!(!installed.available);
+        assert_eq!(targets[0].skills_dir, "/Users/me/.claude/skills");
     }
 
     #[test]

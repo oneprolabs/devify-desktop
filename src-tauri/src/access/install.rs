@@ -174,11 +174,15 @@ mod tests {
             name: "Codex".into(),
             available: true,
             command: None,
+            desktop_app: None, config_dir: None,
             skills_dir: skills.to_string_lossy().into(),
             installed: vec![],
         };
         let data = root.join("app");
-        for _ in 0..2 {
+        // CLI and desktop modes that share a Skills directory install one copy.
+        for id in ["codex", "chatgpt-desktop"] {
+            let mut target = target.clone();
+            target.id = id.into();
             assert_eq!(
                 install(&data, &target, &cli, "http://127.0.0.1:18765")
                     .unwrap()
