@@ -187,7 +187,46 @@ async function mount(report, failDetail = false) {
 }
 const weeklyEnglish = await mount(fixture({ title: 'Weekly · week 48', body: 'Report body' }));
 assert.ok(text(weeklyEnglish.tree).includes('周报 ·'), 'English-generated reports keep their cadence in the Chinese interface');
+const weeklyFilter = find(weeklyEnglish.tree, node => node.type === 'button' && text(node) === '周报1');
+weeklyFilter.props.onClick();
+assert.match(text(byClass(render(weeklyEnglish.instance), 'analysis-items')), /Weekly · week 48/);
 const summaryOf = tree => byClass(tree, 'report-summary');
+
+{
+  const { instance, tree } = await mount(fixture({ title: '主题 · 虚构客户反馈日报' }));
+  assert.equal(tree.props.className, 'analysis-page report-workspace');
+  assert.ok(!elements(tree).some(node => node.props?.className === 'analysis-side-row'));
+  find(tree, node => node.type === mocks['../../shared/ui/SidebarResizeHandle'].SidebarResizeHandle);
+  const topicFilter = find(tree, node => node.type === 'button' && text(node) === '主题1');
+  topicFilter.props.onClick();
+  assert.equal(elements(byClass(render(instance), 'analysis-items')).filter(node => node.type === 'button').length, 1);
+  find(tree, node => node.type === 'input' && node.props?.['aria-label'] === '搜索报告').props.onChange({ target: { value: '不存在的标题' } });
+  const noMatch = render(instance);
+  assert.match(text(byClass(noMatch, 'analysis-list-empty')), /当前筛选下没有记录。/);
+  assert.ok(!text(noMatch).includes('当前空间还没有报告。'));
+  find(noMatch, node => node.type === 'button' && text(node) === '清除搜索').props.onClick();
+  assert.match(text(byClass(render(instance), 'analysis-items')), /虚构客户反馈/);
+}
+
+for (const failed of [false, true]) {
+  invoke = command => {
+    if (command === 'app_settings_get') return Promise.resolve({ devify: { active_space_id: '999' } });
+    if (command === 'devify_analysis_list') return failed ? Promise.reject('ACCOUNT_UPLOAD_BUSY: 虚构同步错误') : Promise.resolve({ list: [] });
+    throw Error(`unexpected IPC: ${command}`);
+  };
+  const instance = { hooks: [] };
+  render(instance); await flush();
+  const tree = render(instance);
+  const state = byClass(tree, failed ? 'analysis-empty report-empty error' : 'analysis-empty report-empty');
+  assert.equal(state.props.role, failed ? 'alert' : undefined);
+  assert.match(text(state), failed ? /同步失败虚构同步错误重试/ : /当前空间还没有报告。.*生成报告/);
+  assert.deepEqual(
+    elements(byClass(tree, 'analysis-pills')).filter(node => node.type === 'small').map(text),
+    Array(5).fill(failed ? '—' : '0'),
+  );
+  assert.ok(!elements(tree).some(node => node.props?.className === 'analysis-list-empty'));
+}
+
 const assertNotice = (tree, role, expected) => {
   const summary = summaryOf(tree);
   const notices = elements(summary).filter(node => node.props?.role === role);

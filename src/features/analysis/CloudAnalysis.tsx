@@ -144,18 +144,20 @@ function isoWeek(date: Date): number {
   return Math.ceil((((target.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
 }
 
-function reportKind(report: ReportItem): string {
+function reportKind(title: string): string {
   // Older reports have no cadence field. Recognize titles generated in either supported language.
-  if (/周报|^Weekly\s*·/i.test(report.title)) return "周报";
-  if (/月报|^Monthly\s*·/i.test(report.title)) return "月报";
-  if (/日报|^Daily\s*·/i.test(report.title)) return "日报";
+  if (/^(主题|Topic)\s*·/i.test(title)) return "主题";
+  if (/周报|^Weekly\s*·/i.test(title)) return "周报";
+  if (/月报|^Monthly\s*·/i.test(title)) return "月报";
+  if (/日报|^Daily\s*·/i.test(title)) return "日报";
+  if (title.includes("主题")) return "主题";
   return "报告";
 }
 function reportType(report: ReportItem): string {
-  return t(reportKind(report));
+  return t(reportKind(report.title));
 }
 function reportBadge(report: ReportItem): string {
-  return { 日报: t("日"), 周报: t("周"), 月报: t("月") }[reportKind(report)] ?? t("报");
+  return { 日报: t("日"), 周报: t("周"), 月报: t("月") }[reportKind(report.title)] ?? t("报");
 }
 function sectionItems(report: ReportItem): string[] {
   return (report.sections ?? []).flatMap(section => (section.items ?? []).map(item => item.title));
@@ -325,7 +327,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     if (search.waiting || search.tooLong) return false;
     if (!search.supported && query.trim() && !text.includes(query.trim().toLowerCase())) return false;
     if (kind === 'events') return true;
-    if (filter !== 'all') return item.title.includes(filter);
+    if (filter !== 'all') return reportKind(item.title) === filter;
     return true;
   }), [items, kind, query, filter, search.supported, search.waiting, search.tooLong]);
   useEffect(() => {
@@ -610,19 +612,22 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const changePage = (value: number) => { setItems([]); setSelectedId(null); setDetail(null); setLoading(true); setEventPage(value); };
   const allCount = relevanceCounts ? relevanceCounts.my_todo + relevanceCounts.related + relevanceCounts.other : filter === 'all' ? total : null;
   const anyEvents = (allCount ?? 0) > 0 || (relevanceCounts === null && kind === 'events' && filter !== 'all');
-  const cycleStatus = () => { if (kind === 'events') changeFilter(EVENT_FILTERS[(EVENT_FILTERS.findIndex(([value]) => value === filter) + 1) % EVENT_FILTERS.length][0]); };
   const filterLabel = kind === 'events'
     ? t(legacyEvents ? '全部待办' : EVENT_FILTERS.find(([value]) => value === filter)?.[1] ?? '全部')
     : t(filter === 'all' ? "全部" : filter);
+  const reportListFailed = kind === 'reports' && !!listError && !items.length;
   const filterPills: Array<[string, string, number | null]> = kind === 'events'
     ? EVENT_FILTERS.map(([value, label]) => [value, label, value === 'all' ? allCount : relevanceCounts?.[value as keyof RelevanceCounts] ?? null])
-    : REPORT_TYPES.map(([value, label]) => [value, label, value === 'all' ? items.length : items.filter(item => reportKind(item as ReportItem) === value).length]);
+    : REPORT_TYPES.map(([value, label]) => {
+      const count = value === 'all' ? items.length : items.filter(item => reportKind(item.title) === value).length;
+      return [value, label, reportListFailed ? null : count];
+    });
 
   const pageTitle = t(copy.title);
   const pageEmpty = t(copy.empty);
   if (!isTauri()) return <div className="analysis-page"><div className="analysis-empty"><h2>{t("请在桌面应用中查看")}</h2><p>{t("待办和报告在上传处理后生成，桌面端负责同步并展示。")}</p></div></div>;
   if (scopeChanged || (loading && !items.length && (kind !== 'events' || listScope.current?.page !== pageKey))) return <LoadingPage title={pageTitle} />;
-  if (listError && !items.length && (kind !== 'events' || !sourceScope)) return <div className="analysis-page">
+  if (kind === 'events' && listError && !items.length && !sourceScope) return <div className="analysis-page">
     <div className="analysis-empty error" role="alert">
       <h2>{t("同步失败")}</h2>
       <p>{errorText(listError)}</p>
@@ -630,23 +635,18 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     </div>
   </div>;
 
-  return <div className={`analysis-page${kind === 'events' ? ' event-workspace' : ''}`}>
+  return <div className={`analysis-page ${kind === 'events' ? 'event-workspace' : 'report-workspace'}`}>
     <aside className="analysis-side" aria-label={tf("{0}列表", pageTitle)}>
       <h1>{pageTitle}</h1>
       {kind === 'events' && legacyEvents && <p role="status">{t('当前服务暂不支持个人分类，暂时显示全部待办。')}</p>}
-      {listError && <p role="status">{items.length ? t("暂时无法更新，显示上次读取的内容。") : errorText(listError)}<button type="button" onClick={reload}>{t("重试")}</button></p>}
-      <p className="analysis-side-count">{kind === 'events' ? tf("{0} 个待办 · 跨全部会话", allCount ?? '—') : tf("{0} 份报告", items.length)}</p>
+      {listError && !reportListFailed && <p role="status">{items.length ? t("暂时无法更新，显示上次读取的内容。") : errorText(listError)}<button type="button" onClick={reload}>{t("重试")}</button></p>}
+      <p className="analysis-side-count">{kind === 'events' ? tf("{0} 个待办 · 跨全部会话", allCount ?? '—') : tf("{0} 份报告", reportListFailed ? '—' : items.length)}</p>
 
       <div className="analysis-search">
         <input value={query} spellCheck={false} placeholder={kind === 'events' && !search.supported ? t('搜索当前页待办') : tf("搜索{0}", pageTitle)} aria-label={kind === 'events' && !search.supported ? t('搜索当前页待办') : tf("搜索{0}", pageTitle)} onChange={change => changeQuery(change.target.value)}/>
       </div>
 
-      {kind === 'reports' && <button type="button" className={`analysis-side-new${creating ? ' on' : ''}`} onClick={() => { setCreating(true); setGenError(''); }}>{t("＋ 生成报告")}</button>}
-
-      <div className="analysis-side-row">
-        <span>{pageTitle}</span>
-        <button type="button" disabled={kind === 'events' && legacyEvents} onClick={cycleStatus}>{filterLabel} ▾</button>
-      </div>
+      {kind === 'reports' && <button type="button" className={`analysis-side-new${creating ? ' on' : ''}`} disabled={reportListFailed} onClick={() => { setCreating(true); setGenError(''); }}>{t("＋ 生成报告")}</button>}
 
       <div className="analysis-pills" role="group" aria-label={t("筛选")}>
         {filterPills.map(([value, label, count]) => <button
@@ -681,14 +681,20 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
             </span>
             </button>;
         })}
-        {!loading && !filteredItems.length && <p className="analysis-list-empty">{t("没有符合筛选条件的")}{pageTitle}</p>}
+        {!loading && !filteredItems.length && (kind === 'events' || items.length > 0) && (
+          kind === 'events' ? <p className="analysis-list-empty">{t("没有符合筛选条件的")}{pageTitle}</p> :
+          <div className="analysis-list-empty">
+            <p role="status">{t("当前筛选下没有记录。")}</p>
+            {!!query.trim() && <button type="button" onClick={() => changeQuery('')}>{t("清除搜索")}</button>}
+          </div>
+        )}
       </div>
       {kind === 'events' && (eventPage > 1 || hasNextPage) && <nav className="event-pagination" aria-label={t('待办分页')}>
         <button type="button" disabled={loading || eventPage === 1} onClick={() => changePage(eventPage - 1)}>{t('上一页')}</button>
         <span>{tf('第 {0} / {1} 页', eventPage, Math.max(1, Math.ceil(total / 50)))}</span>
         <button type="button" disabled={loading || !hasNextPage} onClick={() => changePage(eventPage + 1)}>{t('下一页')}</button>
       </nav>}
-      {kind === 'events' && <SidebarResizeHandle/>}
+      <SidebarResizeHandle/>
     </aside>
 
     <main className="analysis-main">
@@ -714,7 +720,16 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       </header>
 
       <div className="analysis-doc-wrap">
-        {kind==='reports'&&!creating&&!report&&!detailLoading&&!error&&<div className="analysis-empty"><h2>{t('还没有报告')}</h2><p>{t('可以按需生成第一份报告，也可以在智能分析中设置定期生成。')}</p><button type="button" className="report-create-submit" onClick={()=>setCreating(true)}>{t('生成报告')}</button></div>}
+        {reportListFailed && !creating && <div className="analysis-empty report-empty error" role="alert">
+          <h2>{t("同步失败")}</h2>
+          <p>{errorText(listError)}</p>
+          <button type="button" className="event-empty-action" onClick={reload}>{t("重试")}</button>
+        </div>}
+        {kind === 'reports' && !creating && !reportListFailed && !items.length && !detailLoading && !error && <div className="analysis-empty report-empty">
+          <h2>{pageEmpty}</h2>
+          <p>{t("可以按需生成第一份报告，也可以在智能分析中设置定期生成。")}</p>
+          <button type="button" className="event-empty-action" onClick={() => setCreating(true)}>{t("生成报告")}</button>
+        </div>}
         {kind === 'reports' && creating && <div className="report-create">
           <header>
             <h2>{t("生成报告")}</h2>
@@ -735,14 +750,14 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
               <small>{t(genRange(genType).hint)}</small>
             </div>
           </div>
-          {genError && <p className="analysis-empty error" role="alert">{errorText(genError)}</p>}
+          {genError && <p className="analysis-action-error" role="alert">{errorText(genError)}</p>}
           <button type="button" className="report-create-submit" disabled={generating} onClick={() => void generateReport()}>{generating ? t("正在提交…") : t("生成")}</button>
           <p className="report-create-note">{t("会按所选区间重新汇总待办；生成完成后会出现在左侧列表，标题为「")}{genRange(genType).title}」。</p>
         </div>}
 
         {!(kind === 'reports' && creating) && <>
         {(detailLoading || (kind === 'events' && loading)) && !currentDetail && <LoadingSkeleton label={t("正在加载详情")} kind="detail" />}
-        {error && <div className="analysis-action-error" role="alert">
+        {error && <div className={kind === 'reports' ? 'analysis-empty report-empty error' : 'analysis-action-error'} role="alert">
           <span>{errorText(error)}</span>{' '}
           <button type="button" className="event-empty-action" onClick={reload}>{t("重试")}</button>
         </div>}

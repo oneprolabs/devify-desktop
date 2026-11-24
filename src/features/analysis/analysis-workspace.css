@@ -10,18 +10,18 @@
 .analysis-refresh,.topic-loading-status { display: inline-flex; align-items: center; gap: 6px; }
 .topic-loading-status { color: #74746e; font-size: 13px; }
 .analysis-top-actions button.primary,.topic-save,.report-create-submit { background: #a3279a; border-color: #a3279a; color: #fff; }
-/* Events and topics share the same empty-state rhythm and action shape. */
-.topic-empty,.analysis-empty.event-empty { max-width: 520px; margin: 80px auto; padding: 32px 24px; text-align: center; color: #74746e; }
+/* Shared empty-state layout and actions. */
+.topic-empty,.analysis-empty.event-empty,.analysis-empty.report-empty { max-width: 520px; margin: 80px auto; padding: 32px 24px; text-align: center; color: #74746e; }
 .topic-empty h2,.analysis-empty.event-empty h2 { margin: 0; color: #1a1a19; font-size: 16px; font-weight: 600; }
 .topic-empty p,.analysis-empty.event-empty p { margin: 8px 0 16px; font-size: 14px; line-height: 1.7; }
 .event-empty-action { padding: 7px 14px; border: 0; border-radius: 999px; background: #a3279a; color: #fff; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; }
 .event-empty-action:hover { background: #8e2187; }
 .event-empty-action:focus-visible { outline: 2px solid #a3279a; outline-offset: 3px; }
-.analysis-items > button,.topic-side-list > section > button,.ask-threads > button { border-radius: 8px; margin-bottom: 4px; padding: 12px; }
+.analysis-items > button,.topic-side-list > section > button { border-radius: 8px; margin-bottom: 4px; padding: 12px; }
 .analysis-items > button.on,.topic-side-list > section > button.on,.ask-threads > button.on { background: #e9e9e6; color: #1a1a19; box-shadow: none; }
 .analysis-items > button strong,.topic-side-list strong,.ask-thread-title { font-size: 14px; line-height: 1.5; }
 .analysis-items > button small,.topic-side-list small { font-size: 12px; line-height: 1.5; color: #6c6c67; }
-.analysis-search,.topic-side-search { background: #fff; border: 1px solid #dededb; border-radius: 7px; box-shadow: none; }
+.analysis-search { background: #fff; border: 1px solid #dededb; border-radius: 7px; box-shadow: none; }
 .analysis-pills,.topic-freq,.ask-time-seg { padding: 3px; border-radius: 8px; background: #ededea; }
 .analysis-pills button,.topic-freq button,.ask-time-seg button { padding: 5px 11px; border-radius: 6px; color: #4f4f4a; font-size: 12px; }
 .analysis-pills button.on,.topic-freq button.on,.ask-time-seg button.on { color: #1a1a19; background: #fff; box-shadow: 0 1px 2px #00000014; }
@@ -33,41 +33,71 @@
 .analysis-timeline-step { padding-bottom: 24px; }
 .analysis-step-content,.analysis-step-preview { font-size: 14px; line-height: 1.8; }
 .analysis-raw { border: 1px solid #e9e9e6; border-radius: 8px; background: #fafafa; }
-.report-head { gap: 14px; align-items: flex-start; }
-.report-summary { margin: 24px 0; }
-.report-section { margin-top: 28px; }
-.report-items { margin-top: 12px; }
-.report-item { border: 1px solid #e9e9e6; border-radius: 9px; background: #fff; padding: 14px 16px; text-align: left; box-shadow: none; }
-.report-item:hover:enabled { background: #fafafa; border-color: #d1d1cd; }
-.report-item:disabled { opacity: 1; cursor: default; }
-.report-item-body strong { font-size: 14px; line-height: 1.5; }
-.report-item-body small { color: #5f5f5a; font-size: 13px; line-height: 1.7; }
-.report-markdown { font-size: 14px; line-height: 1.8; }
-.report-markdown h2,.report-markdown h3 { margin-top: 20px; }
-/* V7 event sidebar: one surface, a single search input and quiet filter pills. */
-.event-workspace .analysis-side { padding: 18px 14px 10px; background: #f6f6f4; border-color: #eaeae7; }
-.event-workspace .analysis-side h1 { margin: 0 4px 3px; }
-.event-workspace .analysis-side-count { margin: 0 4px 12px; }
-.event-workspace .analysis-search { padding: 0; margin-bottom: 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.event-workspace .analysis-search input { height: 31px; padding: 0 9px; border: 0; border-radius: 8px; background: #ededea; box-shadow: none; }
-.event-workspace .analysis-search input:focus-visible { outline: 2px solid #a3279a; outline-offset: 2px; }
-.event-workspace .analysis-pills { gap: 2px; margin: 0 0 6px; padding: 2px 4px 6px; border: 0; border-radius: 0; background: transparent; }
-.event-workspace .analysis-pills button { flex: none; justify-content: flex-start; padding: 6px 8px; }
-.event-workspace .analysis-pills button.on { background: #fff; box-shadow: none; }
-.event-workspace .analysis-pills button.on small { color: #5f5f5a; }
-.event-workspace .analysis-items { gap: 2px; }
-.event-workspace .analysis-items > button { align-items: flex-start; padding: 8px; margin: 0; border: 0; border-radius: 7px; box-shadow: none; }
-.event-workspace .analysis-items > button.on { background: #e9e9e6; box-shadow: none; }
+.report-workspace .report-doc,.report-workspace .report-create { max-width: 920px; padding: 24px 28px 40px; gap: 20px; overflow-wrap: anywhere; }
+.report-workspace .report-head { gap: 10px; }
+.report-workspace .report-head > div { min-width: 0; }
+.report-workspace .report-head h1,.report-workspace .report-create h2 { font-size: 19px; line-height: 1.45; }
+.report-workspace .report-head p { font-size: 12px; }
+.report-workspace .report-summary { margin: 0; gap: 10px; }
+.report-workspace .report-stats { gap: 4px 14px; font-size: 12px; }
+.report-workspace .report-section { border-color: #e9e9e6; background: #fff; padding: 12px 14px; gap: 8px; }
+.report-workspace .report-items { gap: 4px; }
+.report-workspace .report-item { border: 0; border-radius: 7px; background: #f7f7f5; padding: 8px 10px; }
+.report-workspace .report-item:hover:enabled { background: #ededea; }
+.report-workspace .report-item:disabled { opacity: 1; color: inherit; }
+.report-workspace .report-item-body strong,.report-workspace .report-item-body small { white-space: normal; }
+.report-workspace .report-item-body strong { font-size: 14px; line-height: 1.5; }
+.report-workspace .report-item-body small { color: #5f5f5a; font-size: 13px; }
+.report-workspace .report-item-label { flex-shrink: 1; }
+.report-workspace .report-markdown { min-width: 0; font-size: 14px; line-height: 1.7; }
+.report-workspace .report-markdown > :first-child { margin-top: 0; }
+.report-workspace .report-markdown > :last-child { margin-bottom: 0; }
+.report-workspace .report-markdown table { table-layout: fixed; }
+.report-workspace .analysis-side { position: relative; width: min(var(--sidebar-width, 300px), max(280px, 100% - 350px)); }
+.report-workspace .analysis-side-new { margin-inline: 0; }
+.report-workspace .analysis-side-new:disabled { cursor: default; }
+.report-workspace .analysis-list-empty { padding-inline: 8px; }
+.report-workspace .analysis-list-empty button { margin-top: 6px; padding: 0; color: #8e2187; width: auto; }
+.report-workspace .report-empty,.report-workspace .analysis-side [role="status"] { overflow-wrap: anywhere; }
+.report-workspace .report-empty.error button { margin-top: 8px; }
+@media (max-width: 1000px) {
+  .report-workspace .report-doc,.report-workspace .report-create { padding: 20px 22px 36px; }
+}
+@media (max-width: 900px) {
+  .report-workspace .analysis-side { width: auto; max-height: min(260px, 48%); }
+  .report-workspace .sidebar-resize-handle { display: none; }
+}
+/* Workbench sidebar: one surface, a single search input and quiet filter pills. */
+:is(.event-workspace,.report-workspace) .analysis-side,.ask-page .ask-side,.topic-page .topic-side { background: #f6f6f4; border-color: #eaeae7; }
+:is(.event-workspace,.report-workspace) .analysis-side,.ask-page .ask-side { padding: 18px 14px 10px; }
+:is(.event-workspace,.report-workspace) .analysis-side h1,.ask-side h1 { margin: 0 4px 3px; }
+:is(.event-workspace,.report-workspace) .analysis-side-count { margin: 0 4px 12px; }
+:is(.event-workspace,.report-workspace) .analysis-search { padding: 0; margin-bottom: 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.topic-side .topic-side-search,
+:is(.event-workspace,.report-workspace) .analysis-search input { height: 31px; padding: 0 9px; border: 0; border-radius: 8px; background: #ededea; box-shadow: none; font-size: 14.5px; line-height: 1.45; }
+.topic-side .topic-side-search:focus-visible,
+:is(.event-workspace,.report-workspace) .analysis-search input:focus-visible { outline: 2px solid #a3279a; outline-offset: 2px; }
+.topic-side .topic-side-search::placeholder,
+:is(.event-workspace,.report-workspace) .analysis-search input::placeholder { color: #6c6c67; }
+:is(.event-workspace,.report-workspace) .analysis-pills { gap: 2px; margin: 0 0 6px; padding: 2px 4px 6px; border: 0; border-radius: 0; background: transparent; }
+:is(.event-workspace,.report-workspace) .analysis-pills button { flex: none; justify-content: flex-start; padding: 6px 8px; }
+:is(.event-workspace,.report-workspace) .analysis-pills button.on { background: #fff; box-shadow: none; }
+:is(.event-workspace,.report-workspace) .analysis-pills button.on small { color: #5f5f5a; }
+:is(.event-workspace,.report-workspace) .analysis-items { gap: 2px; }
+:is(.event-workspace,.report-workspace) .analysis-items > button,.ask-threads > button { align-items: flex-start; padding: 8px; margin: 0; border: 0; border-radius: 7px; box-shadow: none; }
+:is(.event-workspace,.report-workspace) .analysis-items > button.on { background: #e9e9e6; box-shadow: none; }
+.ask-threads > button > :is(strong,small) { max-width: 100%; }
+.ask-threads > button:focus-visible { outline-offset: -2px; }
 .event-workspace .event-list-icon { width: 16px; height: 16px; margin-top: 2px; border-radius: 0; background: transparent; }
 .event-workspace .event-list-icon .analysis-dot { width: 16px; height: 16px; }
-/* Chat is the typography baseline for these same-role event elements. */
-.chat-workbench-sidebar-head h1,.event-workspace .analysis-side h1 { font-size: 22px; font-weight: 600; line-height: 1.25; letter-spacing: -.012em; }
-.chat-workbench-sidebar-head p,.event-workspace .analysis-side-count { font-size: 13px; font-weight: 400; line-height: 1.4; }
-.chat-workbench-search,.event-workspace .analysis-search input { font-size: 14.5px; line-height: 1.45; }
-.chat-workbench-filters button,.event-workspace .analysis-pills button { font-size: 13px; font-weight: 400; line-height: 1.45; }
-.chat-workbench-filters small,.event-workspace .analysis-pills button small { font-size: 11.5px; }
-.chat-workbench-session-line strong,.event-workspace .analysis-items > button strong { font-size: 14px; font-weight: 500; line-height: 1.45; }
-.chat-workbench-session-body small,.event-workspace .analysis-items > button small { font-size: 13px; font-weight: 400; line-height: 1.45; }
+/* Chat is the typography baseline for the analysis sidebars. */
+.chat-workbench-sidebar-head h1,:is(.event-workspace,.report-workspace) .analysis-side h1,.ask-side h1 { font-size: 22px; font-weight: 600; line-height: 1.25; letter-spacing: -.012em; }
+.chat-workbench-sidebar-head p,:is(.event-workspace,.report-workspace) .analysis-side-count,.ask-side-sub { font-size: 13px; font-weight: 400; line-height: 1.4; }
+.chat-workbench-search { font-size: 14.5px; line-height: 1.45; }
+.chat-workbench-filters button,:is(.event-workspace,.report-workspace) .analysis-pills button { font-size: 13px; font-weight: 400; line-height: 1.45; }
+.chat-workbench-filters small,:is(.event-workspace,.report-workspace) .analysis-pills button small { font-size: 11.5px; }
+.chat-workbench-session-line strong,:is(.event-workspace,.report-workspace) .analysis-items > button strong,.ask-threads > button strong { font-size: 14px; font-weight: 500; line-height: 1.45; }
+.chat-workbench-session-body small,:is(.event-workspace,.report-workspace) .analysis-items > button small,.ask-threads > button small { font-size: 13px; font-weight: 400; line-height: 1.45; }
 .chat-workbench-session-line time,.event-workspace .event-list-meta time { font-size: 12px; line-height: 1.45; }
 .chat-workbench-title h2,.event-workspace .analysis-doc h1 { font-size: 17px; font-weight: 600; line-height: 1.45; letter-spacing: -.012em; }
 .chat-workbench-conversation-meta,.event-workspace .event-heading-meta,.event-workspace .event-heading-meta .analysis-status,.event-workspace .event-heading-meta .analysis-meta { font-family: inherit; font-size: 12px; line-height: 1.5; }
