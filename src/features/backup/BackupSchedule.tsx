@@ -1,4 +1,5 @@
 import { t, tf, ctf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type AppSettings, defaultSettings, mergeSettings } from '../settings/settingsModel';
@@ -112,7 +113,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
         setSettings(state.draft);
         setBlocked(state.blocked);
         setSavePending(state.saving || state.pending > 0);
-        if (state.error) setError(tf("保存失败，修改尚未确认：{0}", String(state.error)));
+        if (state.error) setError(tf("保存失败，修改尚未确认：{0}", errorText(state.error)));
       });
       setConnected((scan ?? []).some(account => !wizard || account.id === stored.active_account_id));
       setWhatsappConnected((scan ?? []).some(account => account.source === 'whatsapp'));
@@ -122,7 +123,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
     } catch (e) {
       if (active.current && request === loadId.current) {
         setBlocked(true);
-        setError(tf("无法加载设置：{0}", String(e)));
+        setError(tf("无法加载设置：{0}", errorText(e)));
       }
     } finally {
       if (active.current && request === loadId.current) setLoading(false);
@@ -174,7 +175,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
     ? tf("每天 {0}", plan.times.join('、'))
     : intervalSeconds % 3600 === 0 ? tf("每 {0} 小时", intervalSeconds / 3600) : tf("每 {0} 分钟", intervalSeconds / 60);
 
-  if (!ready) return <div className="settings-page backup-page backup-v7"><h2>{t("备份周期")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{error}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
+  if (!ready) return <div className="settings-page backup-page backup-v7"><h2>{t("备份周期")}</h2><p>{loading ? t("正在加载设置…") : t("设置尚未加载，无法安全保存。")}</p>{error && <div className="error" role="alert">{errorText(error)}</div>}{!loading && <button type="button" onClick={() => void load()}>{t("重新加载")}</button>}</div>;
 
   return <div className={`settings-page backup-page backup-v7${wizard ? ' wizard-backup-page' : ''}`}>
     <header className="page-head">
@@ -268,7 +269,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
             <Row label={t("生效日")}>
               <div className="plan-pills" role="group" aria-label={t("生效日")}>
                 {WEEKDAYS.map((label, day) => <button
-                  key={t(label)}
+                  key={label}
                   type="button"
                   aria-pressed={plan.days.includes(day)}
                   className={plan.days.includes(day) ? 'on' : ''}
@@ -306,7 +307,7 @@ export function BackupSchedule({ onOpenConnectors, onContinue, wizard = false, o
 
     </fieldset>
     {onContinue && <div className="page-actions">{wizard && onBack && <button type="button" className="wxv-btn" disabled={savePending} onClick={onBack}>{t("上一步")}</button>}<WizardActionButton className={savePending ? "primary backup-next-saving" : "primary"} busyLabel={t("正在保存…")} disabled={!connected || (!wizard && (!settings.sync.enabled || plan.mode === 'manual')) || blocked || savePending} onAction={onContinue}>{wizard ? editingSharedPlan ? t("下一步") : t("沿用当前设置并继续") : t("保存并继续")}</WizardActionButton>{!wizard && (!settings.sync.enabled || plan.mode === 'manual') && <span>{t("请开启自动备份并选择备份周期。")}</span>}</div>}
-    {error && <div className="error" role="alert">{error}</div>}
+    {error && <div className="error" role="alert">{errorText(error)}</div>}
     {blocked && <div><p>{t("当前修改未确认保存；重新加载会放弃这些修改。")}</p><button type="button" disabled={loading} onClick={() => void load()}>{loading ? t("正在加载…") : t("放弃未保存修改并重新加载")}</button></div>}
   </div>;
 }

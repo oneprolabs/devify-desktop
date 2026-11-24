@@ -233,8 +233,8 @@ export function useWeChatCapture({ account, wizard, wizardStep, onWizardStep, sh
     setError(''); setRecoveryError(''); setRecoveryNotice(''); setLaunchDiagnosis(null); setCaptureBusy('accept-official');
     try {
       await invoke('wechat_capture_accept_official');
-      setNotice('已保留当前官方微信和原备份，可以重新连接。');
-      setRecoveryNotice('已校验并保留当前官方微信，原备份已保留。请完成系统检查后继续连接。');
+      setNotice(t("已保留当前官方微信和原备份，可以重新连接。"));
+      setRecoveryNotice(t("已校验并保留当前官方微信，原备份已保留。请完成系统检查后继续连接。"));
       await refreshCaptureStatus();
       onWizardStep?.('wizard-permission');
     } catch(e) { setError(captureErrorText(e)); setRecoveryError(captureErrorText(e)); }

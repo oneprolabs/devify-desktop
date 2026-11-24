@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { t, tf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import { granted, useInternalAccount } from '../auth/entitlements';
 import { AgentSelect } from './AgentSelect';
@@ -40,7 +41,7 @@ export function AgentHub({ onOpenAnalysis }: { onOpenAnalysis?: () => void }) {
       <p>{t('在聊天中选择「生成总结」，使用 AIMyChats 提供的线上模型，无需安装智能体。')}</p>
     </section>
     {!ready && !model.error && <p role="status">{t('正在加载设置…')}</p>}
-    {model.error && <p role="alert" className="integration-error">{model.error} <button type="button" className="integration-text" disabled={saving} onClick={() => void model.reload()}>{t('重新加载')}</button></p>}
+    {model.error && <p role="alert" className="integration-error">{errorText(model.error)} <button type="button" className="integration-text" disabled={saving} onClick={() => void model.reload()}>{t('重新加载')}</button></p>}
     {ready && canSummary && <section className="integration-local" aria-labelledby="integration-local-title">
       <div className="integration-section-heading"><div><h3 id="integration-local-title"><span>2</span>{t('使用本地智能体总结')}</h3><p>{t('开启后，可在聊天中调用本机智能体，生成聊天记录总结。')}</p></div>
         <span className="integration-switch-state" role="status">{saving ? t('正在保存…') : enabled ? t(effective ? '已开启' : '等待可用工具') : t('未开启')}</span>

@@ -1,4 +1,5 @@
 import { t, tf, ctf } from '../../shared/i18n/locale';
+import { errorText, nativeErrorCode } from '../../shared/i18n/errorText';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { listen } from '@tauri-apps/api/event';
@@ -116,7 +117,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
         setBaseUrl(value);
         setServerDraft(value);
       })
-      .catch(reason => setError(tf("设置加载失败：{0}，请重新打开页面。", String(reason))));
+      .catch(reason => setError(tf("设置加载失败：{0}，请重新打开页面。", errorText(reason))));
   }, []);
 
   useEffect(() => {
@@ -154,8 +155,9 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
 
   const idOk = /^[a-z0-9._-]{3,}$/i.test(username);
   const browserStarting = busy === 'browser-config' || busy === 'browser-opening';
-  const configFailed = /^(读取服务端登录配置失败|服务端登录配置)/.test(error);
-  const configConnectionFailed = error.startsWith("读取服务端登录配置失败：服务端暂不可用");
+  const configError = nativeErrorCode(error);
+  const configConnectionFailed = configError === 'AUTH_CONFIG_UNAVAILABLE';
+  const configFailed = configConnectionFailed || configError === 'AUTH_CONFIG_INVALID';
   const retrySavedSession = async () => {
     if (sessionCheckLock.current || busy !== '' || connectionSaving) return;
     sessionCheckLock.current = true;
@@ -309,7 +311,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
       setBusy('');
       setInfo('');
       const message = String(reason);
-      setError(/上传期间无法更改登录状态|备份正在使用登录状态/.test(message)
+      setError(nativeErrorCode(message) === 'AUTH_UPLOAD_BUSY'
         ? t("后台备份尚未结束，暂时无法登录。如果长时间没有进展，请退出并重新打开 AIMyChats 后重试。")
         : message);
     } finally { loginActionLock.current = false; }
@@ -351,7 +353,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
   };
 
   const signInError = error && !configConnectionFailed && <div className="auth-error">
-    <p role="alert">{t(error)}</p>
+    <p role="alert">{errorText(error)}</p>
     <div className="auth-error-actions">
       {configFailed && <button type="button" onClick={openConnectionSettings}>{t("连接设置")}</button>}
       <button type="button" disabled={connectionSaving} onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button>
@@ -373,7 +375,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
           }}>{t("登录…")}</button>}
       {busy === 'browser' && <button type="button" className="auth-gate-secondary" onClick={() => void cancelBrowserLogin()}>{t("取消")}</button>}
       {busy !== 'browser' && <button type="button" className="auth-gate-secondary" disabled={!settingsLoaded || serverSaving || connectionSaving || busy !== ''} aria-busy={busy === 'session'} onClick={() => void retrySavedSession()}>{busy === 'session' ? t("正在检查…") : t("重新检查已有登录")}</button>}
-      {error && !popup && <p className="auth-gate-error" role="alert">{error} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
+      {error && !popup && <p className="auth-gate-error" role="alert">{errorText(error)} <button type="button" onClick={() => requestFeedback('login', 'login')}>{t("反馈此问题")}</button></p>}
     </div>
 
     {popup && <div className="auth-backdrop auth-login-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy && !connectionSaving && !serverSaving) closePopup(); }}>
@@ -459,7 +461,7 @@ export function LoginGate({ notice = '', onAuthenticated }: { notice?: string; o
               <p>{t("在浏览器中创建 Aimychats 账号：填写邮箱并完成验证后，设置 AI 邮箱用户名和密码，再回到客户端登录。")}</p>
               <button type="button" className="auth-submit" onClick={() => void openExternal('/register')}>{t("在浏览器中注册")}</button>
             </div>
-            {error && <p className="auth-error" role="alert">{t(error)}</p>}
+            {error && <p className="auth-error" role="alert">{errorText(error)}</p>}
           </div>}
           <div className="auth-login-footer">
             <p className="auth-switch">{tab === 'login' ? t("还没有账号？") : t("已有账号？")}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t, tf } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { WizardActionButton } from '../../shared/ui/WizardActionButton';
 import { AGENTS, type AccessStatus, type AgentInfo } from './agentCatalog';
 
@@ -38,7 +39,7 @@ export function AgentAccess({ status, agents, defaultId, disabled, error, onConf
     <div className="integration-section-heading"><h3 id="integration-skills-title"><span>3</span>{t('让智能体从本地读取聊天记录')}</h3><small>{t('按需接入')}</small></div>
     <p>{t('为智能体安装 Skills，直接通过本机 AIMyChats 读取聊天记录，继续总结、分析或处理。')}</p>
     <p className="integration-help">{t('本机接入，优先本地读取。无需开启上方的总结开关，后续处理由你的智能体完成。')}</p>
-    {error && <p className="integration-error" role="alert">{error} <button className="integration-text" type="button" onClick={() => void onRefresh()}>{t('重试')}</button></p>}
+    {error && <p className="integration-error" role="alert">{errorText(error)} <button className="integration-text" type="button" onClick={() => void onRefresh()}>{t('重试')}</button></p>}
     {status && !status.running && <p className="integration-error" role="alert">{t('本机接入暂不可用，请确认已登录并重新打开智能体集成。')}</p>}
     {status && !status.wxq && <p className="integration-error" role="alert">{t('缺少本机读取工具，请重新安装完整版 AIMyChats。')}</p>}
     <div className="integration-directory-heading"><h4>{t('选择智能体，安装 Skills')}</h4><small>{tf('已安装 {0} / {1}', AGENTS.filter(item => installed(item.id)).length, AGENTS.length)}</small></div>
@@ -57,7 +58,7 @@ export function AgentAccess({ status, agents, defaultId, disabled, error, onConf
         {complete && <span className="integration-installed">{t('Skills 已安装')}</span>}
       </article>;
     })}</div>
-    {message && <p className="integration-success" role="status">{message}</p>}{failure && <p className="integration-error" role="alert">{failure}</p>}
+    {message && <p className="integration-success" role="status">{message}</p>}{failure && <p className="integration-error" role="alert">{errorText(failure)}</p>}
     <div className="integration-howto"><div className="integration-directory-heading"><h4>{t('怎么用')}</h4><small>{t('安装 Skills 后，在你的智能体里直接说')}</small></div>
       <ol><li>{t('为已安装的智能体安装 Skills')}</li><li>{t('打开它的对话窗口')}</li><li>{t('说出会话名称和时间范围')}</li></ol>
       <div className="integration-examples">{EXAMPLES.map(example => <button type="button" key={example} onClick={() => void copy(example)}>{t(example)}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-label={t('复制')}><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg></button>)}</div>

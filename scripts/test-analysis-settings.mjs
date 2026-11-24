@@ -1,3 +1,4 @@
+import * as nativeErrors from '../src/shared/i18n/errorText.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -34,6 +35,7 @@ function load(file) {
     if(name==='../../shared/ui/DailyTimePicker')return{DailyTimePicker};
     if(name==='../agents/AgentSummaryInstructions')return{AgentSummaryInstructions};
     if(name.endsWith('.css'))return{};
+  if (name.endsWith('/i18n/errorText')) return nativeErrors;
     throw Error(name);
   },module,module.exports);
   cache.set(file,module.exports);return module.exports;

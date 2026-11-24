@@ -1,4 +1,5 @@
 import { t, tf, ctf, dateLocale, sortLocale } from '../../../shared/i18n/locale';
+import { errorText } from '../../../shared/i18n/errorText';
 import { useEffect, useMemo, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { CollectionMessages, type MessageRef } from './CollectionMessages';
@@ -158,7 +159,7 @@ export function Collection({ onSettings, onComplete }: { onSettings: () => void;
       <p className="collection-intro">{t("从本机已读取的会话中挑选，确认范围后上传。")}</p>
       {!isTauri() && <p className="collection-notice">{t("请在桌面应用中选择本机聊天。")}</p>}
       {loading && <p className="collection-notice">{t("正在读取会话和上传空间…")}</p>}
-      {error && <p className="collection-error" role="alert">{t(error)}</p>}
+      {error && <p className="collection-error" role="alert">{errorText(error)}</p>}
       {!loading && isTauri() && (!accountId || blocked) && <div className="collection-notice">{!accountId ? t("请先连接微信并选择账号。") : t("请先登录并保存可用的上传目标空间。")} <button type="button" onClick={onSettings}>{t("打开账户设置")}</button></div>}
       {accounts.length > 0 && <div className="collection-account"><label>{t("账号")}</label><AccountPicker accounts={accounts} value={accountId} disabled={busy} onChange={switchAccount} /><span>{t("每次采集仅包含当前账号的白名单会话。")}</span></div>}
       {whatsappSource && <p className="collection-notice">{t("WhatsApp 先上传文字内容；图片、语音和文件暂不打包，消息里会保留「[图片]」这类标签。")}</p>}

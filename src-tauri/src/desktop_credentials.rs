@@ -91,7 +91,7 @@ pub(crate) fn advance_generation_locked() -> Result<u64, String> {
 }
 
 pub fn begin_auth_attempt() -> Result<u64, String> {
-    let _identity = crate::UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "上传期间无法更改登录状态，请稍后重试。")?;
+    let _identity = crate::UPLOAD_IDENTITY_LOCK.try_write().map_err(|_| "AUTH_UPLOAD_BUSY: 上传期间无法更改登录状态，请稍后重试。")?;
     advance_generation_locked()
 }
 

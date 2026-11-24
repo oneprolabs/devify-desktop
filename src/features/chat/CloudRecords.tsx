@@ -1,4 +1,5 @@
 import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
+import { errorText } from '../../shared/i18n/errorText';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
@@ -179,7 +180,7 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
         <span>{syncing ? t("正在读取本机记录并上传…") : notice || t("已上传的会话与消息")}</span>
         <button type="button" onClick={() => void syncNow()} disabled={syncing}>{syncing ? t("同步中…") : t("同步本机记录")}</button>
       </div>
-      {conversationsError && <p className="cloud-error">{conversationsError}</p>}
+      {conversationsError && <p className="cloud-error">{errorText(conversationsError)}</p>}
       <div className="cloud-conversation-list">
         {conversations.map(conversation => <button
           type="button" key={conversation.id}
@@ -218,7 +219,7 @@ export function CloudRecords({ spaceId, focus, onFocusHandled, onOpenSettings }:
             <button type="button" disabled={messagePage >= messagePages} onClick={() => void loadMessages(selected, messagePage + 1)}>{t("下一页")}</button>
           </div>}
         </header>
-        {messagesError && <p className="cloud-error">{messagesError}</p>}
+        {messagesError && <p className="cloud-error">{errorText(messagesError)}</p>}
         <div className="cloud-message-list">
           {messages.map(message => <article
             key={message.id}

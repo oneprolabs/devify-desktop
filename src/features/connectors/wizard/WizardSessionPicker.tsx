@@ -32,7 +32,7 @@ export function WizardSessionPicker(p: Props) {
       <input type="search" value={p.search} onChange={event => p.onSearch(event.target.value)} placeholder={t("搜索会话名称")} aria-label={t("搜索会话")} />
     </div>
     <div className="wizard-session-selection" role="group" aria-label={t("批量选择当前筛选结果")}>
-      <span>{t("共")}{p.items.length} {t("个会话 · 当前已选")}{visibleSelected} {t("个")}</span>
+      <span>{tf("共 {0} 个会话 · 已选 {1} 个", p.items.length, visibleSelected)}</span>
       <button type="button" disabled={!p.items.length || p.loading} onClick={() => p.onBulk('select')}>{t("全选")}</button>
       <button type="button" disabled={!visibleSelected || p.loading} onClick={() => p.onBulk('clear')}>{t("全不选")}</button>
       <button type="button" disabled={!p.items.length || p.loading} onClick={() => p.onBulk('invert')}>{t("反选")}</button>
@@ -43,15 +43,15 @@ export function WizardSessionPicker(p: Props) {
         <span role="columnheader">{t("会话")}</span><span role="columnheader">{t("最近活跃")}</span>
       </div>
       {rows.map(item => <div className="wizard-session-row" role="row" key={item.username}>
-        <span role="cell"><input type="checkbox" aria-label={`导入 ${item.display}`} checked={p.selected.has(item.username)} onChange={() => p.onToggle(item.username)} /></span>
+        <span role="cell"><input type="checkbox" aria-label={tf("导入 {0}", item.display)} checked={p.selected.has(item.username)} onChange={() => p.onToggle(item.username)} /></span>
         <div role="cell" className="wizard-session-name"><button type="button" title={t("设置此会话的首次备份时间范围")} onClick={() => { p.onFocus(item.username); }}><img className="wizard-session-badge" src={p.sourceName === 'WhatsApp' ? whatsappIcon : wechatIcon} alt="" /><strong>{item.display}</strong></button><small>{item.is_group ? t("群聊") : t("私聊")}{p.selected.has(item.username) ? t(" · 已选择") : ''}</small></div>
         <time role="cell">{p.activity(item.last_time)}</time>
       </div>)}
-      {!p.accountId ? <p className="plan-empty">{t("未发现")}{p.sourceName ?? "微信"}{t("账号，请返回连接器完成连接。")}</p> : p.loading ? <p className="plan-empty" role="status">{t("正在读取会话列表…")}</p> : !rows.length && <p className="plan-empty">{t("没有符合条件的会话。")}</p>}
+      {!p.accountId ? <p className="plan-empty">{tf("未发现 {0} 账号，请返回连接器完成连接。", p.sourceName ?? t("微信"))}</p> : p.loading ? <p className="plan-empty" role="status">{t("正在读取会话列表…")}</p> : !rows.length && <p className="plan-empty">{t("没有符合条件的会话。")}</p>}
     </div>
     <div className="wizard-session-pagination">
-      <span>{p.items.length ? `${current * size + 1}–${Math.min((current + 1) * size, p.items.length)}` : '0'} / {p.items.length} {t("个 · 已选")}{p.selectedCount}</span>
-      <nav aria-label={t("会话分页")}><button type="button" aria-label={t("上一页")} disabled={current === 0} onClick={() => setPage(current - 1)}>‹</button>{pageNumbers.map((n, i) => <span key={n}>{i > 0 && n - pageNumbers[i - 1] > 1 && <span className="wizard-page-ellipsis">…</span>}<button type="button" aria-label={`第 ${n + 1} 页`} aria-current={current === n ? 'page' : undefined} onClick={() => setPage(n)}>{n + 1}</button></span>)}<button type="button" aria-label={t("下一页")} disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>›</button></nav>
+      <span>{tf("{0} / {1} · 已选 {2} 个", p.items.length ? `${current * size + 1}–${Math.min((current + 1) * size, p.items.length)}` : '0', p.items.length, p.selectedCount)}</span>
+      <nav aria-label={t("会话分页")}><button type="button" aria-label={t("上一页")} disabled={current === 0} onClick={() => setPage(current - 1)}>‹</button>{pageNumbers.map((n, i) => <span key={n}>{i > 0 && n - pageNumbers[i - 1] > 1 && <span className="wizard-page-ellipsis">…</span>}<button type="button" aria-label={tf("第 {0} 页", n + 1)} aria-current={current === n ? 'page' : undefined} onClick={() => setPage(n)}>{n + 1}</button></span>)}<button type="button" aria-label={t("下一页")} disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>›</button></nav>
       <div className="wizard-session-size"><span>{t("每页")}</span>{[20, 50, 100].map(n => <button type="button" key={n} aria-pressed={size === n} onClick={() => setSize(n)}>{n}</button>)}</div>
     </div>
   </fieldset>;

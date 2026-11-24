@@ -19,8 +19,8 @@
 .wechat-wizard .wizard-connector-head strong { color: #a3279a; font-size: 12px; font-weight: 400; line-height: 17px; letter-spacing: .08em; }
 .wechat-wizard .wizard-connector-head h2 { margin: 2px 0 0; color: #1a1a19; font-size: 24px; font-weight: 600; line-height: 1.4; }
 .wechat-wizard .wizard-connector-head p { margin: 3px 0 0; color: #5f5f5a; font-size: 13px; line-height: 1.6; }
-.wechat-wizard .wizard-stepper { display: flex; align-items: center; gap: 0; margin: 0 0 26px; padding: 0; border: 0; }
-.wechat-wizard .wizard-stepper button { display: flex; flex: 1; flex-direction: row; align-items: center; gap: 8px; margin: 0; padding: 0; border: 0; background: transparent; color: #5f5f5a; font: inherit; font-size: 13px; font-weight: 400; line-height: 24px; white-space: nowrap; }
+.wechat-wizard .wizard-stepper { display: flex; flex-wrap: wrap; align-items: center; row-gap: 10px; margin: 0 0 26px; padding: 0; border: 0; }
+.wechat-wizard .wizard-stepper button { display: flex; flex: 1 0 auto; flex-direction: row; align-items: center; gap: 8px; margin: 0; padding: 0; border: 0; background: transparent; color: #5f5f5a; font: inherit; font-size: 13px; font-weight: 400; line-height: 24px; white-space: nowrap; }
 .wechat-wizard .wizard-stepper button:last-child { flex: 0 0 auto; }
 .wechat-wizard .wizard-stepper button > span { display: inline-flex; flex: 0 0 24px; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 1px solid #d9d9d5; border-radius: 50%; background: #fff; color: #5f5f5a; font: inherit; font-size: 12px; line-height: 1; letter-spacing: 0; text-align: center; font-variant-numeric: tabular-nums; }
 .wechat-wizard .wizard-stepper button:not(:last-child)::after { display: block; position: static; flex: 1; min-width: 12px; height: 1px; margin: 0 10px; background: #e6e6e3; }
@@ -221,7 +221,7 @@
 .wizard-scope-label { flex: 1; min-width: 0; }
 .wizard-scope-label small { display: block; margin-top: 2px; color: #5f5f5a; font-size: 12.5px; line-height: 1.6; }
 .wizard-scope-value { margin-left: auto; color: #5f5f5a; font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.wizard-scope-pills { display: flex; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.wizard-scope-pills { display: flex; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .wizard-scope-pills button { padding: 4px 10px; border: 1px solid #e6e6e3; border-radius: 999px; background: #fff; color: #3a3a37; box-shadow: none; font: inherit; font-size: 12px; line-height: 16px; cursor: pointer; }
 .wizard-scope-pills button[aria-pressed="true"] { border-color: #a3279a; background: #a3279a; color: #fff; }
 .wizard-scope-pills button:hover:not(:disabled):not([aria-pressed="true"]) { border-color: #a3279a; color: #a3279a; }

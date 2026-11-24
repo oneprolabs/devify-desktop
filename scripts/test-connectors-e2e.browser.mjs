@@ -157,11 +157,22 @@ export async function runLoginUiE2E(task, base = 'http://localhost:1420', pageLa
   assert.equal(await page.evaluate(() => document.querySelector('.auth-divider').textContent), 'or');
   await page.screenshot({path:'/tmp/aimychats-login-v7-english-small.png'});
   await page.evaluate(() => {
-    window.__E2E__.authStartError = '读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
+    window.__E2E__.authStartError = 'AUTH_CONFIG_UNAVAILABLE: 读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
   });
   await page.click('.auth-alt');
   await page.waitForSelector('.auth-connection-recovery select:not(:disabled)');
   await fits();
+  assert.ok(await page.evaluate(() => {
+    const recovery = document.querySelector('.auth-connection-recovery');
+    const label = recovery.querySelector('label > span').getBoundingClientRect();
+    const select = recovery.querySelector('select').getBoundingClientRect();
+    const retry = recovery.querySelector('.auth-connection-retry').getBoundingClientRect();
+    const centerY = rect => (rect.top + rect.bottom) / 2;
+    const control = recovery.querySelector('.network-connection').getBoundingClientRect();
+    return label.bottom <= select.top && select.right <= retry.left
+      && Math.abs(control.width - select.width) <= 1
+      && Math.abs(centerY(select) - centerY(retry)) <= 1;
+  }), 'retry aligns with the full-width select below its label');
   assert.ok(await page.evaluate(() => {
     const select = document.querySelector('.auth-connection-recovery select');
     const style = getComputedStyle(select);
@@ -465,6 +476,64 @@ export async function runConnectorEnglishSmoke(task, base = 'http://localhost:14
 }
 
 // Real React UI with synthetic native IPC; native runtime tests cover durable state.
+export async function runEnglishWechatWizardE2E(task, base = 'http://127.0.0.1:1422', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const click = name => page.click(`loc=role:button[name="${name}"]`);
+  const ready = name => page.waitForFunction(text => [...document.querySelectorAll('button')]
+    .some(button => button.textContent.trim() === text && !button.disabled), name);
+  const fit = async (selector, width, height) => {
+    await page.cdp('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    const overflow = await page.evaluate(rootSelector => {
+      const root = document.querySelector(rootSelector);
+      return [root, ...root.querySelectorAll('button, [role="columnheader"]')]
+        .filter(element => element.getClientRects().length > 0 && element.scrollWidth > element.clientWidth + 1)
+        .map(element => element === root ? rootSelector : element.textContent.trim());
+    }, selector);
+    assert.deepEqual(overflow, [], `${selector} fits ${width}×${height}`);
+  };
+
+  await page.cdp('Emulation.setDeviceMetricsOverride', { width: 940, height: 640, deviceScaleFactor: 1, mobile: false });
+  await page.goto(`${base}/scripts/connectors-e2e.html?fresh&intel&english`);
+  await ready('Settings');
+  await click('Settings');
+  await page.waitForSelector('.connector-actions .connector-primary');
+  await page.click('loc=css:.connector-actions .connector-primary >> nth=0');
+  await ready('Next');
+  await click('Next');
+  await ready('Next: connect WeChat');
+  await page.evaluate(() => {
+    window.__wizardScrolls = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (...args) {
+      if (this.matches('.wx-setup-list .wx-setup-item.current')) window.__wizardScrolls.push(this.querySelector('strong')?.textContent);
+      return original.apply(this, args);
+    };
+  });
+  await click('Next: connect WeChat');
+  await page.waitForSelector('[aria-label="WeChat connection steps"] .current');
+  await page.waitForFunction(() => window.__wizardScrolls.length > 0);
+  await fit('.wechat-wizard', 940, 640);
+  await click('Enter key manually');
+  await page.fill('#wx-manual-key', 'invalid-key');
+  await page.press('#wx-manual-key', 'Enter');
+  await page.waitForFunction(() => {
+    const error = document.querySelector('.wx-setup-details p');
+    return Boolean(error?.textContent && !/\p{Script=Han}/u.test(error.textContent));
+  });
+  await page.fill('#wx-manual-key', 'ab'.repeat(32));
+  await page.press('#wx-manual-key', 'Enter');
+  await ready('Next: choose chats');
+  await click('Next: choose chats');
+  await page.waitForFunction(() => /Chats found: \d+/.test(document.querySelector('.wizard-import-scope')?.textContent || ''));
+  await page.click('[aria-label="Import scope"] button[aria-expanded]');
+  await page.waitForSelector('input[aria-label^="Import "]');
+  await page.waitForSelector('button[aria-label="Page 2"]');
+  await fit('.wechat-wizard', 940, 640);
+  await fit('.wechat-wizard', 1360, 900);
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  console.log('PASS English WeChat wizard: current-step scrolling, validation error, dynamic import copy, accessible names and compact layout');
+}
+
 export async function runBackupSwitchUiE2E(task, base = 'http://localhost:1434', pageLabel = 'p1') {
   const page = task.page(pageLabel);
   const master = 'button[role="switch"][aria-label="后台备份"]';
