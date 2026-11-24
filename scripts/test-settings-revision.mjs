@@ -67,6 +67,7 @@ const find = (tree, test) => {
 };
 let invoke;
 let wizardActionModule;
+let uiLanguage = '中文', englishCopy;
 const installed = { detect: { state: 'installed', app_path: '/Applications/WeChat.app', version: '4.1.2', message: '' }, checking: false, usable: true, canProceed: true, recheck: async () => {} };
 let connectorInstall = installed;
 let backupRuntime = { paused: false };
@@ -105,7 +106,8 @@ const mockedRequire = id => {
   };
   if (id === '../../shared/api/serviceUrl.ts' || id === './serviceUrl') return serviceUrl;
   if (['../../../shared/i18n/locale', '../../shared/i18n/locale', '../i18n/locale'].includes(id)) return {
-    t: text => text,
+    t: text => uiLanguage === 'English' ? englishCopy[text] ?? text : text,
+    useUiLanguage: () => uiLanguage,
     tf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
     ctf: (pattern, ...args) => String(pattern).replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? '')),
     dateLocale: () => 'zh-CN',
@@ -507,6 +509,62 @@ tree = render(recoveryView, () => WeChatSetupChecklist({ ...recoveryProps, recov
 find(tree, node => node.type === WizardActionButton && node.props.children === '重试恢复微信').props.onAction();
 assert.equal(restores, 1, 'an unknown or modified signature must keep the guarded restore path');
 for (const hook of recoveryView.hooks) hook?.cleanup?.();
+
+// Only an explicit write denial for an installed Mac bundle gets the Finder guide.
+const writeView = { hooks: [] }, writeResult = deferred();
+const deniedCapture = { ...recoveryProps.capture, pending: false, stage: 'idle', needs_cleanup: false,
+  recovery_error_code: null, platform_supported: true, lldb_available: true, wechat_present: true, user_can_write: false };
+let writeCapture = deniedCapture, recheckingWrite = false;
+invoke = async command => {
+  assert.equal(command, 'app_info');
+  return { platform: 'macos', arch: 'aarch64', os_version: 'macOS 15' };
+};
+const renderSystemChecks = (patch = {}) => render(writeView, () => WeChatSetupChecklist({
+  ...recoveryProps, error: '', permissionPhase: true, capture: writeCapture, captureChecking: recheckingWrite, captureError: '',
+  async onCaptureRefresh() { recheckingWrite = true; writeCapture = await writeResult.promise; recheckingWrite = false; },
+  ...patch,
+}));
+const systemRow = (tree, title) => find(tree, node => node.type === 'li' && elements(node).some(child => child.type === 'strong' && child.props.children === title));
+const writeRow = (patch = {}) => systemRow(renderSystemChecks(patch), uiLanguage === 'English' ? 'WeChat installation permissions' : '安装目录读写权限');
+const hasWriteGuide = row => elements(row).some(node => node.props.className === 'wx-setup-write-guide');
+const hasWriteAlert = row => elements(row).some(node => node.props.role === 'alert');
+const writeStatus = row => find(row, node => node.props.className === 'wx-setup-status').props.children.at(-1);
+assert.equal(hasWriteGuide(writeRow({ capture: null, captureChecking: true })), false);
+await flush();
+const deniedRow = writeRow();
+assert.equal(writeStatus(deniedRow), '未完成');
+const guide = find(deniedRow, node => node.props.className === 'wx-setup-write-guide');
+assert.equal(elements(guide).filter(node => node.type === 'li').length, 4);
+assert.match(find(guide, node => node.type === 'p').props.children, /管理员.*微信及其所在目录/);
+assert.equal(find(guide, node => node.type === 'a').props.href, 'https://support.apple.com/zh-cn/guide/mac-help/mchlp1203/27/mac/27');
+englishCopy = loadModule('../src/shared/i18n/enCatalog.ts').en;
+uiLanguage = 'English';
+const englishWrite = writeRow();
+assert.equal(find(englishWrite, node => node.type === 'a').props.href, 'https://support.apple.com/en-sg/guide/mac-help/mchlp1203/mac');
+find(englishWrite, node => node.type === WizardActionButton && node.props.children === 'Check permissions again');
+const englishAccess = systemRow(renderSystemChecks(), 'Data access');
+find(englishAccess, node => node.type === 'small' && node.props.children === 'Read-only');
+find(englishAccess, node => node.type === 'small' && node.props.children === 'AIMyChats reads your chats without changing WeChat’s original database.');
+uiLanguage = '中文';
+const writeError = writeRow({ captureError: 'probe failed' });
+assert.equal(hasWriteGuide(writeError), false);
+assert.equal(find(writeError, node => node.props.role === 'alert').props.children, '检查未完成，请重试。');
+assert.equal(hasWriteAlert(writeRow({ captureError: 'probe failed', captureChecking: true })), false);
+assert.equal(hasWriteAlert(writeRow({ capture: { ...deniedCapture, wechat_present: false } })), false);
+assert.equal(hasWriteGuide(writeRow({ manual: true })), false);
+assert.equal(hasWriteGuide(writeRow({ keyedCount: 1 })), false);
+const retryWrite = find(deniedRow, node => node.type === WizardActionButton && node.props.children === '重新检查目录权限').props.onAction();
+const pendingWrite = writeRow();
+assert.equal(hasWriteGuide(pendingWrite), false);
+assert.equal(find(pendingWrite, node => node.type === WizardActionButton).props.loading, true);
+writeResult.resolve({ ...deniedCapture, user_can_write: true });
+await retryWrite;
+const passedWrite = writeRow();
+assert.equal(hasWriteGuide(passedWrite), false);
+assert.equal(writeStatus(passedWrite), '已完成');
+assert.equal(find(passedWrite, node => node.props.className === 'wx-setup-body').props.hidden, true);
+for (const hook of writeView.hooks) hook?.cleanup?.();
+
 const wa = { hooks: [] }, waCalls = [];
 let waStatus = { installed: true, version: '2.0', account: 'wa@s.whatsapp.net', name: 'Test', sessions: 2, error: null };
 let activation = deferred();

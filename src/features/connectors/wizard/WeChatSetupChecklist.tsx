@@ -1,4 +1,4 @@
-import { t, tf } from '../../../shared/i18n/locale';
+import { t, tf, useUiLanguage } from '../../../shared/i18n/locale';
 import { errorText } from '../../../shared/i18n/errorText';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -61,6 +61,7 @@ type Props = {
 };
 
 export function WeChatSetupChecklist(p: Props) {
+  const language = useUiLanguage();
   const [systemInfo, setSystemInfo] = useState<{ platform: string; arch: string; os_version?: string } | null>(null);
   const [systemInfoChecking, setSystemInfoChecking] = useState(false);
   const [systemInfoError, setSystemInfoError] = useState('');
@@ -311,6 +312,8 @@ export function WeChatSetupChecklist(p: Props) {
   const arm64 = systemInfo?.arch === 'aarch64' || systemInfo?.arch === 'arm64';
   const archLabel = arm64 ? systemInfo?.platform === 'macos' ? 'Apple Silicon（ARM64）' : 'ARM64' : systemInfo?.arch ?? '';
   const captureCheckPending = !p.captureError && (!p.capture || p.captureChecking);
+  const writePermissionDenied = (permission.platform ?? systemInfo?.platform) === 'macos'
+    && p.capture?.wechat_present === true && p.capture.user_can_write === false;
   const systemRows = [
     { id: 'os', title: '系统版本', detail: systemInfo?.os_version ?? '', passed: false, information: Boolean(systemInfo?.os_version), checking: systemInfoChecking, skipped: false, status: systemInfo?.os_version ? '兼容性待验证' : '' },
     { id: 'arch', title: '芯片架构', detail: archLabel, passed: permission.platform === 'windows' || Boolean(p.capture?.platform_supported), checking: (!systemInfoError && !systemInfo) || (permission.platform !== 'windows' && captureCheckPending), skipped: skipCaptureChecks },
@@ -320,7 +323,7 @@ export function WeChatSetupChecklist(p: Props) {
     { id: 'data', title: '微信数据目录', detail: dataReady ? databaseCount ? tf("已找到 {0} 个账号目录 · {1} 个数据库", p.accounts.length, databaseCount)
       : tf("已找到 {0} 个账号目录", p.accounts.length) : '', passed: dataReady, checking: p.busy === 'scan', skipped: false, status: !done[0] ? '等待授权' : '' },
     { id: 'tools', title: '系统工具', detail: p.capture?.lldb_available && !skipCaptureChecks ? 'LLDB 与 Python 运行检查通过' : '', passed: Boolean(p.capture?.lldb_available) && !p.captureError, checking: captureCheckPending, skipped: skipCaptureChecks },
-    { id: 'write', title: '安装目录读写权限', passed: Boolean(p.capture?.user_can_write) && !p.captureError, checking: captureCheckPending, skipped: skipCaptureChecks },
+    { id: 'write', title: '安装目录读写权限', passed: Boolean(p.capture?.user_can_write) && !p.captureError, checking: p.captureChecking || captureCheckPending, skipped: skipCaptureChecks },
     { id: 'readonly', title: '数据访问方式', detail: '只读检查，不修改原始微信数据库。', passed: false, information: true, checking: false, skipped: false, status: '只读' },
   ];
 
@@ -360,7 +363,30 @@ export function WeChatSetupChecklist(p: Props) {
           {row.id === 'install' && !row.checking && <><p>{p.install.message ? t(p.install.message) : t("请安装官方微信后重新检查。")}</p><WizardActionButton className="wxv-btn" busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查微信…")} onAction={p.onInstallRecheck}>{t("重新检查微信")}</WizardActionButton></>}
           {row.id === 'permission' && <DiskAccessCard compact checkOnEntry={p.permissionPhase} onCheck={onPermission} />}
           {row.id === 'data' && done[0] && !row.checking && <><p>{t("未找到可读取的微信数据目录。请先打开微信并登录一次，再重新检查。")}</p><WizardActionButton className="wxv-btn" busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在查找数据目录…")} disabled={working} onAction={p.onScan}>{t("重新查找数据目录")}</WizardActionButton></>}
-          {(row.id === 'tools' || row.id === 'write') && <>{!row.checking && <p role="alert">{p.captureError ? t("检查未完成，请重试。") : row.id === 'tools' ? t("请安装或修复 Xcode Command Line Tools 后，重新检查系统工具。") : t("请确认当前用户对微信及其安装目录有读写权限，再重新检查。")}</p>}<WizardActionButton className="wxv-btn" loading={p.captureChecking} busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查…")} onAction={p.onCaptureRefresh}>{t("重新检查")}{row.id === 'tools' ? t("系统工具") : t("目录权限")}</WizardActionButton></>}
+          {(row.id === 'tools' || row.id === 'write') && <>
+            {!row.checking && (p.captureError ? <p role="alert">{t("检查未完成，请重试。")}</p>
+              : row.id === 'tools' ? <p role="alert">{t("请安装或修复 Xcode Command Line Tools 后，重新检查系统工具。")}</p>
+              : !row.skipped && writePermissionDenied && <>
+                <p className="wx-setup-write-alert" role="alert">{t("当前账号无法写入微信或其所在目录。")}</p>
+                <div className="wx-setup-write-guide">
+                  <h3>{t("如何检查微信的读写权限")}</h3>
+                  <ol>
+                    <li>{t("打开「访达 → 应用程序」，找到「微信」。")}</li>
+                    <li>{t("右键点击微信，选「显示简介」，展开「共享与权限」。")}</li>
+                    <li>{t("如果可以修改，按提示解锁，将当前 Mac 账号的权限设为「读与写」。")}</li>
+                    <li>{t("回到 AIMyChats，点「重新检查目录权限」。")}</li>
+                  </ol>
+                  <footer>
+                    <p>{t("如果权限是灰色、你没有管理员权限，或微信已设为「读与写」但检查仍未通过，请联系这台 Mac 的管理员，确认微信及其所在目录的权限。")}</p>
+                    <a href={language === 'English' ? 'https://support.apple.com/en-sg/guide/mac-help/mchlp1203/mac' : 'https://support.apple.com/zh-cn/guide/mac-help/mchlp1203/27/mac/27'}
+                      target="_blank" rel="noreferrer">{t("Apple 官方说明：在 Mac 上更改文件、文件夹或磁盘的权限")} <span aria-hidden="true">↗</span></a>
+                  </footer>
+                </div>
+              </>)}
+            <WizardActionButton className="wxv-btn" loading={p.captureChecking} busyLabel={checkingStep ? t("正在检查前置条件…") : t("正在检查…")} onAction={p.onCaptureRefresh}>
+              {row.id === 'tools' ? <>{t("重新检查")}{t("系统工具")}</> : t("重新检查目录权限")}
+            </WizardActionButton>
+          </>}
         </div>
       </li>; })}
     </ol>
