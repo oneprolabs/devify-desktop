@@ -1,4 +1,4 @@
-import { t, tf, ctf, dateLocale, sortLocale } from '../../shared/i18n/locale';
+import { t, tf, ctf, dateLocale, getUiLanguage, sortLocale } from '../../shared/i18n/locale';
 import { errorText } from '../../shared/i18n/errorText';
 import { LoadingPage, LoadingSkeleton } from '../../shared/ui/LoadingSkeleton';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
@@ -27,7 +27,7 @@ type EventDetail = EventItem & {
   relations?: EventRelation[];
   related_events?: EventRelation[];
 };
-type Page<T> = { list: T[]; relevance_counts?: RelevanceCounts; search_supported?: boolean; pagination?: { total?: number; page?: number; next?: string | null } };
+type Page<T> = { list: T[]; relevance_counts?: RelevanceCounts; search_supported?: boolean; completion_filter_supported?: boolean; pagination?: { total?: number; page?: number; next?: string | null } };
 type AppSettings = { devify?: { base_url?: string; active_space_id: string | null } };
 
 const labels: Record<Kind, { title: string; empty: string }> = {
@@ -35,7 +35,17 @@ const labels: Record<Kind, { title: string; empty: string }> = {
   reports: { title: '报告', empty: '当前空间还没有报告。' },
 };
 const REPORT_TYPES = [['all', '全部'], ['日报', '日报'], ['周报', '周报'], ['月报', '月报'], ['主题', '主题']];
-const EVENT_FILTERS = [['my_todo', '我的待办'], ['related', '与我有关'], ['other', '其他']];
+const EVENT_FILTERS = [
+  ['my_todo', '我的待办'],
+  ['related', '与我有关'],
+  ['other', '其他'],
+] as const;
+const COMPLETION_FILTERS = [
+  ['unfinished', '未完成', 'Incomplete'],
+  ['done', '已完成', 'Completed'],
+  ['all', '全部状态', 'All'],
+] as const;
+type CompletionFilter = typeof COMPLETION_FILTERS[number][0];
 
 function date(value?: string | null): string {
   if (!value) return t("时间未知");
@@ -169,6 +179,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const [resolvedScope, setResolvedScope] = useState<{ page: string; source: string } | null>(null);
   const [items, setItems] = useState<Array<EventItem | ReportItem>>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [relatedDetailId, setRelatedDetailId] = useState<number | null>(null);
   const [loading, setLoading] = useState(isTauri());
   const [error, setError] = useState('');
   const [listError, setListError] = useState('');
@@ -176,6 +187,8 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState(defaultFilter);
   const [eventPage, setEventPage] = useState(1);
+  const [completionFilter, setCompletionFilter] = useState<CompletionFilter>('all');
+  const [completionSupported, setCompletionSupported] = useState(false);
   const [hasNextPage, setHasNextPage] = useState(false);
   const [relevanceCounts, setRelevanceCounts] = useState<RelevanceCounts | null>(null);
   const [legacyEvents, setLegacyEvents] = useState(false);
@@ -205,13 +218,14 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const [addingProgress, setAddingProgress] = useState(false);
   const [progressText, setProgressText] = useState('');
   const pendingSelect = useRef<number | null>(null);
-  const listScope = useRef<{ page: string; source: string; generation: number; filter: string; number: number; keyword: string } | null>(null);
+  const listScope = useRef<{ page: string; source: string; generation: number; filter: string; number: number; keyword: string; completion: CompletionFilter } | null>(null);
   const copy = labels[kind];
   const pageKey = JSON.stringify([kind, userId, focusId]);
   const search = useEventSearch(pageKey, query, kind === 'events');
   const ownsFilter = listScope.current?.page === pageKey;
   const eventFilter = kind === 'events' && ownsFilter ? filter : defaultFilter;
   const requestPage = kind === 'events' && ownsFilter ? eventPage : 1;
+  const completion = kind === 'events' && ownsFilter ? completionFilter : 'all';
   const scopeChanged = resolvedScope !== null && resolvedScope.page !== pageKey;
   const sourceScope = scopeChanged ? null : resolvedScope;
   const isDone = (status?: string | null) => status === 'done';
@@ -222,16 +236,19 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     let cacheKey = '';
     if (search.waiting || search.tooLong) { setLoading(!search.tooLong); setListError(search.tooLong ? t('搜索内容最多输入 200 个字符。') : ''); return; }
     const generation = pageSnapshotGeneration();
-    const focus = kind === 'events' && (eventFilter !== 'all' || requestPage !== 1 || !!search.keyword) ? null : focusId;
+    const focus = kind === 'events' && (eventFilter !== 'all' || requestPage !== 1 || !!search.keyword || completion !== 'all') ? null : focusId;
     const initialSelection = (list: Array<EventItem | ReportItem>) => focus ?? list[0]?.id ?? null;
     const sameIdentity = listScope.current?.page === pageKey;
     const samePage = sameIdentity && listScope.current?.generation === generation;
-    let keepContent = samePage && listScope.current?.filter === eventFilter && listScope.current?.number === requestPage && listScope.current?.keyword === search.keyword;
+    let keepContent = samePage && listScope.current?.filter === eventFilter && listScope.current?.number === requestPage && listScope.current?.keyword === search.keyword && listScope.current?.completion === completion;
     const resetContent = (resetFilters = true) => {
       if (resetFilters) { listScope.current = null; setSpaceId(null); setResolvedScope(null); }
-      setItems([]); setTotal(0); setSelectedId(null); setDetail(null); setEventNotes([]);
+      setItems([]); setTotal(0); setSelectedId(null); setRelatedDetailId(null); setDetail(null); setEventNotes([]);
       setEvidence(null); if (resetFilters) { setQuery(''); search.reset(); }
-      if (resetFilters) { setFilter(defaultFilter); setEventPage(1); setRelevanceCounts(null); setLegacyEvents(false); }
+      if (resetFilters) {
+        setFilter(defaultFilter); setEventPage(1); setRelevanceCounts(null); setLegacyEvents(false);
+        setCompletionFilter('all'); setCompletionSupported(false);
+      }
       setHasNextPage(false);
       setRelations([]); setEditing(false); setPickerOpen(false); setActionError(''); setActionBusy(null); setRemovedNotes([]); setAddingProgress(false); setProgressText('');
     };
@@ -253,11 +270,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
         setSpaceId(id);
         if (!id) throw new Error(t("暂时无法读取空间，请检查账户连接后重试。"));
         if (!keepContent) {
-          const scope = { page: pageKey, source, generation, filter: eventFilter, number: requestPage, keyword: search.keyword };
+          const scope = { page: pageKey, source, generation, filter: eventFilter, number: requestPage, keyword: search.keyword, completion };
           listScope.current = scope;
           setResolvedScope(scope);
         }
-        cacheKey = userId === null ? '' : JSON.stringify(kind === 'events' ? [settings.devify?.base_url, userId, id, kind, eventFilter, requestPage, search.keyword] : [settings.devify?.base_url, userId, id, kind]);
+        cacheKey = userId === null ? '' : JSON.stringify(kind === 'events' ? [settings.devify?.base_url, userId, id, kind, eventFilter, requestPage, search.keyword, completion] : [settings.devify?.base_url, userId, id, kind]);
         const cached = cacheKey ? readPageSnapshot<{ list: Array<EventItem | ReportItem>; total: number; relevanceCounts?: RelevanceCounts | null; hasNextPage?: boolean }>(cacheKey) : undefined;
         if (cached && !keepContent) {
           setItems(cached.list);
@@ -266,8 +283,9 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
           setSelectedId(initialSelection(cached.list));
         }
         return invoke<Page<EventItem> | Page<ReportItem>>('devify_analysis_list', { kind, spaceId: id, page: requestPage,
-          ...(kind === 'events' ? { pageSize: 50, viewerRelevance: eventFilter === 'all' ? null : eventFilter, includeRelevanceCounts: eventFilter === 'all' && requestPage === 1 } : {}),
+          ...(kind === 'events' ? { pageSize: 50, viewerRelevance: eventFilter === 'all' ? null : eventFilter, includeRelevanceCounts: eventFilter === 'all' } : {}),
           ...(search.keyword ? { searchQuery: search.keyword } : {}),
+          ...(completion !== 'all' ? { completionStatus: completion } : {}),
         });
       })
       .then(result => {
@@ -278,17 +296,28 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
           search.setSupported(result.search_supported === true);
           if (search.keyword && result.search_supported !== true) { resetContent(false); setEventPage(1); rerouting = true; return; }
           if (result.relevance_counts != null && !counts) throw new Error(t('服务端返回的待办分类统计无效，请稍后重试。'));
+          // The flag covers aggregate status filtering and stable personal categories.
+          const supported = result.completion_filter_supported === true && Boolean(counts);
+          if (!supported && completion !== 'all') {
+            resetContent(false); setCompletionSupported(false); setCompletionFilter('all');
+            setRelevanceCounts(null); setEventPage(1); rerouting = true; return;
+          }
           if (!counts && eventFilter !== 'all') {
             // Old servers ignore the filter. Explicitly reload unfiltered data;
             // never present those rows as personal to-dos or cache them as such.
             resetContent(false); setRelevanceCounts(null); setLegacyEvents(true);
-            setFilter('all'); setEventPage(1); rerouting = true; return;
+            setFilter('all'); setCompletionSupported(false); setCompletionFilter('all'); setEventPage(1); rerouting = true; return;
           }
           if (counts && eventFilter === 'all' && focusId == null) {
             // A manual refresh after a server upgrade restores personal categories.
             resetContent(false); setLegacyEvents(false);
             setFilter(defaultFilter); setEventPage(1); rerouting = true; return;
           }
+          if (supported && !completionSupported && focusId == null) {
+            resetContent(false); setCompletionSupported(true); setCompletionFilter('unfinished');
+            setRelevanceCounts(null); setEventPage(1); rerouting = true; return;
+          }
+          setCompletionSupported(supported);
           if (counts) setLegacyEvents(false);
           else if (requestPage === 1) { setLegacyEvents(true); setRelevanceCounts(null); }
         }
@@ -308,7 +337,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       .catch(reason => { if (active) setListError(String(reason)); })
       .finally(() => { if (active && !rerouting) setLoading(false); });
     return () => { active = false; };
-  }, [kind, userId, focusId, pageKey, reloadKey, eventFilter, requestPage, defaultFilter, search.keyword, search.waiting, search.tooLong]);
+  }, [kind, userId, focusId, pageKey, reloadKey, eventFilter, requestPage, defaultFilter, search.keyword, search.waiting, search.tooLong, completion, completionSupported]);
 
   // The linking dialog keeps its original space-wide candidates. Main-list
   // paging and personal categories must not restrict which events can be linked.
@@ -336,10 +365,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
       setSelectedId(filteredItems[0]?.id ?? null);
     }
   }, [filteredItems, selectedId, kind, items.length, focusId, search.keyword]);
-  const selected = useMemo(() => items.find(item => item.id === selectedId) ?? null, [items, selectedId]);
+  const detailId = relatedDetailId ?? selectedId;
+  const selected = useMemo(() => items.find(item => item.id === detailId) ?? null, [items, detailId]);
 
   useEffect(() => {
-    if (!isTauri() || !sourceScope || !spaceId || selectedId == null) return;
+    if (!isTauri() || !sourceScope || !spaceId || detailId == null) return;
     setOpenNotes({});
     setEventNotes([]);
     setEventTab('overview');
@@ -348,26 +378,26 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     setRemovedNotes([]);
     setAddingProgress(false);
     setProgressText('');
-  }, [kind, spaceId, selectedId, sourceScope]);
+  }, [kind, spaceId, detailId, sourceScope]);
   useEffect(() => {
-    if (!isTauri() || !sourceScope || !spaceId || selectedId == null) { setDetail(null); setEventNotes([]); setDetailLoading(false); setError(''); return; }
+    if (!isTauri() || !sourceScope || !spaceId || detailId == null) { setDetail(null); setEventNotes([]); setDetailLoading(false); setError(''); return; }
     let active = true;
     setDetailLoading(true);
     setError('');
-    void invoke<EventDetail | ReportItem>('devify_analysis_detail', { kind, spaceId, itemId: selectedId })
+    void invoke<EventDetail | ReportItem>('devify_analysis_detail', { kind, spaceId, itemId: detailId })
       .then(value => { if (active) setDetail(value); })
       .catch(reason => { if (active) setError(String(reason)); })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
-  }, [kind, spaceId, selectedId, sourceScope, detailReloadKey]);
+  }, [kind, spaceId, detailId, sourceScope, detailReloadKey]);
   useEffect(() => {
-    if (!isTauri() || !sourceScope || kind !== 'events' || !spaceId || selectedId == null) { setEventNotes([]); return; }
+    if (!isTauri() || !sourceScope || kind !== 'events' || !spaceId || detailId == null) { setEventNotes([]); return; }
     let active = true;
-    void invoke<EventNote[]>('devify_event_notes', { spaceId, eventId: selectedId })
+    void invoke<EventNote[]>('devify_event_notes', { spaceId, eventId: detailId })
       .then(notes => { if (active) setEventNotes(sortNotes(notes ?? [])); })
       .catch(() => { if (active) setEventNotes([]); });
     return () => { active = false; };
-  }, [kind, spaceId, selectedId, sourceScope, detailReloadKey]);
+  }, [kind, spaceId, detailId, sourceScope, detailReloadKey]);
   useEffect(() => {
     if (!isTauri() || !sourceScope || kind !== 'events' || !spaceId) { setRelations([]); return; }
     let active = true;
@@ -377,12 +407,15 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
     return () => { active = false; };
   }, [kind, spaceId, sourceScope, detailReloadKey]);
 
-  const currentDetail = detail?.id === selectedId ? detail : null;
+  const currentDetail = detail?.id === detailId ? detail : null;
   const displayedDetail = currentDetail ?? (!detailLoading && !error ? selected : null);
   const refreshing = loading || (detailLoading && currentDetail !== null);
   const reload = () => { if (kind === 'events') setEventPage(1); setReloadKey(key => key + 1); };
   const report = kind === 'reports' ? displayedDetail as ReportItem | null : null;
   const event = kind === 'events' ? displayedDetail as EventDetail | null : null;
+  const english = getUiLanguage() === 'English';
+  const eventStatusLabel = (status?: string | null) => status === 'open' ? t('待跟进')
+    : status === 'done' && english ? 'Completed' : statusLabel(status);
   const eventRelevance = event ? viewerRelevanceLabel(event) : '';
   const relatedEvents = useMemo(() => {
     if (!event) return [];
@@ -467,17 +500,22 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   };
   const toggleEventStatus = async () => {
     if (!event || !spaceId || actionBusy) return;
+    const scope = listScope.current;
+    const sameSource = () => scope?.page === listScope.current?.page && scope?.source === listScope.current?.source;
     setActionBusy('status');
     setActionError('');
     try {
       const updated = await invoke<EventItem>('devify_event_update', {
         spaceId, eventId: event.id, status: isDone(event.status) ? 'open' : 'done',
       });
-      if (updated?.id) applyEventUpdate(updated);
+      if (!updated?.id || !sameSource()) return;
+      clearPageSnapshots();
+      setEventPage(1);
+      setReloadKey(key => key + 1);
     } catch (reason) {
-      setActionError(String(reason));
+      if (sameSource()) setActionError(String(reason));
     } finally {
-      setActionBusy(null);
+      if (sameSource()) setActionBusy(null);
     }
   };
   const refreshRelations = async () => {
@@ -575,8 +613,12 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   };
   const openRelatedEvent = (eventId: number) => {
     if (kind === 'events') {
-      if (!items.some(item => item.id === eventId)) setItems(current => [{ id: eventId, title: tf("待办 #{0}", eventId), content: '' }, ...current]);
-      setSelectedId(eventId);
+      if (filteredItems.some(item => item.id === eventId)) {
+        setRelatedDetailId(null);
+        setSelectedId(eventId);
+      } else {
+        setRelatedDetailId(eventId);
+      }
     } else onOpenEvent?.(eventId);
   };
   const generateReport = async () => {
@@ -605,23 +647,31 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
 
   const changeFilter = (value: string) => {
     if (value === filter) return;
-    if (kind === 'events') { setEventPage(1); setItems([]); setSelectedId(null); setDetail(null); setLoading(true); setHasNextPage(false); }
+    if (kind === 'events') { setEventPage(1); setItems([]); setSelectedId(null); setRelatedDetailId(null); setDetail(null); setLoading(true); setHasNextPage(false); }
     setFilter(value);
   };
-  const changeQuery = (value: string) => { setQuery(value); if (search.supported) { setEventPage(1); setItems([]); setSelectedId(null); setDetail(null); } };
-  const changePage = (value: number) => { setItems([]); setSelectedId(null); setDetail(null); setLoading(true); setEventPage(value); };
+  const changeCompletion = (value: CompletionFilter) => {
+    if (value === completionFilter) return;
+    setRelevanceCounts(null);
+    changePage(1);
+    setCompletionFilter(value);
+  };
+  const changeQuery = (value: string) => { setQuery(value); if (search.supported) { setEventPage(1); setItems([]); setSelectedId(null); setRelatedDetailId(null); setDetail(null); } };
+  const changePage = (value: number) => { setItems([]); setSelectedId(null); setRelatedDetailId(null); setDetail(null); setLoading(true); setEventPage(value); };
   const allCount = relevanceCounts ? relevanceCounts.my_todo + relevanceCounts.related + relevanceCounts.other : filter === 'all' ? total : null;
-  const anyEvents = (allCount ?? 0) > 0 || (relevanceCounts === null && kind === 'events' && filter !== 'all');
+  const anyEvents = completion !== 'all' || (allCount ?? 0) > 0 || (relevanceCounts === null && kind === 'events' && filter !== 'all');
   const filterLabel = kind === 'events'
     ? t(legacyEvents ? '全部待办' : EVENT_FILTERS.find(([value]) => value === filter)?.[1] ?? '全部')
     : t(filter === 'all' ? "全部" : filter);
   const reportListFailed = kind === 'reports' && !!listError && !items.length;
   const filterPills: Array<[string, string, number | null]> = kind === 'events'
-    ? EVENT_FILTERS.map(([value, label]) => [value, label, value === 'all' ? allCount : relevanceCounts?.[value as keyof RelevanceCounts] ?? null])
+    ? EVENT_FILTERS.map(([value, label]) => [value, t(label), relevanceCounts?.[value] ?? null])
     : REPORT_TYPES.map(([value, label]) => {
       const count = value === 'all' ? items.length : items.filter(item => reportKind(item.title) === value).length;
-      return [value, label, reportListFailed ? null : count];
+      return [value, t(label), reportListFailed ? null : count];
     });
+  const visibleCount = loading || listError ? '—'
+    : !search.supported && query.trim() ? filteredItems.length : total;
 
   const pageTitle = t(copy.title);
   const pageEmpty = t(copy.empty);
@@ -648,7 +698,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
 
       {kind === 'reports' && <button type="button" className={`analysis-side-new${creating ? ' on' : ''}`} disabled={reportListFailed} onClick={() => { setCreating(true); setGenError(''); }}>{t("＋ 生成报告")}</button>}
 
-      <div className="analysis-pills" role="group" aria-label={t("筛选")}>
+      <div className="analysis-pills" role="group" aria-label={t(kind === 'events' ? '我的角色' : '筛选')}>
         {filterPills.map(([value, label, count]) => <button
           key={value}
           type="button"
@@ -656,8 +706,23 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
           disabled={kind === 'events' && legacyEvents}
           className={filter === value ? 'on' : ''}
           onClick={() => changeFilter(value)}
-        >{t(label)}<small>{count ?? '—'}</small></button>)}
+        >{label}<small>{count ?? '—'}</small></button>)}
       </div>
+
+      {kind === 'events' && completionSupported && !legacyEvents && (
+        <div className="event-list-toolbar">
+          <span className="event-result-count">{visibleCount === 1 ? t('1 个待办') : tf('{0} 个待办', visibleCount)}</span>
+          <div className="analysis-pills event-completion-filters" role="group" aria-label={t('完成状态')}>
+            {COMPLETION_FILTERS.map(([value, label, translation]) => <button
+              key={value}
+              type="button"
+              className={completion === value ? 'on' : ''}
+              aria-pressed={completion === value}
+              onClick={() => changeCompletion(value)}
+            >{english ? translation : label}</button>)}
+          </div>
+        </div>
+      )}
 
       <div className="analysis-items">
         {kind === 'events' && loading && <p className="analysis-list-empty" role="status">{t('正在加载待办')}</p>}
@@ -667,16 +732,16 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
           const when = kind === 'events' ? (item as EventItem).last_activity_at : (item as ReportItem).generated_at;
           return <button key={item.id}
             type="button"
-            aria-current={item.id === selectedId ? 'true' : undefined}
-            className={item.id === selectedId ? 'on' : ''}
-            onClick={() => { setCreating(false); setSelectedId(item.id); }}
+            aria-current={item.id === detailId ? 'true' : undefined}
+            className={item.id === detailId ? 'on' : ''}
+            onClick={() => { setCreating(false); setRelatedDetailId(null); setSelectedId(item.id); }}
           >
             {kind === 'reports'
               ? <span className="report-mini-badge">{reportBadge(item as ReportItem)}</span>
               : <span className="event-list-icon" aria-hidden="true"><DoneDot done={isDone(status)}/></span>}
             <span>
               <strong>{item.title || `${pageTitle} #${item.id}`}</strong>
-              {kind === 'events' ? <small className="event-list-meta"><span>{[status === 'open' ? t("待跟进") : statusLabel(status), relevance].filter(Boolean).join(' · ')}</span>{when && <time dateTime={when}>{shortDate(when)}</time>}</small>
+              {kind === 'events' ? <small className="event-list-meta"><span>{[eventStatusLabel(status), relevance].filter(Boolean).join(' · ')}</span>{when && <time dateTime={when}>{shortDate(when)}</time>}</small>
                 : <small>{reportType(item as ReportItem)}{when ? ` · ${shortDate(when)}` : ''}</small>}
             </span>
             </button>;
@@ -761,7 +826,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
           <span>{errorText(error)}</span>{' '}
           <button type="button" className="event-empty-action" onClick={reload}>{t("重试")}</button>
         </div>}
-        {kind === 'events' && selectedId == null && !detailLoading && !loading && !listError && <div className="analysis-empty event-empty" role="status">
+        {kind === 'events' && detailId == null && !detailLoading && !loading && !listError && <div className="analysis-empty event-empty" role="status">
           <h2>{anyEvents ? t("当前筛选下没有记录。") : pageEmpty}</h2>
           <p>{anyEvents ? t("可切换筛选查看其他待办。") : t("已备份的聊天大约每小时分析一次，生成的待办会显示在这里。可在「智能分析 → 聊天待办分析」中调整设置。")}</p>
           {query.trim() ? <button type="button" className="event-empty-action" onClick={() => changeQuery('')}>{t('清除搜索')}</button>
@@ -793,7 +858,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
             <div className="event-heading"><span className="event-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><h1>{event.title}</h1>
             <div className="event-heading-meta"><div className="analysis-status">
               <DoneDot done={isDone(event.status)}/>
-              <span>{event.status === 'open' ? t("待跟进") : statusLabel(event.status)}</span>
+              <span>{eventStatusLabel(event.status)}</span>
             </div>{eventRelevance && <span>{eventRelevance}</span>}<span className="analysis-meta">{[eventNotes.length ? tf("{0} 条进展", eventNotes.length) : '', eventPeople ? tf("{0} 人", eventPeople) : '', event.last_activity_at ? tf("最近活动 {0}", shortDate(event.last_activity_at)) : ''].filter(Boolean).join(' · ')}</span></div></div></div>
             <nav className="event-section-nav" aria-label={t("待办详情")}>
               <button type="button" aria-pressed={eventTab === 'overview'} onClick={() => setEventTab('overview')}>{t("概览")}</button>

@@ -832,6 +832,74 @@ export async function runEventRelevanceRecoveryE2E(task, base = 'http://localhos
   console.log(await page.snapshot());
 }
 
+export async function runEventCompletionUiE2E(task, base = 'http://127.0.0.1:1434', pageLabel = 'p1', english = false) {
+  const page = task.page(pageLabel);
+  await page.goto(`${base}/scripts/connectors-e2e.html?analysis&analysis-completion${english ? '&english' : ''}`);
+  await page.waitForFunction(() => Boolean(window.__E2E__));
+  await page.evaluate(() => {
+    const fixture = window.__E2E__;
+    fixture.analysisEvents = [
+      ...Array.from({ length: 51 }, (_, i) => ({
+        id: i + 1, title: `Release task ${i + 1}`, content: i === 50 ? 'second-page-only' : '',
+        status: i === 50 ? 'in_progress' : 'open', viewer_relevance: 'my_todo',
+      })),
+      { id: 52, title: 'Release notes', content: '', status: 'done', viewer_relevance: 'my_todo' },
+      { id: 53, title: 'Review agenda', content: '', status: 'done', viewer_relevance: 'related' },
+      { id: 54, title: 'Share minutes', content: '', status: 'open', viewer_relevance: 'other' },
+    ];
+  });
+  await page.click(`text="${english ? 'To-dos' : '待办'}"`);
+  const roles = '.analysis-side > .analysis-pills';
+  const statuses = '.event-completion-filters';
+  const list = '.analysis-items';
+  const labels = selector => page.evaluate(selector => [...document.querySelectorAll(selector)].map(button => button.textContent), selector);
+  const lastRequest = () => page.evaluate(() => window.__E2E__.calls.filter(call => call.command === 'devify_analysis_list').at(-1).args);
+  await page.waitForFunction(() => document.querySelectorAll('.analysis-items button').length === 50);
+  assert.deepEqual(await labels(`${roles} button`), english ? ['My tasks51', 'Involved0', 'Other1'] : ['我的待办51', '与我有关0', '其他1']);
+  assert.deepEqual(await labels(`${statuses} button`), english ? ['Incomplete', 'Completed', 'All'] : ['未完成', '已完成', '全部状态']);
+  assert.equal((await lastRequest()).completionStatus, 'unfinished');
+  assert.ok(await page.evaluate(selectors => selectors.every(selector => {
+    const group = document.querySelector(selector);
+    const buttons = [...group.querySelectorAll('button')];
+    return buttons.length === 3 && buttons.every(button => button.offsetTop === buttons[0].offsetTop
+      && button.getBoundingClientRect().right <= group.getBoundingClientRect().right + 1);
+  }), [roles, statuses]), 'each filter group fits on one line');
+
+  if (!english) {
+    await page.fill('.analysis-search input', 'second-page-only');
+    await page.waitForFunction(() => document.querySelector('.analysis-items button')?.textContent.includes('Release task 51'));
+    assert.deepEqual(await labels(`${roles} button`), ['我的待办51', '与我有关0', '其他1']);
+    assert.equal((await lastRequest()).searchQuery, 'second-page-only');
+    assert.equal((await lastRequest()).completionStatus, 'unfinished');
+    assert.equal((await lastRequest()).page, 1);
+    await page.fill('.analysis-search input', '');
+    await page.waitForFunction(() => document.querySelectorAll('.analysis-items button').length === 50);
+    await page.click('text="下一页"');
+    await page.waitForFunction(() => document.querySelector('.analysis-items button')?.textContent.includes('Release task 51'));
+    await page.click('text="标记完成"');
+    await page.waitForFunction(() => !document.querySelector('.event-pagination') && document.querySelectorAll('.analysis-items button').length === 50);
+    assert.equal((await lastRequest()).page, 1);
+  }
+  await page.click(`${statuses} button:nth-child(2)`);
+  await page.waitForFunction(() => document.querySelector('.analysis-items')?.textContent.includes('Release notes'));
+  assert.equal((await lastRequest()).completionStatus, 'done');
+  assert.equal((await lastRequest()).viewerRelevance, 'my_todo');
+  if (!english) {
+    assert.ok((await labels(`${list} button`)).some(label => label.includes('Release task 51')));
+    await page.click('text="重新打开"');
+    await page.waitForFunction(() => !document.querySelector('.analysis-items')?.textContent.includes('Release task 51'));
+    await page.click(`${roles} button:nth-child(2)`);
+    await page.waitForFunction(() => document.querySelector('.analysis-items')?.textContent.includes('Review agenda'));
+    await page.click(`${roles} button:nth-child(3)`);
+    await page.waitForSelector('.event-empty');
+    await page.click(`${statuses} button:nth-child(3)`);
+    await page.waitForFunction(() => document.querySelector('.analysis-items')?.textContent.includes('Share minutes'));
+    assert.equal((await lastRequest()).completionStatus, undefined);
+  }
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  console.log(`PASS task completion toolbar and role labels (${english ? 'English' : '中文'})`);
+}
+
 // UI + real, read-only development API through a local bridge. Other IPC remains synthetic.
 export async function runEventSearchApiE2E(task, fixture, base = 'http://127.0.0.1:1434') {
  const page=task.page('p1');

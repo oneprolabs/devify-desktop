@@ -87,7 +87,7 @@ const load = path => {
   const requireMock = id => {
     if (id === '../../shared/content/summary') return { renderAgentMarkdown: value => value };
     if (id in mocks) return mocks[id];
-    if (id === '../../shared/i18n/locale' || id === '../i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
+    if (id === '../../shared/i18n/locale' || id === '../i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, getUiLanguage: () => '中文', dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
   if (id.endsWith('/i18n/errorText')) return nativeErrors;
     throw Error(`unexpected import: ${id}`);
   };
@@ -769,3 +769,102 @@ assert.equal(renderCachedTopics(topicUser + 1).type, mocks['../../shared/ui/Load
 await flush();
 assert.ok(!text(renderCachedTopics(topicUser + 1)).includes(topics[0].title));
 console.log('Topic refresh keeps cached content in place and clears it on account change');
+
+// Status-capable servers filter before paging and keep completion separate from ownership.
+const statusRequests = [];
+let completionAvailable = true;
+let holdCompletedRequest = false;
+let lateCompleted;
+const statusRows = [
+  { ...myEvent, id: 81, title: '进行中的我的待办', status: 'in_progress',
+    related_events: [{ id: 82, title: '已完成的我的待办', status: 'done' }] },
+  { ...myEvent, id: 82, title: '已完成的我的待办', status: 'done' },
+];
+invoke = async (command, args) => {
+  if (command === 'app_settings_get') return { devify: { base_url: 'https://status.invalid', active_space_id: 'status-fixture' } };
+  if (command === 'devify_analysis_list') {
+    statusRequests.push(args);
+    const list = statusRows.filter(row => row.viewer_relevance === args.viewerRelevance
+      && (!args.completionStatus || (args.completionStatus === 'done' ? row.status === 'done' : row.status !== 'done')));
+    const result = { list, completion_filter_supported: completionAvailable, search_supported: true,
+      pagination: { total: list.length }, relevance_counts: { my_todo: list.length, related: 0, other: 0 } };
+    if (holdCompletedRequest && args.completionStatus === 'done') {
+      return new Promise(resolve => { lateCompleted = () => resolve(result); });
+    }
+    return result;
+  }
+  if (command === 'devify_event_update') {
+    const row = statusRows.find(row => row.id === args.eventId);
+    row.status = args.status;
+    return row;
+  }
+  if (command === 'devify_analysis_detail') return statusRows.find(row => row.id === args.itemId);
+  if (command === 'devify_event_notes' || command === 'devify_event_relations') return [];
+  throw Error(command);
+};
+const statusInstance = { hooks: [] };
+const renderStatus = () => renderPage(statusInstance, () => CloudAnalysisPage({ kind: 'events', userId: 42 }));
+const settleStatus = async () => {
+  for (let i = 0; i < 8; i++) { renderStatus(); await flush(); }
+  return renderStatus();
+};
+let statusTree = await settleStatus();
+const statusButton = (tree, label) => find(tree, node => node.type === 'button' && text(node) === label);
+assert.equal(statusButton(statusTree, '未完成')?.props['aria-pressed'], true);
+assert.equal(statusRequests.at(-1).completionStatus, 'unfinished');
+assert.match(text(byClass(statusTree, 'analysis-items')), /进行中的我的待办/);
+assert.doesNotMatch(text(byClass(statusTree, 'analysis-items')), /已完成的我的待办/);
+
+const unfinishedList = text(byClass(statusTree, 'analysis-items'));
+const unfinishedCount = text(byClass(statusTree, 'event-result-count'));
+const unfinishedRequestCount = statusRequests.length;
+find(statusTree, node => node.props?.className === 'analysis-step-preview link').props.onClick();
+statusTree = await settleStatus();
+assert.equal(text(byClass(statusTree, 'analysis-doc')).includes('已完成的我的待办'), true);
+assert.equal(text(byClass(statusTree, 'analysis-items')), unfinishedList);
+assert.equal(text(byClass(statusTree, 'event-result-count')), unfinishedCount);
+assert.equal(statusButton(statusTree, '未完成').props['aria-pressed'], true);
+assert.equal(statusRequests.length, unfinishedRequestCount);
+find(byClass(statusTree, 'analysis-items'), node => node.type === 'button' && text(node).includes('进行中的我的待办')).props.onClick();
+statusTree = await settleStatus();
+
+statusButton(statusTree, '标记完成').props.onClick();
+statusTree = await settleStatus();
+assert.match(text(statusTree), /当前筛选下没有记录/);
+statusButton(statusTree, '已完成').props.onClick();
+statusTree = await settleStatus();
+assert.equal(statusRequests.at(-1).completionStatus, 'done');
+assert.equal(statusRequests.at(-1).viewerRelevance, 'my_todo');
+assert.equal(statusRequests.at(-1).page, 1);
+assert.match(text(byClass(statusTree, 'analysis-items')), /进行中的我的待办/);
+statusButton(statusTree, '重新打开').props.onClick();
+statusTree = await settleStatus();
+assert.doesNotMatch(text(byClass(statusTree, 'analysis-items')), /进行中的我的待办/);
+statusButton(statusTree, '未完成').props.onClick();
+statusTree = await settleStatus();
+assert.match(text(byClass(statusTree, 'analysis-items')), /进行中的我的待办/);
+statusButton(statusTree, '全部状态').props.onClick();
+statusTree = await settleStatus();
+assert.equal(statusRequests.at(-1).completionStatus, undefined);
+assert.match(text(byClass(statusTree, 'analysis-items')), /已完成的我的待办/);
+console.log('Completion status switches independently from personal ownership, including complete and reopen');
+
+holdCompletedRequest = true;
+statusButton(statusTree, '已完成').props.onClick();
+statusTree = await settleStatus();
+assert.equal(typeof lateCompleted, 'function');
+statusButton(statusTree, '未完成').props.onClick();
+statusTree = await settleStatus();
+lateCompleted();
+statusTree = await settleStatus();
+assert.equal(statusButton(statusTree, '未完成').props['aria-pressed'], true);
+assert.doesNotMatch(text(byClass(statusTree, 'analysis-items')), /已完成的我的待办/);
+
+completionAvailable = false;
+statusButton(statusTree, '刷新').props.onClick();
+statusTree = await settleStatus();
+assert.equal(statusRequests.at(-1).completionStatus, undefined);
+assert.equal(statusRequests.at(-1).viewerRelevance, 'my_todo');
+assert.equal(elements(statusTree).some(node => node.props?.['aria-label'] === '完成状态'), false);
+assert.match(text(byClass(statusTree, 'analysis-items')), /已完成的我的待办/);
+console.log('Late status replies and server capability downgrade passed');
