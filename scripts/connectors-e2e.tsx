@@ -46,7 +46,7 @@ const state = {
  voiceStatus:{settings:{engine:'',model:'',language:'zh'},engines:[{id:'whisper',label:'Whisper',available:true}],selected:'whisper'},voiceError:'',voiceSaveError:'',
  agentApps:query.has('no-agents')?[]:['workbuddy'], agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
  agents: query.has('no-agents')?[]:['codex','claude-code','gemini-cli'].map(id=>({id,name:id,command:'/e2e/'+id,version:'1.0 (fixture)',available:true,note:'Synthetic tool'})),
- analysisEvents:[] as any[],analysisNotes:{} as Record<number,any[]>,analysisReports:[] as any[],questions:[] as any[],analysisLegacy:false,analysisSearch:false,
+ analysisEvents:[] as any[],analysisNotes:{} as Record<number,any[]>,analysisReports:[] as any[],questions:[] as any[],analysisLegacy:false,analysisSearch:false,analysisCompletion:false,
  analysisPreferences:{event_granularity:'balanced',summary_length:'standard',summary_style:'concise',conversation_types:['direct','group'],lookback_days:0,auto_analyze:true},
  analysisSaveError:'', reportSaveError:'', reportReadError:'', reportDelay:0,
  feedbackDraft:feedbackDraft(),feedbackHistory:[] as any[],feedbackSubmitError:'',feedbackSubmits:0,
@@ -94,20 +94,22 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'devify_topics':if(state.reportReadError)throw state.reportReadError;return clone(state.dailyPlans);
    case 'devify_analysis_list':{
     if(args.kind!=='events')return {list:clone(state.analysisReports),pagination:{total:state.analysisReports.length,page:1}};
+    const scoped = state.analysisEvents.filter(row => !state.analysisCompletion || !args.completionStatus
+      || (args.completionStatus === 'done' ? row.status === 'done' : ['open', 'in_progress'].includes(row.status)));
     const counts={my_todo:0,related:0,other:0};
-    for(const row of state.analysisEvents)counts[(row.viewer_relevance??'other') as keyof typeof counts]++;
-    const list=state.analysisEvents.filter(row=>state.analysisLegacy||!args.viewerRelevance||(row.viewer_relevance??'other')===args.viewerRelevance)
+    for(const row of scoped)counts[(row.viewer_relevance??'other') as keyof typeof counts]++;
+    const list=scoped.filter(row=>state.analysisLegacy||!args.viewerRelevance||(row.viewer_relevance??'other')===args.viewerRelevance)
      .filter(row=>!state.analysisSearch||!args.searchQuery||`${row.title} ${row.content??''}`.toLowerCase().includes(args.searchQuery.trim().toLowerCase()))
      .map(row=>state.analysisLegacy?Object.fromEntries(Object.entries(row).filter(([key])=>!key.startsWith('viewer_'))):row);
     if(!args.pageSize)return {list:clone(list),pagination:{total:list.length,page:1,next:null}};
     const page=args.page??1,size=args.pageSize??100,start=(page-1)*size;
-    return {list:clone(list.slice(start,start+size)),search_supported:!state.analysisLegacy&&state.analysisSearch,pagination:{total:list.length,page,page_size:size,next:start+size<list.length?'next':null},
+    return {list:clone(list.slice(start,start+size)),completion_filter_supported:!state.analysisLegacy&&state.analysisCompletion,search_supported:!state.analysisLegacy&&state.analysisSearch,pagination:{total:list.length,page,page_size:size,next:start+size<list.length?'next':null},
      ...(!state.analysisLegacy&&(args.includeRelevanceCounts||args.viewerRelevance)?{relevance_counts:counts}:{})};
    }
    case 'devify_event_update':{
     const row=state.analysisEvents.find(event=>event.id===args.eventId);if(!row)throw Error('Event not found');
     for(const key of ['title','content','status'])if(args[key]!=null)row[key]=args[key];
-    if(args.status==='done'&&row.viewer_relevance==='my_todo')row.viewer_relevance='related';return clone(row);
+    if(!state.analysisCompletion&&args.status==='done'&&row.viewer_relevance==='my_todo')row.viewer_relevance='related';return clone(row);
    }
    case 'devify_analysis_detail':return clone((args.kind==='events'?state.analysisEvents:state.analysisReports).find(row=>row.id===args.itemId));
    case 'devify_event_notes':return clone(state.analysisNotes[args.eventId]??[]);
@@ -308,6 +310,11 @@ window.addEventListener('error',event=>state.errors.push(event.message));
 window.addEventListener('unhandledrejection',event=>state.errors.push(String(event.reason)));
 if(query.has('fallback')) state.settings.devify.active_space_id='e2e-space';
 if(query.has('analysis')) state.settings.devify.active_space_id='e2e-space';
+if (query.has('analysis-completion')) {
+  state.settings.devify.base_url = 'http://127.0.0.1:18080';
+  state.analysisCompletion = true;
+  state.analysisSearch = true;
+}
 if(query.has('chat')) {
  state.settings.devify.active_space_id='e2e-space';
  state.settings.chat.allowed_usernames={[wx]:catalog(wx).map(s=>s.username),[wa]:catalog(wa).map(s=>s.username)};
