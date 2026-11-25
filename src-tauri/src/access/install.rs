@@ -144,7 +144,7 @@ fn bound_skill(skill: &super::SkillDoc, data: &Path, installed_cli: &Path, endpo
         .strip_prefix("---\n")
         .and_then(|body| body.find("\n---\n").map(|n| n + 9))
         .ok_or("内置 Skill 格式无效。")?;
-    Ok(format!("{}\n<!-- AIMyChats local access kit -->\n本机读取入口：所有下文的 `wxq` 命令请替换为 `{command}`。已由 AIMyChats 安装，无需下载或构建。保持 AIMyChats 打开并登录；Token 由 CLI 自动读取，不要回显或复制。只读取应用允许访问的会话。\n\n{}", &skill.content[..end], &skill.content[end..]))
+    Ok(format!("{}\n<!-- AIMyChats local access kit -->\n本机读取入口：所有下文的 `wxq` 命令请替换为 `{command}`。已由 AIMyChats 安装，无需下载或构建。保持 AIMyChats 打开并登录；Token 由 CLI 自动读取，不要回显或复制。只读取应用允许访问的会话和当前空间已有云端结果；云端查询是远程只读，不触发生成。\n\n{}", &skill.content[..end], &skill.content[end..]))
 }
 
 /// Stage the same bound Skill as direct installation, inside this app's storage only.

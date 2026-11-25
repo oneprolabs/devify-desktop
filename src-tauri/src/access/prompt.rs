@@ -5,7 +5,7 @@ pub fn build(kit: &Path, data: &Path, endpoint: &str) -> String {
     let name = crate::build_flavor::SKILL_NAME;
     let source = kit.join(name).join("SKILL.md");
     let command = format!("{} --app-data {} --endpoint {}", super::sh_quote(&data.join("bin").join(super::CLI_NAME).to_string_lossy()), super::sh_quote(&data.to_string_lossy()), super::sh_quote(endpoint));
-    format!("请为你自己安装 AIMyChats 的 {name} 技能，用于通过本机 AIMyChats 读取获准的聊天记录。\n\n\
+    format!("请为你自己安装 AIMyChats 的 {name} 技能，用于通过本机 AIMyChats 读取获准的聊天记录、当前空间已有待办和已生成报告。\n\n\
 1. 确认你与 AIMyChats 运行在同一台电脑。识别你实际使用的客户端或 CLI，并查明它支持的 Skills 目录；不要把其他智能体的目录当作自己的目录。若不支持本机 Skills 或目录无法确定，停止并说明原因。\n\
 2. 安装源已由 AIMyChats 准备在本机：{source}。读取这个文件，将它原样安装到你确认的 Skills 目录下的 {name}/SKILL.md。先说明安装位置；若目标已有不同内容，先保留备份，不要丢弃自定义内容。无需下载、编译或覆盖全局命令。不要覆盖其他 AIMyChats 版本的技能。\n\
 3. 保持 AIMyChats 打开并登录。使用下面的本机读取入口验证 health 和 policy，再查询最多 5 个可访问会话确认连接；不要读取聊天正文作为安装测试。Token 由工具自动读取，不要读取、回显或复制 Token、平台密钥等凭据。\n\n\

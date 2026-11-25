@@ -7,6 +7,9 @@
 //!
 //! Run `wxq help` for the command list.
 
+#[path = "wxq/cloud.rs"]
+mod cloud;
+
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -224,6 +227,9 @@ fn run() -> Result<String, String> {
 }
 
 fn dispatch(cli: Cli) -> Result<String, String> {
+    if cloud::is_command(&cli.command) {
+        return cloud::dispatch(&cli);
+    }
     let account = cli.args.last("account").map(str::to_string);
     match cli.command.as_str() {
         "build-info" => Ok(wechat_devify_bridge_lib::build_flavor::metadata().to_string()),
@@ -460,7 +466,7 @@ fn format_digest(digest: &DigestReport) -> String {
         return "所选会话在该时间范围内没有可整理的消息。".to_string();
     }
     format!(
-        "{}\n---\n规则抽取：{} 个会话 / {} 条消息；待办 {}、决定 {}、问题 {}、风险 {}、数据 {}。\n这是确定性规则抽取，不是 AI 总结；负责人、截止时间和因果关系需回原文确认。",
+        "{}\n---\n规则抽取：{} 个会话 / {} 条消息；待办 {}、决定 {}、问题 {}、风险 {}、数据 {}。\n这是确定性规则抽取，不是 AI 总结或应用已生成的“我的待办”；负责人、截止时间和因果关系需回原文确认。",
         digest.markdown.trim_end(),
         digest.sessions,
         digest.messages,
@@ -509,7 +515,7 @@ fn request_json(cli: &Cli, method: &str, path: &str, body: Option<&str>) -> Resu
     let response = http(cli, method, path, body)?;
     let value: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
     if !(200..300).contains(&response.status) {
-        if response.status == 404 {
+        if response.status == 404 && value.get("error").is_none() {
             return Err(format!(
                 "端点不存在（HTTP 404）：{path}\n桌面应用可能是改造前的版本，请重新构建并启动应用，或先运行 wxq health 确认服务。"
             ));
@@ -645,7 +651,8 @@ fn parse_flags(raw: &[String]) -> Result<Parsed, String> {
                 parsed.flags.insert("help".to_string());
             }
             "--account" | "--chat" | "--keyword" | "--limit" | "--before" | "--before-id" | "--before-shard"
-            | "--since" | "--until" | "--max-sessions" => {
+            | "--since" | "--until" | "--max-sessions"
+            | "--space" | "--id" | "--page" | "--page-size" | "--category" | "--status" => {
                 let value = take_value(name, inline, raw, &mut index)?;
                 let key = name.trim_start_matches("--").to_string();
                 parsed.values.entry(key).or_default().push(value);
@@ -753,6 +760,19 @@ fn usage() -> String {
   messages --chat USERNAME [--limit N] [--before TS --before-id ID --before-shard FILE] [--account ID]
   search   --keyword KEY [--groups-only] [--max-sessions N] [--account ID]
   digest   --chat USERNAME [--chat ...] [--since TIME] [--until TIME] [--account ID]
+
+云端已有结果（远程只读，复用客户端登录，不生成报告）:
+  cloud-context                             发现当前空间、服务地址和接口限制
+  todos --space ID [--page N --page-size N] [--category my_todo|related|other]
+        [--status unfinished|done] [--keyword TEXT]
+  todo --space ID --id ID                    已有待办详情、进度和证据引用
+  reports --space ID [--page N --page-size N] [--status queued|ready|partial|failed]
+  report --space ID --id ID                  已有报告完整正文、周期和状态
+  topics --space ID [--page N --page-size N]  主题订阅配置（不是报告正文）
+  topic --space ID --id ID                   主题订阅详情
+  topic-reports --space ID --id TOPIC_ID     最近最多 50 份主题报告（非完整历史）
+  --page-size 范围 1–100，默认 25；按 next_page 翻页，不跟随服务端 URL。
+  报告列表不支持类型、日期或主题筛选；不得猜测参数或只看第一页便声称无结果。
 
 时间:
   Unix 秒，或 2026-10-20 / \"2026-10-20 18:00\"；--until 只给日期时按当天结束。

@@ -35,7 +35,7 @@ export function AgentHub({ onOpenAnalysis }: { onOpenAnalysis?: () => void }) {
     return ok;
   };
   return <div className="settings-page agent-integration">
-    <header className="page-head"><h2>{t('智能体集成')}</h2><p className="help">{t('在 AIMyChats 中生成总结，也可以让你的智能体读取聊天记录。')}</p></header>
+    <header className="page-head"><h2>{t('智能体集成')}</h2><p className="help">{t('在 AIMyChats 中生成总结，也可以让你的智能体读取聊天、待办和已有报告。')}</p></header>
     <section className="integration-online" aria-labelledby="integration-online-title">
       <div className="integration-section-heading"><h3 id="integration-online-title">{t('默认使用线上总结')}</h3><small className="integration-online-badge">{t('默认使用')}</small></div>
       <p>{t('在聊天中选择「生成总结」，使用 AIMyChats 提供的线上模型，无需安装智能体。')}</p>
@@ -60,7 +60,7 @@ export function AgentHub({ onOpenAnalysis }: { onOpenAnalysis?: () => void }) {
       </div>
       {model.scanError && <p className="integration-error" role="alert">{tf('扫描失败，已保留上次结果：{0}', model.scanError)}</p>}
       {!effective && !scanning && <div className="integration-empty"><strong>{t('未发现可用于总结的本地智能体')}</strong><p>{t('安装智能体后，点击「重新扫描 CLI」。已安装但未识别？可在「高级配置」中指定路径。')}</p><p>{t('你仍可直接使用上方的线上总结。')}</p></div>}
-      <p className="integration-help">{t('CLI 也可以使用 Skills，安装方式见下方「使用智能体访问聊天记录」。')}</p>
+      <p className="integration-help">{t('CLI 也可以使用 Skills，安装方式见下方「使用智能体访问 AIMyChats」。')}</p>
       <p className="integration-help">{t('“本地 CLI”不代表“本地模型”，消息将按该 CLI 的模型配置处理。')}</p>
     </section>}
     {ready && editing && <div ref={advanced}><AgentAdvanced key={editing} id={editing} agent={settings.agent} access={access} saving={saving} canSummarize={canSummary}
