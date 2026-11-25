@@ -651,7 +651,7 @@ fn parse_flags(raw: &[String]) -> Result<Parsed, String> {
                 parsed.flags.insert("help".to_string());
             }
             "--account" | "--chat" | "--keyword" | "--limit" | "--before" | "--before-id" | "--before-shard"
-            | "--since" | "--until" | "--max-sessions"
+            | "--offset" | "--since" | "--until" | "--max-sessions"
             | "--space" | "--id" | "--page" | "--page-size" | "--category" | "--status" => {
                 let value = take_value(name, inline, raw, &mut index)?;
                 let key = name.trim_start_matches("--").to_string();
