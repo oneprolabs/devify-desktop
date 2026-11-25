@@ -6,8 +6,9 @@ import { useSyncExternalStore } from 'react';
 import { DEVELOPMENT_APP } from '../../shared/api/buildFlavor';
 
 export const RELEASE_URL = 'https://github.com/oneprolabs/devify-desktop-releases/releases/tag/alpha';
-type Status = 'disabled' | 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'installed' | 'error';
+type Status = 'disabled' | 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'downloaded' | 'preparing' | 'installing' | 'installed' | 'error';
 type Snapshot = { status: Status; version?: string; currentVersion?: string; notes?: string; progress?: number; error?: string; blockers?: string[] };
+const updateLockedStatuses: Status[] = ['downloading', 'downloaded', 'preparing', 'installing', 'installed'];
 let snapshot: Snapshot = { status: DEVELOPMENT_APP ? 'disabled' : 'idle' };
 let update: Update | null = null;
 let checkInFlight: Promise<void> | undefined;
@@ -35,7 +36,7 @@ export function useUpdater() { return useSyncExternalStore(listener => { listene
 export function checkForUpdates(silent = false): Promise<void> {
   if (DEVELOPMENT_APP) return Promise.resolve();
   if (checkInFlight) return checkInFlight;
-  if (!isTauri() || ['downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) return Promise.resolve();
+  if (!isTauri() || updateLockedStatuses.includes(snapshot.status)) return Promise.resolve();
   checkInFlight = refreshUpdate(silent).finally(() => { checkInFlight = undefined; });
   return checkInFlight;
 }
@@ -54,7 +55,7 @@ async function refreshUpdate(silent: boolean) {
     // A download may have started while this background refresh was in flight.
     // Its result is stale and must not replace the download state or close the
     // Update object that the download is using.
-    if (generation !== refreshGeneration || ['downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) {
+    if (generation !== refreshGeneration || updateLockedStatuses.includes(snapshot.status)) {
       if (next && next !== update) await next.close().catch(() => {});
       return;
     }
@@ -62,7 +63,7 @@ async function refreshUpdate(silent: boolean) {
     setSnapshot(next ? { status: 'available', version: next.version, currentVersion: next.currentVersion, notes: next.body } : { status: 'latest' });
     if (previous) await previous.close().catch(() => {});
   } catch (error) {
-    if (generation !== refreshGeneration || ['downloading', 'installing', 'downloaded', 'installed'].includes(snapshot.status)) return;
+    if (generation !== refreshGeneration || updateLockedStatuses.includes(snapshot.status)) return;
     if (previous) {
       // A transient refresh failure must not discard a valid offer. Keep it
       // actionable and expose the failure only for an explicit check.
@@ -115,14 +116,16 @@ export async function downloadUpdate() {
  */
 export async function installUpdate(force = false) {
   if (DEVELOPMENT_APP) return;
-  if (!update || !['downloaded', 'installed'].includes(snapshot.status)) return;
+  const priorStatus = snapshot.status;
+  if (!update || (priorStatus !== 'downloaded' && priorStatus !== 'installed')) return;
   const selected = update;
   const base = { version: selected.version, currentVersion: selected.currentVersion, notes: selected.body, progress: 100 };
-  const alreadyInstalled = snapshot.status === 'installed';
+  const alreadyInstalled = priorStatus === 'installed';
   if (!force) {
+    setSnapshot({ status: 'preparing', ...base });
     try {
       const accounts = await invoke<string[]>('update_upload_accounts');
-      if (accounts.length) { setSnapshot({ status: snapshot.status, ...base, blockers: accounts }); return; }
+      if (accounts.length) { setSnapshot({ status: priorStatus, ...base, blockers: accounts }); return; }
     } catch {
       // The install command re-checks the gate, so a failed probe is not fatal.
     }

@@ -65,7 +65,7 @@ function updateNoteLines(notes?: string): string[] {
 export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void; compact?: boolean } = {}) {
   const update = useUpdater();
   const [error, setError] = useState('');
-  const busy = ['checking', 'downloading', 'installing'].includes(update.status);
+  const busy = ['checking', 'downloading', 'preparing', 'installing'].includes(update.status);
   const notes = updateNoteLines(update.notes);
   const status = update.status === 'disabled' ? t('开发版不检查或安装正式更新。')
     : update.status === 'checking' ? t("正在检查更新…")
@@ -74,6 +74,7 @@ export function UpdatePanel({ onClose, compact = false }: { onClose?: () => void
     : update.status === 'downloading' ? t("正在下载更新…")
     : update.status === 'downloaded' ? tf("AIMyChats {0} 已下载", update.version)
     : update.status === 'installed' ? t("更新已安装，请重启应用")
+    : update.status === 'preparing' ? t("正在准备安装…")
     : update.status === 'installing' ? t("正在安装更新…")
     : update.status === 'error' ? t("检查更新失败")
     : t("检查软件更新");
@@ -127,7 +128,7 @@ export function About() {
   const [error, setError] = useState('');
   const hideOffer = updateLater && update.status === 'available';
   const releaseNotes = updateNoteLines(update.notes);
-  const showingRelease = releaseNotes.length > 0 && ['available', 'downloading', 'downloaded', 'installing', 'installed'].includes(update.status);
+  const showingRelease = releaseNotes.length > 0 && ['available', 'downloading', 'downloaded', 'preparing', 'installing', 'installed'].includes(update.status);
 
   useEffect(() => {
     invoke<AppInfo>('app_info')
