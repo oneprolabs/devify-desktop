@@ -6988,6 +6988,7 @@ pub fn run() {
             commands::chat::local::wechat_account_profile,
             commands::chat::local::wechat_session_catalog,
             commands::chat::local::wechat_messages,
+            commands::chat::media::whatsapp_attachment_action,
             commands::chat::media::wechat_message_media,
             commands::chat::media::wechat_media_reveal,
             commands::chat::media::wechat_media_open_image,

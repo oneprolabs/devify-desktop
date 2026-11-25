@@ -50,6 +50,33 @@ pub(crate) fn whatsapp_allowed_usernames(
         .collect())
 }
 
+pub(crate) fn require_whatsapp_attachment_session(
+    app: &AppHandle,
+    account_id: &str,
+    username: &str,
+) -> Result<settings::UploadOwner, String> {
+    if !whatsapp_allowed_usernames(app, account_id)?.contains(username) {
+        return Err("该会话不在当前策略白名单中。".into());
+    }
+    let data = app_data(app);
+    let value = settings::load(&data)?;
+    let principal = config_runtime::local_owner(&data, &value, account_id)?;
+    let owner = value
+        .runtime
+        .sources
+        .get(account_id)
+        .and_then(|source| source.owner.as_ref())
+        .or_else(|| value.sync.owners.get(account_id));
+    let authorized = match owner {
+        Some(owner) => config_runtime::same_principal(owner, &principal),
+        None => config_runtime::has_current_profile(&data, &value)?,
+    };
+    if !authorized {
+        return Err("该会话不在当前策略白名单中。".into());
+    }
+    Ok(principal)
+}
+
 /// Whitelist + visibility guard shared by the media and voice commands.
 pub(crate) fn require_visible_session(
     app: &AppHandle,

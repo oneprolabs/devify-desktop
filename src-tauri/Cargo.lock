@@ -4948,6 +4948,7 @@ dependencies = [
  "hmac",
  "hostname",
  "iana-time-zone",
+ "libc",
  "mach2",
  "md-5",
  "pbkdf2",

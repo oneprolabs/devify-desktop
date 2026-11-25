@@ -1,5 +1,5 @@
 //! Bounded local conversation and message reads for WeChat and WhatsApp.
-use crate::chat::access::{allowed_usernames, validate_account_id, whatsapp_allowed_usernames};
+use crate::chat::access::{allowed_usernames, require_whatsapp_attachment_session, validate_account_id, whatsapp_allowed_usernames};
 use crate::chat::LOCAL_READ_BUDGET;
 use crate::wechat::{
     self, decrypt,
@@ -218,14 +218,15 @@ pub(crate) async fn wechat_messages(
     before: Option<i64>,
     before_id: Option<i64>,
     before_shard: Option<String>,
-) -> Result<Vec<MessageItem>, String> {
+    include_attachments: Option<bool>,
+) -> Result<Vec<whatsapp::DesktopMessage>, String> {
     let _read_budget = LOCAL_READ_BUDGET
         .acquire()
         .await
         .map_err(|e| e.to_string())?;
     if whatsapp::is_account(&account_id) {
-        let allowed = whatsapp_allowed_usernames(&app, &account_id)?;
-        if !allowed.contains(&username) {
+        let include_attachments = include_attachments.unwrap_or(false);
+        if !include_attachments && !whatsapp_allowed_usernames(&app, &account_id)?.contains(&username) {
             return Err("该会话不在当前策略白名单中。".into());
         }
         let cursor = before.map(|time| match before_id {
@@ -238,8 +239,21 @@ pub(crate) async fn wechat_messages(
         });
         let data = app_data(&app);
         return tauri::async_runtime::spawn_blocking(move || {
-            let rows =
-                whatsapp::messages(&data, &username, limit.unwrap_or(100).clamp(1, 100), cursor)?;
+            let limit = limit.unwrap_or(100).clamp(1, 100);
+            let rows = if include_attachments {
+                let authorize = || {
+                    let _identity = crate::UPLOAD_IDENTITY_LOCK.blocking_read();
+                    require_whatsapp_attachment_session(&app, &account_id, &username)
+                };
+                let principal = authorize()?;
+                let rows = whatsapp::messages_with_attachments(&data, &username, limit, cursor)?;
+                if !config_runtime::same_principal(&principal, &authorize()?) {
+                    return Err("登录状态已变化，请重新打开聊天。".into());
+                }
+                rows
+            } else {
+                without_attachments(whatsapp::messages(&data, &username, limit, cursor)?)
+            };
             if rows.is_empty() && before.is_none() {
                 return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());
             }
@@ -282,10 +296,14 @@ pub(crate) async fn wechat_messages(
         if rows.is_empty() && before.is_none() {
             return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());
         }
-        Ok(rows)
+        Ok(without_attachments(rows))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn without_attachments(messages: Vec<MessageItem>) -> Vec<whatsapp::DesktopMessage> {
+    messages.into_iter().map(|message| whatsapp::DesktopMessage { message, attachment: None }).collect()
 }
 
 /// Bounded keyword search over decrypted message content.

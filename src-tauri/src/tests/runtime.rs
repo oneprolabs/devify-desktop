@@ -506,6 +506,7 @@ fn login_profiles_keep_selection_schedule_and_pause_separate() {
     let data = temp.path();
     identity(data, 1);
     config_runtime::activate_profile(data).unwrap();
+    assert!(config_runtime::has_current_profile(data, &settings::load(data).unwrap()).unwrap());
     settings::update(data, |s| {
         s.chat
             .allowed_usernames
@@ -516,6 +517,7 @@ fn login_profiles_keep_selection_schedule_and_pause_separate() {
     })
     .unwrap();
     identity(data, 2);
+    assert!(!config_runtime::has_current_profile(data, &settings::load(data).unwrap()).unwrap());
     config_runtime::activate_profile(data).unwrap();
     let two = settings::load(data).unwrap();
     assert!(two.chat.allowed_usernames.is_empty());
