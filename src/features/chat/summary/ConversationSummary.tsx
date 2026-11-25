@@ -3,7 +3,7 @@ import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import { t, tf, dateLocale } from '../../../shared/i18n/locale';
 import { useInternalAccount, useCapability } from '../../auth/entitlements';
 import { renderAgentMarkdown } from '../../../shared/content/summary';
-import { readSummaryRange, summaryBounds, validateSummaryMessages, validateCloudSummaryInput, type CloudSummary, type SummaryChat, type SummaryMessage, type SummaryPage, type SummaryRange } from './summaryInput';
+import { readSummaryRange, summaryBounds, summaryPeriodError, validateSummaryMessages, validateCloudSummaryInput, type CloudSummary, type SummaryChat, type SummaryMessage, type SummaryPage, type SummaryRange } from './summaryInput';
 import { refreshTaskRuntime } from '../../tasks/taskRuntime';
 import { mergeSummaryRecords, reconcileSummaryPage, summaryRecordKey } from './summaryRecords';
 import { SummaryRequestOptions } from './SummaryRequestOptions';
@@ -11,9 +11,14 @@ import { useSummaryOptions } from './useSummaryOptions';
 import { summaryOptionFields, summaryScenarioLabel } from './summaryOptions';
 import './conversation-summary.css';
 
-const RANGES: Array<[SummaryRange,string]> = [['today','今天'],['yesterday','昨天'],['three','近 3 天'],['week','本周']];
+const RANGES: Array<[SummaryRange,string]> = [['today','今天'],['yesterday','昨天'],['three','近 3 天'],['week','本周'],['month','本月'],['custom','自定义']];
 const waiting = (row:CloudSummary) => row.status==='queued'||row.status==='running';
 const keyOf = (message:SummaryMessage) => JSON.stringify([message.username,message.source_shard,message.local_id,message.time]);
+
+function dateRangeLabel({since,until}: ReturnType<typeof summaryBounds>, withTime=false) {
+  const format=new Intl.DateTimeFormat(dateLocale(),{year:'numeric',month:'2-digit',day:'2-digit',...(withTime?{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}:{})});
+  return `${format.format(since*1000)} — ${format.format(until*1000)}`;
+}
 
 function DisclosureArrow({ expanded }: { expanded:boolean }) {
   return <svg className="summary-disclosure-arrow" data-expanded={expanded} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>;
@@ -48,6 +53,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   const [rows,setRows]=useState<CloudSummary[]>([]);
   const [open,setOpen]=useState(false);
   const [range,setRange]=useState<SummaryRange>('today');
+  const [dates,setDates]=useState({from:'',to:''});
   const [mode,setMode]=useState<'time'|'pick'>('time');
   const [engine,setEngine]=useState<'cloud'|'local'>('cloud');
   const [extras,setExtras]=useState<string[]>([]);
@@ -112,9 +118,20 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   // The reader supplies text-only input, while its selection includes media.
   const nonTextCount=Math.max(0,selectionTotal-selection.length);
   const selectedTotal=selected.length+nonTextCount;
+  const preview=(()=>{
+    if(!visible||!open||mode!=='time')return null;
+    try {
+      const bounds=summaryBounds(range,new Date(),dates);
+      const invalid=summaryPeriodError(bounds,'local');
+      return {bounds,invalid:Boolean(invalid),error:invalid||summaryPeriodError(bounds,engine)};
+    } catch (reason) {
+      return {bounds:null,invalid:true,error:String(reason).replace(/^Error: /,'')};
+    }
+  })();
+  const rangeErrorId=`${panelId}-range-error`;
 
   const generate=async()=>{
-    if(lock.current||!spaceId||!accountId||!session)return;
+    if(lock.current||!spaceId||!accountId||!session||preview?.error)return;
     if(engine==='local'&&!canUseLocal){setFormError(t('请先在智能体集成中开启可用的本地智能体。'));return;}
     lock.current=true;const owner=scope;request.current++;setLoading(false);
     setError('');setFormError('');setNotice('');setPhase(t('正在读取所选消息…'));
@@ -123,9 +140,11 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
       if(!body){
         const fields = summaryOptionFields(options.view, options.draft);
         let messages:SummaryMessage[]=[];
-        const bounds=summaryBounds(range);
+        const bounds=mode==='time'?summaryBounds(range,new Date(),dates):null;
         if(mode==='pick')messages=selected;
-        else {
+        else if(bounds) {
+          const problem=summaryPeriodError(bounds,engine);
+          if(problem)throw Error(problem);
           // At most eight conversations, read sequentially in bounded pages.
           for(const username of [session.username,...extras]){
             const chat=sessions.find(item=>item.username===username);if(!chat)continue;
@@ -133,11 +152,13 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
             if(messages.length>2000)throw Error(t('消息内容过多，请缩小时间范围或减少选择。'));
           }
         }
-        const times=validateSummaryMessages(messages,session.username);
+        const times=validateSummaryMessages(messages,session.username,engine);
+        const period=bounds??times;
         if(engine==='local'&&(messages.length>400||messages.reduce((sum,item)=>sum+item.text.length,0)>40000))throw Error(t('本地单次总结内容过多，请缩小时间范围或减少选择。'));
-        const input={title:session.display,range_label:mode==='pick'?tf('所选 {0} 条消息',messages.length):t(RANGES.find(item=>item[0]===range)![1]),...fields,messages};
+        const label=mode==='pick'?tf('所选 {0} 条消息',messages.length):range==='custom'?dateRangeLabel(period):t(RANGES.find(item=>item[0]===range)![1]);
+        const input={title:session.display,range_label:label,...fields,messages};
         if(engine==='cloud')validateCloudSummaryInput(input,options.view!.config.scenarios.find(item=>item.id===fields.scenario)!.budgets.cloud);
-        body={request_key:crypto.randomUUID(),...input,mode,period_start:new Date((mode==='time'?bounds.since:times.since)*1000).toISOString(),period_end:new Date((mode==='time'?bounds.until:times.until)*1000).toISOString()};
+        body={request_key:crypto.randomUUID(),...input,mode,period_start:new Date(period.since*1000).toISOString(),period_end:new Date(period.until*1000).toISOString()};
         submission.current={scope:owner,engine,body};
       }
       if(!current(owner))return;
@@ -164,7 +185,17 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
     {open&&<section id={panelId} className="chat-summary-panel" aria-label={t('生成聊天总结')}>
       <div className="summary-segments" role="group" aria-label={t('选择消息方式')}>{([['time','按时间周期'],['pick','选具体消息']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={mode===id} disabled={Boolean(phase)} onClick={()=>{setMode(id);change();}}>{t(label)}</button>)}</div>
       {mode==='time'?<>
-        <div className="chat-summary-row"><span className="chat-summary-label">{t('时间')}</span><div className="chat-summary-time"><div className="chat-summary-pills">{RANGES.map(([id,label])=><button type="button" key={id} className={range===id?'on':''} disabled={Boolean(phase)} onClick={()=>{setRange(id);change();}}>{t(label)}</button>)}</div><span className="chat-summary-hint">{t('单次最长一周')}</span></div></div>
+        <div className="chat-summary-row"><span className="chat-summary-label">{t('时间')}</span><div className="chat-summary-time summary-date-range">
+          <div className="chat-summary-pills" role="group" aria-label={t('选择时间范围')}>{RANGES.map(([id,label])=><button type="button" key={id} className={range===id?'on':''} aria-pressed={range===id} disabled={Boolean(phase)} onClick={()=>{setRange(id);change();}}>{t(label)}</button>)}</div>
+          {range==='custom'&&<div className="imports-dates summary-custom-dates">
+            <label>{t('开始日期')}<input type="date" value={dates.from} disabled={Boolean(phase)} aria-invalid={preview?.invalid||undefined} aria-describedby={preview?.error?rangeErrorId:undefined} onChange={event=>{setDates({...dates,from:event.target.value});change();}}/></label>
+            <span aria-hidden="true">{t('至')}</span>
+            <label>{t('结束日期')}<input type="date" value={dates.to} disabled={Boolean(phase)} aria-invalid={preview?.invalid||undefined} aria-describedby={preview?.error?rangeErrorId:undefined} onChange={event=>{setDates({...dates,to:event.target.value});change();}}/></label>
+          </div>}
+          {preview?.bounds&&!preview.invalid&&(range==='month'||range==='custom')&&<p className="summary-date-value"><strong>{t('范围')}</strong> {dateRangeLabel(preview.bounds,range==='month')}{range==='custom'&&` ${t('（含结束日）')}`}</p>}
+          <p className="chat-summary-hint">{t('单次最长一个自然月；消息过多时，请缩小时间范围。')}</p>
+          {preview?.error&&<p id={rangeErrorId} className={`summary-date-feedback${preview.invalid?' invalid':''}`} role="alert">{t(preview.error)}</p>}
+        </div></div>
         <div className="chat-summary-row"><span className="chat-summary-label">{t('聊天')}</span><div className="summary-chat-scope"><div className="summary-chat-chips"><span>{session?.display}</span>{extras.map(username=><span key={username}>{sessions.find(item=>item.username===username)?.display}<button type="button" aria-label={tf('移除 {0}',username)} disabled={Boolean(phase)} onClick={()=>{setExtras(old=>old.filter(item=>item!==username));change();}}>×</button></span>)}<button type="button" disabled={Boolean(phase)} onClick={()=>setPicker(value=>!value)}>{picker?t('完成选择'):t('添加聊天')}</button></div>
         {picker&&<div className="summary-chat-picker"><input aria-label={t('搜索聊天名称')} placeholder={t('搜索聊天名称')} value={chatQuery} onChange={event=>setChatQuery(event.target.value)}/><div>{sessions.filter(chat=>chat.username!==session?.username&&chat.display.toLowerCase().includes(chatQuery.toLowerCase())).slice(0,80).map(chat=><label key={chat.username}><input type="checkbox" checked={extras.includes(chat.username)} disabled={Boolean(phase)||(!extras.includes(chat.username)&&extras.length>=7)} onChange={event=>{setExtras(old=>event.target.checked?[...old,chat.username]:old.filter(item=>item!==chat.username));change();}}/><span>{chat.display}</span><small>{chat.is_group?t('群聊'):t('单聊')}</small></label>)}</div><small>{t('最多 8 个聊天，仅列出当前平台已加载的会话。')}</small></div>}</div></div>
       </>:<div className="summary-message-picker"><div className="summary-message-picker-head"><strong>{tf('已选 {0} 条消息',selectedTotal)}</strong><button type="button" onClick={onPick}>{t('去原始记录选择')}</button></div>
@@ -185,7 +216,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
       <p className="chat-summary-note">{engine==='cloud'?t('由云端处理文字内容，完成后自动保存。图片、语音和视频不参与此次总结。'):tf('模型：{0}。沿用智能体已有的登录状态。',localAgentModel.trim()||t('沿用智能体默认模型'))}</p>
       {engine==='local'&&<p className="chat-summary-note">{t('本地工具可能使用在线模型服务；所选文字会交给该工具处理。')}</p>}
       {formError&&<div className="summary-feedback error" role="alert"><span>{t(formError.replace(/^Error: /,''))}</span></div>}
-      <div className="chat-summary-actions"><button type="button" disabled={Boolean(phase)} onClick={()=>setOpen(false)}>{t('取消')}</button><button type="button" className="primary" disabled={Boolean(phase)||!session||!options.view||options.loading||(mode==='pick'&&!selected.length)} onClick={()=>void generate()}>{phase||t('开始生成')}</button></div>
+      <div className="chat-summary-actions"><button type="button" disabled={Boolean(phase)} onClick={()=>setOpen(false)}>{t('取消')}</button><button type="button" className="primary" disabled={Boolean(phase)||!session||!options.view||options.loading||Boolean(preview?.error)||(mode==='pick'&&!selected.length)} onClick={()=>void generate()}>{phase||t('开始生成')}</button></div>
     </section>}
     {error&&<div className="summary-feedback error" role="alert"><span>{t(error.replace(/^Error: /,''))}</span><button type="button" disabled={loading} onClick={()=>void load()}>{t('重试读取')}</button></div>}
     {notice&&<div className="summary-feedback" role="status"><span>{notice}</span><button type="button" onClick={onOpenTasks}>{t('查看任务')}</button></div>}

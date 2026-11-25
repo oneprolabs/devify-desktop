@@ -577,6 +577,96 @@ export async function runBackupSwitchUiE2E(task, base = 'http://localhost:1434',
 }
 
 
+export async function runSummaryDateUiE2E(task, base = 'http://127.0.0.1:1422', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const range = label => page.click(`loc=css:.summary-date-range button:text-is("${label}")`, {label:'Select summary date range'});
+  const open = () => page.click('.chat-summary-cta', {label:'Open chat summary form'});
+  const local = '.summary-agent-options button:nth-child(2):not(:disabled)';
+  const generate = '.chat-summary-actions .primary';
+  const dates = (from,to) => page.evaluate(values => {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    document.querySelectorAll('.summary-custom-dates input').forEach((input,index) => {
+      setValue.call(input,values[index]);
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      input.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+  },[from,to]);
+  const submit = async number => {
+    await page.waitForSelector(`${generate}:not(:disabled)`);
+    await page.click(generate,{label:'Create simulated summary task'});
+    await page.waitForSelector('.chat-summary-cta');
+    return page.evaluate(count => {
+      const requests=window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue');
+      return requests.length===count ? requests.at(-1).args : null;
+    },number);
+  };
+
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat&internal`);
+  await page.waitForSelector('.wxv-msg[role="button"]');
+  const expected=await page.evaluate(() => {
+    const state=window.__E2E__;
+    Object.assign(state.settings.agent,{enabled:true,provider_id:'codex'});
+    window.dispatchEvent(new Event('agent-settings-changed'));
+    const start=new Date(2024,9,30).getTime()/1000, end=new Date(2024,10,5).getTime()/1000-1;
+    const message=(local_id,time,text) => ({local_id,time,text,kind:1,source_shard:'synthetic',sender:'tester'});
+    state.chatMessageOverrides[state.settings.active_account_id]=[
+      ...Array.from({length:2100},(_,i)=>message(4000-i,end+10000-i,'Newer history')),
+      message(3,end+1,'Excluded'),message(2,end,'End of selected day'),message(1,start,'Start of selected day'),
+    ];
+    return {start:new Date(start*1000).toISOString(),end:new Date(end*1000).toISOString()};
+  });
+  await page.click('loc=role:tab[name="聊天总结"]',{label:'Open chat summary tab'});
+  await open();
+  await page.waitForSelector(local);
+  assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('.summary-date-range button')].map(el=>el.textContent)), ['今天','昨天','近 3 天','本周','本月','自定义']);
+  await range('自定义');
+  assert.equal(await page.evaluate(selector=>document.querySelector(selector).disabled,generate),true,'Missing dates block submission');
+  await dates('2024-10-01','2024-11-04');
+  await page.waitForSelector('.summary-date-feedback.invalid');
+  assert.match(await page.evaluate(()=>document.querySelector('.summary-date-feedback').textContent),/超过一个自然月/);
+  await dates('2024-10-25','2024-11-04');
+  await page.waitForFunction(()=>document.querySelector('.summary-date-feedback')?.textContent.includes('一周'));
+  assert.equal(await page.evaluate(selector=>document.querySelector(selector).disabled,generate),true);
+  await dates('2024-10-30','2024-11-04');
+  await page.waitForSelector('.summary-date-value');
+  assert.match(await page.evaluate(()=>document.querySelector('.summary-date-value').textContent),/含结束日/);
+  assert.ok(await page.evaluate(() => {
+    const row = document.querySelector('.summary-date-range');
+    return [...row.children].every(el=>Math.abs(el.getBoundingClientRect().left-row.getBoundingClientRect().left)<1);
+  }),'Date controls and hints align with the form column');
+  const cloud=await submit(1);
+  assert.equal(cloud.engine,'cloud');
+  assert.equal(cloud.body.period_start,expected.start);
+  assert.equal(cloud.body.period_end,expected.end);
+  assert.deepEqual(cloud.body.messages.map(m=>m.text),['End of selected day','Start of selected day']);
+
+  await open();
+  await page.click(local,{label:'Select local summary agent'});
+  await dates('2024-10-08','2024-11-04');
+  assert.equal((await submit(2)).engine,'local','Custom month is available to the local agent');
+  const month=await page.evaluate(()=>{
+    const now=new Date(), start=new Date(now.getFullYear(),now.getMonth(),1);
+    const state=window.__E2E__;
+    state.chatMessageOverrides[state.settings.active_account_id]=[{local_id:1,time:start.getTime()/1000,kind:1,text:'First of the month',source_shard:'synthetic'}];
+    return start.toISOString();
+  });
+  await open();
+  await range('本月');
+  assert.equal(await page.evaluate(()=>document.querySelectorAll('.summary-custom-dates input').length),0);
+  const currentMonth=await submit(3);
+  assert.equal(currentMonth.engine,'local');
+  assert.equal(currentMonth.body.period_start,month);
+  assert.equal(currentMonth.body.messages[0].text,'First of the month');
+
+  await page.click('loc=role:tab[name="原始记录"]',{label:'Return to original messages'});
+  await page.click('.wxv-msg[role="button"] >> nth=0',{label:'Select a text message'});
+  await page.click('.wxv-selection-actions button.primary',{label:'Summarize the selected message'});
+  const picked=await submit(4);
+  assert.equal(picked.body.mode,'pick');
+  assert.equal(picked.body.messages.length,1);
+  console.log('PASS chat summary dates: legacy cloud guard, inclusive history, local month and custom, and selection (synthetic IPC)');
+}
+
 // Real React shell with synthetic IPC, not a server integration test.
 export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', pageLabel = 'p1') {
   const page = task.page(pageLabel);
@@ -600,8 +690,15 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   });
   await page.click(refresh, {label:'刷新当前微信会话'});
   await page.waitForSelector(alert);
-  assert.match(await page.evaluate(selector => document.querySelector(selector).textContent, alert), /密钥.*连接器/);
-  assert.ok(!await page.evaluate(selector => document.querySelector(selector).textContent.includes('sensitive-test-salt'), alert));
+  assert.deepEqual(await page.evaluate(selector => {
+    const card = document.querySelector(selector);
+    return {
+      title: card.querySelector('[role="alert"] strong').textContent,
+      action: card.querySelector('button').textContent,
+      mainPane: Boolean(card.closest('.chat-workbench-main')),
+      rawDetail: card.textContent.includes('sensitive-test-salt'),
+    };
+  }, alert), {title:'微信密钥需要更新',action:'更新微信密钥',mainPane:true,rawDetail:false});
   assert.ok(await page.evaluate(selector => document.querySelector(selector).textContent.includes('的测试消息'), message));
   const calls = () => page.evaluate(start => window.__E2E__.calls.slice(start), start);
   assert.deepEqual((await calls()).filter(c => c.command === 'wechat_sync').map(c => c.args), [{accountId:wx}]);
@@ -612,9 +709,10 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
       .find(button => button.textContent.trim() === text)?.scrollIntoView({block:'center',behavior:'instant'}), name);
     await page.click(`loc=role:button[name="${name}"]`, {label:name});
   };
-  await page.click(`${alert} button`, {label:'前往连接器恢复密钥'});
+  await page.click(`${alert} button`, {label:'打开微信密钥更新向导'});
   await page.waitForSelector('.wechat-wizard #wizard-method');
-  await page.click('loc=css:.wizard-method-option >> nth=1', {label:'选择手动导入微信密钥'});
+  assert.equal(await page.evaluate(() => document.querySelector('#wizard-method h2').textContent), '更新微信密钥');
+  await page.click('loc=role:button[name*="导入密钥"]', {label:'选择导入新密钥'});
   await click('下一步');
   await ready('下一步：连接微信');
   await click('下一步：连接微信');
@@ -625,17 +723,38 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   await click('导入并校验');
   await ready('返回聊天');
   await click('返回聊天');
-  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息')
+    && !document.querySelector('.chat-workbench-refresh-error'));
+  assert.equal(await sessionKey(), original, 'returning from recovery preserves the selected chat');
   assert.deepEqual((await calls()).filter(c => c.command === 'wechat_import_keys').map(c => c.args), [{accountId:wx,targetOnly:true}]);
   assert.ok(!(await calls()).some(c => c.command === 'connector_setup_state'), 'key recovery preserves connector setup and backup settings');
   await page.waitForSelector(`${refresh}:not(:disabled)`);
   await page.evaluate(() => { window.__E2E__.wechatSyncError = '该账号正在同步，请稍后重试。'; });
-  await page.click(refresh, {label:'验证微信同步拒绝提示'});
+  await page.click(refresh, {label:'验证同步暂忙时可重试'});
   await page.waitForSelector(alert);
-  assert.match(await page.evaluate(selector => document.querySelector(selector).textContent, alert), /正在同步/);
+  assert.match(await page.evaluate(selector => document.querySelector(selector).querySelector('[role="alert"]').textContent, alert), /稍等片刻.*重试/);
+  await page.evaluate(() => {
+    window.__E2E__.wechatSyncError = '';
+    window.__E2E__.wechatSyncOutcomes = [
+      {rel:'session/session.db',status:'cached',error:null},
+      {rel:'message/message_0.db',status:'failed',error:'WAL 第 2 页 HMAC 校验失败'},
+    ];
+  });
+  await page.click(refresh, {label:'验证日志读取失败提示'});
+  await page.waitForFunction(selector => document.querySelector(selector + ' strong')?.textContent.includes('部分微信'), alert);
+  assert.deepEqual(await page.evaluate(selector => {
+    const card = document.querySelector(selector);
+    return {
+      title: card.querySelector('strong').textContent,
+      action: card.querySelector('button').textContent,
+      expanded: card.querySelector('details').open,
+      readableHistory: card.querySelector('[role="alert"]').textContent.includes('仍可查看'),
+    };
+  }, alert), {title:'部分微信聊天记录未能刷新',action:'重试刷新',expanded:false,readableHistory:true});
+  await page.click(`${alert} summary`, {label:'展开技术错误详情'});
+  await page.waitForFunction(selector => document.querySelector(selector + ' details[open] p')?.textContent.includes('HMAC'), alert);
   await page.evaluate(() => {
     const state = window.__E2E__;
-    state.wechatSyncError = '';
     state.wechatSyncPaused = true;
     state.wechatSyncOutcomes = [
       {rel:'session/session.db',status:'ok',error:null},
@@ -643,9 +762,10 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
       {rel:'message/media_0.db',status:'no-key',error:'fixture media error'},
     ];
   });
-  await page.click(refresh, {label:'重新同步并刷新微信'});
+  await page.click(`${alert} button`, {label:'从提示卡重试刷新'});
   await page.waitForFunction(() => window.__E2E__.wechatSyncResolvers.length === 1);
   assert.ok(await page.evaluate(selector => document.querySelector(selector).disabled, refresh));
+  assert.ok(await page.evaluate(selector => document.querySelector(selector + ' button').disabled, alert));
   const retry = await page.evaluate(accountId => {
     const state = window.__E2E__;
     state.chatMessageOverrides[accountId] = [{local_id:2,source_shard:'synthetic',time:1795000100,sender:'tester',sender_name:'测试联系人',kind:1,text:'微信同步后收到的新消息',is_self:false}];
@@ -672,7 +792,7 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('WhatsApp 刷新后的新消息'));
   assert.deepEqual(await page.evaluate(start => window.__E2E__.calls.slice(start).filter(c => c.command === 'wechat_sync'), whatsappStart), []);
   assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
-  return 'PASS chat refresh: partial key failure, key reimport without resetting setup, IPC rejection, refreshed WeChat messages, WhatsApp local reload';
+  return 'PASS chat refresh: prominent key recovery, preserved setup and selection, retry with collapsed diagnostics, refreshed WeChat messages, WhatsApp local reload';
 }
 
 export async function runChatMessageRetryUiE2E(task, base, pageLabel = 'p1') {

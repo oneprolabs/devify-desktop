@@ -3,6 +3,15 @@
 .conversation-summary:lang(en) .chat-summary-row { grid-template-columns: 132px minmax(0, 1fr); }
 .conversation-summary { gap: 16px; }
 .conversation-summary .chat-summary-intro p { font-size: 12.5px; }
+.chat-summary-time.summary-date-range { flex-flow: column nowrap; align-items: flex-start; gap: 9px; }
+.summary-date-range .chat-summary-pills { flex-wrap: wrap; max-width: 100%; }
+.summary-custom-dates.imports-dates { flex-wrap: wrap; margin: 0; }
+.summary-custom-dates input[type=date] { min-width: 146px; font: inherit; color: #1a1a19; }
+.summary-custom-dates input[aria-invalid=true] { border-color: #c9786d; }
+.summary-date-value { color: #3a3a37; font-size: 13px; font-variant-numeric: tabular-nums; }
+.summary-date-value strong { margin-inline-end: 4px; }
+.summary-date-feedback { padding: 7px 10px; border-radius: 7px; background: #fff7e8; color: #785023; font-size: 12px; }
+.summary-date-feedback.invalid { background: #fff4f1; color: #9b3f36; }
 .summary-segments { display: inline-flex; gap: 2px; padding: 3px; border-radius: 8px; background: #ededea; align-self: flex-start; }
 .summary-segments button { border: 0; padding: 5px 12px; border-radius: 6px; background: transparent; color: #4f4f4a; font: inherit; font-size: 12.5px; cursor: pointer; }
 .summary-segments button[aria-pressed=true] { background: #fff; color: #1a1a19; box-shadow: 0 1px 2px #00000014; }

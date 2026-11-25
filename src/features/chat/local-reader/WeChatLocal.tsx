@@ -428,7 +428,7 @@ export default function WeChatLocal({
       return true;
     } catch (reason) {
       if (!currentRequest()) return true;
-      setMessageRefreshError({ accountId: id, username, message: localRefreshError(reason).message });
+      setMessageRefreshError({ accountId: id, username, message: tf("刷新会话失败：{0}", errorText(reason)) });
       return false;
     } finally {
       if (messageRefreshRequest.current === request) {
