@@ -4,6 +4,7 @@ import { useWeChatConnection } from '../../connectors/wechat/useWeChatConnection
 import { WeChatConnectionPanel } from '../../connectors/wechat/WeChatConnectionPanel';
 import { WeChatConnectionWizard } from '../../connectors/wechat/WeChatConnectionWizard';
 import { MediaThumb } from './MediaThumb';
+import { WhatsAppAttachment } from './WhatsAppAttachment';
 import { MessageSelectionActions } from './MessageSelectionActions';
 import type {
   SessionItem,
@@ -268,7 +269,7 @@ export default function WeChatLocal({
   /** Attachment manifest for the loaded message window, keyed by `local_id`. */
   const [mediaByMessage, setMediaByMessage] = useState<Record<string, MediaItem[]>>({});
   const [mediaScanComplete, setMediaScanComplete] = useState(false);
-  const [imageViewer, setImageViewer] = useState<{ src: string | null; error: string } | null>(null);
+  const [imageViewer, setImageViewer] = useState<{ src: string | null; error: string; thumbnailOnly: boolean } | null>(null);
   const imageViewerRequest = useRef(0);
   const imageViewerOpener = useRef<HTMLElement | null>(null);
   const [voiceText, setVoiceText] = useState<Record<string, string>>({});
@@ -407,7 +408,7 @@ export default function WeChatLocal({
     messageRefreshRequest.current = request;
     setRefreshingMessages(true);
     try {
-      const latest = await invoke<MessageItem[]>('wechat_messages', { accountId: id, username, limit: PAGE });
+      const latest = await invoke<MessageItem[]>('wechat_messages', { accountId: id, username, limit: PAGE, includeAttachments: true });
       if (!currentRequest()) return true;
       const root = messageRef.current;
       scrollIntent.current = followNewest.current ? 'bottom' : 'preserve';
@@ -672,6 +673,7 @@ export default function WeChatLocal({
           accountId: account.id,
           username: session.username,
           limit: PAGE,
+          includeAttachments: true,
         });
         // A keyword hit can be older than the first page; pull more pages so the
         // highlighted message is actually on screen instead of silently missing. Twelve
@@ -689,6 +691,7 @@ export default function WeChatLocal({
             before: last.time,
             beforeId: last.local_id,
             beforeShard: last.source_shard,
+            includeAttachments: true,
           });
           if (!page.length) break;
           list = [...list, ...page];
@@ -735,8 +738,7 @@ export default function WeChatLocal({
       setMediaByMessage({});
       return;
     }
-    // WhatsApp message types do not use WeChat's media identifiers. Its reader already
-    // supplies a readable label, so do not try to resolve them against a WeChat database.
+    // WhatsApp attaches metadata to its message page instead of running the WeChat scan.
     if (account.id.endsWith('@s.whatsapp.net')) {
       setMediaByMessage({});
       setMediaScanComplete(true);
@@ -842,6 +844,11 @@ export default function WeChatLocal({
   }, []);
 
   useEffect(() => {
+    imageViewerRequest.current += 1;
+    setImageViewer(null);
+  }, [accountId, active?.username]);
+
+  useEffect(() => {
     if (!imageViewer) return;
     const handleKey = (event: KeyboardEvent) => { if (event.key === 'Escape') closeImage(); };
     window.addEventListener('keydown', handleKey);
@@ -851,12 +858,16 @@ export default function WeChatLocal({
   const openImage = (item: MediaItem) => {
     const paths = item.sources.length ? item.sources : item.rel_path ? [item.rel_path] : [];
     if (!account || !paths.length) return;
+    showImage(() => invoke<string>('wechat_media_open_image', { accountId: account.id, paths }).then(path => convertFileSrc(path)));
+  };
+
+  const showImage = (load: () => Promise<string>, thumbnailOnly = false) => {
     imageViewerOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const request = ++imageViewerRequest.current;
-    setImageViewer({ src: null, error: '' });
-    void invoke<string>('wechat_media_open_image', { accountId: account.id, paths })
-      .then(path => { if (imageViewerRequest.current === request) setImageViewer({ src: convertFileSrc(path), error: '' }); })
-      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: tf("无法查看图片：{0}", errorText(reason)) }); });
+    setImageViewer({ src: null, error: '', thumbnailOnly });
+    void load()
+      .then(src => { if (imageViewerRequest.current === request) setImageViewer({ src, error: '', thumbnailOnly }); })
+      .catch(reason => { if (imageViewerRequest.current === request) setImageViewer({ src: null, error: tf("无法查看图片：{0}", errorText(reason)), thumbnailOnly }); });
   };
 
   const loadOlder = async () => {
@@ -877,6 +888,7 @@ export default function WeChatLocal({
         before: last.time,
         beforeId: last.local_id,
         beforeShard: last.source_shard,
+        includeAttachments: true,
       });
       if (!currentRequest()) return;
       const root = messageRef.current;
@@ -1699,6 +1711,11 @@ export default function WeChatLocal({
       {orderedWithDates.map(({ message, divider, stamp }) => {
         const base = kindBase(message.kind);
         const isWhatsApp = message.source_shard === 'whatsapp';
+        const whatsappMedia = isWhatsApp && account && active && (message.kind === 1 || message.kind === 2 || message.kind === 8)
+          ? { accountId: account.id, username: active.username, localId: message.local_id, time: message.time }
+          : null;
+        const whatsappCaption = whatsappMedia ? message.text.replace(/^\[(?:图片|视频|文件)\](?: |$)/, '') : '';
+        const showWhatsAppCaption = whatsappCaption && (message.kind !== 8 || whatsappCaption !== message.attachment?.name);
         const system = isWhatsApp
           ? active?.is_group && message.kind === 6
           : base === 10000 || base === 10002;
@@ -1796,11 +1813,23 @@ export default function WeChatLocal({
                 {(onChatState || (active?.is_group && !message.is_self)) && (
                   <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || sender || t("未知成员"))}{onChatState && <time className="wxv-message-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}</span>
                 )}
-                <div className={`wxv-bubble ${imageMessage || videoMessage ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
-                  {imageMessage || voiceMessage || videoMessage ? null : placeholder ? (
+                <div className={`wxv-bubble ${imageMessage || videoMessage || whatsappMedia ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
+                  {imageMessage || voiceMessage || videoMessage || whatsappMedia ? null : placeholder ? (
                     message.text
                   ) : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
+                  )}
+                  {whatsappMedia && <WhatsAppAttachment
+                    key={`${whatsappMedia.accountId}:${whatsappMedia.username}:${message.local_id}:${message.time}`}
+                    message={whatsappMedia}
+                    attachment={message.attachment}
+                    onImageOpen={() => {
+                      const thumbnailOnly = message.kind === 2 || message.attachment?.status === 'thumbnail_only';
+                      showImage(() => invoke<string>('whatsapp_attachment_action', { ...whatsappMedia, action: thumbnailOnly ? 'preview' : 'image' }), thumbnailOnly);
+                    }}
+                  />}
+                  {showWhatsAppCaption && (
+                    <p className="wxv-attach-text"><Highlight text={whatsappCaption} keyword={highlightKeyword} /></p>
                   )}
                   {imageMessage && !mediaFor(message).length && <div className="wxv-attach image"><span className="wxv-image-placeholder" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true"/>}{mediaScanComplete ? t("图片不可用") : t("正在加载图片…")}</span></div>}
                   {voiceMessage && !mediaFor(message).length && <span className="wxv-attach-chip" role="status">{!mediaScanComplete && <i className="wxv-image-spinner" aria-hidden="true" />}{mediaScanComplete ? t("语音暂不可用") : t("正在加载语音…")}</span>}
@@ -2380,7 +2409,7 @@ export default function WeChatLocal({
 
       {imageViewer && createPortal(<div className="wxv-image-viewer" role="dialog" aria-modal="true" aria-label={t("查看图片")} onClick={closeImage}>
         <button type="button" className="wxv-image-viewer-close" aria-label={t("关闭图片")} onClick={closeImage} autoFocus>×</button>
-        {imageViewer.error ? <p role="alert">{errorText(imageViewer.error)}</p> : imageViewer.src ? <img src={imageViewer.src} alt={t("聊天图片原图")} onClick={event => event.stopPropagation()} onError={() => setImageViewer({ src: null, error: t("图片加载失败。") })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{t("正在加载原图…")}</p>}
+        {imageViewer.error ? <p role="alert">{errorText(imageViewer.error)}</p> : imageViewer.src ? <img src={imageViewer.src} alt={imageViewer.thumbnailOnly ? t("本机只有缩略图") : t("聊天图片原图")} onClick={event => event.stopPropagation()} onError={() => setImageViewer({ ...imageViewer, src: null, error: t("图片加载失败。") })}/> : <p role="status"><i className="wxv-image-spinner" aria-hidden="true"/>{imageViewer.thumbnailOnly ? t("正在加载图片…") : t("正在加载原图…")}</p>}
       </div>, document.body)}
       {/* The capture guide needs the full column width; the digest drawer would clip it. */}
       {workOpen && !forceUnlock && renderWorkSelector()}

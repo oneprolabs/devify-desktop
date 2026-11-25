@@ -20,7 +20,20 @@ export type MessageItem = {
   kind: number;
   text: string;
   is_self: boolean;
+  attachment?: WhatsAppAttachmentInfo;
 };
+
+export type WhatsAppAttachmentInfo = {
+  kind: 'image' | 'video' | 'file';
+  status: 'available' | 'thumbnail_only' | 'unavailable' | 'denied' | 'unsupported';
+  name: string | null;
+  file_type: string | null;
+  size: number | null;
+  can_open: boolean;
+  has_thumbnail: boolean;
+};
+
+export type WhatsAppMediaRef = { accountId: string; username: string; localId: number; time: number };
 
 export type MediaItem = {
   local_id: number;

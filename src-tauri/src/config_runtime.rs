@@ -311,6 +311,11 @@ fn profile_identity(data: &Path, s: &AppSettings) -> Result<(String, Option<i64>
     Ok((key, user))
 }
 
+pub(crate) fn has_current_profile(data: &Path, settings: &AppSettings) -> Result<bool, String> {
+    let (key, user) = profile_identity(data, settings)?;
+    Ok(user.is_some() && settings.runtime.active_profile.as_deref() == Some(&key))
+}
+
 /// Also used inside the settings transaction when switching server or space.
 /// The outgoing profile is archived before any incoming source can be enqueued.
 pub fn activate_settings_profile(data: &Path, s: &mut AppSettings) -> Result<(), String> {

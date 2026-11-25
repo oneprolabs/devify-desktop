@@ -1,10 +1,58 @@
 //! Attachment manifests, lazy image decoding and local media export.
-use crate::chat::access::{account_root, require_visible_session};
+use crate::chat::access::{
+    account_root, require_visible_session, require_whatsapp_attachment_session,
+};
 use crate::chat::LOCAL_READ_BUDGET;
 use crate::wechat::{decrypt, media, query};
-use crate::{app_data, capabilities, entitlements, local_scope, settings};
+use crate::whatsapp::attachments;
+use crate::{app_data, capabilities, config_runtime, entitlements, local_scope, settings};
 use std::path::{Path, PathBuf};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
+
+#[tauri::command]
+pub(crate) async fn whatsapp_attachment_action(
+    app: AppHandle,
+    account_id: String,
+    username: String,
+    local_id: i64,
+    time: i64,
+    action: attachments::Action,
+) -> Result<String, String> {
+    static ATTACHMENT_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let budget = ATTACHMENT_READS
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _budget = budget;
+        let authorize = || require_whatsapp_attachment_session(&app, &account_id, &username);
+        let data = app_data(&app);
+        let (principal, scope) = {
+            let _identity = crate::UPLOAD_IDENTITY_LOCK.blocking_read();
+            (authorize()?, local_scope::root(&data))
+        };
+        let recheck = || {
+            let identity = crate::UPLOAD_IDENTITY_LOCK.blocking_read();
+            if !config_runtime::same_principal(&principal, &authorize()?) {
+                return Err("登录状态已变化，请重新打开聊天。".into());
+            }
+            Ok(identity)
+        };
+        attachments::perform(
+            &data,
+            &scope,
+            &account_id,
+            &username,
+            local_id,
+            time,
+            action,
+            app.path().download_dir().ok().as_deref(),
+            recheck,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
 /// Per-message attachment manifest (images, videos, documents, voice).
 #[tauri::command]

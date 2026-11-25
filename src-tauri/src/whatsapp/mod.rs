@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use crate::settings;
 use crate::wechat::query::{CommunityInfo, MessageCursor, MessageItem, SearchHit, SearchReport, SearchSnippet, SessionItem};
 
+pub(crate) mod attachments;
+
 /// Seconds between the Unix epoch and Core Data's reference date (2001-01-01 UTC).
 const CORE_DATA_EPOCH: i64 = 978_307_200;
 
@@ -472,6 +474,36 @@ pub fn messages(
     before: Option<MessageCursor>,
 ) -> Result<Vec<MessageItem>, String> {
     messages_from(&*open(app_data)?, chat, limit, before, None, None)
+}
+
+#[derive(Serialize)]
+pub(crate) struct DesktopMessage {
+    #[serde(flatten)]
+    pub(crate) message: MessageItem,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attachment: Option<attachments::Description>,
+}
+
+pub(crate) fn messages_with_attachments(
+    app_data: &Path,
+    chat: &str,
+    limit: usize,
+    before: Option<MessageCursor>,
+) -> Result<Vec<DesktopMessage>, String> {
+    let conn = open(app_data)?;
+    let messages = messages_from(&conn, chat, limit, before, None, None)?;
+    let ids: Vec<_> = messages.iter().filter(|message| matches!(message.kind, 1 | 2 | 8))
+        .map(|message| message.local_id).collect();
+    let mut attachments = attachments::lookup(&conn, chat, &ids).unwrap_or_default();
+    drop(conn);
+    let container = data_dir();
+    Ok(messages.into_iter().map(|message| {
+        let attachment = attachments.remove(&message.local_id)
+            .filter(|item| item.time == message.time)
+            .zip(container.as_deref())
+            .map(|(item, container)| item.describe(container));
+        DesktopMessage { message, attachment }
+    }).collect())
 }
 
 pub fn messages_between(
@@ -1186,6 +1218,65 @@ mod tests {
         assert_eq!(find(6).sender, None);
         assert_eq!(find(7).sender_name.as_deref(), Some("群成员"));
         assert_eq!(find(4).sender, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachments_follow_exact_messages_and_keep_unavailable_rows() {
+        let (root, conn) = fixture();
+        conn.execute_batch(
+            "ALTER TABLE ZWAMEDIAITEM ADD COLUMN ZMEDIALOCALPATH TEXT;
+             ALTER TABLE ZWAMEDIAITEM ADD COLUMN ZTHUMBNAILLOCALPATH TEXT;
+             ALTER TABLE ZWAMEDIAITEM ADD COLUMN ZFILESIZE INTEGER;
+             UPDATE ZWAMEDIAITEM SET ZMEDIALOCALPATH='Media/photo.jpg',
+                 ZTHUMBNAILLOCALPATH='Media/photo.thumb' WHERE Z_PK=1;
+             INSERT INTO ZWAMEDIAITEM VALUES (2, 'Report.pdf', NULL, 0, 0, 'Media/stored.pdf', NULL, 52);
+             INSERT INTO ZWAMEDIAITEM VALUES (3, NULL, NULL, 0, 0, 'Media/clip.mp4', 'Media/clip.thumb', NULL);
+             INSERT INTO ZWAMESSAGE VALUES (5, 2, 0, 8, 816590733, NULL, NULL, 2);
+             INSERT INTO ZWAMESSAGE VALUES (6, 2, 1, 8, 816590734, NULL, NULL, NULL);
+             INSERT INTO ZWAMESSAGE VALUES (7, 2, 1, 2, 816590735, NULL, NULL, 3);",
+        )
+        .unwrap();
+        let media = root.path().join("Message/Media");
+        fs::create_dir_all(&media).unwrap();
+        fs::write(media.join("photo.thumb"), b"thumb").unwrap();
+        fs::write(media.join("stored.pdf"), b"document").unwrap();
+        fs::write(media.join("clip.mp4"), b"video fixture").unwrap();
+        fs::write(media.join("clip.thumb"), b"video cover fixture").unwrap();
+        let rows = attachments::lookup(&conn, "120363000000000001@g.us", &[2, 5, 6, 7]).unwrap();
+        assert!(rows.get(&2).is_none(), "a private message cannot be read through a group");
+        let document = serde_json::to_value(rows[&5].describe(root.path())).unwrap();
+        assert_eq!(document["name"], "Report.pdf");
+        assert_eq!(document["size"], 52);
+        assert_eq!(document["file_type"], "pdf");
+        assert_eq!(document["status"], "available");
+        assert_eq!(serde_json::to_value(rows[&6].describe(root.path())).unwrap()["status"], "unavailable");
+        let video = serde_json::to_value(rows[&7].describe(root.path())).unwrap();
+        assert_eq!(video["kind"], "video");
+        assert_eq!(video["has_thumbnail"], true);
+        assert_eq!(video["can_open"], true);
+        let private = attachments::lookup(&conn, "8613800000000@s.whatsapp.net", &[2]).unwrap();
+        assert_eq!(serde_json::to_value(private[&2].describe(root.path())).unwrap()["status"], "thumbnail_only");
+        fs::write(media.join("photo.jpg"), b"original").unwrap();
+        assert_eq!(serde_json::to_value(private[&2].describe(root.path())).unwrap()["status"], "available");
+    }
+
+    #[test]
+    fn attachment_resolution_refuses_outside_files_and_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let media = root.path().join("Media");
+        fs::create_dir(&media).unwrap();
+        let outside = root.path().join("ChatStorage.sqlite");
+        fs::write(&outside, b"not an attachment").unwrap();
+        assert!(attachments::resolve(root.path(), "Media/../ChatStorage.sqlite").is_err());
+        assert!(attachments::resolve(root.path(), outside.to_str().unwrap()).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, media.join("wrong.pdf")).unwrap();
+            assert!(attachments::resolve(root.path(), "Media/wrong.pdf").is_err());
+            std::os::unix::fs::symlink(root.path(), media.join("directory")).unwrap();
+            assert!(attachments::resolve(root.path(), "Media/directory/ChatStorage.sqlite").is_err());
+        }
     }
 
     #[test]
