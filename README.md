@@ -10,7 +10,7 @@ Main areas:
 2. **聊天白名单** — independently selects which group chats and one-to-one chats are visible for each WeChat account.
 3. **自动化策略** — configures local sync interval, incremental upload of allowlisted conversations to Devify, and the daily report time that is synced to a Devify topic subscription.
 4. **Devify 配置** — selects the server, space, and device. The daily report schedule is stored on the server.
-5. **Agent 集成** — one settings tab with two sections. **本地总结** picks a local CLI agent, model, timeout, and extra instructions for manual chat summaries. **工具接入** generates one prompt that installs the read-only `wxq` CLI and the three `SKILL.md` documents from the app's in-process download service into directories you choose, then verifies them with `wxq health` / `wxq policy`. No MCP configuration is involved.
+5. **Agent 集成** — one settings tab with two sections. **本地总结** picks a local CLI agent, model, timeout, and extra instructions for manual chat summaries. **工具接入** generates one prompt that installs the read-only `aimychats-cli` CLI and the unified `aimychats` Skill from the app's in-process download service into directories you choose, then verifies them with `aimychats-cli health` / `aimychats-cli policy`. No MCP configuration is involved.
 6. **关于** — shows the current build (`0.1.0`), the runtime platform, and the app identifier. The version is read from the Rust build (`Cargo.toml`), which is kept in sync with `package.json` and `tauri.conf.json`.
 
 聊天记录是默认入口；原始消息可以在本地导出，自动化策略负责按白名单上传记录，日报由 Devify 服务端按计划生成。
@@ -41,7 +41,7 @@ The app never modifies, deletes, or writes to WeChat's own database files. It do
 - **Centralized strategy**: the `聊天白名单` page persists the allowed group and one-to-one conversations per account. The Rust layer always enforces this allowlist for the session list, message reads, search, exploration, digest, and scheduled delivery; an empty allowlist exposes no chat history.
 - **Server-side daily report**: enabling the daily report creates or updates a `TopicSubscription` on Devify with the selected local time and IANA timezone. Devify runs the schedule even when the desktop app is closed, then generates the report from the uploaded notes and events. The app only keeps the topic id and the last known run status.
 - **No SMTP delivery in this path**: the daily report no longer reads the local database or sends email from the desktop. Chat records reach Devify through the existing incremental upload, and delivery/notification is a server concern.
-- **Read-only service and agent kit**: after sign-in, when the plan includes a bridge capability, the desktop app starts an in-process listener at `127.0.0.1:18765`; signing out, losing the capability, disconnecting WeChat, or quitting the app stops it. Chat data is exposed as whitelist-checked REST (`/api/policy`, `/api/sessions`, `/api/messages`, `/api/search`, `/api/digest`, plus `/health`). The same listener distributes the agent kit: `/agent/manifest`, `/agent/wxq` (the read-only CLI binary), `/agent/skills`, `/agent/skills/<name>` and `/agent/install.sh`. The **Agent 集成 → 工具接入** page turns this into one prompt: the user picks a host and two directories, copies the prompt, and the receiving agent downloads both artifacts and verifies the connection. The CLI speaks the REST side, so any agent with shell access can read chats. `WECHAT_AGENT_BIND` moves the listener. Every request needs the per-install Bearer token stored in `<app data>/agent-token` (0600); `wxq` and the install script read it automatically, and `WECHAT_AGENT_TOKEN` overrides it (the older `WECHAT_MCP_*` names still work as aliases). Every request re-reads `app-settings.json` and re-checks the whitelist, so policy changes take effect without a restart. Nothing can decrypt, write, or send mail. MCP over SSE remains available for existing GUI clients but is not part of the page or the prompt; the standalone `wechat-mcp-sse` binary is only a debugging entry point.
+- **Read-only service and agent kit**: after sign-in, when the plan includes a bridge capability, the desktop app starts an in-process listener at `127.0.0.1:18765`; signing out, losing the capability, disconnecting WeChat, or quitting the app stops it. Chat data is exposed as whitelist-checked REST (`/api/policy`, `/api/sessions`, `/api/messages`, `/api/search`, `/api/digest`, plus `/health`). The same listener distributes the agent kit: `/agent/manifest`, `/agent/aimychats-cli` (the read-only CLI binary), `/agent/skills`, `/agent/skills/<name>` and `/agent/install.sh`. The **Agent 集成 → 工具接入** page turns this into one prompt: the user picks a host and two directories, copies the prompt, and the receiving agent downloads both artifacts and verifies the connection. The CLI speaks the REST side, so any agent with shell access can read chats. `WECHAT_AGENT_BIND` moves the listener. Every request needs the per-install Bearer token stored in `<app data>/agent-token` (0600); `aimychats-cli` and the install script read it automatically, and `WECHAT_AGENT_TOKEN` overrides it (the older `WECHAT_MCP_*` names still work as aliases). Every request re-reads `app-settings.json` and re-checks the whitelist, so policy changes take effect without a restart. Nothing can decrypt, write, or send mail. MCP over SSE remains available for existing GUI clients but is not part of the page or the prompt; the standalone `wechat-mcp-sse` binary is only a debugging entry point.
 - **Per-conversation browsing**: newest-first messages, page size 100 with "load older", day dividers, and time stamps only when messages are more than five minutes apart.
 - **Incremental upload to Devify**: while automatic sync is on, every interval decrypts the local cache and uploads only the allowlisted conversations that have messages newer than their saved cursor. The first run of a conversation sends its full local history. Batches are idempotent by content, and the client never invents messages the local database does not contain. See [Sync chat records to a Devify space](#sync-chat-records-to-a-devify-space).
 - **Cloud records view**: the 聊天 page opens a **云端记录** tab that reads the selected Devify space's conversations and messages (search, paging, jump-to-message). Event evidence links open the matching server-side message instead of the local viewer.
@@ -285,11 +285,9 @@ Settings → 备份周期 owns the upload plan: one card per connected platform 
 
 ## Connect an external agent (one prompt)
 
-The app publishes an **agent kit** from its loopback listener: the read-only `wxq` CLI and the three `SKILL.md` documents. The **Agent 集成 → 工具接入** page turns it into one prompt:
+The app publishes an **agent kit** from its loopback listener: the read-only `aimychats-cli` CLI and the unified `aimychats` Skill. On **智能体集成**, use **安装 Skills / 更新 Skills** for a supported host, or copy the general installation prompt.
 
-1. Pick the host (Claude Code, Codex, OpenCode, Gemini CLI, Qwen Code, Cursor Agent, WorkBuddy, or a custom directory). Picking one fills in its user-level skills directory.
-2. Set the CLI directory (default `~/.local/bin`) and the skills directory. Both accept `~` or absolute paths.
-3. Copy the prompt and paste it into that host, allowing shell execution. The agent downloads both artifacts, writes the three `SKILL.md` files, then runs `wxq health` and `wxq policy`.
+The installed Skill uses the full `<app data>/bin/aimychats-cli` path with the owning app’s data directory and loopback address; no PATH or token changes are needed. Reinstall from the desktop app to update the managed CLI and Skill. Existing `wxq` commands and Skills remain usable.
 
 Nothing in the prompt depends on the repository checkout, and no MCP configuration is involved. The service and every download live on the loopback listener; it only exists while the account is signed in with a bridge capability and stops on sign-out, plan loss, or app exit.
 
@@ -300,14 +298,17 @@ The listener requires the per-install token even on loopback (another local user
 | Method | Path | Query / body |
 |---|---|---|
 | `GET` | `/agent/manifest` | — |
-| `GET` | `/agent/wxq` | — |
+| `GET` | `/agent/aimychats-cli` | Canonical CLI download |
+| `GET` | `/agent/wxq` | Compatibility download of the same CLI |
 | `GET` | `/agent/skills` | — |
 | `GET` | `/agent/skills/<name>` | — |
 | `GET` | `/agent/install.sh` | `bin`, `skills` (absolute or `~/…`) |
 
 The `/agent/*` routes expose only the app's own CLI binary and static skill documents — never chat data. They need an internal account whose plan carries `bridge.agent_cli`, and the same Bearer token as `/api/*`.
 
-Manual install without an agent:
+The manifest advertises `canonical_cli`; it retains `cli` for clients that expect the `wxq` name and URL.
+
+Manual install without an agent (production only; the script will not replace a different executable in a user-selected bin directory):
 
 ```bash
 TOKEN=$(cat "$HOME/Library/Application Support/local.wechat.devifybridge/agent-token")
@@ -327,26 +328,26 @@ curl -fsSL -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18765/agent/insta
 
 `GET` returns JSON; failures return `{"error": "…"}` with `400` (rule violation) or `401` (missing/wrong token). Every request re-reads `app-settings.json` and re-checks the whitelist, so policy changes take effect without a restart.
 
-### `wxq` command line
+### `aimychats-cli` command line
 
-`wxq` is a small HTTP client for those endpoints — it never opens a database, decrypts, or sends mail. It arrives through the prompt (or the install script above); no manual build is required.
+`aimychats-cli` is a small HTTP client for those endpoints — it never opens a database, decrypts, or sends mail. It arrives through the prompt (or the install script above); no manual build is required.
 
 ```bash
-wxq health
-wxq policy
-wxq sessions
-wxq messages --chat 56209716836@chatroom --limit 50
-wxq messages --chat 56209716836@chatroom --before 1793025903 --before-id 4211
-wxq search --keyword 报价 --groups-only
-wxq digest --chat 56209716836@chatroom --since 2026-10-20 --until 2026-10-27
+aimychats-cli health
+aimychats-cli policy
+aimychats-cli sessions
+aimychats-cli messages --chat 56209716836@chatroom --limit 50
+aimychats-cli messages --chat 56209716836@chatroom --before 1793025903 --before-id 4211
+aimychats-cli search --keyword 报价 --groups-only
+aimychats-cli digest --chat 56209716836@chatroom --since 2026-10-20 --until 2026-10-27
 ```
 
 - Default output is a readable transcript/table; add `--json` for the raw payload.
-- `--endpoint` / `WECHAT_AGENT_ENDPOINT` and `--token` / `WECHAT_AGENT_TOKEN` move the target and override the Bearer token; by default `wxq` reads `<app data>/agent-token` (the `WECHAT_MCP_*` names remain as aliases).
+- `--endpoint` / `WECHAT_AGENT_ENDPOINT` and `--token` / `WECHAT_AGENT_TOKEN` move the target and override the Bearer token; by default `aimychats-cli` reads `<app data>/agent-token` (the `WECHAT_MCP_*` names remain as aliases).
 - `--before`, `--since`, `--until` accept Unix seconds, `2026-10-20`, or `"2026-10-20 18:00"`; a date-only `--until` means end of that day.
 - Non-zero exit code plus a message on stderr for whitelist, token, or connectivity failures.
 
-Agent-facing skills live in `skills/` and call `wxq`.
+Agent-facing skills live in `skills/` and call `aimychats-cli`.
 
 ### MCP (legacy, not shown in the app)
 
@@ -439,14 +440,14 @@ Build a desktop bundle:
 
 ```bash
 # The CLI is data, not a sidecar executable: `beforeBuildCommand` runs
-# `npm run stage:wxq`, which builds it with the opt-in feature and copies it to
-# src-tauri/binaries/wxq-<host-triple> for `bundle.resources`.
+# `npm run stage:aimychats-cli`, which builds it with the opt-in feature and copies it to
+# src-tauri/binaries/aimychats-cli-<host-triple> for `bundle.resources`.
 npm run desktop:install:dev         # builds, signs, installs only /Applications/AIMyChats Dev.app
 npm run desktop:build:dev           # builds + signs the development app without installing
 scripts/macos-build.sh --production --no-install # explicit production build, no installation
 ```
 
-Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.1.0_aarch64.dmg`). The DMG mounts with `AIMyChats.app` next to an `Applications` symlink, so the app can be dragged straight into `/Applications`. On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/wxq-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
+Artifacts land in `src-tauri/target/release/bundle/` (`macos/AIMyChats.app`, `dmg/AIMyChats_0.1.0_aarch64.dmg`). The DMG mounts with `AIMyChats.app` next to an `Applications` symlink, so the app can be dragged straight into `/Applications`. On macOS the app bundle contains one executable (`Contents/MacOS/wechat-devify-bridge`) plus `Contents/Resources/binaries/aimychats-cli-*`; the CLI is never treated as a helper program and does not take part in the app's code signature.
 
 ### Development app and production app
 
@@ -565,7 +566,7 @@ command line overrides it and will produce unrelated failures such as
 
 `tests/pipeline.rs` generates encrypted fixtures with the independent `sqlcipher` CLI (page size 4096, SQLCipher 4) and asserts that decryption, session listing, contact-name resolution, message decoding, cache reuse, passphrase derivation, group prefix stripping, self detection, bounded search, and digest extraction all behave. Install it with `brew install sqlcipher` / `apt install sqlcipher`; the test prints a skip notice and passes when the CLI is absent.
 
-`cargo test --bin wxq --features aux-binaries` covers the CLI's flag/date parsing, URL encoding, chunked responses, and output formatting; it does not need a running app.
+`cargo test --bin aimychats-cli --features aux-binaries` covers the CLI's flag/date parsing, URL encoding, chunked responses, and output formatting; it does not need a running app.
 
 ```bash
 for f in scripts/test-*.mjs; do node "$f" || exit 1; done
@@ -612,7 +613,7 @@ WX_PASS='<64 hex>' cargo run --quiet --example probe -- 会议 200
 - `src-tauri/src/mcp/runtime.rs`: the single desktop-managed local Agent service state and start/stop reconciliation.
 - `src-tauri/src/tests/`: entry-layer regression tests; its README explains ownership and the required serial harness.
 - `src-tauri/src/agent.rs`: agent detection (PATH/search dirs/login shell), bounded non-interactive runs, timeout/kill handling, output and error normalisation.
-- `src-tauri/src/access.rs`: embedded skill documents, host → skills-directory mapping, `wxq` resolution, prompt and install-script generation.
+- `src-tauri/src/access.rs`: embedded skill documents, host → skills-directory mapping, `aimychats-cli` resolution, prompt and install-script generation.
 - `src-tauri/src/wechat/query.rs`: schema-discovered reads, whitelist filtering, and the bounded transcript builder shared by interactive and automated summaries.
 - `src-tauri/src/mcp.rs`: in-process listener (axum): whitelist-enforcing REST handlers, `/agent/*` download routes, and the legacy MCP SSE adapter; `src-tauri/src/bin/wechat-mcp-sse.rs` is a thin standalone debug entry point.
 - `src-tauri/src/wechat/discover.rs`: container/tenant discovery, account and `.db` inventory, salt extraction.

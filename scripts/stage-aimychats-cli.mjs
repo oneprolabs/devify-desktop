@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stage the read-only `wxq` CLI next to the bundle resources.
+// Stage the read-only `aimychats-cli` CLI next to the bundle resources.
 //
 // The app only serves the binary over HTTP, it never executes it, so it does not
 // belong in Contents/MacOS (Tauri/`codesign` would treat it as a helper
@@ -11,9 +11,9 @@
 // compile. A clean checkout (CI, or anyone who deleted `src-tauri/binaries/`)
 // therefore has a chicken-and-egg problem:
 //
-//   node scripts/stage-wxq.mjs --prepare   → seed an empty placeholder first
-//   cargo build --release --bin wxq ...    → build scripts see the glob match
-//   node scripts/stage-wxq.mjs             → copy the real binary over it
+//   node scripts/stage-aimychats-cli.mjs --prepare   → seed an empty placeholder first
+//   cargo build --release --bin aimychats-cli ...    → build scripts see the glob match
+//   node scripts/stage-aimychats-cli.mjs             → copy the real binary over it
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -31,8 +31,8 @@ if (!host) {
 const ext = process.platform === 'win32' ? '.exe' : '';
 const development = process.argv.includes('--dev');
 const dir = join(root, 'src-tauri', development ? 'binaries-dev' : 'binaries');
-const target = join(dir, `wxq-${host}${ext}`);
-const source = join(root, 'src-tauri', 'target', 'release', `wxq${ext}`);
+const target = join(dir, `aimychats-cli-${host}${ext}`);
+const source = join(root, 'src-tauri', 'target', 'release', `aimychats-cli${ext}`);
 
 mkdirSync(dir, { recursive: true });
 

@@ -29,10 +29,12 @@ done
 PRODUCT="AIMyChats"
 BUNDLE_ID="local.wechat.devifybridge"
 CONFIG_ARGS=(--config src-tauri/tauri.conf.json)
+CLI_RESOURCES=binaries
 if [ "$CHANNEL" = "dev" ]; then
   PRODUCT="AIMyChats Dev"
   BUNDLE_ID="local.wechat.devifybridge.dev"
   CONFIG_ARGS=(--config src-tauri/tauri.dev-app.conf.json)
+  CLI_RESOURCES=binaries-dev
 fi
 IDENTITY="${AIMYCHATS_SIGNING_IDENTITY:-AIMyChats Local Signing}"
 KEYCHAIN="${AIMYCHATS_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/signing.keychain-db}"
@@ -83,6 +85,13 @@ fi
 "$APP/Contents/MacOS/wechat-devify-bridge" --build-info | node -e '
 let input="";process.stdin.on("data",chunk=>input+=chunk);process.stdin.on("end",()=>{
  const info=JSON.parse(input);if(info.identifier!==process.argv[1])throw Error("Executable build identity mismatch");
+});' "$BUNDLE_ID"
+
+CLI="$APP/Contents/Resources/$CLI_RESOURCES/aimychats-cli-$ARCH-apple-darwin"
+test -x "$CLI" || { echo "Missing bundled CLI: $CLI" >&2; exit 1; }
+"$CLI" build-info --json | node -e '
+let input="";process.stdin.on("data",chunk=>input+=chunk);process.stdin.on("end",()=>{
+ const info=JSON.parse(input);if(info.identifier!==process.argv[1])throw Error("CLI build identity mismatch");
 });' "$BUNDLE_ID"
 
 for binary in "$APP"/Contents/MacOS/*; do

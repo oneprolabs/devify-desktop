@@ -38,7 +38,7 @@ pub fn token_path(app_data: &Path) -> PathBuf {
 }
 
 /// Read the per-install token, generating it on first run. The file is 0600 so other local
-/// accounts cannot read it; `wxq` and the installer pick it up automatically.
+/// accounts cannot read it; `aimychats-cli` and the installer pick it up automatically.
 pub fn load_or_create_token(app_data: &Path) -> Result<String, String> {
     let path = token_path(app_data);
     if let Ok(raw) = std::fs::read_to_string(&path) {
@@ -571,7 +571,7 @@ async fn agent_manifest(State(state): State<AppState>, headers: HeaderMap) -> Re
     if !internal_agent_allowed(&state) {
         return agent_forbidden();
     }
-    let wxq = access::resolve_wxq(&state.app_data);
+    let cli = access::resolve_cli(&state.app_data);
     let skills: Vec<Value> = access::SKILLS
         .iter()
         .map(|skill| {
@@ -583,15 +583,22 @@ async fn agent_manifest(State(state): State<AppState>, headers: HeaderMap) -> Re
             })
         })
         .collect();
+    let size = cli.as_ref().and_then(|path| std::fs::metadata(path).ok()).map(|meta| meta.len());
     Json(json!({
         "service": "wechat-devify-bridge",
         "version": env!("CARGO_PKG_VERSION"),
         "base_url": state.base_url,
         "cli": {
+            "name": access::LEGACY_CLI_NAME,
+            "available": cli.is_some(),
+            "url": access::LEGACY_CLI_DOWNLOAD,
+            "size": size,
+        },
+        "canonical_cli": {
             "name": access::CLI_NAME,
-            "available": wxq.is_some(),
-            "url": "/agent/wxq",
-            "size": wxq.as_ref().and_then(|path| std::fs::metadata(path).ok()).map(|meta| meta.len()),
+            "available": cli.is_some(),
+            "url": access::CLI_DOWNLOAD,
+            "size": size,
         },
         "skills": skills,
         "install": {
@@ -602,22 +609,27 @@ async fn agent_manifest(State(state): State<AppState>, headers: HeaderMap) -> Re
     .into_response()
 }
 
-async fn agent_wxq(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn agent_cli(State(state): State<AppState>, headers: HeaderMap, uri: axum::http::Uri) -> Response {
     if !authorized(&headers, &state.token) {
         return api_unauthorized();
     }
     if !internal_agent_allowed(&state) {
         return agent_forbidden();
     }
-    let Some(path) = access::resolve_wxq(&state.app_data) else {
-        return agent_unavailable("没有可下载的 wxq。请在 AIMyChats 源码目录构建后重启应用。");
+    let name = if uri.path() == access::LEGACY_CLI_DOWNLOAD {
+        access::LEGACY_CLI_NAME
+    } else {
+        access::CLI_NAME
+    };
+    let Some(path) = access::resolve_cli(&state.app_data) else {
+        return agent_unavailable("没有可下载的 aimychats-cli。请在 AIMyChats 源码目录构建后重启应用。");
     };
     match tokio::fs::read(&path).await {
         Ok(bytes) => (
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                (header::CONTENT_DISPOSITION, "attachment; filename=\"wxq\"".to_string()),
+                (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
                 (header::CACHE_CONTROL, "no-store".to_string()),
             ],
             bytes,
@@ -625,7 +637,7 @@ async fn agent_wxq(State(state): State<AppState>, headers: HeaderMap) -> Respons
             .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("读取 wxq 失败：{error}") })),
+            Json(json!({ "error": format!("读取 aimychats-cli 失败：{error}") })),
         )
             .into_response(),
     }
@@ -673,6 +685,7 @@ async fn agent_skill(
         ],
         if skill.legacy_names.contains(&name.as_str()) {
             skill.content.replacen(&format!("name: {}", skill.name), &format!("name: {}", name), 1)
+                .replace(access::CLI_NAME, access::LEGACY_CLI_NAME)
         } else {
             skill.content.to_string()
         },
@@ -708,12 +721,21 @@ async fn agent_install_script(
         )
             .into_response();
     };
-    let script = access::build_install_script(
+    let script = match access::build_install_script(
         &bin_dir,
         &skills_dir,
         &state.base_url,
         &token_path(&state.app_data),
-    );
+    ) {
+        Ok(script) => script,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error})),
+            )
+                .into_response();
+        }
+    };
     (
         StatusCode::OK,
         [
@@ -778,7 +800,8 @@ pub async fn start(
         .route("/api/digest", post(api_digest))
         .route("/api/cloud/:operation", get(api_cloud))
         .route("/agent/manifest", get(agent_manifest))
-        .route("/agent/wxq", get(agent_wxq))
+        .route(access::CLI_DOWNLOAD, get(agent_cli))
+        .route(access::LEGACY_CLI_DOWNLOAD, get(agent_cli))
         .route("/agent/skills", get(agent_skills))
         .route("/agent/skills/:name", get(agent_skill))
         .route("/agent/install.sh", get(agent_install_script))
@@ -955,6 +978,50 @@ mod tests {
         entitlements::write_snapshot(&dir, &snapshot);
         assert!(bridge_listen_allowed(&dir));
         assert!(internal_agent_allowed(&state(dir)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_download_names_share_auth_and_bytes_and_keep_legacy_manifest() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        let mut settings = AppSettings::default();
+        settings.devify.base_url = "http://127.0.0.1:8010".into();
+        settings::save(dir, &settings).unwrap();
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let fixture = bin.join(access::CLI_NAME);
+        std::fs::write(&fixture, b"synthetic CLI").unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut app = state(dir.to_path_buf());
+        app.token = Some("fixture-token".into());
+        let mut auth = HeaderMap::new();
+        auth.insert(header::AUTHORIZATION, "Bearer fixture-token".parse().unwrap());
+
+        tauri::async_runtime::block_on(async {
+            let names = [(access::CLI_DOWNLOAD, access::CLI_NAME),
+                (access::LEGACY_CLI_DOWNLOAD, access::LEGACY_CLI_NAME)];
+            for (path, _) in names {
+                assert_eq!(agent_cli(State(app.clone()), HeaderMap::new(), path.parse().unwrap()).await.status(), StatusCode::UNAUTHORIZED);
+                assert_eq!(agent_cli(State(app.clone()), auth.clone(), path.parse().unwrap()).await.status(), StatusCode::FORBIDDEN);
+            }
+            entitlements::write_snapshot(dir, &internal_snapshot(&settings.devify.base_url));
+            for (path, name) in names {
+                let response = agent_cli(State(app.clone()), auth.clone(), path.parse().unwrap()).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()[header::CONTENT_DISPOSITION].to_str().unwrap(), format!("attachment; filename=\"{name}\""));
+                assert_eq!(axum::body::to_bytes(response.into_body(), 1024).await.unwrap().as_ref(), b"synthetic CLI");
+            }
+            let response = agent_manifest(State(app), auth).await;
+            let bytes = axum::body::to_bytes(response.into_body(), 32 * 1024).await.unwrap();
+            let manifest: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(manifest["cli"]["name"], "wxq");
+            assert_eq!(manifest["cli"]["url"], "/agent/wxq");
+            assert_eq!(manifest["canonical_cli"]["name"], "aimychats-cli");
+            assert_eq!(manifest["canonical_cli"]["url"], "/agent/aimychats-cli");
+        });
     }
 
     #[test]
