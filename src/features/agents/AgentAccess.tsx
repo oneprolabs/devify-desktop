@@ -59,7 +59,7 @@ export function AgentAccess({ status, disabled, error, onConfigure, onRefresh }:
           {found && <svg className="integration-check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>}
           {t(!target ? '检测中…' : found ? target.desktop_app && !target.command ? '已安装客户端' : '已安装 CLI' : '未检测到安装')}
         </small></div></div>
-        <p className="integration-skill-state">{t(complete ? 'Skills 文件已安装' : 'Skills 尚未安装')}</p>
+        <p className="integration-skill-state">{t(complete ? 'Skills 已安装 · 连接待验证' : 'Skills 尚未安装')}</p>
         <div className="integration-tool-actions"><WizardActionButton className={complete ? 'secondary' : 'primary'} disabled={unavailable || !found} loading={installing === tool.id}
           busyLabel={t('安装中…')} onAction={() => install(tool.id)}>{t(complete ? '更新 Skills' : '安装 Skills')}</WizardActionButton>
           <details className="integration-location"><summary>{t('安装位置')}</summary><div><p>{target?.skills_dir || t('尚未读取到安装目录')}</p>
@@ -74,6 +74,6 @@ export function AgentAccess({ status, disabled, error, onConfigure, onRefresh }:
       <p className="integration-help">{t('Skills 连接本机 AIMyChats，使用时请保持应用打开并登录。')}</p>
       <p className="integration-help">{t('安装成功表示文件已就位；实际访问仍由当前智能体的本机权限决定。')}</p>
     </div>
-    <AgentUsage/>
+    <AgentUsage skillName={status?.skills[0]?.name}/>
   </section>;
 }

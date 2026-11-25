@@ -10,8 +10,8 @@
 mod cloud;
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::{self, Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::Duration;
 
 use chrono::{Local, NaiveDate, NaiveTime, TimeZone};
@@ -245,7 +245,10 @@ fn dispatch(cli: Cli) -> Result<String, String> {
         "build-info" => Ok(wechat_devify_bridge_lib::build_flavor::metadata().to_string()),
         "health" => {
             let body = request_json(&cli, "GET", "/health", None)?;
-            let service = body.get("service").and_then(Value::as_str).unwrap_or("unknown");
+            let service = "wechat-devify-bridge";
+            if body["ok"] != true || body["service"] != service {
+                return Err("[invalid_health_response] 本机服务返回了意外的健康检查结果。请确认使用的是该 Skill 绑定的 AIMyChats 入口。".into());
+            }
             if cli.json {
                 return pretty(&body);
             }
@@ -524,17 +527,29 @@ struct Response {
 fn request_json(cli: &Cli, method: &str, path: &str, body: Option<&str>) -> Result<Value, String> {
     let response = http(cli, method, path, body)?;
     let value: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
+    let message = value.get("error").and_then(Value::as_str);
+    match (response.status, message) {
+        (401, _) | (400, Some("请先登录 AIMyChats。")) => {
+            return Err(format!(
+                "[authentication_failed] HTTP {}：请确认已登录对应版本的 AIMyChats，并使用该 Skill 绑定的入口。",
+                response.status
+            ));
+        }
+        (403, _) | (400, Some("当前账户未开通本机智能体读取能力。")) => {
+            return Err(format!(
+                "[access_forbidden] HTTP {}：服务拒绝此操作。请检查当前账号是否具备相应的访问权限。",
+                response.status
+            ));
+        }
+        _ => {}
+    }
     if !(200..300).contains(&response.status) {
         if response.status == 404 && value.get("error").is_none() {
             return Err(format!(
                 "端点不存在（HTTP 404）：{path}\n桌面应用可能是改造前的版本，请重新构建并启动应用，或先运行 aimychats-cli health 确认服务。"
             ));
         }
-        let message = value
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("请求失败。")
-            .to_string();
+        let message = message.unwrap_or("请求失败。");
         return Err(format!("{message}（HTTP {}）", response.status));
     }
     Ok(value)
@@ -552,11 +567,18 @@ fn http(cli: &Cli, method: &str, path: &str, body: Option<&str>) -> Result<Respo
     let (host, port) = split_authority(authority)?;
     let path = format!("{base_path}{path}");
 
-    let mut stream = TcpStream::connect((host.as_str(), port)).map_err(|error| {
-        format!("无法连接 {host}:{port}：{error}\n请确认桌面应用已启动（「MCP 服务」页应显示运行中）。")
-    })?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+    let is_health = cli.command == "health";
+    let mut stream = match (is_health, host.parse::<IpAddr>()) {
+        (true, Ok(ip)) => TcpStream::connect_timeout(
+            &SocketAddr::new(ip, port),
+            Duration::from_secs(5),
+        ),
+        _ => TcpStream::connect((host.as_str(), port)),
+    }
+    .map_err(|error| connection_error("连接本机服务", &error))?;
+    let (read_secs, write_secs) = if is_health { (5, 5) } else { (30, 10) };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(read_secs)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(write_secs)));
 
     let mut request = format!(
         "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: application/json\r\nConnection: close\r\n"
@@ -575,12 +597,31 @@ fn http(cli: &Cli, method: &str, path: &str, body: Option<&str>) -> Result<Respo
 
     stream
         .write_all(request.as_bytes())
-        .map_err(|error| format!("发送请求失败：{error}"))?;
+        .map_err(|error| connection_error("发送请求", &error))?;
     let mut raw = Vec::new();
     stream
         .read_to_end(&mut raw)
-        .map_err(|error| format!("读取响应失败：{error}"))?;
+        .map_err(|error| connection_error("读取响应", &error))?;
     parse_response(&raw)
+}
+
+fn connection_error(operation: &str, error: &io::Error) -> String {
+    let (code, hint) = match error.kind() {
+        io::ErrorKind::PermissionDenied => (
+            "permission_denied",
+            "当前运行环境拒绝本机访问。请确认宿主在这台电脑上运行，并查看当前模式是否提供本机连接授权。",
+        ),
+        io::ErrorKind::ConnectionRefused => (
+            "connection_refused",
+            "本机服务未接受连接。请确认对应版本的 AIMyChats 已打开并登录，并使用 Skill 绑定的入口重试。",
+        ),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => (
+            "connection_timeout",
+            "本机请求超时。请确认 AIMyChats 有响应，稍后在同一宿主重试。",
+        ),
+        _ => ("connection_failed", "请确认 AIMyChats 正在运行，并使用 Skill 绑定的入口。"),
+    };
+    format!("[{code}] {operation}失败：{error}\n{hint}")
 }
 
 fn split_authority(authority: &str) -> Result<(String, u16), String> {
@@ -862,6 +903,16 @@ mod tests {
         let response = parse_response(raw).expect("response");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn connection_errors_separate_permission_failures_from_timeouts() {
+        let permission = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(connection_error("连接本机服务", &permission).starts_with("[permission_denied]"));
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
+            let timeout = io::Error::from(kind);
+            assert!(connection_error("读取响应", &timeout).starts_with("[connection_timeout]"));
+        }
     }
 
     #[test]
