@@ -1186,6 +1186,7 @@ export const en: Record<string, string> = {
   "当前已是最新版本": "You're up to date",
   "正在下载更新…": "Downloading the update…",
   "更新已安装，请重启应用": "Update installed. Restart the app.",
+  "正在准备安装…": "Preparing to install…",
   "正在安装更新…": "Installing the update…",
   "检查更新失败": "Couldn't check for updates",
   "检查软件更新": "Check for updates",
