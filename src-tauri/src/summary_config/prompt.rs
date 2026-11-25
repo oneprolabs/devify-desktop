@@ -1,6 +1,7 @@
 //! Chat-summary-only prompt assembly. Other Agent callers keep their existing rules.
 use super::*;
 use crate::wechat::query::SummaryInput;
+use chrono::{DateTime, Datelike, Local, Months, TimeDelta};
 use serde_json::{json, Value};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -32,6 +33,39 @@ pub(crate) fn language(
     Ok(selected.to_string())
 }
 
+fn validate_period(body: &Value, first: i64, last: i64, engine: &str) -> Result<(), String> {
+    let parse = |key: &str| {
+        body[key]
+            .as_str()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .ok_or("总结的时间范围无效。")
+    };
+    let start = parse("period_start")?;
+    let end = parse("period_end")?;
+    if end < start {
+        return Err("总结的时间范围无效。".into());
+    }
+    let start_date = start.with_timezone(&Local).date_naive();
+    let end_date = end.with_timezone(&Local).date_naive();
+    let limit = start_date
+        .checked_add_months(Months::new(1))
+        .ok_or("总结的时间范围无效。")?;
+    // Chrono clamps missing dates to month-end; that clamped day is included.
+    if end_date > limit || (end_date == limit && start_date.day() == limit.day()) {
+        return Err("所选范围超过一个自然月，请缩短后重试。".into());
+    }
+    // shortcut: the current cloud API rejects longer intervals, remove after server capability negotiation.
+    if engine == "cloud" && end - start > TimeDelta::days(7) {
+        return Err("当前服务端最多支持一周；请选择较短的范围。".into());
+    }
+    let first = DateTime::from_timestamp(first, 0).ok_or("总结消息时间无效。")?;
+    let last = DateTime::from_timestamp(last, 0).ok_or("总结消息时间无效。")?;
+    if first < start || last > end {
+        return Err("所选消息不在本次时间范围内。".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn freeze(
     config: &Catalog,
     body: &mut Value,
@@ -55,15 +89,12 @@ pub(crate) fn freeze(
     if messages.is_empty() || messages.len() > 2000 || names.len() > 8 {
         return Err("单次最多总结 8 个聊天、2000 条文字消息。".into());
     }
-    if times
-        .iter()
-        .max()
-        .unwrap()
-        .saturating_sub(*times.iter().min().unwrap())
-        > 7 * 86400
-    {
-        return Err("单次总结的时间范围不能超过一周。".into());
-    }
+    validate_period(
+        body,
+        *times.iter().min().unwrap(),
+        *times.iter().max().unwrap(),
+        engine,
+    )?;
     let id = body
         .get("scenario")
         .and_then(Value::as_str)

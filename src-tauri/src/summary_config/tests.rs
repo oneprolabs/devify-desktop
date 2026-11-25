@@ -57,6 +57,7 @@ pub(super) fn fixture() -> Catalog {
 fn input(config: &Catalog, scenario: &str) -> serde_json::Value {
     json!({"scenario":scenario,"prompt_version":config.version,"prompt_digest":config.scenarios.iter().find(|s|s.id==scenario).unwrap().sha256,
         "instructions":"","language":"English","title":"Group","range_label":"Today",
+        "period_start":"2023-11-14T22:13:20Z","period_end":"2023-11-14T22:13:20Z",
         "messages":[{"username":"group","display":"Group","sender":"Member","time":1700000000,"text":"Release on Friday","is_group":true}]})
 }
 
@@ -172,6 +173,53 @@ fn user_requirements_and_json_escaping_consume_the_budget_without_truncation() {
     body["prompt_digest"] = "obsolete".into();
     assert!(prompt::freeze(&config, &mut body, &settings, "cloud", true).is_err());
 }
+#[test]
+fn summary_period_uses_local_calendar_dates_and_checks_sparse_requests() {
+    use chrono::{Local, TimeDelta, TimeZone};
+    let config = fixture();
+    let settings = settings::LanguageSettings::default();
+    let at = |(y, m, d)| Local.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap();
+    for (from, to, first_invalid) in [
+        ((2024, 1, 1), (2024, 1, 31), (2024, 2, 1)),
+        ((2024, 1, 31), (2024, 2, 29), (2024, 3, 1)),
+        ((2025, 1, 31), (2025, 2, 28), (2025, 3, 1)),
+        ((2024, 3, 1), (2024, 3, 31), (2024, 4, 1)),
+        ((2025, 12, 15), (2026, 1, 14), (2026, 1, 15)),
+    ] {
+        let start = at(from);
+        let end = at(to);
+        let mut body = input(&config, "summary");
+        body["period_start"] = start.to_rfc3339().into();
+        body["period_end"] = end.to_rfc3339().into();
+        body["messages"][0]["time"] = end.timestamp().into();
+        assert!(prompt::freeze(&config, &mut body, &settings, "local", true).is_ok());
+        assert!(prompt::freeze(&config, &mut body, &settings, "cloud", true)
+            .unwrap_err()
+            .contains("一周"));
+        body["period_end"] = at(first_invalid).to_rfc3339().into();
+        assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
+            .unwrap_err()
+            .contains("一个自然月"));
+    }
+    let mut body = input(&config, "summary");
+    let start = at((2024, 3, 9));
+    let end = start + TimeDelta::days(7);
+    body["period_start"] = start.to_rfc3339().into();
+    body["period_end"] = end.to_rfc3339().into();
+    body["messages"][0]["time"] = start.timestamp().into();
+    assert!(prompt::freeze(&config, &mut body, &settings, "cloud", true).is_ok());
+    body["messages"][0]["time"] = (end.timestamp() + 1).into();
+    assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
+        .unwrap_err()
+        .contains("不在本次时间范围内"));
+    for invalid_end in ["not a date".to_string(), (start - TimeDelta::seconds(1)).to_rfc3339()] {
+        body["period_end"] = invalid_end.into();
+        assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
+            .unwrap_err()
+            .contains("时间范围无效"));
+    }
+}
+
 #[test]
 fn only_the_documented_409_means_the_server_created_no_task() {
     let known = transport::cloud_error(

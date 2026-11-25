@@ -569,6 +569,96 @@ export async function runBackupSwitchUiE2E(task, base = 'http://localhost:1434',
 }
 
 
+export async function runSummaryDateUiE2E(task, base = 'http://127.0.0.1:1422', pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const range = label => page.click(`loc=css:.summary-date-range button:text-is("${label}")`, {label:'Select summary date range'});
+  const open = () => page.click('.chat-summary-cta', {label:'Open chat summary form'});
+  const local = '.summary-agent-options button:nth-child(2):not(:disabled)';
+  const generate = '.chat-summary-actions .primary';
+  const dates = (from,to) => page.evaluate(values => {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    document.querySelectorAll('.summary-custom-dates input').forEach((input,index) => {
+      setValue.call(input,values[index]);
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      input.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+  },[from,to]);
+  const submit = async number => {
+    await page.waitForSelector(`${generate}:not(:disabled)`);
+    await page.click(generate,{label:'Create simulated summary task'});
+    await page.waitForSelector('.chat-summary-cta');
+    return page.evaluate(count => {
+      const requests=window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue');
+      return requests.length===count ? requests.at(-1).args : null;
+    },number);
+  };
+
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat&internal`);
+  await page.waitForSelector('.wxv-msg[role="button"]');
+  const expected=await page.evaluate(() => {
+    const state=window.__E2E__;
+    Object.assign(state.settings.agent,{enabled:true,provider_id:'codex'});
+    window.dispatchEvent(new Event('agent-settings-changed'));
+    const start=new Date(2024,9,30).getTime()/1000, end=new Date(2024,10,5).getTime()/1000-1;
+    const message=(local_id,time,text) => ({local_id,time,text,kind:1,source_shard:'synthetic',sender:'tester'});
+    state.chatMessageOverrides[state.settings.active_account_id]=[
+      ...Array.from({length:2100},(_,i)=>message(4000-i,end+10000-i,'Newer history')),
+      message(3,end+1,'Excluded'),message(2,end,'End of selected day'),message(1,start,'Start of selected day'),
+    ];
+    return {start:new Date(start*1000).toISOString(),end:new Date(end*1000).toISOString()};
+  });
+  await page.click('loc=role:tab[name="聊天总结"]',{label:'Open chat summary tab'});
+  await open();
+  await page.waitForSelector(local);
+  assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('.summary-date-range button')].map(el=>el.textContent)), ['今天','昨天','近 3 天','本周','本月','自定义']);
+  await range('自定义');
+  assert.equal(await page.evaluate(selector=>document.querySelector(selector).disabled,generate),true,'Missing dates block submission');
+  await dates('2024-10-01','2024-11-04');
+  await page.waitForSelector('.summary-date-feedback.invalid');
+  assert.match(await page.evaluate(()=>document.querySelector('.summary-date-feedback').textContent),/超过一个自然月/);
+  await dates('2024-10-25','2024-11-04');
+  await page.waitForFunction(()=>document.querySelector('.summary-date-feedback')?.textContent.includes('一周'));
+  assert.equal(await page.evaluate(selector=>document.querySelector(selector).disabled,generate),true);
+  await dates('2024-10-30','2024-11-04');
+  await page.waitForSelector('.summary-date-value');
+  assert.match(await page.evaluate(()=>document.querySelector('.summary-date-value').textContent),/含结束日/);
+  assert.ok(await page.evaluate(() => {
+    const row = document.querySelector('.summary-date-range');
+    return [...row.children].every(el=>Math.abs(el.getBoundingClientRect().left-row.getBoundingClientRect().left)<1);
+  }),'Date controls and hints align with the form column');
+  const cloud=await submit(1);
+  assert.equal(cloud.engine,'cloud');
+  assert.equal(cloud.body.period_start,expected.start);
+  assert.equal(cloud.body.period_end,expected.end);
+  assert.deepEqual(cloud.body.messages.map(m=>m.text),['End of selected day','Start of selected day']);
+
+  await open();
+  await page.click(local,{label:'Select local summary agent'});
+  await dates('2024-10-08','2024-11-04');
+  assert.equal((await submit(2)).engine,'local','Custom month is available to the local agent');
+  const month=await page.evaluate(()=>{
+    const now=new Date(), start=new Date(now.getFullYear(),now.getMonth(),1);
+    const state=window.__E2E__;
+    state.chatMessageOverrides[state.settings.active_account_id]=[{local_id:1,time:start.getTime()/1000,kind:1,text:'First of the month',source_shard:'synthetic'}];
+    return start.toISOString();
+  });
+  await open();
+  await range('本月');
+  assert.equal(await page.evaluate(()=>document.querySelectorAll('.summary-custom-dates input').length),0);
+  const currentMonth=await submit(3);
+  assert.equal(currentMonth.engine,'local');
+  assert.equal(currentMonth.body.period_start,month);
+  assert.equal(currentMonth.body.messages[0].text,'First of the month');
+
+  await page.click('loc=role:tab[name="原始记录"]',{label:'Return to original messages'});
+  await page.click('.wxv-msg[role="button"] >> nth=0',{label:'Select a text message'});
+  await page.click('.wxv-selection-actions button.primary',{label:'Summarize the selected message'});
+  const picked=await submit(4);
+  assert.equal(picked.body.mode,'pick');
+  assert.equal(picked.body.messages.length,1);
+  console.log('PASS chat summary dates: legacy cloud guard, inclusive history, local month and custom, and selection (synthetic IPC)');
+}
+
 // Real React shell with synthetic IPC, not a server integration test.
 export async function runEventRelevanceUiE2E(task, base = 'http://localhost:1434', pageLabel = 'p1') {
   const page = task.page(pageLabel);
