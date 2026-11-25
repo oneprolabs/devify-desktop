@@ -10,7 +10,9 @@ export type CloudSummary = {
 };
 export type SummaryPage = { offline?: boolean;list:CloudSummary[];local?:CloudSummary[];pagination:{total:number;page:number;next:string|null}};
 
-export type SummaryRange = 'today'|'yesterday'|'three'|'week';
+export type SummaryRange = 'today'|'yesterday'|'three'|'week'|'month'|'custom';
+type SummaryPeriod = {since:number;until:number};
+type SummaryDates = {from:string;to:string};
 
 // Conservative admission policy for the current 12,000-byte cloud budget.
 // Reserve 2,000 bytes for the server prompt/framing; the server remains authoritative.
@@ -41,13 +43,42 @@ export function validateCloudSummaryInput(input: {
   if (new TextEncoder().encode(content).length > (budget?.max_content_bytes ?? CLOUD_SUMMARY_MAX_INPUT_BYTES)) tooLong();
 }
 
-export function summaryBounds(range: SummaryRange, now = new Date()) {
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+function localDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00`);
+  const [year,month,day] = value.split('-').map(Number);
+  return date.getFullYear()===year && date.getMonth()===month-1 && date.getDate()===day ? date : null;
+}
+
+export function summaryBounds(range: SummaryRange, now = new Date(), dates?: SummaryDates): SummaryPeriod {
+  if (range === 'custom') {
+    if (!dates?.from || !dates.to) throw Error('请选择自定义时间范围的开始日期和结束日期。');
+    const start = localDate(dates.from), end = localDate(dates.to);
+    if (!start || !end) throw Error('请选择有效的开始日期和结束日期。');
+    if (end < start) throw Error('结束日期不能早于开始日期。');
+    if (end > now) throw Error('日期不能晚于今天。');
+    end.setDate(end.getDate()+1);
+    end.setHours(0,0,0,0);
+    return {since:Math.floor(start.getTime()/1000),until:Math.min(Math.floor(now.getTime()/1000),end.getTime()/1000-1)};
+  }
+  const start = new Date(now.getFullYear(), now.getMonth(), range==='month'?1:now.getDate());
   const end = new Date(now);
   if (range === 'yesterday') { end.setTime(start.getTime()-1000); start.setDate(start.getDate()-1); }
   if (range === 'three') start.setDate(start.getDate()-2);
   if (range === 'week') start.setDate(start.getDate()-((start.getDay()+6)%7));
   return {since:Math.floor(start.getTime()/1000),until:Math.floor(end.getTime()/1000)};
+}
+
+export function summaryPeriodError({since,until}: SummaryPeriod, engine: 'cloud'|'local') {
+  const start = new Date(since*1000), end = new Date(until*1000);
+  if (!Number.isInteger(since) || !Number.isInteger(until) || isNaN(+start) || isNaN(+end) || until<since) return '总结的时间范围无效。';
+  const monthDelta = (end.getFullYear()-start.getFullYear())*12+end.getMonth()-start.getMonth();
+  // End dates are inclusive: stop before the next month's same day, or at month-end if it doesn't exist.
+  if (monthDelta>1 || (monthDelta===1 && end.getDate()>=start.getDate())) {
+    return '所选范围超过一个自然月，请缩短后重试。';
+  }
+  // shortcut: the cloud API still caps elapsed time at seven days, replace with a server capability when supported.
+  return engine==='cloud' && until-since>7*86400 ? '当前服务端最多支持一周；请选择较短的范围。' : '';
 }
 
 type RawMessage = {local_id:number;source_shard?:string;time:number;kind:number;sender?:string|null;sender_name?:string|null;text:string;is_self?:boolean};
@@ -58,7 +89,8 @@ type ReadPage = (args: {accountId:string;username:string;limit:number;before?:nu
 export async function readSummaryRange(read:ReadPage, accountId:string, chat:SummaryChat, since:number, until:number, current:()=>boolean):Promise<SummaryMessage[]> {
   const result: SummaryMessage[] = [];
   let characters=0;
-  let cursor: {before?:number;beforeId?:number;beforeShard?:string} = {};
+  // Native `before` excludes that whole second unless an ID is supplied.
+  let cursor: {before:number;beforeId?:number;beforeShard?:string} = {before:until+1};
   for (let page=0;page<20;page++) {
     if (!current()) throw Error('SUMMARY_SCOPE_CHANGED');
     // Native reads clamp to 100. Asking for 500 makes a full page look like EOF.
@@ -80,13 +112,14 @@ export async function readSummaryRange(read:ReadPage, accountId:string, chat:Sum
   throw Error('这个范围的聊天记录过多，请缩小时间范围。');
 }
 
-export function validateSummaryMessages(messages:SummaryMessage[], primary:string) {
+export function validateSummaryMessages(messages:SummaryMessage[], primary:string, engine: 'cloud'|'local') {
   if (!messages.length) throw Error('这个范围没有可总结的文字消息。');
   if (!messages.some(item=>item.username===primary)) throw Error('请选择当前会话的文字消息。');
   if (messages.length>2000 || messages.reduce((sum,item)=>sum+item.text.length,0)>120000) throw Error('消息内容过多，请缩小时间范围或减少选择。');
   if (new Set(messages.map(item=>item.username)).size>8) throw Error('单次最多总结 8 个聊天。');
   const times=messages.map(item=>item.time);
   const since=Math.min(...times),until=Math.max(...times);
-  if (until-since>7*86400) throw Error('单次总结的时间范围不能超过一周。');
+  const problem=summaryPeriodError({since,until},engine);
+  if (problem) throw Error(problem);
   return {since,until};
 }
