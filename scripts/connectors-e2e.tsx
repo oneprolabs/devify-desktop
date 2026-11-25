@@ -37,6 +37,7 @@ const state = {
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
  chatPageError:'', chatPageAccount:'', chatBadgeDelay:0,
+ chatSessionPreviews:{} as Record<string,{preview:string|null;last_time:number}>,
  chatMessageOverrides:{} as Record<string,any[]>,
  chatMessagesError:'', chatOlderPaused:false, chatOlderResolvers:[] as Array<()=>void>,
  chatLatestPaused:false, chatLatestResolvers:[] as Array<()=>void>,
@@ -234,7 +235,8 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'wechat_session_catalog':return catalog(args.accountId);
    case 'chat_sessions':{
     if(args.offset&&state.chatPageError&&args.accountId===state.chatPageAccount)throw state.chatPageError;
-    const all=state.keys||args.accountId===wa?catalog(args.accountId).filter(s=>(state.settings.chat.allowed_usernames[args.accountId]??[]).includes(s.username)):[];
+    const all=state.keys||args.accountId===wa?catalog(args.accountId).filter(s=>(state.settings.chat.allowed_usernames[args.accountId]??[]).includes(s.username))
+      .map(session=>({...session,...state.chatSessionPreviews[session.username]})):[];
     if(args.focusUsername)return all.filter(s=>s.username===args.focusUsername);
     if(args.focusUsernames)return all.filter(s=>args.focusUsernames.includes(s.username));
     return all.slice(args.offset??0,(args.offset??0)+(args.limit??50));
