@@ -13,7 +13,7 @@ fn run_cli(endpoint: &str, args: &[&str]) -> Output {
         .expect("run aimychats-cli")
 }
 
-fn request(args: &[&str], body: &str) -> (String, String) {
+fn exchange(args: &[&str], status: &'static str, body: &str) -> (String, Output) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -49,20 +49,83 @@ fn request(args: &[&str], body: &str) -> (String, String) {
         }
         write!(
             stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
         line
     });
     let output = run_cli(&endpoint, args);
-    let line = server.join();
+    (server.join().unwrap(), output)
+}
+
+fn request(args: &[&str], body: &str) -> (String, String) {
+    let (line, output) = exchange(args, "200 OK", body);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    (line.unwrap(), String::from_utf8(output.stdout).unwrap())
+    (line, String::from_utf8(output.stdout).unwrap())
+}
+
+#[test]
+fn health_requires_a_valid_service_response() {
+    let (line, text) = request(
+        &["health", "--json"],
+        r#"{"ok":true,"service":"wechat-devify-bridge"}"#,
+    );
+    assert_eq!(line, "GET /health HTTP/1.1\r\n");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()["ok"],
+        true
+    );
+
+    let (_, output) = exchange(&["health"], "200 OK", r#"{"ok":true,"service":"other"}"#);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("[invalid_health_response]"));
+}
+
+#[test]
+fn access_errors_distinguish_authentication_and_authorization_without_echoing_body() {
+    for (status, code) in [
+        ("401 Unauthorized", "[authentication_failed]"),
+        ("403 Forbidden", "[access_forbidden]"),
+    ] {
+        let (_, output) = exchange(&["health"], status, r#"{"error":"private fixture"}"#);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(code), "{error}");
+        assert!(!error.contains("private fixture"), "{error}");
+    }
+}
+
+#[test]
+fn stopped_listener_has_its_own_diagnostic() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let output = run_cli(&endpoint, &["health"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("[connection_refused]"));
+}
+
+#[test]
+fn account_discovery_distinguishes_a_denied_capability_from_an_empty_scope() {
+    let (_, output) = exchange(
+        &["accounts", "--json"],
+        "400 Bad Request",
+        r#"{"error":"当前账户未开通本机智能体读取能力。"}"#,
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("[access_forbidden] HTTP 400"));
+
+    let (_, text) = request(
+        &["accounts", "--json"],
+        r#"{"accounts":[],"truncated":false}"#,
+    );
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["accounts"], serde_json::json!([]));
 }
 
 #[test]

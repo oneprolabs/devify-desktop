@@ -14,11 +14,26 @@ Skills 只连接 AIMyChats 的统一本机接口。本机聊天当前支持微�
 ## 前置条件
 
 1. 桌面应用「AIMyChats」正在运行（会自带只读服务，默认 `http://127.0.0.1:18765`）。
-2. `aimychats-cli` 已通过 AIMyChats「智能体集成」页安装；本 Skill 也从同一服务的 `/agent/skills` 下载。优先使用安装时给出的完整本机读取入口，不要求它出现在 PATH 中。若该入口不可执行，停止并让用户在该页重新安装 Skills，不要自行构建或改用其它方式读取数据库。
+2. `aimychats-cli` 已通过 AIMyChats「智能体集成」页安装。使用安装时绑定的完整入口，包括应用数据目录和服务地址，无需依赖 PATH。
    只有旧安装且没有绑定完整入口时，可以用同一 AIMyChats 安装提供的兼容命令 `wxq` 替代下文的命令名。
 3. 需要更新到最新时，在「智能体集成」重新安装 Skills 即可；已存在的 `SKILL.md` 会先备份。
 
 服务地址可用 `--endpoint` 或 `WECHAT_AGENT_ENDPOINT` 覆盖（旧名 `WECHAT_MCP_ENDPOINT` 仍兼容）；服务始终要求 Bearer Token，`aimychats-cli` 默认读取桌面应用生成的 `<应用数据目录>/agent-token`，也可用 `--token` 或 `WECHAT_AGENT_TOKEN` 覆盖。
+
+## 首次使用时验证连接
+
+新会话中先确认当前智能体的运行模式与 AIMyChats 在同一台电脑，再用绑定的完整入口运行 `aimychats-cli health --json`。安装只表示文件已就位。收到 `ok: true` 后再查账号、聊天或云端结果。手动验证连接时，只查账号和一页最多 1 条获准会话。若用户指定了测试会话，在同一宿主使用 `messages --account ID --chat USERNAME --limit 1 --json` 验证原文读取。汇报状态即可，不展示账号 ID、会话名称、原文或凭据。
+
+| 结果 | 如何处理 |
+|---|---|
+| 找不到绑定的可执行文件 | 请用户在对应版本的 AIMyChats「智能体集成」中更新 Skill。 |
+| `permission_denied`、`Operation not permitted` 或宿主阻止命令执行 | 告知用户当前运行模式拒绝本机操作。仅在宿主官方支持时，请用户通过它提供的授权入口授予该本机连接权限，然后在同一宿主重试。若没有授权入口或无法确认，报告当前模式未验证，并让用户选择已实测支持的接入方式。 |
+| `connection_refused` 或 `connection_timeout` | 确认绑定的是对应版本的 AIMyChats，应用已打开并登录，再在同一宿主重试。 |
+| `authentication_failed` | 确认对应版本的登录和绑定入口，由 CLI 读取凭据。 |
+| `access_forbidden` | 请用户确认当前账号具有相应权限。 |
+| 账号列表或白名单为空 | 连接已通，但没有可验证的聊天。请用户检查连接器和「导入管理」里的会话范围。 |
+
+遇到权限或连接失败时停止读取。不要更改全局权限、公开本机服务、重新安装来解决权限拒绝，或自行切换到其他运行环境。
 
 ## 账号与平台
 
@@ -41,7 +56,7 @@ Skills 只连接 AIMyChats 的统一本机接口。本机聊天当前支持微�
 ## 工作规则
 
 1. 读取聊天时先用 `aimychats-cli policy --account ID` 或 `aimychats-cli sessions --account ID --limit 100 --offset 0 --json` 确认范围，只使用输出里出现过的 `username`。
-2. 会话不在白名单、或服务返回 401/400 时立即停止，把原文错误展示给用户，不要改用其他方式读取。
+2. 会话不在白名单或服务请求失败时停止，汇报诊断代码、HTTP 状态和可执行的下一步，省略聊天数据和凭据。
 3. 需要历史消息时用 `--before` + `--before-id` 翻页（命令末尾会直接打印这两个值），不要一次请求过大的 `--limit`。
 4. 明确区分原文、规则抽取和 Agent 自己的推断。
 5. 不把聊天原文发送到其他服务，除非用户明确要求。
@@ -49,7 +64,7 @@ Skills 只连接 AIMyChats 的统一本机接口。本机聊天当前支持微�
 
 ## 备注
 
-`aimychats-cli` 只读，不解密、不写入、不发邮件；每次请求都由本机服务重新读取客户端设置并校验访问范围。`digest.todo` 是聊天规则素材，不是应用已生成的“我的待办”。若环境只支持 MCP 客户端而不便运行 shell，可用同一服务的 MCP 工具
+`aimychats-cli` 只读，不解密、不写入、不发邮件；每次请求都由本机服务重新读取客户端设置并校验访问范围。`digest.todo` 是聊天规则素材，不是应用已生成的“我的待办”。用户已配置并验证本机 MCP 接入且明确选择使用时，可用同一服务的 MCP 工具
 `aimychats_list_accounts` / `aimychats_get_policy` / `aimychats_list_sessions` / `aimychats_get_messages` / `aimychats_search_messages` / `aimychats_digest`
 （`http://127.0.0.1:18765/sse`），新工具统一使用 `aimychats_` 前缀；旧 `wechat_` 名称仅作兼容，规则与上述完全一致。
 

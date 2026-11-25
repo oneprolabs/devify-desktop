@@ -115,3 +115,18 @@ await assert.rejects(copyInstallationPrompt(),/clipboard denied/);
 delete globalThis.ClipboardItem;navigator.clipboard.writeText=async text=>{copied=text;};
 await copyInstallationPrompt();assert.equal(copied,'another prompt','writeText fallback copies the generated prompt');
 console.log('Installation prompt clipboard activation, native failure and clipboard failure passed');
+
+const { AgentUsage } = load('../src/features/agents/AgentUsage.tsx');
+for (const skillName of ['aimychats-dev', 'aimychats']) {
+  owner = { hooks: [], index: 0, effects: [] };
+  nodes.length = 0;
+  visit(AgentUsage({ skillName }));
+  const prompt = nodes.find(node => node.type === 'p' && String(node.props.children).includes(skillName));
+  assert.match(prompt.props.children, /在当前运行环境执行健康检查/);
+  assert.match(prompt.props.children, /最多 1 条获准会话/);
+  const copy = nodes.find(node => node.type === 'button' && node.props['aria-label'] === '复制示例');
+  copy.props.onClick();
+  await flush();
+  assert.equal(copied, prompt.props.children);
+}
+console.log('Connection check copies the matching Dev or production Skill prompt');
