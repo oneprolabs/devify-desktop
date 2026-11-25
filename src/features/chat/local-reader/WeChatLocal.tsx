@@ -456,7 +456,7 @@ export default function WeChatLocal({
     setSyncIssue(null);
     try {
       if (!id.endsWith('@s.whatsapp.net')) {
-        const issue = await syncWechatForRefresh(id);
+        const { issue } = await syncWechatForRefresh(id);
         if (!isCurrent()) return;
         if (issue) { setSyncIssue({ accountId: id, issue }); return; }
       }

@@ -9,6 +9,7 @@ const nativeErrorCodes = [
   'WHATSAPP_ACCESS_DENIED',
   'WHATSAPP_DATA_UNSUPPORTED',
   'WECHAT_SESSION_DB_MISSING',
+  'WECHAT_ACCOUNT_UNAVAILABLE',
 ] as const;
 
 type NativeErrorCode = typeof nativeErrorCodes[number];

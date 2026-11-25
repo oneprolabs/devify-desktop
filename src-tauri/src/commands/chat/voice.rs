@@ -1,9 +1,9 @@
 //! Local voice playback, transcription and voice-engine preferences.
 use crate::chat::access::require_visible_session;
 use crate::wechat::{decrypt, voice};
-use crate::{app_data, capabilities, entitlements, local_scope, settings, wechat_sync, SyncState};
+use crate::{app_data, capabilities, entitlements, local_scope, settings, wechat_sync};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::AppHandle;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct VoiceRequest {
@@ -45,7 +45,6 @@ pub(crate) async fn wechat_voice_settings_save(
 /// Decode and transcribe selected voice messages. Results are cached by `account|server_id`.
 async fn voice_blobs_with_refresh(
     app: &AppHandle,
-    state: State<'_, SyncState>,
     account_id: &str,
     ids: &[i64],
 ) -> Result<std::collections::BTreeMap<i64, Vec<u8>>, String> {
@@ -54,7 +53,7 @@ async fn voice_blobs_with_refresh(
     if ids.iter().all(|id| cached.contains_key(id)) {
         return Ok(cached);
     }
-    wechat_sync(app.clone(), state, account_id.to_string())
+    wechat_sync(app.clone(), account_id.to_string())
         .await
         .map_err(|error| format!("无法刷新语音数据：{error}"))?;
     voice::read_voice_blobs(&cache, ids)
@@ -63,7 +62,6 @@ async fn voice_blobs_with_refresh(
 #[tauri::command]
 pub(crate) async fn wechat_voice_transcribe(
     app: AppHandle,
-    state: State<'_, SyncState>,
     account_id: String,
     username: String,
     items: Vec<VoiceRequest>,
@@ -88,7 +86,7 @@ pub(crate) async fn wechat_voice_transcribe(
         &settings.devify.base_url,
         capabilities::LOCAL_VOICE_TRANSCRIBE,
     )?;
-    let blobs = voice_blobs_with_refresh(&app, state, &account_id, &ids).await?;
+    let blobs = voice_blobs_with_refresh(&app, &account_id, &ids).await?;
     let view = voice::view(&data_dir);
     if view.selected.is_none() {
         return Err(
@@ -152,7 +150,6 @@ pub(crate) async fn wechat_voice_transcribe(
 #[tauri::command]
 pub(crate) async fn wechat_voice_audio(
     app: AppHandle,
-    state: State<'_, SyncState>,
     account_id: String,
     username: String,
     server_id: String,
@@ -163,7 +160,7 @@ pub(crate) async fn wechat_voice_audio(
         .map_err(|_| "无效的语音标识。".to_string())?;
     let data_dir = app_data(&app);
     let private_data = local_scope::root(&data_dir);
-    let blobs = voice_blobs_with_refresh(&app, state, &account_id, &[server_id]).await?;
+    let blobs = voice_blobs_with_refresh(&app, &account_id, &[server_id]).await?;
     let blob = blobs
         .get(&server_id)
         .ok_or_else(|| "本地暂未找到这条语音，请刷新微信数据后重试。".to_string())?;

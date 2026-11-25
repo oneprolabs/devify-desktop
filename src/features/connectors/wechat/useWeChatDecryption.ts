@@ -79,7 +79,7 @@ export function useWeChatDecryption({ account, accountSwitching, clearing, reset
     setDecrypting(true);
     try {
       if (recoveringKeys) {
-        const issue = await syncWechatForRefresh(account.id);
+        const { issue } = await syncWechatForRefresh(account.id);
         if (issue) {
           if (issue.needsKeys) resetKeys();
           setError(issue.message);

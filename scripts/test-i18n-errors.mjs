@@ -5,12 +5,16 @@ import { nativeErrorCode, errorText, whatsAppReadErrorCode } from '../src/shared
 const unavailable = '读取服务端登录配置失败：服务端暂不可用，请稍后重试。';
 const busy = '该账号正在上传，请稍后重试。';
 const missing = '未找到解密后的 session.db，请先完成解密。';
+const unavailableWeChat = 'WECHAT_ACCOUNT_UNAVAILABLE: 暂时无法读取本机微信账号。';
 for (const ui of ['中文', 'English']) {
   applyLanguage({ ui });
   assert.equal(nativeErrorCode(unavailable), 'AUTH_CONFIG_UNAVAILABLE');
   assert.equal(nativeErrorCode('AUTH_CONFIG_INVALID: 服务端登录配置响应无效，请检查服务地址并稍后重试。'), 'AUTH_CONFIG_INVALID');
   assert.equal(nativeErrorCode(busy), 'ACCOUNT_UPLOAD_BUSY');
   assert.equal(nativeErrorCode(missing), 'WECHAT_SESSION_DB_MISSING');
+  assert.equal(nativeErrorCode(unavailableWeChat), 'WECHAT_ACCOUNT_UNAVAILABLE');
+  assert.equal(errorText(unavailableWeChat), ui === 'English'
+    ? 'The local WeChat account can’t be read right now.' : '暂时无法读取本机微信账号。');
   assert.equal(nativeErrorCode('unexpected failure'), undefined);
   assert.equal(nativeErrorCode('AUTH_UPLOAD_BUSY: 上传期间无法更改登录状态，请稍后重试。'), 'AUTH_UPLOAD_BUSY');
   assert.equal(whatsAppReadErrorCode('WHATSAPP_DATA_UNSUPPORTED: 无法读取'), 'WHATSAPP_DATA_UNSUPPORTED');

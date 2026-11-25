@@ -41,7 +41,8 @@ const state = {
  chatMessagesError:'', chatOlderPaused:false, chatOlderResolvers:[] as Array<()=>void>,
  chatLatestPaused:false, chatLatestResolvers:[] as Array<()=>void>,
  wechatSyncOutcomes:null as Array<{rel:string;status:string;error:string|null}> | null,
- wechatSyncError:'', wechatSyncPaused:false, wechatSyncResolvers:[] as Array<()=>void>,
+ wechatSyncError:'', wechatSyncRevision:'initial', wechatSyncPaused:false, wechatSyncResolvers:[] as Array<()=>void>,
+ wechatPolls:new Map<number, () => void>(),
  summaries:[] as any[],summaryLocal:[] as any[],summaryError:'',
  voiceStatus:{settings:{engine:'',model:'',language:'zh'},engines:[{id:'whisper',label:'Whisper',available:true}],selected:'whisper'},voiceError:'',voiceSaveError:'',
  agentApps:query.has('no-agents')?[]:['workbuddy'], agentScanError:'', agentScanDelay:0, agentInstallError:'', agentSkills:{} as Record<string,string[]>,
@@ -57,6 +58,16 @@ const state = {
  authStartError:'', authStartPaused:false, authStartResolvers:[] as Array<()=>void>,
  browserOpenPaused:false, browserOpenResolvers:[] as Array<()=>void>, networkMode:'auto',
 };
+if (query.has('controlled-chat-poll')) {
+ const setInterval = window.setInterval.bind(window), clearInterval = window.clearInterval.bind(window);
+ let timer = 0;
+ window.setInterval = (handler, delay, ...args) => {
+  if (delay !== 30_000 || typeof handler !== 'function') return setInterval(handler, delay, ...args);
+  state.wechatPolls.set(--timer, () => handler(...args));
+  return timer;
+ };
+ window.clearInterval = id => { if (!state.wechatPolls.delete(id ?? 0)) clearInterval(id); };
+}
 Object.assign(window,{__E2E__:state,isTauri:true});
 const callbacks = new Map<number,Function>();const eventHandlers = new Map<string,number[]>();let callbackId=0;
 Object.assign(window,{__TASK_EMIT__:()=>{for(const id of eventHandlers.get('task-runtime')??[]) callbacks.get(id)?.({event:'task-runtime',id,payload:structuredClone(state.runtime)});}});
@@ -271,8 +282,10 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'wechat_sync':{
     if(state.wechatSyncPaused)await new Promise<void>(resolve=>state.wechatSyncResolvers.push(resolve));
     if(state.wechatSyncError)throw state.wechatSyncError;
-    if(state.wechatSyncOutcomes)return clone(state.wechatSyncOutcomes);
-    return ['session/session.db','message/message_0.db'].map(rel=>({account:args.accountId,rel,status:'ok',pages:1,error:null}));
+    return {
+     revision:state.wechatSyncRevision,
+     outcomes:clone(state.wechatSyncOutcomes ?? ['session/session.db','message/message_0.db'].map(rel=>({account:args.accountId,rel,status:'cached',pages:1,error:null}))),
+    };
    }
    case 'wechat_decrypt':return ['session/session.db','message/message_0.db'].map(rel=>({account:wx,rel,status:'ok',pages:1,error:null}));
    case 'wechat_messages':{

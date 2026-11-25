@@ -29,13 +29,17 @@ const react = {
     }
   },
 };
+react.useLayoutEffect = react.useEffect;
 const jsx = { jsx: (type, props, key) => ({ type, props, key }), jsxs: (type, props, key) => ({ type, props, key }), Fragment: Symbol('Fragment') };
 const timers = [];
 const intervals = new Map();
 let intervalId = 0;
+let chatPoll;
+let syncRevision = 'fixture';
 let uploadStateCalls = 0;
 let resolveUploadState;
-globalThis.window = { setTimeout: fn => (timers.push(fn), timers.length), clearTimeout() {}, setInterval(fn) { intervals.set(++intervalId, fn); return intervalId; }, clearInterval(id) { intervals.delete(id); }, addEventListener() {}, removeEventListener() {} };
+globalThis.window = { setTimeout: fn => (timers.push(fn), timers.length), clearTimeout() {}, setInterval(fn, delay) { intervals.set(++intervalId, fn); if (delay === 30_000) chatPoll = fn; return intervalId; }, clearInterval(id) { intervals.delete(id); }, addEventListener() {}, removeEventListener() {} };
+globalThis.document = { hidden: true };
 let resolveAccounts;
 const accounts = new Promise(resolve => { resolveAccounts = resolve; });
 const account = '123456789@s.whatsapp.net';
@@ -65,7 +69,7 @@ const invoke = async (command, args) => {
       if (longSessionPages && args.accountId !== account) {
         const start = Math.min(offset, 1000);
         const other = args.accountId === otherWeChat;
-        const count = Math.min(50, (other ? 52 : 1100) - start);
+        const count = Math.min(args.limit, (other ? 52 : 1100) - start);
         return Array.from({ length: count }, (_, i) => {
           const index = start + i;
           if (!other && index === 50) return { username: '0', display: 'Stale duplicate', last_time: 5000, is_group: false };
@@ -79,6 +83,9 @@ const invoke = async (command, args) => {
         const row = { username: `${args.accountId}-${index}`, display: `${args.accountId} chat ${index}`, last_time: 1000 - index, is_group: false };
         if (args.accountId === account && (index === 0 || index === 50)) {
           return { ...row, community: { id: 'fixture-community', name: 'Fixture Community', is_parent: index === 50 } };
+        }
+        if (args.accountId === wechat && syncRevision === 'new-message' && index === 0) {
+          return { ...row, preview: '自动刷新后的新消息' };
         }
         return row;
       });
@@ -106,6 +113,7 @@ const mockedRequire = id => {
   if (id === '@tauri-apps/api/core') return { isTauri: () => true };
   if (id === '../../shared/api/desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
   if (id === './ChatPlatformBar') return { ChatPlatformBar: PlatformBar };
+  if (id === '../connectors/wechat/refresh') return { syncWechatForRefresh: async () => ({ revision: syncRevision }) };
   if (id === '../tasks/taskRuntime') return { useTaskRuntime: () => runtime };
   if (id === './local-reader/WeChatLocal') return { default: MessagePane };
   if (id === '../../entitlements') return {
@@ -312,6 +320,16 @@ assert.ok(textOf(tree).includes('已到列表末尾。'),'a short final page con
 scrollList().props.onScroll(scrollAt('whatsapp'));assert.equal(pageReads.length,3);
 selectPlatform('wechat');
 assert.ok(textOf(tree).includes(`${wechat} chat 51`),'switching does not discard the other platform page');
+syncRevision = 'new-message';
+document.hidden = false;
+chatPoll();
+await flush(); tree = render();
+document.hidden = true;
+assert.equal(rows().length, 100, 'automatic refresh preserves both loaded pages');
+assert.ok(textOf(rows()[0]).includes('自动刷新后的新消息'), 'automatic refresh updates the latest preview');
+selectPlatform('whatsapp');
+assert.equal(rows().length, 52, 'automatic WeChat refresh preserves WhatsApp pages');
+selectPlatform('wechat');
 assert.ok(!textOf(tree).includes('已到列表末尾。'),'the end marker follows the platform');
 const moreButton = () => buttons().find(node => textOf(node) === '加载更多会话');
 assert.ok(moreButton(), 'the unfiltered list offers a manual paging fallback');
@@ -400,4 +418,32 @@ assert.equal(pageReads.length, lastPageReadCount, 'do not request an offset the 
 selectPlatform('whatsapp');
 assert.ok(moreButton(), 'a capped WeChat account does not stop WhatsApp pagination');
 assert.ok(!textOf(tree).includes(limitNotice));
+
+selectPlatform('wechat');
+const loadedKeys = rowKeys().sort();
+const beforeRefresh = pageReads.length;
+syncRevision = 'large-window-update';
+document.hidden = false;
+chatPoll();
+await flush(); tree = render(); await flush(); tree = render();
+document.hidden = true;
+assert.deepEqual(rowKeys().sort(), loadedKeys, 'a background refresh keeps the loaded session window');
+const backgroundOffsets = pageReads.slice(beforeRefresh).map(([, offset]) => offset);
+
+failNextWeChatPage = true;
+syncRevision = 'failed-window-update';
+document.hidden = false;
+chatPoll();
+await flush(); tree = render(); await flush(); tree = render();
+document.hidden = true;
+assert.deepEqual(rowKeys().sort(), loadedKeys, 'an incomplete background refresh keeps the prior window');
+const refreshAlert = nodes(tree).find(node => node.props?.role === 'alert' && textOf(node).includes('temporary local read failure'));
+const retryRefresh = nodes(refreshAlert).find(node => node.type === 'button' && textOf(node) === '重试');
+assert.ok(retryRefresh, 'a failed refresh can be retried');
+retryRefresh.props.onClick();
+await flush(); tree = render(); await flush(); tree = render();
+assert.deepEqual(rowKeys().sort(), loadedKeys, 'retry refreshes the already-loaded window without returning to page one');
+assert.ok(!textOf(tree).includes('temporary local read failure'), 'successful retry dismisses the error');
+assert.deepEqual(backgroundOffsets, Array.from({ length: 10 }, (_, index) => (index + 1) * 100),
+  'background refresh reuses the native maximum page size without reading beyond the loaded window');
 console.log('Platform isolation, remembered selection/scroll/filter, stale badges, and session pagination/order/deduplication checks passed');
