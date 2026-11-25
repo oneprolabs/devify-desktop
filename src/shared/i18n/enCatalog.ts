@@ -259,6 +259,8 @@ export const en: Record<string, string> = {
   "更早的记录": "Earlier records",
   "图片待加载": "Image not loaded",
   "加载更多会话": "Load more conversations",
+  "已到列表末尾。": "End of the list.",
+  "已达到会话读取上限，可能还有更早的会话。": "The loading limit has been reached. Older conversations may still exist.",
   "自动备份未开启，可以在备份周期中设置。": "Automatic backup is off. Set a schedule in Backup.",
   "选择会话与备份周期后，自动在后台备份。": "Choose conversations and a schedule to back up automatically.",
   "个会话的备份范围。将按设定的周期自动在后台备份。": "conversation scopes saved. Backups will run automatically on schedule.",
