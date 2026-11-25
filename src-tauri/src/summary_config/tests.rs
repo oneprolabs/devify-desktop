@@ -212,7 +212,10 @@ fn summary_period_uses_local_calendar_dates_and_checks_sparse_requests() {
     assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
         .unwrap_err()
         .contains("不在本次时间范围内"));
-    for invalid_end in ["not a date".to_string(), (start - TimeDelta::seconds(1)).to_rfc3339()] {
+    for invalid_end in [
+        "not a date".to_string(),
+        (start - TimeDelta::seconds(1)).to_rfc3339(),
+    ] {
         body["period_end"] = invalid_end.into();
         assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
             .unwrap_err()
