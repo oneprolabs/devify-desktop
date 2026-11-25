@@ -19,8 +19,8 @@ aux-binaries = []
 dev-app = []
 
 [[bin]]
-name = "wxq"
-path = "src/bin/wxq.rs"
+name = "aimychats-cli"
+path = "src/bin/aimychats-cli/main.rs"
 required-features = ["aux-binaries"]
 
 [[bin]]

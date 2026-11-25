@@ -1,13 +1,12 @@
-//! `wxq` — read-only command line client for the desktop app.
+//! `aimychats-cli` — read-only command line client for the desktop app.
 //!
 //! The app exposes the same five whitelist-checked handlers as its MCP tools under
 //! `/api/*` on the loopback listener. This binary speaks plain HTTP/1.1 to that
 //! endpoint (no TLS, no extra crates) and formats the JSON for a terminal or an
 //! agent. It never opens the databases, decrypts, or sends mail.
 //!
-//! Run `wxq help` for the command list.
+//! Run `aimychats-cli help` for the command list.
 
-#[path = "wxq/cloud.rs"]
 mod cloud;
 
 use std::collections::{HashMap, HashSet};
@@ -106,9 +105,20 @@ fn main() {
             }
         }
         Err(error) => {
-            eprintln!("wxq: {error}");
+            eprintln!("aimychats-cli: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+fn continuation_command() -> &'static str {
+    // A client that downloaded the compatibility filename may only have wxq.
+    if std::env::args_os().next().as_deref().and_then(|arg| std::path::Path::new(arg).file_stem())
+        .is_some_and(|name| name == "wxq")
+    {
+        "wxq"
+    } else {
+        env!("CARGO_BIN_NAME")
     }
 }
 
@@ -122,7 +132,7 @@ fn env_first(keys: &[&str]) -> Option<String> {
 }
 
 /// Where the desktop app keeps its per-install files. Mirrors the app-data directory for the
-/// bundle identifier so `wxq` can pick up the token without any setup or export.
+/// bundle identifier so `aimychats-cli` can pick up the token without any setup or export.
 fn default_app_data_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("WECHAT_DEVIFY_APP_DATA_DIR") {
         let path = std::path::PathBuf::from(dir);
@@ -263,7 +273,7 @@ fn dispatch(cli: Cli) -> Result<String, String> {
             let list: SessionList = decode(body)?;
             let mut output = format_sessions(&list.account_id, &list.sessions);
             if let Some(next) = next_offset {
-                output.push_str(&format!("\n继续：wxq sessions --account '{}' --limit {limit} --offset {next}\n", list.account_id));
+                output.push_str(&format!("\n继续：{} sessions --account '{}' --limit {limit} --offset {next}\n", continuation_command(), list.account_id));
             }
             Ok(output)
         }
@@ -412,8 +422,8 @@ fn format_messages(list: &MessageList) -> String {
     if list.has_more {
         if let Some(oldest) = list.messages.last() {
             out.push_str(&format!(
-                "\n继续读取更早消息：wxq messages --chat {} --before {} --before-id {} --before-shard {}\n",
-                list.username, oldest.time, oldest.local_id, oldest.source_shard
+                "\n继续读取更早消息：{} messages --chat {} --before {} --before-id {} --before-shard {}\n",
+                continuation_command(), list.username, oldest.time, oldest.local_id, oldest.source_shard
             ));
         }
     }
@@ -517,7 +527,7 @@ fn request_json(cli: &Cli, method: &str, path: &str, body: Option<&str>) -> Resu
     if !(200..300).contains(&response.status) {
         if response.status == 404 && value.get("error").is_none() {
             return Err(format!(
-                "端点不存在（HTTP 404）：{path}\n桌面应用可能是改造前的版本，请重新构建并启动应用，或先运行 wxq health 确认服务。"
+                "端点不存在（HTTP 404）：{path}\n桌面应用可能是改造前的版本，请重新构建并启动应用，或先运行 aimychats-cli health 确认服务。"
             ));
         }
         let message = value
@@ -534,7 +544,7 @@ fn http(cli: &Cli, method: &str, path: &str, body: Option<&str>) -> Result<Respo
     let base = cli.endpoint.trim_end_matches('/');
     let rest = base
         .strip_prefix("http://")
-        .ok_or_else(|| "wxq 只支持 http:// 的本地服务地址。".to_string())?;
+        .ok_or_else(|| "aimychats-cli 只支持 http:// 的本地服务地址。".to_string())?;
     let (authority, base_path) = match rest.find('/') {
         Some(index) => (&rest[..index], &rest[index..]),
         None => (rest, ""),
@@ -747,10 +757,10 @@ fn pretty(value: &Value) -> Result<String, String> {
 
 fn usage() -> String {
     format!(
-        "wxq — 只读读取 AIMyChats 白名单聊天记录
+        "aimychats-cli — 只读读取 AIMyChats 白名单聊天记录
 
 用法:
-  wxq [--app-data DIR] [--endpoint URL] [--token TOKEN] [--json] <命令> [参数]
+  aimychats-cli [--app-data DIR] [--endpoint URL] [--token TOKEN] [--json] <命令> [参数]
 
 命令:
   health                                    检查本地服务是否在运行
@@ -780,15 +790,15 @@ fn usage() -> String {
 环境变量:
   WECHAT_AGENT_ENDPOINT  默认 {DEFAULT_ENDPOINT}（旧名 WECHAT_MCP_ENDPOINT 仍兼容）
   WECHAT_AGENT_TOKEN     覆盖自动读取的 <应用数据目录>/agent-token（旧名 WECHAT_MCP_TOKEN 仍兼容）
-                           本机服务始终要求 Token；wxq 默认直接读取桌面应用生成的 0600 文件
+                           本机服务始终要求 Token；aimychats-cli 默认直接读取桌面应用生成的 0600 文件
 
 示例:
-  wxq policy
-  wxq messages --chat 56209716836@chatroom --limit 50
-  wxq search --keyword 报价 --groups-only
-  wxq digest --chat 56209716836@chatroom --since 2026-10-20 --until 2026-10-27
+  aimychats-cli policy
+  aimychats-cli messages --chat 56209716836@chatroom --limit 50
+  aimychats-cli search --keyword 报价 --groups-only
+  aimychats-cli digest --chat 56209716836@chatroom --since 2026-10-20 --until 2026-10-27
 
-服务由桌面应用启动，数据只读且受聊天白名单约束；wxq 不读取数据库、不解密、不发邮件。"
+服务由桌面应用启动，数据只读且受聊天白名单约束；aimychats-cli 不读取数据库、不解密、不发邮件。"
     )
 }
 

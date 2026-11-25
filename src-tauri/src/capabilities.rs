@@ -244,7 +244,7 @@ pub const CAPABILITIES: &[Capability] = &[
         "bridge.agent_cli",
         "bridge",
         "只读 CLI 与 Skills",
-        "下载 wxq 并把三份 SKILL.md 安装到指定目录。",
+        "下载 aimychats-cli 并把统一 Skill 的 SKILL.md 安装到指定目录。",
         false,
     ),
     cap(

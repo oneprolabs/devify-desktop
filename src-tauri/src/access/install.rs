@@ -24,6 +24,10 @@ pub struct InstallResult {
 
 // Same-directory temporary file + rename: never expose a partially written Skill/CLI.
 fn write_owned(path: &Path, bytes: &[u8], executable: bool) -> Result<(), String> {
+    let parent = path.parent().ok_or("安装目录无效。")?;
+    if fs::symlink_metadata(parent).is_ok_and(|meta| !meta.is_dir()) {
+        return Err("安装目录不是普通目录，请在高级配置中选择其他目录。".into());
+    }
     if let Ok(meta) = fs::symlink_metadata(path) {
         if !meta.is_file() || meta.file_type().is_symlink() {
             return Err("安装目标不是普通文件，请在高级配置中选择其他目录。".into());
@@ -32,7 +36,6 @@ fn write_owned(path: &Path, bytes: &[u8], executable: bool) -> Result<(), String
     if fs::read(path).ok().as_deref() == Some(bytes) {
         return Ok(());
     }
-    let parent = path.parent().ok_or("安装目录无效。")?;
     fs::create_dir_all(parent).map_err(|e| format!("创建安装目录失败：{e}"))?;
     let suffix = unique_suffix()?;
     let temp = parent.join(format!(".aimychats-{suffix}.tmp"));
@@ -123,15 +126,30 @@ pub fn install(
     })
 }
 
-fn prepare_cli(data: &Path, cli: &Path) -> Result<std::path::PathBuf, String> {
+pub(crate) fn prepare_cli(data: &Path, cli: &Path) -> Result<std::path::PathBuf, String> {
     // App-owned destination: never replace an unrelated PATH executable.
     let installed_cli = data.join("bin").join(super::CLI_NAME);
     let bytes = fs::read(cli).map_err(|e| format!("读取本机工具失败：{e}"))?;
     write_owned(&installed_cli, &bytes, true)?;
+    let legacy = installed_cli.with_file_name(super::LEGACY_CLI_NAME);
+    #[cfg(unix)]
+    let alias = std::os::unix::fs::symlink(super::CLI_NAME, legacy);
+    #[cfg(not(unix))]
+    let alias = fs::hard_link(&installed_cli, legacy);
+    if let Err(error) = alias {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(format!("创建兼容命令失败：{error}"));
+        }
+    }
     Ok(installed_cli)
 }
 
-fn bound_skill(skill: &super::SkillDoc, data: &Path, installed_cli: &Path, endpoint: &str) -> Result<String, String> {
+pub(super) fn bound_skill(
+    skill: &super::SkillDoc,
+    data: &Path,
+    installed_cli: &Path,
+    endpoint: &str,
+) -> Result<String, String> {
     let command = format!(
         "{} --app-data {} --endpoint {}",
         super::sh_quote(&installed_cli.to_string_lossy()),
@@ -144,7 +162,7 @@ fn bound_skill(skill: &super::SkillDoc, data: &Path, installed_cli: &Path, endpo
         .strip_prefix("---\n")
         .and_then(|body| body.find("\n---\n").map(|n| n + 9))
         .ok_or("内置 Skill 格式无效。")?;
-    Ok(format!("{}\n<!-- AIMyChats local access kit -->\n本机读取入口：所有下文的 `wxq` 命令请替换为 `{command}`。已由 AIMyChats 安装，无需下载或构建。保持 AIMyChats 打开并登录；Token 由 CLI 自动读取，不要回显或复制。只读取应用允许访问的会话和当前空间已有云端结果；云端查询是远程只读，不触发生成。\n\n{}", &skill.content[..end], &skill.content[end..]))
+    Ok(format!("{}\n<!-- AIMyChats local access kit -->\n本机读取入口：所有下文的 `aimychats-cli` 命令请替换为 `{command}`。已由 AIMyChats 安装，无需下载或构建。保持 AIMyChats 打开并登录；Token 由 CLI 自动读取，不要回显或复制。只读取应用允许访问的会话和当前空间已有云端结果；云端查询是远程只读，不触发生成。\n\n{}", &skill.content[..end], &skill.content[end..]))
 }
 
 /// Stage the same bound Skill as direct installation, inside this app's storage only.
@@ -174,6 +192,7 @@ mod tests {
         let kit = prepare_prompt_kit(&data, &cli, "http://127.0.0.1:18766").unwrap();
         let doc = kit.join(SKILLS[0].name).join("SKILL.md");
         let staged = fs::read_to_string(&doc).unwrap();
+        assert!(staged.contains("/bin/aimychats-cli' --app-data"));
         assert!(staged.contains("--endpoint 'http://127.0.0.1:18766'"));
         assert!(staged.contains(&data.to_string_lossy().to_string()));
         assert!(!staged.contains(&other.to_string_lossy().to_string()));
@@ -268,6 +287,29 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
+    fn cli_upgrade_keeps_existing_legacy_files_and_updates_managed_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::write(&source, b"candidate").unwrap();
+        let old_data = root.path().join("old-install");
+        fs::create_dir_all(old_data.join("bin")).unwrap();
+        let old = old_data.join("bin/wxq");
+        fs::write(&old, b"existing executable").unwrap();
+        let canonical = prepare_cli(&old_data, &source).unwrap();
+        assert_eq!(canonical, old_data.join("bin/aimychats-cli"));
+        assert_eq!(fs::read(old).unwrap(), b"existing executable");
+
+        let fresh_data = root.path().join("fresh-install");
+        prepare_cli(&fresh_data, &source).unwrap();
+        let legacy = fresh_data.join("bin/wxq");
+        assert_eq!(fs::read(&legacy).unwrap(), b"candidate");
+        fs::write(&source, b"updated").unwrap();
+        prepare_cli(&fresh_data, &source).unwrap();
+        assert_eq!(fs::read(&legacy).unwrap(), b"updated");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn installer_rejects_linked_targets() {
         let root =
             std::env::temp_dir().join(format!("aimychats-link-{}", unique_suffix().unwrap()));
@@ -278,6 +320,12 @@ mod tests {
         std::os::unix::fs::symlink(&victim, &link).unwrap();
         assert!(write_owned(&link, b"replace", false).is_err());
         assert_eq!(fs::read(victim).unwrap(), b"keep");
+        let real_dir = root.join("real-dir");
+        let linked_dir = root.join("linked-dir");
+        fs::create_dir(&real_dir).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &linked_dir).unwrap();
+        assert!(write_owned(&linked_dir.join("SKILL.md"), b"replace", false).is_err());
+        assert!(!real_dir.join("SKILL.md").exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

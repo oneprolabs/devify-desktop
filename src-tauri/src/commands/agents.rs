@@ -74,7 +74,7 @@ pub(crate) async fn agent_access_install(
         );
         let target = access::installation_target(&status.targets, &tool, skills_dir.as_deref())?;
         let cli =
-            access::resolve_wxq(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
+            access::resolve_cli(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
         access::install::install(&data, &target, &cli, &status.base_url)
     })
     .await
@@ -105,7 +105,7 @@ pub(crate) fn agent_access_prompt(
         .ok_or_else(|| "CLI 目录必须是绝对路径或以 ~/ 开头。".to_string())?;
     let skills = access::expand_path(&skills_dir)
         .ok_or_else(|| "Skills 目录必须是绝对路径或以 ~/ 开头。".to_string())?;
-    let wxq = access::resolve_wxq(&data);
+    let cli = access::resolve_cli(&data);
     let base_url = access::client_base(&service.address);
     let prompt = access::build_prompt(
         &target,
@@ -114,7 +114,7 @@ pub(crate) fn agent_access_prompt(
         &base_url,
         &mcp::token_path(&data),
         service.running,
-        wxq.is_some(),
+        cli.is_some(),
     );
     Ok(access::PromptOut {
         prompt,
@@ -137,14 +137,14 @@ pub(crate) async fn agent_access_installation_prompt(
         return Err("本机接入暂不可用，请确认已登录并重新打开智能体集成。".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let cli = access::resolve_wxq(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
+        let cli = access::resolve_cli(&data).ok_or("缺少本机读取工具，请重新安装完整版 AIMyChats。")?;
         let endpoint = access::client_base(&service.address);
         let kit = access::install::prepare_prompt_kit(&data, &cli, &endpoint)?;
         Ok(access::prompt::build(&kit, &data, &endpoint))
     }).await.map_err(|error| format!("准备安装提示词失败：{error}"))?
 }
 
-/// Rebuild `wxq` from the source checkout so the download endpoint has something to serve.
+/// Rebuild `aimychats-cli` from the source checkout so the download endpoint has something to serve.
 /// Packaged installs without source get a clear error instead of a silent failure.
 #[tauri::command]
 pub(crate) async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
@@ -152,7 +152,7 @@ pub(crate) async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
     let settings = settings::load(&data)?;
     require_internal_agent(&data, &settings.devify.base_url)?;
     let Some(dir) = access::source_dir() else {
-        return Err("当前安装没有附带源码，无法在应用内构建 wxq。".into());
+        return Err("当前安装没有附带源码，无法在应用内构建 aimychats-cli。".into());
     };
     let build_dir = dir.clone();
     let output = tauri::async_runtime::spawn_blocking(move || {
@@ -182,16 +182,14 @@ pub(crate) async fn agent_build_wxq(app: AppHandle) -> Result<String, String> {
             .chars()
             .rev()
             .collect();
-        return Err(format!("构建 wxq 失败：\n{tail}"));
+        return Err(format!("构建 aimychats-cli 失败：\n{tail}"));
     }
     let path = dir.join("target/release").join(access::CLI_NAME);
     if !path.is_file() {
-        return Err("cargo 返回成功，但没有找到 target/release/wxq。".into());
+        return Err("cargo 返回成功，但没有找到 target/release/aimychats-cli。".into());
     }
     if crate::build_flavor::DEVELOPMENT {
-        let owned = data.join("bin").join(access::CLI_NAME);
-        std::fs::create_dir_all(owned.parent().unwrap()).map_err(|e| e.to_string())?;
-        std::fs::copy(&path, &owned).map_err(|e| e.to_string())?;
+        let owned = access::install::prepare_cli(&data, &path)?;
         return Ok(owned.to_string_lossy().to_string());
     }
     Ok(path.to_string_lossy().to_string())

@@ -196,6 +196,7 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG" >/dev/null
           ls -la "$MOUNT"
           test -d "$MOUNT/AIMyChats.app"
+          test -x "$MOUNT/AIMyChats.app/Contents/Resources/binaries/aimychats-cli-aarch64-apple-darwin"
           test -L "$MOUNT/Applications"
           test "$(readlink "$MOUNT/Applications")" = "/Applications"
           hdiutil detach "$MOUNT" >/dev/null
@@ -206,6 +207,8 @@ jobs:
           python3 - "$BUNDLE/macos/AIMyChats_${VERSION}_aarch64.app.tar.gz" <<'PY'
           import sys, tarfile
           names = tarfile.open(sys.argv[1]).getnames()
+          if "AIMyChats.app/Contents/Resources/binaries/aimychats-cli-aarch64-apple-darwin" not in names:
+              sys.exit("Brand CLI missing from updater archive")
           bad = [n for n in names if n.startswith("._") or "/._" in n]
           if bad:
               sys.exit(f"AppleDouble entries in updater archive: {bad}")

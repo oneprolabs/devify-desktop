@@ -47,7 +47,7 @@ fn path(cli: &Cli) -> Result<String, String> {
         || cli.args.flags.iter().any(|key| key != "json")
     {
         return Err(
-            "该云端命令不支持此参数；云端空间不是聊天来源 --account。请运行 wxq help。".into(),
+            "该云端命令不支持此参数；云端空间不是聊天来源 --account。请运行 aimychats-cli help。".into(),
         );
     }
     let mut pairs = Vec::new();

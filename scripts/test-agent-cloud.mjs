@@ -8,7 +8,7 @@ for (const tool of ['get_cloud_context','list_todos','get_todo','list_reports','
   assert.ok(cloud.includes(`aimychats_${tool}`));
 }
 for (const command of ['cloud-context','todos','todo','reports','report','topics','topic','topic-reports']) {
-  assert.ok(skill.includes(`wxq ${command}`), `missing CLI example ${command}`);
+  assert.ok(skill.includes(`aimychats-cli ${command}`), `missing CLI example ${command}`);
 }
 assert.match(skill, /source_info\.subscription_id/);
 assert.match(skill, /50/);

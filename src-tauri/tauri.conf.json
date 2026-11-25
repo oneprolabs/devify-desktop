@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && npm run stage:wxq",
+    "beforeBuildCommand": "npm run build && npm run stage:aimychats-cli",
     "frontendDist": "../dist"
   },
   "app": {
@@ -59,7 +59,7 @@
       "dmg"
     ],
     "resources": [
-      "binaries/wxq-*"
+      "binaries/aimychats-cli-*"
     ],
     "icon": [
       "icons/32x32.png",

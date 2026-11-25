@@ -5,12 +5,12 @@ use std::net::TcpListener;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-fn wxq(endpoint: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_wxq"))
+fn run_cli(endpoint: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_aimychats-cli"))
         .args(["--endpoint", endpoint, "--token", "synthetic-test-token"])
         .args(args)
         .output()
-        .expect("run wxq")
+        .expect("run aimychats-cli")
 }
 
 fn request(args: &[&str], body: &str) -> (String, String) {
@@ -24,7 +24,10 @@ fn request(args: &[&str], body: &str) -> (String, String) {
             match listener.accept() {
                 Ok((stream, _)) => break stream,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "wxq did not send a request");
+                    assert!(
+                        Instant::now() < deadline,
+                        "aimychats-cli did not send a request"
+                    );
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(error) => panic!("accept: {error}"),
@@ -52,7 +55,7 @@ fn request(args: &[&str], body: &str) -> (String, String) {
         .unwrap();
         line
     });
-    let output = wxq(&endpoint, args);
+    let output = run_cli(&endpoint, args);
     let line = server.join();
     assert!(
         output.status.success(),
@@ -144,7 +147,7 @@ fn human_readable_continuation_is_executable() {
         r#"{"account_id":"test-account","sessions":[],"next_offset":4}"#,
     );
     assert!(line.contains("limit=2&offset=2&"));
-    assert!(output.contains("wxq sessions --account 'test-account' --limit 2 --offset 4"));
+    assert!(output.contains("aimychats-cli sessions --account 'test-account' --limit 2 --offset 4"));
     let (line, output) = request(
         &[
             "sessions",
@@ -175,7 +178,7 @@ fn rejects_missing_or_invalid_offsets_before_http() {
     ] {
         let mut args = vec!["sessions"];
         args.extend(flags);
-        let output = wxq("http://127.0.0.1:0", &args);
+        let output = run_cli("http://127.0.0.1:0", &args);
         assert_eq!(output.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&output.stderr).contains(error));
     }

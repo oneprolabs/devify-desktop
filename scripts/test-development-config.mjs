@@ -13,10 +13,10 @@ assert.deepEqual(dev.plugins['deep-link'].desktop.schemes, ['devify-dev']);
 assert.deepEqual(dev.plugins.updater.endpoints, []);
 assert.deepEqual(dev.build.features, ['dev-app']);
 assert.notEqual(dev.build.devUrl, prod.build.devUrl);
-assert.match(dev.build.beforeBuildCommand, /stage:wxq:dev/);
-assert.match(dev.build.beforeDevCommand, /stage-wxq\.mjs --prepare --dev/);
+assert.match(dev.build.beforeBuildCommand, /stage:aimychats-cli:dev/);
+assert.match(dev.build.beforeDevCommand, /stage-aimychats-cli\.mjs --prepare --dev/);
 const scripts = load('../package.json').scripts;
-assert.match(scripts['stage:wxq:dev'], /aux-binaries,dev-app/);
+assert.match(scripts['stage:aimychats-cli:dev'], /aux-binaries,dev-app/);
 assert.match(scripts['build:dev'], /--mode development-app/);
 assert.match(scripts['desktop:dev'], /tauri.dev-app.conf.json/);
 assert.match(scripts['desktop:install:dev'], /--dev/);
@@ -27,4 +27,10 @@ assert.match(release, /Refusing to publish a non-production app/);
 assert.notEqual(dev.build.frontendDist, prod.build.frontendDist);
 assert.notDeepEqual(dev.bundle.resources, prod.bundle.resources);
 assert.match(scripts['build:dev'], /--outDir dist-dev/);
-assert.match(scripts['stage:wxq:dev'], /stage-wxq\.mjs --dev/);
+assert.match(scripts['stage:aimychats-cli:dev'], /stage-aimychats-cli\.mjs --dev/);
+// Tauri matches src/bin filenames to Cargo target names when selecting packaged executables.
+const cargo = fs.readFileSync(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
+assert.match(cargo, /name = "aimychats-cli"\npath = "src\/bin\/aimychats-cli\/main\.rs"\nrequired-features = \["aux-binaries"\]/);
+for (const legacy of ['wxq.rs', 'wxq']) {
+  assert.ok(!fs.existsSync(new URL(`../src-tauri/src/bin/${legacy}`, import.meta.url)));
+}
