@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
 import { isViewerEvidence, viewerRelevanceLabel, readRelevanceCounts, type RelevanceCounts, type ViewerEventRelevance } from '../../shared/api/eventRelevance';
-import { reportPresentation } from './reportPresentation';
+import { reportPeriodDate, reportPresentation, reportSectionTitle, type ReportPresentationInput } from './reportPresentation';
 import { useEventSearch } from './useEventSearch';
 import { renderAgentMarkdown } from '../../shared/content/summary';
 import { readPageSnapshot, savePageSnapshot, clearPageSnapshots, pageSnapshotGeneration } from '../../shared/state/pageSnapshots';
@@ -16,8 +16,8 @@ type EventItem = ViewerEventRelevance & { id: number; title: string; content: st
 type RelatedEvent = { id: number; title?: string; status?: string | null; relation_type?: string; type?: string; label?: string; relation_id?: number };
 type EventRelation = Omit<RelatedEvent, 'id'> & { id?: number; event_id?: number; related_event_id?: number; source_event_id?: number; target_event_id?: number };
 type EventRelationRecord = { id: number; space_id: string; left_event_id: number; right_event_id: number; relation_kind: string; decision: string; reason?: string };
-type ReportSection = { id: number; title: string; position: number; items?: Array<{ id: number; title: string; summary: string; label?: string; time_text?: string; contact_text?: string; followup_text?: string; sources?: Array<{ display_text?: string; event_id?: number | null; note_id?: number | null }> }> };
-type ReportItem = { id: number; title: string; body?: string; content?: unknown; status: string; period_start?: string | null; period_end?: string | null; generated_at?: string | null; updated_at?: string | null; sections?: ReportSection[] };
+type ReportSection = { id: number; section_key?: string; title: string; position: number; items?: Array<{ id: number; title: string; summary: string; label?: string; time_text?: string; contact_text?: string; followup_text?: string; sources?: Array<{ display_text?: string; event_id?: number | null; note_id?: number | null }> }> };
+type ReportItem = ReportPresentationInput & { id: number; title: string; status: string; generated_at?: string | null; updated_at?: string | null; sections?: ReportSection[] };
 type EventNote = { id: number; title: string; content: string; start_at?: string | null; end_at?: string | null; origin?: string | null };
 type EventDetail = EventItem & {
   evidence?: Array<{ id: number; message_id?: number; sender_name?: string; occurred_at?: string | null; content?: string }>;
@@ -67,7 +67,7 @@ function relationKindLabel(kind?: string | null): string {
   return RELATION_KINDS[kind ?? ''] ?? t("关联");
 }
 function statusLabel(value?: string | null): string {
-  return ({ open: t("进行中"), in_progress: t("推进中"), done: t("已完成"), queued: t("排队中"), ready: t("已生成"), partial: t("部分生成"), failed: t("生成失败") } as Record<string, string>)[value || ''] || value || t("未标记");
+  return ({ open: t("进行中"), in_progress: t("推进中"), done: t("已完成"), queued: t("排队中"), processing: t("正在生成"), ready: t("已生成"), partial: t("部分生成"), failed: t("生成失败") } as Record<string, string>)[value || ''] || value || t("未标记");
 }
 /** Notes arrive as `［会话标签］会话名  #消息区间`; split the tag off and drop the
  *  message-range suffix, which is ingestion bookkeeping rather than a name. */
@@ -169,10 +169,6 @@ function reportType(report: ReportItem): string {
 function reportBadge(report: ReportItem): string {
   return { 日报: t("日"), 周报: t("周"), 月报: t("月") }[reportKind(report.title)] ?? t("报");
 }
-function sectionItems(report: ReportItem): string[] {
-  return (report.sections ?? []).flatMap(section => (section.items ?? []).map(item => item.title));
-}
-
 export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAnalysisSettings }: { kind: Kind; userId: number | null; focusId?: number | null; onOpenEvent?: (eventId: number) => void; onOpenAnalysisSettings?: () => void }) {
   const defaultFilter = kind === 'events' && focusId == null ? 'my_todo' : 'all';
   const [spaceId, setSpaceId] = useState<string | null>(null);
@@ -368,6 +364,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   const detailId = relatedDetailId ?? selectedId;
   const selected = useMemo(() => items.find(item => item.id === detailId) ?? null, [items, detailId]);
 
+  const selectedReportPending = useRef(false);
+  useEffect(() => {
+    selectedReportPending.current = kind === 'reports' && (selected?.status === 'queued' || selected?.status === 'processing');
+  }, [kind, selected?.status]);
+
   useEffect(() => {
     if (!isTauri() || !sourceScope || !spaceId || detailId == null) return;
     setOpenNotes({});
@@ -382,13 +383,48 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   useEffect(() => {
     if (!isTauri() || !sourceScope || !spaceId || detailId == null) { setDetail(null); setEventNotes([]); setDetailLoading(false); setError(''); return; }
     let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let hasPendingDetail = false;
+    const scheduleReportCheck = () => {
+      timer = setTimeout(() => {
+        if (!active) return;
+        if (globalThis.document?.hidden) scheduleReportCheck();
+        else void loadDetail(true);
+      }, 5000);
+    };
+    const loadDetail = async (background = false) => {
+      try {
+        const value = await invoke<EventDetail | ReportItem>('devify_analysis_detail', { kind, spaceId, itemId: detailId });
+        if (!active) return;
+        setDetail(value);
+        if (kind === 'reports') {
+          const { status, generated_at } = value as ReportItem;
+          if (background) {
+            setError('');
+            setItems(current => current.map(item => item.id === detailId ? { ...item, status, generated_at } : item));
+          }
+          hasPendingDetail = status === 'queued' || status === 'processing';
+          if (hasPendingDetail) scheduleReportCheck();
+        }
+      } catch (reason) {
+        if (!active) return;
+        if (hasPendingDetail) {
+          scheduleReportCheck();
+        } else {
+          setError(String(reason));
+          if (!background && selectedReportPending.current) scheduleReportCheck();
+        }
+      } finally {
+        if (active && !background) setDetailLoading(false);
+      }
+    };
     setDetailLoading(true);
     setError('');
-    void invoke<EventDetail | ReportItem>('devify_analysis_detail', { kind, spaceId, itemId: detailId })
-      .then(value => { if (active) setDetail(value); })
-      .catch(reason => { if (active) setError(String(reason)); })
-      .finally(() => { if (active) setDetailLoading(false); });
-    return () => { active = false; };
+    void loadDetail();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [kind, spaceId, detailId, sourceScope, detailReloadKey]);
   useEffect(() => {
     if (!isTauri() || !sourceScope || kind !== 'events' || !spaceId || detailId == null) { setEventNotes([]); return; }
@@ -465,7 +501,11 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
   ], [eventNotes, relatedEvents]);
   const allRawOpen = eventNotes.length > 0 && eventNotes.every(note => openNotes[note.id]);
   const toggleAllRaw = () => setOpenNotes(allRawOpen ? {} : Object.fromEntries(eventNotes.map(note => [note.id, true])));
-  const reportView = reportPresentation(report ?? {});
+  const reportSections = (report?.sections ?? []).filter(section => section.items?.length);
+  const reportItemCount = reportSections.reduce((count, section) => count + (section.items?.length ?? 0), 0);
+  const reportView = reportPresentation(report ?? {}, reportItemCount > 0);
+  const periodStart = reportPeriodDate(report?.period_start);
+  const periodEnd = reportPeriodDate(report?.period_end);
   const applyEventUpdate = (updated: EventItem) => {
     clearPageSnapshots();
     setDetail(current => (current && 'content' in current && (current as EventItem).id === updated.id
@@ -964,21 +1004,21 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
             <span className="report-badge">{reportBadge(report)}</span>
             <div>
               <h1>{report.title}</h1>
-              <p>{reportType(report)} · {report.generated_at ? tf("{0} 生成", date(report.generated_at)) : statusLabel(report.status)}</p>
+              <p>{reportType(report)} · {!reportView.notice && report.generated_at ? tf("{0} 生成", date(report.generated_at)) : statusLabel(report.status)}</p>
             </div>
           </header>
 
           <div className="report-summary">
-            <div className="report-stats">
-              {(report.period_start || report.period_end) && <span>{t("周期")} {date(report.period_start)} – {date(report.period_end)}</span>}
-              <span>{report.sections?.length ?? 0} {t("个分类 ·")} {sectionItems(report).length} {t("项")}</span>
-            </div>
+            {(periodStart || periodEnd || reportItemCount > 0) && <div className="report-stats">
+              {(periodStart || periodEnd) && <span>{t("报告周期")} {date(periodStart)} – {date(periodEnd)}</span>}
+              {reportItemCount > 0 && <span>{reportSections.length} {t("个分类 ·")} {reportItemCount} {t("项")}</span>}
+            </div>}
             {reportView.notice && <p role={report.status === 'failed' ? 'alert' : 'status'}>{reportView.notice}</p>}
             {reportView.content ? <div className="report-markdown wxv-ai-body">{renderAgentMarkdown(reportView.content)}</div> : !reportView.notice && <p>{t("尚未返回正文。")}</p>}
           </div>
 
-          {(report.sections ?? []).map(section => <section className="report-section" key={section.id}>
-            <h3>{section.title}{section.items?.length ? ` · ${section.items.length}` : ''}</h3>
+          {reportSections.map(section => <section className="report-section" key={section.id}>
+            <h3>{reportSectionTitle(section, report)} · {section.items?.length}</h3>
             <div className="report-items">
               {(section.items ?? []).map(item => {
                 const eventSource = item.sources?.find(source => source.event_id)?.event_id;
@@ -1006,7 +1046,7 @@ export function CloudAnalysisPage({ kind, userId, focusId, onOpenEvent, onOpenAn
             </div>
           </section>)}
 
-          <p className="report-note">{t("每一项都是待办，点击可在右侧预览；需要完整时间线时再打开详情。")}</p>
+          {reportItemCount > 0 && <p className="report-note">{t("每一项都是待办，点击可在右侧预览；需要完整时间线时再打开详情。")}</p>}
         </article>}
         </>}
 

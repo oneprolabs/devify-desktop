@@ -1,4 +1,5 @@
 import * as nativeErrors from '../src/shared/i18n/errorText.ts';
+import { en } from '../src/shared/i18n/enCatalog.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
@@ -68,9 +69,23 @@ const find = (tree, predicate, message = 'expected element missing') => {
 const byClass = (tree, className) => find(tree, node => node.props?.className === className, `missing .${className}`);
 
 let invoke = () => { throw Error('unexpected IPC before setup'); };
+const reportTimers = new Map();
+const setReportTimer = callback => {
+  const id = Symbol();
+  reportTimers.set(id, callback);
+  return id;
+};
+const clearReportTimer = id => reportTimers.delete(id);
+const tickReportTimer = () => {
+  assert.equal(reportTimers.size, 1, 'expected one pending report check');
+  const [[id, callback]] = reportTimers;
+  reportTimers.delete(id);
+  callback();
+};
 function EvidenceDrawer() { throw Error('child component should not execute'); }
 const mocks = {
   react,
+  './enCatalog': { en },
   'react/jsx-runtime': jsx,
   '@tauri-apps/api/core': { invoke: (...args) => invoke(...args), isTauri: () => true },
   '../../shared/ui/SidebarResizeHandle': { SidebarResizeHandle: () => null },
@@ -87,15 +102,21 @@ const load = path => {
   const requireMock = id => {
     if (id === '../../shared/content/summary') return { renderAgentMarkdown: value => value };
     if (id in mocks) return mocks[id];
-    if (id === '../../shared/i18n/locale' || id === '../i18n/locale') { const format = (value, ...args) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)] ?? '')); return { t: value => value, cf: value => value, tf: format, ctf: format, getUiLanguage: () => '中文', dateLocale: () => 'zh-CN', sortLocale: () => 'zh-Hans-CN' }; }
   if (id.endsWith('/i18n/errorText')) return nativeErrors;
     throw Error(`unexpected import: ${id}`);
   };
-  new Function('require', 'module', 'exports', compiled)(requireMock, module, module.exports);
+  const isReportPage = path.endsWith('/CloudAnalysis.tsx');
+  new Function('require', 'module', 'exports', 'setTimeout', 'clearTimeout', compiled)(
+    requireMock, module, module.exports,
+    isReportPage ? setReportTimer : setTimeout,
+    isReportPage ? clearReportTimer : clearTimeout,
+  );
   return module.exports;
 };
-const { reportPresentation } = load('../src/features/analysis/reportPresentation.ts');
-mocks['./reportPresentation'] = { reportPresentation };
+mocks['../../shared/i18n/locale'] = mocks['../i18n/locale'] = load('../src/shared/i18n/locale.tsx');
+const { applyLanguage } = mocks['../../shared/i18n/locale'];
+mocks['./reportPresentation'] = load('../src/features/analysis/reportPresentation.ts');
+const { reportPresentation } = mocks['./reportPresentation'];
 mocks['../../shared/state/pageSnapshots'] = load('../src/shared/state/pageSnapshots.ts');
 mocks['../../shared/api/eventRelevance'] = load('../src/shared/api/eventRelevance.ts');
 mocks['./useEventSearch'] = load('../src/features/analysis/useEventSearch.ts');
@@ -104,7 +125,7 @@ const { CloudAnalysisPage } = load('../src/features/analysis/CloudAnalysis.tsx')
 const partialWith = '报告未完全生成，以下展示已保存的内容。';
 const partialWithout = '报告未完全生成，暂无已保存的正文。';
 const waitingWith = '正在生成这份报告，以下展示已保存的内容。';
-const waitingWithout = '正在生成这份报告，稍后刷新即可看到内容。';
+const waitingWithout = '正在生成这份报告，完成后会自动显示。';
 const failedWith = '报告生成失败，以下展示已保存的内容。';
 const failedWithout = '报告生成失败，暂无已保存的正文。';
 const body = '  第一行\n第二行  \n';
@@ -192,6 +213,78 @@ weeklyFilter.props.onClick();
 assert.match(text(byClass(render(weeklyEnglish.instance), 'analysis-items')), /Weekly · week 48/);
 const summaryOf = tree => byClass(tree, 'report-summary');
 
+const ruleSections = [['ongoing', 'Ongoing events'], ['notes', 'Notes'], ['done', 'Completed events']]
+  .map(([section_key, title], index) => ({ ...sections[index], section_key, title }));
+const rawPeriod = 'Period: 2026-11-24 00:00:00+08:00 to 2026-11-24 10:57:06.160001+08:00';
+const ruleReport = {
+  title: '日报 · 11/24',
+  snapshot_ref: { schema_version: 'report.v1' },
+  processing: { generator: 'llm_pending' },
+  period_start: '2026-11-23T16:00:00Z',
+  period_end: '2026-11-24T02:57:06.160001Z',
+  generated_at: '2026-11-24T02:57:06.160001Z',
+};
+const fallback = `# ${ruleReport.title}\n\n${rawPeriod}`;
+const original = '## Notes\n\n> Period: customer wording, keep verbatim.\n\n王女士：Release Notes';
+const headings = tree => elements(tree).filter(node => node.type === 'h3').map(text);
+
+for (const [ui, periodLabel, statusLabel, titles] of [
+  ['中文', '报告周期', '排队中', ['进行中的待办', '笔记', '已完成的待办']],
+  ['English', 'Period', 'Queued', ['Ongoing to-dos', 'Notes', 'Completed to-dos']],
+]) {
+  applyLanguage({ ui, summary: ui === '中文' ? 'English' : '中文' });
+  const { tree: queued } = await mount(fixture({ ...ruleReport, status: 'queued', body: fallback, sections: ruleSections.map(section => ({ ...section, items: [] })) }));
+  assert.ok(text(byClass(queued, 'report-head')).includes(statusLabel));
+  assert.deepEqual(headings(queued), []);
+  const queuedSummary = text(summaryOf(queued));
+  assert.match(queuedSummary, new RegExp(periodLabel));
+  assert.doesNotMatch(queuedSummary, /Period:|160001|0 个分类|0 categories|0 items/);
+  assert.ok(queuedSummary.includes(ui === '中文' ? waitingWithout : en[waitingWithout]));
+
+  const { tree: partialReport } = await mount(fixture({
+    ...ruleReport, processing: { generator: 'llm_failed' }, body: `${fallback}\n\n${original}`,
+    sections: ruleSections.map((section, i) => i === 1 ? { ...section, items: [] } : section),
+  }));
+  assert.deepEqual(headings(partialReport), [titles[0] + ' · 1', titles[2] + ' · 1']);
+  assert.ok(text(summaryOf(partialReport)).includes(original));
+  assert.doesNotMatch(text(summaryOf(partialReport)), /160001/);
+  assert.ok(text(byClass(partialReport, 'report-head')).includes(ui === '中文' ? '部分生成' : en['部分生成']));
+
+  const { tree: ready } = await mount(fixture({
+    ...ruleReport, title: 'Monthly · November', status: 'ready', processing: { generator: 'llm' },
+    content: { llm_persisted: true }, body: original, sections: ruleSections,
+  }));
+  assert.deepEqual(headings(ready), ['Ongoing events · 1', 'Notes · 1', 'Completed events · 1']);
+  assert.ok(text(summaryOf(ready)).includes(original));
+}
+applyLanguage({ ui: '中文' });
+
+for (const overrides of [
+  { snapshot_ref: undefined },
+  { processing: { generator: 'llm' } },
+  { period_end: '2026-11-24T02:57:06.160002Z' },
+  { period_end: 'bad timestamp' },
+]) {
+  assert.equal(reportPresentation({ ...ruleReport, ...overrides, body: fallback }).content, fallback);
+}
+const { tree: topicReport } = await mount(fixture({
+  ...ruleReport, title: '主题 · 交接', status: 'ready', processing: { generator: 'llm' },
+  content: { llm_persisted: false }, sections: [{ ...ruleSections[1], title: 'Custom Notes' }, ruleSections[2]], body: original,
+}));
+assert.deepEqual(headings(topicReport), ['Custom Notes · 1', '已完成的待办 · 1']);
+assert.ok(text(summaryOf(topicReport)).includes(original));
+
+const { tree: failedReportWithItems } = await mount(fixture({
+  ...ruleReport, status: 'failed', processing: { generator: 'llm_failed' },
+  period_start: null, body: fallback.replace('2026-11-24 00:00:00+08:00', '—'),
+  sections: [ruleSections[1]],
+}));
+assert.match(text(byClass(failedReportWithItems, 'report-head')), /生成失败/);
+assert.match(text(summaryOf(failedReportWithItems)), /报告周期 时间未知/);
+assert.match(text(summaryOf(failedReportWithItems)), new RegExp(failedWith));
+assert.doesNotMatch(text(summaryOf(failedReportWithItems)), /Period:|160001/);
+assert.deepEqual(headings(failedReportWithItems), ['笔记 · 1']);
+
 {
   const { instance, tree } = await mount(fixture({ title: '主题 · 虚构客户反馈日报' }));
   assert.equal(tree.props.className, 'analysis-page report-workspace');
@@ -260,6 +353,60 @@ assert.ok(text(summaryOf(refreshingReport)).includes(body), 'Detail refresh keep
 resolveRefreshDetail(refreshedReport);
 await flush();
 assert.ok(text(summaryOf(render(refreshPage.instance))).includes(refreshedReport.body));
+
+reportTimers.clear();
+const queuedReport = fixture({ status: 'queued', body: '', sections: [] });
+const autoRefreshPage = await mount(queuedReport);
+const autoRefreshResponses = [
+  () => Promise.reject('虚构的短暂网络错误'),
+  () => Promise.resolve({ ...queuedReport, status: 'processing' }),
+  () => Promise.resolve({ ...queuedReport, status: 'ready', body: '自动加载的报告正文' }),
+];
+invoke = (command, args) => {
+  assert.equal(command, 'devify_analysis_detail');
+  assert.deepEqual(args, { kind: 'reports', spaceId: '999', itemId: queuedReport.id });
+  return autoRefreshResponses.shift()();
+};
+tickReportTimer(); await flush();
+assertNotice(render(autoRefreshPage.instance), 'status', waitingWithout);
+tickReportTimer(); await flush();
+assertNotice(render(autoRefreshPage.instance), 'status', waitingWithout);
+tickReportTimer(); await flush();
+const completedReport = render(autoRefreshPage.instance);
+assert.match(text(summaryOf(completedReport)), /自动加载的报告正文/);
+assert.doesNotMatch(text(summaryOf(completedReport)), /正在生成/);
+assert.equal(reportTimers.size, 0, 'a completed report stops polling');
+
+const initialFailurePage = await mount(queuedReport, true);
+assert.match(text(byClass(initialFailurePage.tree, 'analysis-empty report-empty error')), /虚构详情错误/);
+invoke = (command, args) => {
+  assert.equal(command, 'devify_analysis_detail');
+  assert.deepEqual(args, { kind: 'reports', spaceId: '999', itemId: queuedReport.id });
+  return Promise.resolve({ ...queuedReport, status: 'ready', body: '首次请求失败后自动加载的报告正文' });
+};
+tickReportTimer(); await flush();
+const recoveredReport = render(initialFailurePage.instance);
+assert.match(text(summaryOf(recoveredReport)), /首次请求失败后自动加载的报告正文/);
+assert.doesNotMatch(text(recoveredReport), /虚构详情错误/);
+assert.equal(reportTimers.size, 0, 'a successful retry stops polling when the report is ready');
+
+const repeatedFailurePage = await mount(queuedReport, true);
+tickReportTimer(); await flush();
+assert.match(text(byClass(render(repeatedFailurePage.instance), 'analysis-empty report-empty error')), /虚构详情错误/);
+assert.equal(reportTimers.size, 0, 'an unconfirmed pending report gets one automatic retry');
+
+const leavingReportPage = await mount(queuedReport);
+let finishPoll;
+invoke = command => {
+  if (command === 'devify_analysis_detail') return new Promise(resolve => { finishPoll = resolve; });
+  if (command === 'app_settings_get') return new Promise(() => {});
+  throw Error(command);
+};
+tickReportTimer();
+render(leavingReportPage.instance, 'events');
+finishPoll(queuedReport);
+await flush();
+assert.equal(reportTimers.size, 0, 'leaving the page ignores an in-flight report check');
 
 invoke = (command, args) => {
   if (command === 'app_settings_get') return Promise.resolve({ devify: { active_space_id: '1000' } });
@@ -334,7 +481,7 @@ assert.ok(!elements(tree).some(node => node.type === EvidenceDrawer));
 assert.equal(partial.calls.length, 3, 'source controls must not call real or unexpected IPC');
 
 for (const status of ['partial', 'queued', 'processing']) {
-  const { tree: noBody } = await mount(fixture({ status, body: '  \n', content: metadata }));
+  const { tree: noBody } = await mount(fixture({ status, body: '  \n', content: metadata, sections: [] }));
   assertNotice(noBody, 'status', status === 'partial' ? partialWithout : waitingWithout);
   assert.ok(!text(summaryOf(noBody)).includes(metadata.metadata), `${status} metadata rendered as body`);
   assert.ok(!text(summaryOf(noBody)).includes('尚未返回正文。'));
@@ -344,7 +491,7 @@ for (const status of ['partial', 'queued', 'processing']) {
 }
 for (const [overrides, role, notice, expectedContent] of [
   [{ status: 'failed', content: metadata }, 'alert', failedWith, metadataJSON],
-  [{ status: 'failed', content: null }, 'alert', failedWithout, null],
+  [{ status: 'failed', content: null, sections: [] }, 'alert', failedWithout, null],
   [{ status: 'ready', content: metadata }, null, null, metadataJSON],
   [{ status: 'ready', content: null }, null, null, '尚未返回正文。'],
   [{ status: 'legacy-status', content }, null, null, content],
