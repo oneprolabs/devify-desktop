@@ -44,8 +44,9 @@ export function AgentAccess({ status, disabled, error, onConfigure, onRefresh }:
   };
   const unavailable = disabled || Boolean(installing) || copying || !status?.running || !status?.wxq || Boolean(error);
   return <section className="integration-skills" aria-labelledby="integration-skills-title">
-    <div className="integration-section-heading"><h3 id="integration-skills-title">{t('使用智能体访问聊天记录')}</h3></div>
-    <p>{t('为常用智能体安装 Skills，从它们的会话中读取聊天记录并继续处理。')}</p>
+    <div className="integration-section-heading"><h3 id="integration-skills-title">{t('使用智能体访问 AIMyChats')}</h3></div>
+    <p>{t('通过一个 Skill 读取获准的聊天、待办、已生成的日报／周报／月报和主题报告。')}</p>
+    <p className="integration-help">{t('仅读取已有结果，不会生成报告、完成待办或修改订阅。云端结果属于远程读取。')}</p>
     {error && <p className="integration-error" role="alert">{errorText(error)} <button className="integration-text" type="button" disabled={disabled} onClick={() => void onRefresh()}>{t('重试')}</button></p>}
     {status && !status.running && <p className="integration-error" role="alert">{t('本机接入暂不可用，请确认已登录并重新打开智能体集成。')}</p>}
     {status && !status.wxq && <p className="integration-error" role="alert">{t('缺少本机读取工具，请重新安装完整版 AIMyChats。')}</p>}

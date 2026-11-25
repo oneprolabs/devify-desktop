@@ -42,12 +42,16 @@ export async function runAgentLayoutChecks(page) {
   await page.click('loc=role:button[name="智能体"]');
   await page.waitForSelector('.integration-usage');
   assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('.prototype-nav-item[aria-current="page"]')].map(x=>x.textContent.trim())),['智能体'],'shortcut shares the settings page without two active rail items');
-  assert.equal(await page.evaluate(()=>document.querySelectorAll('.integration-usage-examples button').length),2);
+  assert.equal(await page.evaluate(()=>document.querySelectorAll('.integration-usage-examples button').length),4);
   assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(x=>x.command==='wechat_voice_status').length),0,'collapsed voice section does not probe engines');
   assert.equal(await page.evaluate(()=>getComputedStyle(document.querySelector('.integration-voice h3')).fontSize),'16px');
   await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{async writeText(text){window.__exampleCopied=text;}}}));
   await page.click('.integration-usage-examples button >> nth=0');
   await page.waitForFunction(()=>window.__exampleCopied?.includes('产品讨论群'));
+  await page.click('.integration-usage-examples button >> nth=2');
+  await page.waitForFunction(()=>window.__exampleCopied?.includes('我的未完成待办'));
+  await page.click('.integration-usage-examples button >> nth=3');
+  await page.waitForFunction(()=>window.__exampleCopied?.includes('已经生成的上周周报'));
   const agentBefore=await page.evaluate(()=>JSON.stringify(window.__E2E__.settings.agent));
   await page.click('.integration-disclosure');
   await page.waitForFunction(()=>document.querySelector('.integration-voice-body [role="status"]')?.textContent==='Whisper');
@@ -59,7 +63,7 @@ export async function runAgentLayoutChecks(page) {
   assert.deepEqual(await page.evaluate(()=>window.__E2E__.voiceStatus.settings),{engine:'',model:'/tmp/synthetic-voice-model',language:'en'});
   assert.equal(await page.evaluate(()=>JSON.stringify(window.__E2E__.settings.agent)),agentBefore,'voice config cannot change the Agent provider');
   assert.ok(await page.evaluate(()=>{const footer=document.querySelector('.integration-voice-footer').getBoundingClientRect(),button=document.querySelector('.integration-voice-footer button').getBoundingClientRect();return button.top-footer.top>=16&&footer.bottom-button.bottom>=15;}),'save button has space above and below');
-  return {shortcut:'shared page, single highlight',usage:'visible with two working examples',voice:'lazy detection, advanced save, separated footer'};
+  return {shortcut:'shared page, single highlight',usage:'four examples; chat, to-do and existing-report copy verified',voice:'lazy detection, advanced save, separated footer'};
 }
 
 export async function runMissingAgentConfigurationCheck(page) {

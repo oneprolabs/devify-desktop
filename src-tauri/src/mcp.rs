@@ -1,5 +1,6 @@
 pub(crate) mod runtime;
 mod chat;
+mod cloud;
 use chat::{accounts_json, policy_json, sessions_json, messages_json, search_json, digest_json};
 
 use axum::extract::{Path as AxumPath, Query, State};
@@ -197,7 +198,7 @@ fn safe_account_id(account_id: &str) -> Result<(), String> {
 }
 
 fn tools() -> Value {
-    json!({
+    let mut value = json!({
         "tools": [
             {"name":"aimychats_list_accounts", "description":"列出当前 AIMyChats 中允许读取的平台和账号，后续读取传入 account_id。", "inputSchema":{"type":"object","properties":{}}},
             {
@@ -242,7 +243,7 @@ fn tools() -> Value {
             },
             {
                 "name": "aimychats_digest",
-                "description": "对指定的白名单会话做规则整理，输出待办、决定、问题、风险、数据和时间线素材。不是本地 AI 结论。",
+                "description": "对指定白名单会话做确定性规则整理，输出可能的待办等素材；不是应用已生成的“我的待办”，也不是 AI 结论。查询已有待办请用 aimychats_list_todos。",
                 "inputSchema": {
                     "type": "object",
                     "required": ["usernames"],
@@ -255,7 +256,9 @@ fn tools() -> Value {
                 }
             }
         ]
-    })
+    });
+    value["tools"].as_array_mut().unwrap().extend(cloud::tools());
+    value
 }
 
 fn result(value: Value) -> Value {
@@ -272,7 +275,30 @@ fn arguments<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, String
         .map_err(|error| format!("工具参数无效：{error}"))
 }
 
-fn call_tool(app_data: &Path, name: &str, params: &Value) -> Value {
+async fn call_tool(app_data: &Path, name: &str, params: &Value) -> Value {
+    if let Some(operation) = cloud::operation(name) {
+        let args = match arguments::<cloud::Args>(params) {
+            Ok(args) => args,
+            Err(error) => return tool_error(error),
+        };
+        return match cloud::read(app_data, operation, args).await {
+            Ok(value) => result(value),
+            Err(error) => {
+                let mut value = result(error.json());
+                value["isError"] = json!(true);
+                value
+            }
+        };
+    }
+    let data = app_data.to_path_buf();
+    let name = name.to_owned();
+    let params = params.clone();
+    tokio::task::spawn_blocking(move || call_chat_tool(&data, &name, &params))
+        .await
+        .unwrap_or_else(|_| tool_error("内部读取任务失败。"))
+}
+
+fn call_chat_tool(app_data: &Path, name: &str, params: &Value) -> Value {
     let output = match name {
         "aimychats_list_accounts" => accounts_json(app_data),
         "aimychats_get_policy" | "wechat_get_policy" => arguments::<AccountArgs>(params).and_then(|args| policy_json(app_data, args)),
@@ -296,7 +322,7 @@ fn rpc_error(request: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": request.get("id").cloned().unwrap_or(Value::Null), "error": {"code": code, "message": message}})
 }
 
-fn handle_rpc(app_data: &Path, request: Value) -> Option<Value> {
+async fn handle_rpc(app_data: &Path, request: Value) -> Option<Value> {
     let method = request.get("method")?.as_str()?;
     let has_id = request.get("id").is_some();
     if method == "notifications/initialized" || method == "notifications/cancelled" {
@@ -309,7 +335,7 @@ fn handle_rpc(app_data: &Path, request: Value) -> Option<Value> {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "wechat-devify-bridge", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "只读访问本地已解密缓存；所有工具都受聊天白名单约束。"
+                "instructions": "聊天工具只读本机白名单缓存；云端工具复用桌面登录读取当前空间已有待办、报告和主题，属于远程读取，不触发生成或修改。"
             }),
         ),
         "ping" => rpc_response(&request, json!({})),
@@ -319,7 +345,7 @@ fn handle_rpc(app_data: &Path, request: Value) -> Option<Value> {
             let Some(name) = params.get("name").and_then(Value::as_str) else {
                 return Some(rpc_error(&request, -32602, "tools/call 缺少 name。"));
             };
-            rpc_response(&request, call_tool(app_data, name, &params))
+            rpc_response(&request, call_tool(app_data, name, &params).await)
         }
         "shutdown" => rpc_response(&request, Value::Null),
         _ => rpc_error(&request, -32601, "方法不存在。"),
@@ -368,12 +394,8 @@ async fn messages(
         return (StatusCode::NOT_FOUND, Json(json!({"error": "SSE 会话不存在或已过期。"}))).into_response();
     };
     let app_data = state.app_data.clone();
-    let response = tokio::task::spawn_blocking(move || {
-        handle_rpc(&app_data, request).map(|value| serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()))
-    })
-    .await
-    .ok()
-    .flatten();
+    let response = handle_rpc(&app_data, request).await
+        .map(|value| serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
     if let Some(response) = response {
         if sender.send(response).is_err() {
             return (StatusCode::GONE, Json(json!({"error": "SSE 客户端已断开。"}))).into_response();
@@ -480,6 +502,26 @@ async fn api_digest(
     }
     let app_data = state.app_data.clone();
     api_task(move || digest_json(&app_data, args)).await
+}
+
+async fn api_cloud(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(operation): AxumPath<String>,
+    Query(args): Query<cloud::Args>,
+) -> Response {
+    if !authorized(&headers, &state.token) {
+        return api_unauthorized();
+    }
+    match cloud::read(&state.app_data, &operation, args).await {
+        Ok(value) => ([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response(),
+        Err(error) => (
+            StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY),
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(error.json()),
+        )
+            .into_response(),
+    }
 }
 
 /* ── agent access kit ───────────────────────────────────────────────────────── */
@@ -734,6 +776,7 @@ pub async fn start(
         .route("/api/messages", get(api_messages))
         .route("/api/search", get(api_search))
         .route("/api/digest", post(api_digest))
+        .route("/api/cloud/:operation", get(api_cloud))
         .route("/agent/manifest", get(agent_manifest))
         .route("/agent/wxq", get(agent_wxq))
         .route("/agent/skills", get(agent_skills))
@@ -777,6 +820,18 @@ pub async fn run_from_env() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::settings::AppSettings;
+
+    #[test]
+    fn cloud_tools_are_discoverable_with_the_existing_chat_tools() {
+        let list = tools();
+        let names: Vec<_> = list["tools"].as_array().unwrap().iter()
+            .map(|tool| tool["name"].as_str().unwrap()).collect();
+        for name in ["aimychats_get_cloud_context", "aimychats_list_todos", "aimychats_get_todo",
+            "aimychats_list_reports", "aimychats_get_report", "aimychats_list_topics",
+            "aimychats_get_topic", "aimychats_list_topic_reports", "aimychats_get_messages"] {
+            assert!(names.contains(&name), "missing tool {name}");
+        }
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wcd-mcp-{name}-{}", std::process::id()));
