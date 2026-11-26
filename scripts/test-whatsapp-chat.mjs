@@ -40,6 +40,7 @@ let resolveAccounts;
 const accounts = new Promise(resolve => { resolveAccounts = resolve; });
 const account = '123456789@s.whatsapp.net';
 const wechat = 'wx_test';
+const otherWeChat = 'wx_other';
 const session = { username: 'shared', display: 'WhatsApp 测试会话', is_group: false, last_time: 1 };
 const wechatSession = { username: 'shared', display: '微信测试会话', is_group: false, last_time: 2 };
 let hideWhatsAppFromFirstPage = false;
@@ -48,10 +49,12 @@ let emptyWhatsApp = false;
 let removedWhatsApp = false;
 const badgeReads = [];
 let pagedSessions = false, failNextWeChatPage = false, resolvePagedBadges = false;
+let longSessionPages = false;
 const pageReads = [];
 const sessionReads = [];
-const pagedTotal = id => id === wechat ? 1000 : 52;
-const pagedUsernames = id => Array.from({ length: pagedTotal(id) }, (_, index) => `${id}-${index}`);
+const pagedTotal = id => id === wechat ? (longSessionPages ? 1100 : 1000) : 52;
+const pagedUsernames = id => Array.from({ length: pagedTotal(id) }, (_, index) =>
+  longSessionPages && id !== account ? String(index) : `${id}-${index}`);
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
   if (command === 'app_settings_get') {
@@ -62,6 +65,7 @@ const invoke = async (command, args) => {
         allowed_usernames: {
           [account]: removedWhatsApp ? [] : pagedSessions ? pagedUsernames(account) : [session.username],
           [wechat]: pagedSessions ? pagedUsernames(wechat) : [wechatSession.username],
+          ...(longSessionPages ? { [otherWeChat]: pagedUsernames(otherWeChat) } : {}),
         },
       },
     };
@@ -71,17 +75,39 @@ const invoke = async (command, args) => {
     if(removedWhatsApp&&args.accountId===account)return [];
     if (pagedSessions) {
       const offset=args.offset??0;
-      const total = pagedTotal(args.accountId);
       if(offset)pageReads.push([args.accountId,offset]);
       if(offset&&args.accountId===wechat&&failNextWeChatPage){failNextWeChatPage=false;throw Error('temporary local read failure');}
-      return Array.from({length:Math.min(args.limit, total - offset)},(_,i)=>({username:`${args.accountId}-${offset+i}`,display:`${args.accountId} chat ${offset+i}`,last_time:1000-offset-i,is_group:false}));
+      if (longSessionPages && args.accountId !== account) {
+        const start = Math.min(offset, 1000);
+        const other = args.accountId === otherWeChat;
+        const count = Math.min(args.limit, pagedTotal(args.accountId) - start);
+        return Array.from({ length: count }, (_, i) => {
+          const index = start + i;
+          if (!other && index === 50) return { username: '0', display: 'Stale duplicate', last_time: 5000, is_group: false };
+          if (!other && index === 250) return { username: '1', display: 'Updated conversation', last_time: 10001, is_group: false };
+          if (!other && index === 300) return { username: '1', display: 'Unconfirmed index result', last_time: 10003, is_group: false };
+          return { username: String(index), display: `${args.accountId} chat ${index}`, last_time: (other ? 9975 : 10000) - index, is_group: false };
+        });
+      }
+      const total = pagedTotal(args.accountId);
+      return Array.from({ length: Math.min(args.limit, total - offset) }, (_, i) => {
+        const index = offset + i;
+        const row = { username: `${args.accountId}-${index}`, display: `${args.accountId} chat ${index}`, last_time: 1000 - index, is_group: false };
+        if (args.accountId === account && (index === 0 || index === 50)) {
+          return { ...row, community: { id: 'fixture-community', name: 'Fixture Community', is_parent: index === 50 } };
+        }
+        return row;
+      });
     }
     return args.accountId === wechat ? [wechatSession] : hideWhatsAppFromFirstPage || emptyWhatsApp ? [] : [session];
   }
   if (command === 'wechat_upload_state') {
     badgeReads.push(args); uploadStateCalls++;
-    if (resolvePagedBadges && args.usernames.length <= 200) return args.usernames.filter(username => username === `${wechat}-999`).map(username => ({ username, state: 'pending', new_messages: 7 }));
-    if (resolvePagedBadges) throw Error('请分页读取会话状态。');
+    if (resolvePagedBadges) {
+      assert.ok(args.usernames.length <= 200, 'native upload-state reads are capped at 200 per request');
+      const pending = longSessionPages ? '249' : `${wechat}-999`;
+      return args.usernames.filter(username => username === pending).map(username => ({ username, state: 'pending', new_messages: 1 }));
+    }
     return new Promise(resolve => { resolveUploadState = resolve; });
   }
   if (['wechat_avatars', 'summary_history_list'].includes(command)) return [];
@@ -165,7 +191,7 @@ function nodes(value) {
 render();
 if (timers.length) timers.shift()();
 assert.equal(nodes(render()).filter(node => node.type === MessagePane).length, 0, 'message pane must wait until account discovery completes');
-resolveAccounts([{ id: account, source: 'whatsapp', display: '林同学' }, { id: wechat, source: 'wechat' }]);
+resolveAccounts([{ id: account, source: 'whatsapp', display: '林同学' }, { id: wechat, source: 'wechat' }, { id: otherWeChat, source: 'wechat' }]);
 for (let i = 0; i < 20; i++) await Promise.resolve();
 let initialTree = render();
 initialTree = render();
@@ -295,6 +321,9 @@ assert.ok(!textOf(tree).includes(`${wechat} chat 51`),'WeChat rows cannot leak i
 scrollList().props.onScroll(scrollAt('whatsapp'));await flush();tree=render();
 assert.deepEqual(pageReads,[[wechat,50],[wechat,50],[account,50]],'platforms keep separate page offsets');
 assert.ok(textOf(tree).includes(`${account} chat 51`));
+assert.deepEqual(rows().map(row => JSON.parse(row.props['data-session-key'])[1]),
+  Array.from({ length: 52 }, (_, index) => `${account}-${index}`), 'community rows stay in chronological order across pages');
+assert.ok(textOf(tree).includes('Fixture Community'), 'community identity remains visible');
 assert.ok(textOf(tree).includes('已到列表末尾。'),'a short final page confirms the end');
 scrollList().props.onScroll(scrollAt('whatsapp'));assert.equal(pageReads.length,3);
 selectPlatform('wechat');
@@ -350,4 +379,56 @@ assert.ok(!nodes(tree).some(node=>node.type===MessagePane&&node.props.accountId=
 runtime={sources:[{account_id:account,platform:'whatsapp',setup_complete:true},{account_id:wechat,platform:'wechat',setup_complete:true}]};
 tree=render();await flush();tree=render();tree=render();
 assert.equal(bar().props.platforms.length,2,'finishing setup makes the platform available without restarting');
-console.log('Platform isolation, remembered selection/scroll/filter, pending-first-backup, stale badges and independent pagination/retry checks passed');
+
+longSessionPages = true;
+runtime = { sources: [...runtime.sources, { account_id: otherWeChat, platform: 'wechat', setup_complete: true }] };
+render(); await flush(); tree = render();
+selectPlatform('wechat');
+buttons().find(node => textOf(node).startsWith('全部')).props.onClick(); tree = render();
+await flush(); tree = render();
+const loadWeChatPage = async () => {
+  scrollList().props.onScroll(scrollAt('wechat'));
+  await flush(); tree = render(); await flush(); tree = render();
+};
+const rowKeys = () => rows().map(row => row.props['data-session-key']);
+const key = (id, username) => JSON.stringify([id, String(username)]);
+await loadWeChatPage();
+assert.ok(rowKeys().indexOf(key(wechat, 51)) < rowKeys().indexOf(key(otherWeChat, 49)), 'a later page can precede older rows from another account');
+assert.equal(rows()[0].props['data-session-key'], key(wechat, 0), 'an older duplicate cannot move the newest row');
+assert.ok(!textOf(tree).includes('Stale duplicate'));
+assert.ok(rowKeys().includes(key(otherWeChat, 0)), 'the same username in another account is a separate row');
+
+for (let offset = 100; offset < 250; offset += 50) await loadWeChatPage();
+assert.equal(rowKeys().length, 249 + 52, 'loading beyond 200 keeps the first page and deduplicates the overlap');
+assert.equal(rowKeys()[0], key(wechat, 0));
+assert.equal(rowKeys().at(-1), key(wechat, 249));
+assert.equal(new Set(rowKeys()).size, rowKeys().length);
+assert.ok(badgeReads.some(read => read.accountId === wechat && read.usernames.includes('249') && read.usernames.length === 49), 'the second upload-state batch includes newly loaded older rows');
+pendingFilter().props.onClick(); tree = render();
+assert.deepEqual(rowKeys(), [key(wechat, 249)], 'badges from later batches still feed the pending filter');
+buttons().find(node => textOf(node).startsWith('全部')).props.onClick(); tree = render();
+
+await loadWeChatPage();
+assert.equal(rowKeys()[0], key(wechat, 1), 'a newer duplicate updates and reorders the existing row');
+assert.ok(textOf(rows()[0]).includes('Updated conversation'));
+rows()[0].props.onClick();
+tree = render();
+nodes(tree).find(node => node.type === MessagePane).props.onLatestMessage(wechat, '1', { text: 'Preview from readable messages', time: 10002 });
+tree = render();
+for (let offset = 300; offset <= 1000; offset += 50) await loadWeChatPage();
+assert.equal(rowKeys()[0], key(wechat, 1), 'the newest conversation stays at the top after scrolling through later pages');
+assert.ok(textOf(rows()[0]).includes('Preview from readable messages'), 'a later index page cannot replace the message-backed preview');
+assert.ok(!textOf(tree).includes('Unconfirmed index result'));
+assert.deepEqual(pageReads.at(-1), [wechat, 1000]);
+assert.equal(rowKeys().at(-1), key(wechat, 1049), 'the last supported full page is retained');
+const limitNotice = '已达到会话读取上限，可能还有更早的会话。';
+assert.ok(textOf(tree).includes(limitNotice));
+assert.ok(!textOf(tree).includes('已到列表末尾。'), 'a full page at the API cap does not prove exhaustion');
+assert.equal(moreButton(), undefined);
+const lastPageReadCount = pageReads.length;
+await loadWeChatPage();
+assert.equal(pageReads.length, lastPageReadCount, 'do not request an offset the native API would clamp to the same page');
+selectPlatform('whatsapp');
+assert.ok(moreButton(), 'a capped WeChat account does not stop WhatsApp pagination');
+assert.ok(!textOf(tree).includes(limitNotice));
+console.log('Platform isolation, remembered selection/scroll/filter, stale badges, and session pagination/order/deduplication checks passed');
