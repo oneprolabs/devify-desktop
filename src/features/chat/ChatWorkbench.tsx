@@ -96,7 +96,15 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [selectedSession, setSelectedSession] = useState<OwnedSession | null>(null);
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
+  const failedMessageRefresh = useRef<string>();
+  const noteMessageRefreshFailure = useCallback((id: string, username: string) => {
+    const selected = selectedSessionRef.current;
+    if (selected?.accountId === id && selected.username === username) {
+      failedMessageRefresh.current = sessionKey(id, username);
+    }
+  }, []);
   const showLatestMessage = useCallback((id: string, username: string, message: MessageItem | null) => {
+    if (failedMessageRefresh.current === sessionKey(id, username)) failedMessageRefresh.current = undefined;
     const preview = message?.text.trim() || null;
     const last_time = message?.time ?? null;
     setSessions(current => current.map(session => session.accountId === id && session.username === username
@@ -281,10 +289,11 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const refreshIssue = refreshError?.accountId === refreshAccountId ? refreshError?.issue : undefined;
   const refreshScope = useMemo(() => ({}), [refreshAccountId, visible, runtime.context, configuredKey]);
   const activeRefreshScope = useRef<object | null>(null);
-  const appliedSnapshot = useRef<string>();
+  const appliedSessionSnapshot = useRef<string>();
   useLayoutEffect(() => {
     activeRefreshScope.current = refreshScope;
-    appliedSnapshot.current = undefined;
+    appliedSessionSnapshot.current = undefined;
+    failedMessageRefresh.current = undefined;
     return () => { activeRefreshScope.current = null; };
   }, [refreshScope]);
   const currentLoadError = loadError?.refreshScope && loadError.refreshScope !== refreshScope ? null : loadError;
@@ -306,13 +315,17 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         revision = result.revision;
       }
       setRefreshError(current => current?.accountId === id ? null : current);
-      if (mode === 'automatic' && revision === appliedSnapshot.current && !refreshIssue) return;
-      const preservePagesFor = mode === 'manual' ? undefined : refreshScope;
-      if (await load(refreshIsWechat ? { accountId: id, isCurrent, preservePagesFor } : undefined)
-          && isCurrent() && generation + 1 === loadGeneration.current) {
-        appliedSnapshot.current = revision;
-        setMessageRevisions(current => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+      if (mode === 'automatic' && revision === appliedSessionSnapshot.current && !refreshIssue) {
+        const selected = selectedSessionRef.current;
+        if (selected?.accountId !== id || failedMessageRefresh.current !== sessionKey(id, selected.username)) return;
+      } else {
+        const preservePagesFor = mode === 'manual' ? undefined : refreshScope;
+        if (!await load(refreshIsWechat ? { accountId: id, isCurrent, preservePagesFor } : undefined)
+            || !isCurrent() || generation + 1 !== loadGeneration.current) return;
+        appliedSessionSnapshot.current = revision;
       }
+      failedMessageRefresh.current = undefined;
+      setMessageRevisions(current => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
     } finally {
       refreshLock.current = false;
       setRefreshing(false);
@@ -731,6 +744,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           onClearSearch={() => setDetailQueries(current => ({ ...current, raw: '' }))}
           onChatState={setChatState}
           onLatestMessage={showLatestMessage}
+          onMessageRefreshFailed={noteMessageRefreshFailure}
           onSummarySelection={setSummarySelection}
           onSummarizeSelection={()=>{setSummaryPickRequest(value=>value+1);setView('summary');}}
           onOpenData={onOpenData}

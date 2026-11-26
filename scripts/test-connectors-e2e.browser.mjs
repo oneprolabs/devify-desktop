@@ -820,11 +820,24 @@ export async function runWechatRestartUiE2E(task, base, pageLabel = 'p1') {
       state.wechatSyncError = '';
       // A different reader already wrote the new snapshot, so sync reports cache hits.
       state.wechatSyncRevision = 'after-restart';
+      state.chatMessagesError = '临时消息读取失败（模拟）';
       state.chatMessageOverrides[id] = [{local_id:2,source_shard:'synthetic',time:1795000100,sender:'tester',sender_name:'测试联系人',kind:1,text:'重启后收到的新消息',is_self:false}];
     }, accountId);
     await tick();
+    await page.waitForFunction(() => !document.querySelector('.chat-workbench-refresh').disabled
+      && Boolean(document.querySelector('.wxv-toast.error')));
+    assert.ok(await page.evaluate(() => Boolean(document.querySelector('.wxv-messages #msg-1'))), 'a failed message read keeps the previous chat visible');
+    const retryStart = await page.evaluate(() => {
+      window.__E2E__.chatMessagesError = '';
+      return window.__E2E__.calls.length;
+    });
+    await tick();
     await page.waitForFunction(() => !document.querySelector('.chat-workbench-refresh-error')
-      && document.querySelector('.wxv-messages')?.textContent.includes('重启后收到的新消息'));
+      && !document.querySelector('.wxv-toast.error')
+      && document.querySelector('.wxv-messages')?.textContent.includes('重启后收到的新消息'), undefined, {timeout:5000});
+    const retryReads = await page.evaluate(start => window.__E2E__.calls.slice(start)
+      .filter(call => ['chat_sessions', 'wechat_messages'].includes(call.command)).map(call => call.command), retryStart);
+    assert.deepEqual(retryReads, ['wechat_messages'], 'retry the failed message read without reloading the session list');
     assert.equal(await selection(), selected);
     const start = await page.evaluate(() => window.__E2E__.calls.length);
     await tick();
