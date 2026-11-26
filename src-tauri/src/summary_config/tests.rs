@@ -91,6 +91,7 @@ fn atomic_cache_keeps_valid_rules_when_replacement_is_invalid_or_interrupted() {
         etag: Some("\"v7\"".into()),
         checked_at: 10,
         retry_at: 0,
+        last_error: None,
         refresh_id: "first".into(),
     };
     write(dir.path(), &cache).unwrap();
@@ -418,7 +419,68 @@ fn only_the_documented_409_means_the_server_created_no_task() {
 }
 
 #[test]
+fn catalog_http_failures_are_classified_before_decoding_the_body() {
+    use reqwest::StatusCode;
+    for (status, body, expected) in [
+        (
+            StatusCode::FORBIDDEN,
+            &b"<html>"[..],
+            "没有权限读取当前空间的总结配置。",
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            &br#"{"detail":"Space not found"}"#[..],
+            "当前空间不存在或无权访问，请重新选择空间。",
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            &br#"{"code":404,"message":"Not found","data":{"detail":"No Space matches the given query."}}"#[..],
+            "当前空间不存在或无权访问，请重新选择空间。",
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            &b"<html>Not found</html>"[..],
+            "当前服务不支持聊天总结配置，请联系管理员升级服务端。",
+        ),
+        (
+            StatusCode::BAD_REQUEST,
+            &br#"{"detail":"Unsupported summary configuration schema."}"#[..],
+            "总结配置版本暂不支持，请检查客户端和服务端版本。",
+        ),
+        (
+            StatusCode::BAD_GATEWAY,
+            &b"<html>"[..],
+            "总结服务暂不可用，请稍后重试。",
+        ),
+        (StatusCode::OK, &b"<html>"[..], "总结配置响应格式无效。"),
+    ] {
+        assert_eq!(
+            transport::decode_catalog(status, None, body, &fixture().scope).unwrap_err(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn authentication_failure_only_backs_off_the_rejected_login() {
+    let message = "服务端需要重新验证登录，请稍后重试。";
+    let failure = transport::AuthRetry::new(3, 1000, message.into());
+    let error = failure.for_generation(3, 1001).unwrap();
+    assert_eq!(error.message, message);
+    assert_eq!(error.retry_at, Some(1015));
+    assert!(
+        failure.for_generation(4, 1001).is_none(),
+        "A fresh login can retry immediately"
+    );
+    assert!(
+        failure.for_generation(3, 1015).is_none(),
+        "A stable login can retry when its short cooldown ends"
+    );
+}
+
+#[test]
 fn refreshes_are_throttled_coalesced_and_backed_off_even_when_forced() {
+    use transport::Refresh::{Background, Forced, Missing};
     let config = fixture();
     let mut cache = Cache {
         scope: config.scope.clone(),
@@ -426,18 +488,52 @@ fn refreshes_are_throttled_coalesced_and_backed_off_even_when_forced() {
         etag: Some("\"v7\"".into()),
         checked_at: 1000,
         retry_at: 0,
+        last_error: None,
         refresh_id: "new".into(),
     };
-    assert!(!transport::refresh_needed(&cache, Some("new"), 1001, false).unwrap());
-    assert!(transport::refresh_needed(&cache, Some("new"), 22600, false).unwrap());
-    assert!(transport::refresh_needed(&cache, Some("new"), 1001, true).unwrap());
+    assert!(!transport::refresh_needed(&cache, Some("new"), 1001, Background).unwrap());
+    assert!(transport::refresh_needed(&cache, Some("new"), 22600, Background).unwrap());
+    assert!(transport::refresh_needed(&cache, Some("new"), 1001, Forced).unwrap());
     assert!(
-        !transport::refresh_needed(&cache, Some("old"), 1001, true).unwrap(),
+        !transport::refresh_needed(&cache, Some("old"), 1001, Forced).unwrap(),
         "an update completed while waiting satisfies forced checks too"
     );
     cache.retry_at = 1900;
-    assert!(transport::refresh_needed(&cache, Some("new"), 1001, true).is_err());
-    assert!(transport::refresh_needed(&cache, Some("new"), 1900, true).unwrap());
+    assert!(transport::refresh_needed(&cache, Some("new"), 1001, Forced).is_err());
+    assert!(transport::refresh_needed(&cache, Some("new"), 1900, Forced).unwrap());
+    assert!(!transport::refresh_needed(&cache, None, 1001, Missing).unwrap());
+    assert!(!transport::refresh_needed(&cache, Some("new"), 22600, Missing).unwrap());
+    cache.config = None;
+    assert!(transport::refresh_needed(&cache, None, 1001, Missing).is_err());
+    assert!(transport::refresh_needed(&cache, None, 1900, Missing).unwrap());
+}
+
+#[test]
+fn missing_cache_cannot_use_304_and_recovers_after_a_successful_fetch() {
+    let config = fixture();
+    let mut cache = Cache {
+        scope: config.scope.clone(),
+        config: None,
+        etag: None,
+        checked_at: 0,
+        retry_at: 0,
+        refresh_id: String::new(),
+        last_error: None,
+    };
+    let error = transport::apply_fetch(&mut cache, Ok(None), 1000).unwrap_err();
+    assert!(cache.config.is_none());
+    assert_eq!(error.retry_at, Some(1900));
+    let waiting =
+        transport::refresh_needed(&cache, None, 1200, transport::Refresh::Missing).unwrap_err();
+    assert_eq!(waiting.message, error.message);
+    assert_eq!(waiting.retry_at, error.retry_at);
+
+    transport::apply_fetch(&mut cache, Ok(Some((config, Some("\"v7\"".into())))), 1900).unwrap();
+    assert_eq!(cache.retry_at, 0);
+    assert!(cache.last_error.is_none());
+    transport::apply_fetch(&mut cache, Err("connection failed".into()), 2800).unwrap_err();
+    assert_eq!(cache.config.as_ref().unwrap().version, fixture().version);
+    assert_eq!(cache.etag.as_deref(), Some("\"v7\""));
 }
 
 #[test]
@@ -479,6 +575,7 @@ fn cache_commit_allows_backup_readers_but_rejects_late_login_or_space_responses(
         etag: Some("\"v7\"".into()),
         checked_at: 1,
         retry_at: 0,
+        last_error: None,
         refresh_id: "first".into(),
     };
     {

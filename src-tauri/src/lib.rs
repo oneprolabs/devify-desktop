@@ -784,10 +784,11 @@ async fn ensure_active_space_for(app: &AppHandle, expected: Option<(&desktop_cre
 
 #[tauri::command]
 async fn devify_space_ensure(app: AppHandle) -> Result<Option<String>, String> {
-    match ensure_active_space(&app).await {
-        Some(id) => Ok(Some(id)),
-        None => Ok(None),
+    let space = ensure_active_space(&app).await;
+    if space.is_some() {
+        summary_config::refresh_in_background(&app);
     }
+    Ok(space)
 }
 
 #[tauri::command]
@@ -3750,8 +3751,7 @@ async fn devify_device_register(app: AppHandle) -> Result<DevifyDeviceResult, St
     let (_, generation) = establish_device_session(&data, &base, &result).await?;
     result.generation = generation;
     if result.summary_config_version.is_some() {
-        let service = app.clone();
-        tauri::async_runtime::spawn(async move { let _ = summary_config::refresh(&service, false).await; });
+        summary_config::refresh_in_background(&app);
     }
     Ok(result)
 }
@@ -5017,13 +5017,15 @@ async fn app_settings_save(
     mut value: settings::AppSettings,
 ) -> Result<settings::AppSettings, String> {
     let mut stopped_backup = false;
+    let mut context_changed = false;
     let saved = settings::update(&app_data(&app), |stored| {
         if value.user_settings_revision != stored.user_settings_revision {
             return Err("SETTINGS_CONFLICT: 设置已在其他位置更改，请重新加载后重试。".into());
         }
-        let context_changed = !settings::same_service_url(&value.devify.base_url, &stored.devify.base_url)
-            || value.devify.active_space_id != stored.devify.active_space_id
-            || value.devify.device_id != stored.devify.device_id;
+        context_changed =
+            !settings::same_service_url(&value.devify.base_url, &stored.devify.base_url)
+                || value.devify.active_space_id != stored.devify.active_space_id
+                || value.devify.device_id != stored.devify.device_id;
         if context_changed {
             abort_in_flight_uploads();
             // Server/space switches never submit the outgoing profile as new settings.
@@ -5055,6 +5057,9 @@ async fn app_settings_save(
         config_runtime::enqueue_current_sources(&app_data(&app), stored, stopped_backup)?;
         Ok(())
     })?;
+    if context_changed {
+        summary_config::refresh_in_background(&app);
+    }
     if stopped_backup { abort_in_flight_uploads(); }
     emit_task_runtime(&app);
     if build_flavor::DEVELOPMENT { let _ = app.emit("development-service-changed", saved.devify.base_url.clone()); }
@@ -6910,7 +6915,6 @@ pub fn run() {
             cloud_summary::cloud_summary_list,
             cloud_summary::cloud_summary_action,
             summary_config::summary_config_get,
-            summary_config::summary_config_refresh,
             summary_config::summary_config_preview_local,
             summary_jobs::summary_task_enqueue,
             summary_jobs::summary_task_retry,

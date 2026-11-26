@@ -12,6 +12,13 @@ use std::{
 };
 pub(crate) use transport::{cloud_request, refresh, CloudError};
 
+pub(crate) fn refresh_in_background(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = refresh(&app, false).await;
+    });
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Capabilities {
     pub enforced: bool,
@@ -71,6 +78,30 @@ pub(crate) struct Cache {
     pub retry_at: i64,
     #[serde(default)]
     pub refresh_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ConfigError {
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_at: Option<i64>,
+}
+
+impl From<String> for ConfigError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            retry_at: None,
+        }
+    }
+}
+
+impl From<&str> for ConfigError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
 }
 
 pub(crate) fn scope(data: &Path) -> Result<Scope, String> {
@@ -121,7 +152,7 @@ pub(crate) fn validate(config: &Catalog, expected: &Scope) -> Result<(), String>
         return Err("总结配置版本暂不支持，请升级客户端。".into());
     }
     if &config.scope != expected {
-        return Err("总结配置所属账号或空间不一致，请重新初始化。".into());
+        return Err("服务返回的总结配置与当前账号或空间不匹配。".into());
     }
     if config.version.is_empty()
         || config.version.len() > 128
@@ -134,7 +165,7 @@ pub(crate) fn validate(config: &Catalog, expected: &Scope) -> Result<(), String>
         || config.scenarios.is_empty()
         || config.scenarios.len() > 32
     {
-        return Err("总结配置格式不完整，请稍后重新初始化。".into());
+        return Err("总结配置格式不完整。".into());
     }
     let mut ids = std::collections::HashSet::new();
     for item in &config.scenarios {
@@ -155,7 +186,7 @@ pub(crate) fn validate(config: &Catalog, expected: &Scope) -> Result<(), String>
             || !validate_budget(&item.budgets.local_cli)
             || item.budgets.local_cli.prompt_bytes != item.template.len()
         {
-            return Err("总结配置校验失败，已保留原有配置。".into());
+            return Err("总结配置校验失败。".into());
         }
     }
     if !ids.contains(&config.default_scenario) {
@@ -209,29 +240,43 @@ pub(crate) fn write(data: &Path, cache: &Cache) -> Result<(), String> {
         .map_err(|_| "刷新总结配置目录失败。")?;
     Ok(())
 }
-pub(crate) fn catalog(data: &Path) -> Result<Catalog, String> {
-    let current = scope(data)?;
-    load(data, &current)
-        .and_then(|c| c.config)
-        .ok_or_else(|| "总结方式尚未初始化，请联网后点击「重新初始化」。".into())
+const MISSING_CATALOG: &str = "当前空间没有可用的总结配置，请重试。";
+
+fn cached_catalog(data: &Path, current: &Scope) -> Option<Catalog> {
+    load(data, current).and_then(|c| c.config)
 }
 
-/// Cache-only UI read: opening a chat must not download templates.
-#[tauri::command]
-pub(crate) fn summary_config_get(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let data = crate::app_data(&app);
-    let language = settings::load(&data)?
-        .language
-        .summary_language()
-        .to_string();
-    Ok(
-        serde_json::json!({"config": catalog(&data)?, "language": language, "ui_language": settings::load(&data)?.language.ui,
-        "instructions": settings::load(&data)?.agent.instructions}),
-    )
+pub(crate) fn catalog(data: &Path) -> Result<Catalog, String> {
+    cached_catalog(data, &scope(data)?).ok_or_else(|| MISSING_CATALOG.into())
 }
+
+/// The form can recover a missing catalog; task admission remains cache-only.
 #[tauri::command]
-pub(crate) async fn summary_config_refresh(app: tauri::AppHandle) -> Result<(), String> {
-    refresh(&app, true).await
+pub(crate) async fn summary_config_get(
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, ConfigError> {
+    let data = crate::app_data(&app);
+    let current = scope(&data)?;
+    let config = match cached_catalog(&data, &current) {
+        Some(config) => config,
+        None => {
+            transport::ensure(&app, &data, &current).await?;
+            cached_catalog(&data, &current).ok_or(MISSING_CATALOG)?
+        }
+    };
+    let _identity = crate::UPLOAD_IDENTITY_LOCK
+        .try_read()
+        .map_err(|_| "登录状态正在切换，请稍后重试。")?;
+    if scope(&data)? != current {
+        return Err("服务端、登录账号或空间已改变，请重试。".into());
+    }
+    let settings = settings::load(&data)?;
+    Ok(serde_json::json!({
+        "config": config,
+        "language": settings.language.summary_language(),
+        "ui_language": settings.language.ui,
+        "instructions": settings.agent.instructions
+    }))
 }
 
 #[derive(Serialize)]

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
+import { createElement } from 'react';
+import { jsx, jsxs, Fragment } from 'react/jsx-runtime';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { summaryOptionFields, summaryOutputLanguage } from '../src/features/chat/summary/summaryOptions.ts';
 import { validateCloudSummaryInput } from '../src/features/chat/summary/summaryInput.ts';
 
@@ -22,7 +25,7 @@ assert.equal(view.language,'English','per-request choices do not change the save
 assert.throws(()=>summaryOptionFields(view,{scenario:'custom',language:'',instructions:'  '}),/填写/);
 assert.throws(()=>summaryOptionFields(view,{scenario:'custom',language:'',instructions:'😀'.repeat(5)}),/过长/);
 assert.equal(summaryOptionFields(view,{scenario:'custom',language:'es',instructions:'  😀😀  '}).instructions,'😀😀');
-assert.throws(()=>summaryOptionFields(null,{scenario:'',language:'',instructions:''}),/初始化/);
+assert.throws(()=>summaryOptionFields(null,{scenario:'',language:'',instructions:''}),/没有可用的总结配置/);
 const input={title:'Group',range_label:'Today',language:'English',messages:[{username:'g',display:'Group',sender:'Member',time:1,text:'x'.repeat(3100)}]};
 assert.doesNotThrow(()=>validateCloudSummaryInput(input,{max_content_bytes:4000}),'catalog budget replaces the old fixed character ceiling');
 assert.throws(()=>validateCloudSummaryInput({...input,instructions:'"'.repeat(600)},{max_content_bytes:4000}),/超过/,'escaped instructions consume the same compact input budget');
@@ -43,15 +46,44 @@ const {useSummaryOptions}=module.exports;
 const owner={hooks:[],i:0,effects:[]};
 function render(scope='first',open=true){current=owner;owner.i=0;owner.effects=[];const result=useSummaryOptions(scope,open);owner.effects.forEach(fn=>fn());return result;}
 const pending=[],calls=[];
-invoke=command=>{calls.push(command);if(command==='summary_config_refresh')return Promise.resolve();return new Promise((resolve,reject)=>pending.push({resolve,reject}));};
+invoke=command=>{calls.push(command);return new Promise((resolve,reject)=>pending.push({resolve,reject}));};
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
 render('first');render('second');
 pending[1].resolve(view);await flush();let model=render('second');assert.equal(model.draft.scenario,'three_part','default is not the first array item');assert.equal(model.draft.instructions,'saved');
 pending[0].resolve({...view,language:'old-user'});await flush();model=render('second');assert.equal(model.view.language,'English','late old-account responses are discarded');
 model.setDraft(old=>({...old,scenario:'custom',instructions:'mine',language:'按原文语言'}));model=render('second');
 const reload=model.reload();pending[2].resolve({...view,config:{...config,version:'v8'}});await reload;model=render('second');assert.equal(model.draft.instructions,'mine');assert.equal(model.draft.language,'按原文语言');
-const count=calls.length;render('second');await flush();assert.equal(calls.length,count,'rerenders do not download or poll');assert.ok(!calls.includes('summary_config_refresh'));
-const reset=model.initialize();await flush();pending[3].resolve(view);await reset;assert.equal(calls.filter(c=>c==='summary_config_refresh').length,1,'initialization is explicit');
-model=render('second');const detach=model.reload();owner.hooks.forEach(h=>h?.cleanup?.());pending[4].resolve({...view,language:'detached'});await detach;
+const count=calls.length;render('second');await flush();assert.equal(calls.length,count,'rerenders do not poll');assert.ok(calls.every(command=>command==='summary_config_get'));
+const switched=render('third');
+assert.equal(switched.view,null,'never render the previous scope’s options, even before effects');
+const failure={message:'无法连接总结服务，请检查网络。',retry_at:Date.now()/1000+60};
+pending[3].reject(failure);await flush();model=render('third');
+assert.deepEqual(model.error,failure,'show the native reason and retry time, not a generic cache error');
+const retry=model.reload();await model.reload();assert.equal(pending.length,5,'concurrent retries share a single read');
+pending[4].resolve(view);await retry;model=render('third');
+assert.equal(model.view.config.version,'v7','retry recovers without closing the form');
+const detach=model.reload();owner.hooks.forEach(h=>h?.cleanup?.());pending[5].resolve({...view,language:'detached'});await detach;
 assert.equal(owner.hooks.filter(h=>h?.language==='detached').length,0);
-console.log('Summary options: catalog default, explicit languages, Unicode/custom validation, escaped-input budgets, cache-only reads, late account responses and preserved drafts passed');
+
+const optionsJs = ts.transpileModule(fs.readFileSync(new URL('../src/features/chat/summary/SummaryRequestOptions.tsx', import.meta.url), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+}).outputText;
+const optionsModule = { exports: {} };
+new Function('require', 'exports', optionsJs)(
+  name => ({
+    'react/jsx-runtime': { jsx, jsxs, Fragment },
+    '../../../shared/i18n/locale': { t: text => text, tf: (text, arg) => text.replace('{0}', String(arg)), dateLocale: () => 'zh-CN' },
+    './summaryOptions': { summaryOutputLanguage },
+  })[name], optionsModule.exports,
+);
+const statusHtml = (loading, error) => renderToStaticMarkup(createElement(optionsModule.exports.SummaryRequestOptions, {
+  view: null, draft: { scenario: '', language: '', instructions: '' }, loading, error, onReload: () => {},
+}));
+assert.match(statusHtml(true, null), /role="status">正在读取总结方式/);
+assert.doesNotMatch(statusHtml(true, null), /<button/);
+const failedHtml = statusHtml(false, failure);
+assert.equal(failedHtml.match(/role="alert"/g)?.length, 1);
+assert.match(failedHtml, /无法连接总结服务.*可在 .* 后重试/);
+assert.match(failedHtml, /<button type="button">重试<\/button>/);
+assert.doesNotMatch(failedHtml, /重新初始化/);
+console.log('Summary options: defaults, validation, scoped reads, recovery and preserved drafts passed');

@@ -43,8 +43,8 @@ function SummaryBody({ body }: { body:string }) {
   </div>;
 }
 
-export function ConversationSummary({ visible, localAgentReady = false, localAgentName = '', localAgentModel = '', spaceId, accountId, session, sessions, selection, selectionTotal = selection.length, pickRequest, query, onPick, onOpenTasks, onStatus }: {
-  visible:boolean;localAgentReady?:boolean;localAgentName?:string;localAgentModel?:string;spaceId:string|null;accountId:string|null;session:SummaryChat|null;sessions:SummaryChat[];
+export function ConversationSummary({ visible, localAgentReady = false, localAgentName = '', localAgentModel = '', serviceUrl, spaceId, accountId, session, sessions, selection, selectionTotal = selection.length, pickRequest, query, onPick, onOpenTasks, onStatus }: {
+  visible:boolean;localAgentReady?:boolean;localAgentName?:string;localAgentModel?:string;serviceUrl?:string;spaceId:string|null;accountId:string|null;session:SummaryChat|null;sessions:SummaryChat[];
   selection:SummaryMessage[];selectionTotal?:number;pickRequest:number;query:string;onPick:()=>void;onOpenTasks:()=>void;
   onStatus:(state:{count:number;busy:boolean})=>void;
 }) {
@@ -73,7 +73,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   const panelId=useId();
   const [deleting,setDeleting]=useState<number|string|null>(null);
   const lock=useRef(false);
-  const scope=JSON.stringify([spaceId,accountId,session?.username]);
+  const scope=JSON.stringify([serviceUrl,spaceId,accountId,session?.username]);
   const currentScope=useRef(scope);currentScope.current=scope;
   const alive=useRef(true);
   const submission=useRef<{scope:string;engine:string;body:Record<string,unknown>;attempted?:boolean}|null>(null);
@@ -248,7 +248,7 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
         {nonTextCount>0&&<p role="status">{tf('其中 {0} 条文字参与总结，{1} 条非文字消息不参与。',selected.length,nonTextCount)}</p>}
         {selection.length?selection.slice(0,100).map(message=><label key={keyOf(message)}><input type="checkbox" checked={!excluded.includes(keyOf(message))} onChange={event=>{setExcluded(old=>event.target.checked?old.filter(key=>key!==keyOf(message)):[...old,keyOf(message)]);change();}}/><span><small>{message.display} · {message.sender} · {new Date(message.time*1000).toLocaleString(dateLocale(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><span>{message.text}</span></span></label>):<p>{nonTextCount?t('所选消息不含可总结的文字，请返回选择文字消息。'):t('在原始记录中点击消息进行选择，再回来生成总结。')}</p>}{selection.length>100&&<p>{tf('仅预览前 100 条文字消息，共有 {0} 条文字参与总结。',selected.length)}</p>}</div>}
       <SummaryRequestOptions view={options.view} draft={options.draft} loading={options.loading} error={options.error} disabled={Boolean(phase)}
-        onChange={patch=>{options.setDraft(old=>({...old,...patch}));change();}} onInitialize={()=>{change();void options.initialize();}} onReload={()=>{change();void options.reload();}}/>
+        onChange={patch=>{options.setDraft(old=>({...old,...patch}));change();}} onReload={()=>{change();void options.reload();}}/>
       <div className="chat-summary-row"><span className="chat-summary-label">{t('智能体')}</span>
         <div className="summary-segments summary-agent-options" role="group" aria-label={t('智能体')}>
           <button type="button" aria-pressed={engine==='cloud'} disabled={Boolean(phase)} onClick={()=>{setEngine('cloud');change();}}>

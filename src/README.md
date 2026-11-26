@@ -116,15 +116,16 @@ call the same API for every platform, retaining account IDs rather than merging 
 
 `features/chat/summary/SummaryRequestOptions.tsx` renders the server-provided purposes,
 per-request output language and user requirements. `useSummaryOptions.ts` reads the native
-cache when the form opens; only explicit initialization requests network access. Shared
+cache when the form opens. If the current scope has no valid catalog, the native command
+joins or starts a refresh and reports the failure and any retry deadline. Shared
 `agent.instructions` initializes a draft without overwriting later edits. Request options
 remain separate from the existing Agent selector and are frozen with the durable task.
 
 `src-tauri/src/summary_config/` owns schema/scope/digest validation, atomic conditional
 cache updates and chat-summary-only prompt/budget assembly. Catalogs are scoped to service,
-Devify user, space and capability snapshot. Login initialization and the existing device
-heartbeat trigger throttled refreshes; opening chats and executing local tasks do not fetch
-templates. Other Agent uses retain their existing prompt builder. `summary_jobs.rs` owns
+Devify user, space and capability snapshot. Login, space changes and the existing device
+heartbeat trigger throttled refreshes; opening ordinary chats and executing local tasks
+do not fetch templates. Other Agent uses retain their existing prompt builder. `summary_jobs.rs` owns
 admission, snapshots and execution; only the documented no-task-created configuration 409
 permits one refreshed resubmission with the original request key.
 
