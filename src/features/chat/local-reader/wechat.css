@@ -603,7 +603,8 @@
 @keyframes wxv-voice-playing { from { clip-path:inset(0 70% 0 0); } to { clip-path:inset(0); } }
 @media (prefers-reduced-motion: reduce) { .wxv-voice-bubble.playing .wxv-voice-icon { animation: none; opacity: .6; } }
 .wxv-bubble.hit { box-shadow: inset 0 0 0 1px var(--accent-tint-2); }
-.wxv-bubble mark { background: var(--accent-tint-2); color: var(--accent-deep); border-radius: 2px; padding: 0 1px; }
+.wxv-bubble mark, .wxv-system mark { background: var(--accent-tint-2); color: var(--accent-deep); border-radius: 2px; padding: 0 1px; }
+.wxv-messages mark[aria-current="true"] { background: var(--accent-deep); color: white; }
 
 /* the chosen mark: tint plus a check badge, never a decorative side rule */
 .wxv-msg.selected { background: var(--accent-tint); }
