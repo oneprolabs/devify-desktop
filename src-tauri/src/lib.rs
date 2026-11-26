@@ -6329,33 +6329,46 @@ async fn wechat_decrypt(
     )
 }
 
+const WECHAT_ACCOUNT_UNAVAILABLE: &str = "WECHAT_ACCOUNT_UNAVAILABLE: 暂时无法读取本机微信账号。";
+
+#[derive(Serialize)]
+struct WechatSyncResult {
+    outcomes: Vec<DecryptOutcome>,
+    revision: String,
+}
+
 #[tauri::command]
-async fn wechat_sync(
-    app: AppHandle,
-    state: State<'_, SyncState>,
-    account_id: String,
-) -> Result<Vec<DecryptOutcome>, String> {
-    let scan = discover::scan();
-    let account = scan
-        .accounts
-        .iter()
-        .find(|a| a.id == account_id)
-        .cloned()
-        .ok_or_else(|| format!("找不到账号 {account_id}"))?;
-    if !begin_sync(&state, &account_id) {
-        return Err("该账号正在同步，请稍后重试。".into());
-    }
-    let store = keys::load(&keys::store_path(&app_data(&app)));
-    let outcomes = read_new_wechat_data(
-        &app_data(&app),
-        &connector_environment(&app),
-        &account,
-        &store,
-        true,
-        true,
-    );
-    end_sync(&state, &account_id);
-    outcomes
+async fn wechat_sync(app: AppHandle, account_id: String) -> Result<WechatSyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        allowed_usernames(&app, &account_id)?;
+        let account = discover::scan()
+            .accounts
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .ok_or(WECHAT_ACCOUNT_UNAVAILABLE)?;
+        let state = app.state::<SyncState>();
+        if !begin_sync(&state, &account_id) {
+            return Err("该账号正在同步，请稍后重试。".into());
+        }
+        let data = app_data(&app);
+        let store = keys::load(&keys::store_path(&data));
+        let outcomes = read_new_wechat_data(
+            &data,
+            &connector_environment(&app),
+            &account,
+            &store,
+            true,
+            true,
+        )
+        .map(|outcomes| WechatSyncResult {
+            revision: decrypt::snapshot_revision(&outcomes),
+            outcomes,
+        });
+        end_sync(&state, &account_id);
+        outcomes
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Serialize)]

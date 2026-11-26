@@ -796,6 +796,80 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   return 'PASS chat refresh: prominent key recovery, preserved setup and selection, retry with collapsed diagnostics, refreshed WeChat messages, WhatsApp local reload';
 }
 
+export async function runWechatRestartUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const alert = '.chat-workbench-refresh-error';
+  const refresh = '.chat-workbench-refresh';
+  const unavailable = 'WECHAT_ACCOUNT_UNAVAILABLE: 暂时无法读取本机微信账号。';
+  const tick = () => page.evaluate(() => { for (const poll of window.__E2E__.wechatPolls.values()) poll(); });
+  for (const english of [false, true]) {
+    await page.goto(`${base}/scripts/connectors-e2e.html?chat&backup-disabled&controlled-chat-poll${english ? '&english' : ''}`);
+    await page.waitForFunction(() => window.__E2E__.wechatPolls.size === 1
+      && document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+    const selection = () => page.evaluate(() => document.querySelector('.chat-workbench-session.selected').dataset.sessionKey);
+    const selected = await selection();
+    const accountId = JSON.parse(selected)[0];
+    await page.evaluate(error => { window.__E2E__.wechatSyncError = error; }, unavailable);
+    await tick();
+    await page.waitForSelector(alert);
+    assert.equal(await page.evaluate(selector => document.querySelector(`${selector} strong`).textContent, alert),
+      english ? 'The local WeChat account can’t be read right now.' : '暂时无法读取本机微信账号。');
+    assert.ok(await page.evaluate(() => document.querySelector('.wxv-messages').textContent.includes('的测试消息')));
+    await page.evaluate(id => {
+      const state = window.__E2E__;
+      state.wechatSyncError = '';
+      // A different reader already wrote the new snapshot, so sync reports cache hits.
+      state.wechatSyncRevision = 'after-restart';
+      state.chatMessagesError = '临时消息读取失败（模拟）';
+      state.chatMessageOverrides[id] = [{local_id:2,source_shard:'synthetic',time:1795000100,sender:'tester',sender_name:'测试联系人',kind:1,text:'重启后收到的新消息',is_self:false}];
+    }, accountId);
+    await tick();
+    await page.waitForFunction(() => !document.querySelector('.chat-workbench-refresh').disabled
+      && Boolean(document.querySelector('.wxv-toast.error')));
+    assert.ok(await page.evaluate(() => Boolean(document.querySelector('.wxv-messages #msg-1'))), 'a failed message read keeps the previous chat visible');
+    const retryStart = await page.evaluate(() => {
+      window.__E2E__.chatMessagesError = '';
+      return window.__E2E__.calls.length;
+    });
+    await tick();
+    await page.waitForFunction(() => !document.querySelector('.chat-workbench-refresh-error')
+      && !document.querySelector('.wxv-toast.error')
+      && document.querySelector('.wxv-messages')?.textContent.includes('重启后收到的新消息'), undefined, {timeout:5000});
+    const retryReads = await page.evaluate(start => window.__E2E__.calls.slice(start)
+      .filter(call => ['chat_sessions', 'wechat_messages'].includes(call.command)).map(call => call.command), retryStart);
+    assert.deepEqual(retryReads, ['wechat_messages'], 'retry the failed message read without reloading the session list');
+    assert.equal(await selection(), selected);
+    const start = await page.evaluate(() => window.__E2E__.calls.length);
+    await tick();
+    await page.waitForSelector(`${refresh}:not(:disabled)`);
+    const unchanged = await page.evaluate(start => window.__E2E__.calls.slice(start).map(call => call.command), start);
+    assert.ok(unchanged.includes('wechat_sync'));
+    assert.ok(!unchanged.includes('chat_sessions') && !unchanged.includes('wechat_messages'), 'unchanged snapshots do not reload the chat');
+
+    await page.evaluate(() => { window.__E2E__.wechatSyncPaused = true; });
+    await tick();
+    await page.waitForFunction(() => window.__E2E__.wechatSyncResolvers.length === 1);
+    await page.snapshot();
+    await page.click('[role="tab"][data-platform="whatsapp"]', {label:'切换到 WhatsApp 会话'});
+    await page.waitForFunction(() => window.__E2E__.wechatPolls.size === 0);
+    await page.evaluate(error => {
+      const state = window.__E2E__;
+      state.wechatSyncPaused = false;
+      state.wechatSyncError = error;
+      state.wechatSyncResolvers.shift()();
+    }, unavailable);
+    await page.waitForSelector(`${refresh}:not(:disabled)`);
+    await page.click('[role="tab"][data-platform="wechat"]', {label:'切回原微信会话'});
+    await page.waitForFunction(() => window.__E2E__.wechatPolls.size === 1);
+    assert.equal(await selection(), selected);
+    assert.equal(await page.evaluate(selector => Boolean(document.querySelector(selector)), alert), false, 'late errors cannot leak into the restored view');
+    await page.click('.prototype-nav-item-tasks', {label:'离开聊天进入任务页'});
+    await page.waitForFunction(() => window.__E2E__.wechatPolls.size === 0);
+    assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  }
+  return 'PASS WeChat restart: localized notice, preserved history, automatic cache recovery, unchanged snapshot and stale-result guards';
+}
+
 export async function runWakeChatRefreshUiE2E(task, base, pageLabel = 'p1') {
   const page = task.page(pageLabel);
   await page.goto(`${base}/scripts/connectors-e2e.html?chat`);

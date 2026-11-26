@@ -172,6 +172,7 @@ export default function WeChatLocal({
   accountDisplay,
   onChatState,
   onLatestMessage,
+  onMessageRefreshFailed,
   onSummarySelection,
   onSummarizeSelection,
 }: {
@@ -202,6 +203,7 @@ export default function WeChatLocal({
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean; agentName: string; agentModel: string }) => void;
   /** Only the newest unfiltered page can change the embedding sidebar's preview. */
   onLatestMessage?: (accountId: string, username: string, message: MessageItem | null) => void;
+  onMessageRefreshFailed?: (accountId: string, username: string) => void;
   onSummarySelection?: (messages: import('../summary/summaryInput').SummaryMessage[]) => void;
   onSummarizeSelection?: () => void;
 } = {}) {
@@ -460,6 +462,7 @@ export default function WeChatLocal({
     } catch (reason) {
       if (!currentRequest() || canApplyWakeRefresh?.() === false) return true;
       setMessageRefreshError({ accountId: id, username, message: tf("刷新会话失败：{0}", errorText(reason)) });
+      onMessageRefreshFailed?.(id, username);
       return false;
     } finally {
       if (messageRefreshRequest.current === request) {
@@ -468,7 +471,7 @@ export default function WeChatLocal({
       }
       if (currentRequest()) setBusy(current => current === 'messages' ? null : current);
     }
-  }, [onLatestMessage]);
+  }, [onLatestMessage, onMessageRefreshFailed]);
 
   const appliedMessageRevision = useRef(messageRevision);
   useEffect(() => {
@@ -505,7 +508,7 @@ export default function WeChatLocal({
     setSyncIssue(null);
     try {
       if (!id.endsWith('@s.whatsapp.net')) {
-        const issue = await syncWechatForRefresh(id);
+        const { issue } = await syncWechatForRefresh(id);
         if (!isCurrent()) return;
         if (issue) { setSyncIssue({ accountId: id, issue }); return; }
       }

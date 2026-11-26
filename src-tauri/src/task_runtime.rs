@@ -390,7 +390,11 @@ pub(super) fn record_source_result(
         match result {
             Err(SourceTickError::Backup(error)) => {
                 source.failures = source.failures.saturating_add(1);
-                let delay = (30_i64.saturating_mul(1_i64 << source.failures.min(6))).min(1800);
+                let delay = if error == WECHAT_ACCOUNT_UNAVAILABLE {
+                    30
+                } else {
+                    (30_i64.saturating_mul(1_i64 << source.failures.min(6))).min(1800)
+                };
                 source.retry_after =
                     Some((Utc::now() + chrono::Duration::seconds(delay)).to_rfc3339());
                 source.last_error = Some(error.clone());
@@ -591,7 +595,7 @@ async fn run_source_tick(
             .accounts
             .into_iter()
             .find(|a| a.id == *account)
-            .ok_or_else(|| scan_error("找不到本机微信账号，请检查连接。".into()))?;
+            .ok_or_else(|| scan_error(WECHAT_ACCOUNT_UNAVAILABLE.into()))?;
         let store = keys::load(&keys::store_path(&data));
         let env = connector_environment(app);
         let copy = data.clone();

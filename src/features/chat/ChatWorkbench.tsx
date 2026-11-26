@@ -8,7 +8,7 @@ import { errorText, nativeErrorCode } from '../../shared/i18n/errorText';
 import { syncWechatForRefresh, type WechatRefreshIssue } from '../connectors/wechat/refresh';
 import { ChatEventsPane, type EventItem } from './ChatEventsPane';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
@@ -37,10 +37,12 @@ type UploadState = { username: string; state: 'pending' | 'local' | 'synced' | '
 
 type View = 'events' | 'raw' | 'summary';
 type Filter = 'all' | 'pending';
+type SessionPage = { account: ChatAccount; offset: number; exhausted: boolean };
 type PlatformMemory = { session: OwnedSession | null; scrollTop: number; query: string; filter: Filter };
 const needsBackup = (item: UploadState) => ['pending', 'local', 'failed', 'history_failed'].includes(item.state);
 const sessionKey = (accountId: string, username: string) => JSON.stringify([accountId, username]);
 const SESSION_PAGE_SIZE = 50;
+const SESSION_REFRESH_BATCH_SIZE = 100;
 // shortcut: chat_sessions clamps larger offsets, revisit when the native API supports deeper paging.
 const MAX_SESSION_OFFSET = 1000;
 const UPLOAD_STATE_BATCH_SIZE = 200;
@@ -56,6 +58,10 @@ function orderedSessions(rows: OwnedSession[]) {
     }
   }
   return [...unique.values()].sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0));
+}
+
+function keepReadablePreview(row: OwnedSession, previous: OwnedSession) {
+  return { ...row, preview: previous.preview, last_time: previous.last_time, previewFromMessages: true };
 }
 
 const timeLabel = (value?: number | null) => {
@@ -90,7 +96,15 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [selectedSession, setSelectedSession] = useState<OwnedSession | null>(null);
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
+  const failedMessageRefresh = useRef<string>();
+  const noteMessageRefreshFailure = useCallback((id: string, username: string) => {
+    const selected = selectedSessionRef.current;
+    if (selected?.accountId === id && selected.username === username) {
+      failedMessageRefresh.current = sessionKey(id, username);
+    }
+  }, []);
   const showLatestMessage = useCallback((id: string, username: string, message: MessageItem | null) => {
+    if (failedMessageRefresh.current === sessionKey(id, username)) failedMessageRefresh.current = undefined;
     const preview = message?.text.trim() || null;
     const last_time = message?.time ?? null;
     setSessions(current => current.map(session => session.accountId === id && session.username === username
@@ -127,7 +141,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   }, [wechatRecovery]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventRefresh, setEventRefresh] = useState(0);
-  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState<{ message: string; refreshScope?: object } | null>(null);
   const [eventsError, setEventsError] = useState('');
   const [rawFocus, setRawFocus] = useState<{ conversationId: string; messageId?: string | number } | null>(null);
   const [rawMounted, setRawMounted] = useState(false);
@@ -140,28 +154,80 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   useEffect(() => { if (selectedSession && view === 'raw') setRawMounted(true); }, [selectedSession, view]);
   const [moreSessionsErrors, setMoreSessionsErrors] = useState<Record<string, string>>({});
   const [loadingSource, setLoadingSource] = useState<string | null>(null);
-  const sessionOffsets = useRef(new Map<string, { account: ChatAccount; offset: number }>());
+  const sessionOffsets = useRef(new Map<string, SessionPage>());
   const activeOffsets = [...sessionOffsets.current.values()].filter(entry => (entry.account.source ?? 'wechat') === activeSource);
-  const hasMoreSessions = activeOffsets.some(entry => entry.offset <= MAX_SESSION_OFFSET);
-  const sessionLimitReached = activeOffsets.some(entry => entry.offset > MAX_SESSION_OFFSET);
+  const hasMoreSessions = activeOffsets.some(entry => !entry.exhausted && entry.offset <= MAX_SESSION_OFFSET);
+  const sessionLimitReached = activeOffsets.some(entry => !entry.exhausted && entry.offset > MAX_SESSION_OFFSET);
   const moreLock = useRef(false);
 
-  const load = useCallback(async () => {
+  const rememberPageAnchor = useCallback((source: string) => {
+    const list = sessionList.current;
+    if (activeSourceRef.current !== source || !list?.scrollTop) return;
+    const top = list.getBoundingClientRect().top;
+    const anchor = [...list.querySelectorAll<HTMLElement>('[data-session-key]')].find(node => node.getBoundingClientRect().bottom > top);
+    if (anchor) pageAnchor.current = { source, key: anchor.dataset.sessionKey!, top: anchor.getBoundingClientRect().top };
+  }, []);
+
+  const load = useCallback(async (refresh?: { accountId: string; isCurrent: () => boolean; preservePagesFor?: object }) => {
     if (!isTauri()) return;
     const configured: string[] | null = JSON.parse(configuredKey);
     if (!configured) return;
     const generation = ++loadGeneration.current;
-    setLoading(true); setError(''); setMoreSessionsErrors({}); setLoadingSource(null);
+    const isCurrent = () => generation === loadGeneration.current && (!refresh || refresh.isCurrent());
+    const reportError = (message: string) => setLoadError({ message, refreshScope: refresh?.preservePagesFor });
+    setLoading(true); setLoadError(null); setLoadingSource(null);
+    if (!refresh?.preservePagesFor) setMoreSessionsErrors({});
     try {
       const [stored, found] = await Promise.all([invoke<Settings>('app_settings_get'), invoke<ChatAccount[]>('chat_accounts')]);
-      if (generation !== loadGeneration.current) return;
+      if (!isCurrent()) return;
       const connections = stored.connectors ?? {};
       const accounts = (found ?? []).filter(account => configured.includes(account.id)).filter(account => account.source === 'whatsapp'
         ? connections.whatsapp_enabled !== false
         : connections.wechat_enabled !== false);
 
+      if (refresh?.preservePagesFor) {
+        const account = accounts.find(item => item.id === refresh.accountId);
+        if (!account) { reportError(t("微信聊天记录未能刷新")); return; }
+        const previous = sessionOffsets.current.get(account.id);
+        const lastLoadedOffset = previous ? previous.offset - (previous.exhausted ? 0 : SESSION_PAGE_SIZE) : 0;
+        const source = account.source ?? 'wechat';
+        const rows: OwnedSession[] = [];
+        let offset = 0;
+        let exhausted = false;
+        // Re-read the loaded window so rows moving between offset pages do not leave a gap.
+        const windowSize = Math.min(lastLoadedOffset, MAX_SESSION_OFFSET) + SESSION_PAGE_SIZE;
+        do {
+          const limit = Math.min(SESSION_REFRESH_BATCH_SIZE, windowSize - offset);
+          const page = await invoke<Session[]>('chat_sessions', { accountId: account.id, limit, offset });
+          if (!isCurrent()) return;
+          rows.push(...page.map(row => ({ ...row, accountId: account.id, source })));
+          exhausted = page.length < limit;
+          // Keep the cursor in normal page increments, including a partially filled final page.
+          offset += Math.floor(page.length / SESSION_PAGE_SIZE) * SESSION_PAGE_SIZE;
+        } while (!exhausted && offset < windowSize);
+        sessionOffsets.current.set(account.id, { account, offset, exhausted });
+        rememberPageAnchor(source);
+        const selected = selectedSessionRef.current;
+        setSessions(current => {
+          const previous = selected?.accountId === account.id
+            ? current.find(row => row.accountId === account.id && row.username === selected.username && row.previewFromMessages)
+            : undefined;
+          const refreshed = previous ? rows.map(row => row.username === previous.username ? keepReadablePreview(row, previous) : row) : rows;
+          return orderedSessions([...current.filter(row => row.accountId !== account.id), ...refreshed]);
+        });
+        setSelectedSession(current => current?.accountId === account.id
+          ? rows.find(row => row.username === current.username) ?? current : current);
+        setEventRefresh(value => value + 1);
+        return true;
+      }
+
       const results = await Promise.allSettled(accounts.map(async item => ({ account: item, sessions: await invoke<Session[]>('chat_sessions', { accountId: item.id, limit: SESSION_PAGE_SIZE }) })));
-      if (generation !== loadGeneration.current) return;
+      if (!isCurrent()) return;
+      // A source can disappear between sync and the session read. Keep the loaded history.
+      if (refresh && !results.some(result => result.status === 'fulfilled' && result.value.account.id === refresh.accountId)) {
+        reportError(t("微信聊天记录未能刷新"));
+        return;
+      }
       const list = orderedSessions(results.flatMap(result => result.status === 'fulfilled'
         ? (result.value.sessions ?? []).map(session => ({ ...session, accountId: result.value.account.id, source: result.value.account.source ?? 'wechat' })) : []));
       const failed = results.flatMap((result, index) => result.status === 'rejected' ? [accounts[index].source === 'whatsapp' ? 'WhatsApp' : t("微信")] : []);
@@ -179,14 +245,19 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         if (!list.some(matchesSelected)) return [...list, previous];
         if (!previous.previewFromMessages) return list;
         return list.map(item => matchesSelected(item)
-          ? { ...item, preview: previous.preview, last_time: previous.last_time, previewFromMessages: true }
+          ? keepReadablePreview(item, previous)
           : item);
       });
       const available = [...new Set(accounts.map(item => item.source ?? 'wechat'))];
       const source = available.includes(activeSourceRef.current) ? activeSourceRef.current : list[0]?.source ?? available[0] ?? '';
       activeSourceRef.current = source;
       setActiveSource(source);
-      sessionOffsets.current = new Map(results.flatMap(result => result.status === 'fulfilled' && result.value.sessions.length === SESSION_PAGE_SIZE ? [[result.value.account.id, { account: result.value.account, offset: SESSION_PAGE_SIZE }] as const] : []));
+      sessionOffsets.current = new Map(results.flatMap(result => {
+        if (result.status === 'rejected') return [];
+        const { account, sessions } = result.value;
+        const exhausted = sessions.length < SESSION_PAGE_SIZE;
+        return [[account.id, { account, offset: exhausted ? 0 : SESSION_PAGE_SIZE, exhausted }] as const];
+      }));
       setSelectedSession(current => {
         const remembered = current?.source === source ? current : platformMemory.current.get(source)?.session;
         // A refreshed first page does not prove a previously selected chat was deleted.
@@ -195,12 +266,12 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
             && stored.chat?.allowed_usernames?.[remembered.accountId]?.includes(remembered.username)
             ? remembered : list.find(item => item.source === source) ?? null);
       });
-      if (failed.length) setError(tf("{0}会话读取失败，请刷新重试。", [...new Set(failed)].join('、')));
+      if (failed.length) reportError(tf("{0}会话读取失败，请刷新重试。", [...new Set(failed)].join('、')));
       setEventRefresh(value => value + 1);
-
-    } catch (reason) { if (generation === loadGeneration.current) setError(String(reason)); }
+      return true;
+    } catch (reason) { if (isCurrent()) reportError(String(reason)); }
     finally { if (generation === loadGeneration.current) setLoading(false); }
-  }, [configuredKey]);
+  }, [configuredKey, rememberPageAnchor]);
   useEffect(() => {
     const configured: string[] = JSON.parse(configuredKey) ?? [];
     setConnectedAccounts(current => current.filter(account => configured.includes(account.id)));
@@ -213,29 +284,65 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
 
   const refreshAccount = connectedAccounts.find(account => account.id === accountId)
     ?? pickAccount(connectedAccounts.filter(account => (account.source ?? 'wechat') === activeSource), settings?.active_account_id);
-  const refreshIssue = refreshError?.accountId === refreshAccount?.id ? refreshError?.issue : undefined;
-  const refreshSessions = async () => {
-    if (!isTauri() || !visible || loading || refreshLock.current) return;
-    if (!refreshAccount) { await load(); return; }
+  const refreshAccountId = refreshAccount?.id;
+  const refreshIsWechat = Boolean(refreshAccount && (refreshAccount.source ?? 'wechat') === 'wechat');
+  const refreshIssue = refreshError?.accountId === refreshAccountId ? refreshError?.issue : undefined;
+  const refreshScope = useMemo(() => ({}), [refreshAccountId, visible, runtime.context, configuredKey]);
+  const activeRefreshScope = useRef<object | null>(null);
+  const appliedSessionSnapshot = useRef<string>();
+  useLayoutEffect(() => {
+    activeRefreshScope.current = refreshScope;
+    appliedSessionSnapshot.current = undefined;
+    failedMessageRefresh.current = undefined;
+    return () => { activeRefreshScope.current = null; };
+  }, [refreshScope]);
+  const currentLoadError = loadError?.refreshScope && loadError.refreshScope !== refreshScope ? null : loadError;
+  const refreshSessions = useCallback(async (mode: 'manual' | 'automatic' | 'retry' = 'manual') => {
+    const isCurrent = () => activeRefreshScope.current === refreshScope;
+    if (!isTauri() || !visible || !isCurrent() || loading || refreshLock.current || moreLock.current) return;
+    if (!refreshAccountId) { await load(); return; }
     refreshLock.current = true;
     setRefreshing(true);
-    const id = refreshAccount.id;
+    const id = refreshAccountId;
     const generation = loadGeneration.current;
     try {
-      if ((refreshAccount.source ?? 'wechat') === 'wechat') {
-        const issue = await syncWechatForRefresh(id);
-        if (generation !== loadGeneration.current) return;
+      let revision: string | undefined;
+      if (refreshIsWechat) {
+        const result = await syncWechatForRefresh(id);
+        if (!isCurrent() || generation !== loadGeneration.current) return;
+        const { issue } = result;
         if (issue) { setRefreshError({ accountId: id, issue }); return; }
+        revision = result.revision;
       }
       setRefreshError(current => current?.accountId === id ? null : current);
-      await load();
-      if (generation + 1 === loadGeneration.current) {
-        setMessageRevisions(current => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+      if (mode === 'automatic' && revision === appliedSessionSnapshot.current && !refreshIssue) {
+        const selected = selectedSessionRef.current;
+        if (selected?.accountId !== id || failedMessageRefresh.current !== sessionKey(id, selected.username)) return;
+      } else {
+        const preservePagesFor = mode === 'manual' ? undefined : refreshScope;
+        if (!await load(refreshIsWechat ? { accountId: id, isCurrent, preservePagesFor } : undefined)
+            || !isCurrent() || generation + 1 !== loadGeneration.current) return;
+        appliedSessionSnapshot.current = revision;
       }
+      failedMessageRefresh.current = undefined;
+      setMessageRevisions(current => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
     } finally {
       refreshLock.current = false;
       setRefreshing(false);
     }
+  }, [visible, refreshScope, loading, refreshAccountId, refreshIsWechat, refreshIssue, load]);
+  useEffect(() => {
+    if (!isTauri() || !visible || !refreshIsWechat || refreshIssue?.needsKeys) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refreshSessions('automatic');
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [visible, refreshIsWechat, refreshIssue?.needsKeys, refreshSessions]);
+
+  const retryLoad = () => {
+    if (loading || refreshing) return;
+    if (currentLoadError?.refreshScope) void refreshSessions('retry');
+    else void load();
   };
 
   const loadMoreSessions = async (source: string) => {
@@ -245,25 +352,21 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     try {
       // Page only this platform, reading at most 50 rows per account in sequence.
       const added: OwnedSession[] = [];
-      const pages: Array<{ id: string; entry: { account: ChatAccount; offset: number }; count: number }> = [];
+      const pages: Array<{ entry: SessionPage; count: number }> = [];
       for (const [id, entry] of sessionOffsets.current) {
-        if ((entry.account.source ?? 'wechat') !== source || entry.offset > MAX_SESSION_OFFSET) continue;
+        if ((entry.account.source ?? 'wechat') !== source || entry.exhausted || entry.offset > MAX_SESSION_OFFSET) continue;
         const rows = await invoke<Session[]>('chat_sessions', { accountId: id, limit: SESSION_PAGE_SIZE, offset: entry.offset });
         if (generation !== loadGeneration.current) return;
         added.push(...rows.map(row => ({ ...row, accountId: id, source: entry.account.source ?? 'wechat' })));
-        pages.push({ id, entry, count: rows.length });
+        pages.push({ entry, count: rows.length });
       }
       // Commit offsets only after the whole page succeeds, so a retry cannot skip rows.
-      for (const { id, entry, count } of pages) {
+      for (const { entry, count } of pages) {
         // A short page proves exhaustion; a full page at the cap does not.
-        if (count < SESSION_PAGE_SIZE) sessionOffsets.current.delete(id);
+        if (count < SESSION_PAGE_SIZE) entry.exhausted = true;
         else entry.offset += SESSION_PAGE_SIZE;
       }
-      if (activeSourceRef.current === source && sessionList.current) {
-        const top = sessionList.current.getBoundingClientRect().top;
-        const anchor = [...sessionList.current.querySelectorAll<HTMLElement>('[data-session-key]')].find(node => node.getBoundingClientRect().bottom > top);
-        if (anchor) pageAnchor.current = { source, key: anchor.dataset.sessionKey!, top: anchor.getBoundingClientRect().top };
-      }
+      rememberPageAnchor(source);
       setSessions(current => orderedSessions([...current, ...added]));
     } catch (reason) { if (generation === loadGeneration.current) setMoreSessionsErrors(current => ({ ...current, [source]: String(reason) })); }
     finally { moreLock.current = false; if (generation === loadGeneration.current) { setLoading(false); setLoadingSource(null); } }
@@ -524,7 +627,9 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         }
       }}>
         {loading && !sessions.length && <LoadingSkeleton label={t("正在加载会话")} />}
-        {error && <p className="chat-workbench-load-error" role="alert">{errorText(error)} <button type="button" disabled={loading || refreshing} onClick={() => void load()}>{t("重试")}</button></p>}
+        {currentLoadError && <p className="chat-workbench-load-error" role="alert">
+          {errorText(currentLoadError.message)} <button type="button" disabled={loading || refreshing} onClick={retryLoad}>{t("重试")}</button>
+        </p>}
         <div className="chat-workbench-source-section" key={activeSource}>
             {visibleSessions.map((session, index) => {
               const key = sessionKey(session.accountId, session.username);
@@ -553,7 +658,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
               {!loading && !moreSessionsErrors[activeSource] && <button type="button" className="connector-quiet" disabled={refreshing} onClick={() => void loadMoreSessions(activeSource)}>{t('加载更多会话')}</button>}
             </div>}
           </div>
-        {!loading && !refreshing && !error && !hasMoreSessions && (sessionLimitReached || visibleSessions.length
+        {!loading && !refreshing && !currentLoadError && !hasMoreSessions && (sessionLimitReached || visibleSessions.length
           ? <p className="chat-workbench-empty" role="status">{sessionLimitReached ? t("已达到会话读取上限，可能还有更早的会话。") : t("已到列表末尾。")}</p>
           : <p className="chat-workbench-empty">{t("没有符合条件的会话。")}</p>)}
       </div>
@@ -601,12 +706,12 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       <ChatEventsPane
         active={view === 'events'}
         loading={eventsLoading}
-        error={error || eventsError}
+        error={currentLoadError?.message || eventsError}
         events={scopedEvents}
         sessionCount={sessions.length}
         query={detailQueries.events ?? ''}
         filter={filter}
-        onRetry={() => { if (error) void load(); else setEventRefresh(value => value + 1); }}
+        onRetry={() => { if (currentLoadError) retryLoad(); else setEventRefresh(value => value + 1); }}
         onSchedule={onSchedule}
         onOpenEvidence={event => setEvidence({ kind: 'event', id: event.id, title: event.title })}
       />
@@ -639,6 +744,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           onClearSearch={() => setDetailQueries(current => ({ ...current, raw: '' }))}
           onChatState={setChatState}
           onLatestMessage={showLatestMessage}
+          onMessageRefreshFailed={noteMessageRefreshFailure}
           onSummarySelection={setSummarySelection}
           onSummarizeSelection={()=>{setSummaryPickRequest(value=>value+1);setView('summary');}}
           onOpenData={onOpenData}

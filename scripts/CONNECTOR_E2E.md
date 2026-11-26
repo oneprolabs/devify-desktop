@@ -14,6 +14,8 @@ The fixture renders the production `PrototypeShell`, connector catalogue, WeChat
 
 `runChatRefreshUiE2E(task, 'http://127.0.0.1:1420')` exercises the visible refresh button: a stale key on a message shard despite a usable cache, reimport for the same account without resetting setup, sync rejection, refresh of the open chat, and a WhatsApp refresh without WeChat decryption.
 
+`runWechatRestartUiE2E(task, base)` advances the chat poll with backup disabled. It checks that a temporarily unavailable WeChat account leaves history visible, a newer cached snapshot appears without a click, unchanged snapshots skip reload, and a late result is ignored after switching platforms.
+
 Use `runChatMessageRetryUiE2E(task, base)` to verify a failed read keeps the visible messages and a successful retry dismisses the error. Use `runChatRefreshPagingUiE2E(task, base)` to verify a delayed older-page request cannot leave a gap after refresh.
 
 Covered paths:

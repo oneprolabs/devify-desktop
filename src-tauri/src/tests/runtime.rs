@@ -647,9 +647,8 @@ fn source_errors_respect_the_login_and_backup_schedule() {
     assert!(s.runtime.sources["local"].last_error.is_none());
     assert_eq!(s.runtime.sources["local"].failures, 0);
 
-    for _ in 0..2 {
-        let error =
-            task_runtime::SourceTickError::WakeFollowUp("temporary source read failure".into());
+    for message in ["temporary source read failure", WECHAT_ACCOUNT_UNAVAILABLE] {
+        let error = task_runtime::SourceTickError::WakeFollowUp(message.into());
         task_runtime::record_source_result(data, &current, s.user_settings_revision, &Err(error))
             .unwrap();
     }
@@ -665,6 +664,23 @@ fn source_errors_respect_the_login_and_backup_schedule() {
         false,
     ));
 
+    let before = Utc::now();
+    task_runtime::record_source_result(
+        data,
+        &current,
+        s.user_settings_revision,
+        &Err(WECHAT_ACCOUNT_UNAVAILABLE.into()),
+    )
+    .unwrap();
+    let s = settings::load(data).unwrap();
+    let source = &s.runtime.sources["local"];
+    let retry = chrono::DateTime::parse_from_rfc3339(source.retry_after.as_deref().unwrap())
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!(retry >= before + chrono::Duration::seconds(30));
+    assert!(retry <= Utc::now() + chrono::Duration::seconds(30));
+    assert_eq!(source.failures, 1);
+
     task_runtime::record_source_result(
         data,
         &current,
@@ -674,7 +690,7 @@ fn source_errors_respect_the_login_and_backup_schedule() {
     .unwrap();
     let s = settings::load(data).unwrap();
     assert!(s.runtime.sources["local"].retry_after.is_some());
-    assert_eq!(s.runtime.sources["local"].failures, 1);
+    assert_eq!(s.runtime.sources["local"].failures, 2);
 }
 
 #[test]

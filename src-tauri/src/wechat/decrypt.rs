@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -96,6 +97,22 @@ fn mtime_nanos(path: &Path) -> u64 {
 fn file_signature(path: &Path) -> (u64, u64) {
     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     (size, mtime_nanos(path))
+}
+
+/// Another reader (e.g. automatic backup) can update the cache before a chat poll.
+pub fn snapshot_revision(outcomes: &[DecryptOutcome]) -> String {
+    let mut hash = DefaultHasher::new();
+    for outcome in outcomes {
+        if let Some(output) = outcome.output.as_deref() {
+            (
+                outcome.rel.as_str(),
+                file_signature(Path::new(output)),
+                file_signature(&wal_path(output)),
+            )
+                .hash(&mut hash);
+        }
+    }
+    format!("{:016x}", hash.finish())
 }
 
 fn wal_path(path: &str) -> PathBuf {
@@ -705,7 +722,9 @@ mod tests {
         let wal = wal_path(&account.dbs[0].path);
         let store = store_with(Some(&salt));
         fs::write(&wal, []).unwrap();
-        assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "ok");
+        let initial = decrypt_account(temp.path(), &account, &store, true, true);
+        assert_eq!(initial[0].status, "ok");
+        let initial_revision = snapshot_revision(&initial);
 
         // One committed frame makes the current snapshot newer than its base.
         let mut header = [0; 32];
@@ -722,7 +741,13 @@ mod tests {
         let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(meta_path(&cache)).unwrap()).unwrap();
         legacy["entries"][&account.dbs[0].rel].as_object_mut().unwrap().remove("wal_replayed");
         fs::write(meta_path(&cache), serde_json::to_vec(&legacy).unwrap()).unwrap();
-        assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "ok");
+        let replayed = decrypt_account(temp.path(), &account, &store, true, true);
+        assert_eq!(replayed[0].status, "ok");
+        let replayed_revision = snapshot_revision(&replayed);
+        assert_ne!(replayed_revision, initial_revision);
+        let cached = decrypt_account(temp.path(), &account, &store, true, true);
+        assert_eq!(cached[0].status, "cached");
+        assert_eq!(snapshot_revision(&cached), replayed_revision);
         let previous = fs::read(&out).unwrap();
         assert_eq!(previous.len(), 2 * crypto::PAGE_SIZE);
         let previous_base = fs::read(base_path(&out)).unwrap();

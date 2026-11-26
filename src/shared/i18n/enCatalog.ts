@@ -1094,6 +1094,8 @@ export const en: Record<string, string> = {
   "刷新会话": "Refresh chats",
   "正在刷新…": "Refreshing…",
   "聊天记录未能刷新": "Couldn’t refresh chats",
+  "暂时无法读取本机微信账号。": "The local WeChat account can’t be read right now.",
+  "请打开微信并确认已登录原账号，且本机数据访问权限未被关闭。": "Open WeChat, sign in to the same account, and check that local data access is still allowed.",
   "请稍等片刻，再重试刷新。": "Wait a moment, then try refreshing again.",
   "微信密钥需要更新": "Update your WeChat key",
   "重新获取或导入当前微信账号的密钥，才能读取新消息。": "Get or import an updated key for this WeChat account to read new messages.",
