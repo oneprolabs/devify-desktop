@@ -29,12 +29,22 @@ pub struct Source {
     pub acknowledged: Option<serde_json::Value>,
     pub active: Option<serde_json::Value>,
     pub last_run_at: Option<String>,
+    pub key_recovery_pending: bool,
+    pub wechat_key_failure: Option<WechatKeyFailure>,
     pub scan_index: usize,
     pub scan_remaining: usize,
     pub retry_after: Option<String>,
     pub failures: u32,
     pub last_error: Option<String>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WechatKeyFailure {
+    pub database: String,
+    pub confirmed: bool,
+    #[serde(default)]
+    pub interrupted: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Mutation {
     pub owner: UploadOwner,

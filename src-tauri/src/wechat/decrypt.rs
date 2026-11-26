@@ -50,20 +50,6 @@ struct SyncEntry {
     key_salt: String,
 }
 
-/// Keys are not the only thing that makes a database readable: the decrypted copy sits in the
-/// cache and the shortcut below would keep serving it after the keys were cleared. Tie the
-/// cached copy to the key that created it so clearing (or re-keying) invalidates the cache.
-fn cache_matches_key(db: &DbFile, entry: &SyncEntry, store: &KeyStore, account: &str) -> bool {
-    if !db.encrypted {
-        return true;
-    }
-    match keys::lookup(store, account, &db.rel) {
-        Some(key) => !entry.key_salt.is_empty() && entry.key_salt == key.salt
-            && db.salt.as_deref() == Some(key.salt.as_str()),
-        None => false,
-    }
-}
-
 pub fn cache_dir(app_data_dir: &Path, account: &str) -> PathBuf {
     crate::local_scope::root(app_data_dir).join("wechat-cache").join(account)
 }
@@ -144,39 +130,33 @@ fn failed(account: &str, rel: &str, error: impl Into<String>) -> DecryptOutcome 
     }
 }
 
-fn validated_key<'a>(
+fn validated_key(
     db: &DbFile,
     account: &str,
-    store: &'a KeyStore,
-) -> Result<(&'a keys::KeyEntry, [u8; crypto::KEY_LEN]), DecryptOutcome> {
+    store: &KeyStore,
+) -> Result<([u8; crypto::SALT_LEN], [u8; crypto::KEY_LEN]), DecryptOutcome> {
     let no_key = |message| {
         let mut outcome = failed(account, &db.rel, message);
         outcome.status = "no-key".into();
         outcome
     };
-    let entry = keys::lookup(store, account, &db.rel)
-        .ok_or_else(|| no_key("没有该数据库的密钥。请先用密钥工具提取并导入。"))?;
-    if db.salt.as_ref().is_some_and(|salt| *salt != entry.salt) {
-        return Err(no_key("数据库已重新加密，需重新提取密钥。"));
-    }
-    let enc_key: [u8; crypto::KEY_LEN] = hex::decode(&entry.enc_key)
-        .ok()
-        .and_then(|key| key.try_into().ok())
-        .ok_or_else(|| no_key("保存的密钥格式无效。"))?;
-
-    // A matching salt identifies the database, but doesn't prove the saved key can read it.
-    // Verify the first page before accepting a cached copy or trying incremental WAL replay.
+    // Discovery and saved metadata may be stale. Authenticate the actual page first.
     let mut page = [0; crypto::PAGE_SIZE];
     File::open(&db.path)
         .and_then(|mut source| source.read_exact(&mut page))
         .map_err(|error| failed(account, &db.rel, format!("无法读取数据库首页：{error}")))?;
-    if crypto::read_salt(&page).map(hex::encode).as_ref() != Some(&entry.salt) {
-        return Err(no_key("数据库已重新加密，需重新提取密钥。"));
-    }
+    let salt = crypto::read_salt(&page)
+        .ok_or_else(|| failed(account, &db.rel, "数据库格式已变化，稍后重新读取。"))?;
+    let entry =
+        keys::lookup(store, account, &db.rel).ok_or_else(|| no_key("没有该数据库的密钥。"))?;
+    let enc_key: [u8; crypto::KEY_LEN] = hex::decode(&entry.enc_key)
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| no_key("保存的密钥格式无效。"))?;
     if !crypto::verify_key(&page, &enc_key) {
         return Err(no_key("已保存的密钥未通过数据库首页校验。"));
     }
-    Ok((entry, enc_key))
+    Ok((salt, enc_key))
 }
 
 /// Copy a plaintext database together with its WAL so SQLite can see the latest committed state.
@@ -199,15 +179,18 @@ fn copy_plaintext(db: &DbFile, out: &Path) -> Result<u64, String> {
     Ok(size)
 }
 
-fn decrypt_file(db: &DbFile, out: &Path, enc_key: &[u8], replay_wal: bool) -> DecryptOutcome {
+fn decrypt_file(
+    db: &DbFile,
+    out: &Path,
+    salt: &[u8],
+    enc_key: &[u8],
+    expected_pages: u64,
+    replay_wal: bool,
+) -> DecryptOutcome {
     let account = String::new();
     let mut pages: u64 = 0;
 
-    let salt = match salt_bytes(db.salt.as_deref()) {
-        Some(salt) => salt,
-        None => return failed(&account, &db.rel, "数据库 salt 不可读"),
-    };
-    let mac_key = match crypto::derive_mac_key(enc_key, &salt) {
+    let mac_key = match crypto::derive_mac_key(enc_key, salt) {
         Ok(mac) => mac,
         Err(error) => return failed(&account, &db.rel, error),
     };
@@ -227,13 +210,27 @@ fn decrypt_file(db: &DbFile, out: &Path, enc_key: &[u8], replay_wal: bool) -> De
     let mut page = vec![0u8; crypto::PAGE_SIZE];
     let mut pgno: u32 = 1;
     loop {
-        match reader.read_exact(&mut page) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+        let read = reader.read(&mut page).and_then(|n| {
+            if n > 0 {
+                reader.read_exact(&mut page[n..])?;
+            }
+            Ok(n)
+        });
+        match read {
+            Ok(0) if pages >= expected_pages => break,
+            Ok(0) => {
+                remove_if_exists(&tmp);
+                return failed(&account, &db.rel, "读取期间数据库缩短，稍后重新读取。");
+            }
+            Ok(_) => {}
             Err(error) => {
                 remove_if_exists(&tmp);
                 return failed(&account, &db.rel, format!("读取第 {pgno} 页失败：{error}"));
             }
+        }
+        if pgno == 1 && !page.starts_with(salt) {
+            remove_if_exists(&tmp);
+            return failed(&account, &db.rel, "数据库首页已变化，稍后重新读取。");
         }
         if !crypto::verify_page(&page, &mac_key, pgno) {
             remove_if_exists(&tmp);
@@ -325,11 +322,11 @@ fn replay_snapshot_wal(db: &DbFile, tmp: &Path, enc_key: &[u8], mac_key: &[u8]) 
 fn refresh_wal(
     db: &DbFile,
     out: &Path,
+    salt: &[u8],
     enc_key: &[u8],
     base: &Path,
 ) -> Result<wal::WalOutcome, String> {
-    let salt = salt_bytes(db.salt.as_deref()).ok_or("数据库 salt 不可读")?;
-    let mac_key = crypto::derive_mac_key(enc_key, &salt)?;
+    let mac_key = crypto::derive_mac_key(enc_key, salt)?;
     let tmp = out.with_extension("db.refresh.part");
     let result = (|| {
         fs::copy(base, &tmp).map_err(|e| format!("复制解密基线失败：{e}"))?;
@@ -344,15 +341,6 @@ fn refresh_wal(
     remove_if_exists(&sidecar(out, "-wal"));
     remove_if_exists(&sidecar(out, "-shm"));
     result
-}
-
-fn salt_bytes(salt_hex: Option<&str>) -> Option<Vec<u8>> {
-    let bytes = hex::decode(salt_hex?).ok()?;
-    if bytes.len() == crypto::SALT_LEN {
-        Some(bytes)
-    } else {
-        None
-    }
 }
 
 fn is_chat_db(rel: &str) -> bool {
@@ -419,10 +407,19 @@ pub fn decrypt_account(
         if let Some(parent) = out.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let src_size = db.size;
-        let src_mtime = mtime_nanos(Path::new(&db.path));
+        let (src_size, src_mtime) = file_signature(Path::new(&db.path));
         let (wal_size, wal_mtime) = file_signature(&wal_path(&db.path));
         let replay_wal = apply_wal && db.encrypted && wal_size > 0;
+        if src_size < crypto::PAGE_SIZE as u64
+            || (db.encrypted && src_size % crypto::PAGE_SIZE as u64 != 0)
+        {
+            outcomes.push(failed(
+                &account.id,
+                &db.rel,
+                "数据库无法读取或包含不完整的页面，稍后重新读取。",
+            ));
+            continue;
+        }
         let key = if db.encrypted {
             match validated_key(db, &account.id, store) {
                 Ok(key) => Some(key),
@@ -435,8 +432,12 @@ pub fn decrypt_account(
             None
         };
 
+        let key_salt = key
+            .as_ref()
+            .map_or_else(String::new, |(salt, _)| hex::encode(salt));
         if let Some(entry) = meta.entries.get(&db.rel) {
-            let matching_key = cache_matches_key(db, entry, store, &account.id);
+            // Reuse only a snapshot produced from the current, authenticated page salt.
+            let matching_key = !db.encrypted || entry.key_salt == key_salt;
             if entry.src_size == src_size
                 && entry.src_mtime == src_mtime
                 && entry.wal_size == wal_size
@@ -458,23 +459,28 @@ pub fn decrypt_account(
                 continue;
             }
 
-            if let Some((key, enc_key)) = key.as_ref().filter(|_| {
+            if let Some((salt, enc_key)) = key.as_ref().filter(|_| {
                 replay_wal && matching_key
                     && entry.src_size == src_size
                     && entry.src_mtime == src_mtime
                     && base_path(&out).exists()
             }) {
-                match refresh_wal(db, &out, enc_key, &base_path(&out)) {
+                match refresh_wal(db, &out, salt, enc_key, &base_path(&out)) {
                     Ok(wal) => {
-                        meta.entries.insert(db.rel.clone(), SyncEntry {
-                            src_size,
-                            src_mtime,
-                            out_size: fs::metadata(&out).map(|m| m.len()).unwrap_or(entry.out_size),
-                            wal_size,
-                            wal_mtime,
-                            wal_replayed: true,
-                            key_salt: key.salt.clone(),
-                        });
+                        meta.entries.insert(
+                            db.rel.clone(),
+                            SyncEntry {
+                                src_size,
+                                src_mtime,
+                                out_size: fs::metadata(&out)
+                                    .map(|m| m.len())
+                                    .unwrap_or(entry.out_size),
+                                wal_size,
+                                wal_mtime,
+                                wal_replayed: true,
+                                key_salt,
+                            },
+                        );
                         outcomes.push(DecryptOutcome {
                             account: account.id.clone(),
                             rel: db.rel.clone(),
@@ -495,7 +501,7 @@ pub fn decrypt_account(
             }
         }
 
-        let Some((entry, enc_key)) = key else {
+        let Some((salt, enc_key)) = key else {
             match copy_plaintext(db, &out) {
                 Ok(size) => {
                     meta.entries.insert(
@@ -526,7 +532,14 @@ pub fn decrypt_account(
             continue;
         };
 
-        let mut outcome = decrypt_file(db, &out, &enc_key, replay_wal);
+        let mut outcome = decrypt_file(
+            db,
+            &out,
+            &salt,
+            &enc_key,
+            src_size / crypto::PAGE_SIZE as u64,
+            replay_wal,
+        );
         outcome.account = account.id.clone();
         if outcome.status == "ok" {
             let out_size = fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
@@ -539,7 +552,7 @@ pub fn decrypt_account(
                     wal_size,
                     wal_mtime,
                     wal_replayed: replay_wal,
-                    key_salt: entry.salt.clone(),
+                    key_salt,
                 },
             );
         }
@@ -641,23 +654,6 @@ mod tests {
     }
 
     #[test]
-    fn cached_copy_is_not_usable_after_keys_are_cleared() {
-        // Regression: "清除本账号密钥" looked like a no-op because the cached-copy shortcut kept
-        // reporting success for a database whose key no longer existed.
-        assert!(!cache_matches_key(&db(true), &cached("aa"), &store_with(None), "acct"));
-    }
-
-    #[test]
-    fn cached_copy_is_not_usable_after_rekeying() {
-        let mut rotated = db(true);
-        rotated.salt = Some("6262".into());
-        // The old cache and saved key agree, but neither matches the source.
-        assert!(!cache_matches_key(&rotated, &cached("6161"), &store_with(Some("aa")), "acct"));
-        // Updating the saved key still requires rebuilding the old cache.
-        assert!(!cache_matches_key(&rotated, &cached("6161"), &store_with(Some("bb")), "acct"));
-    }
-
-    #[test]
     fn changed_salt_bypasses_cache_and_wal_shortcuts() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("message_0.db");
@@ -691,8 +687,82 @@ mod tests {
     }
 
     #[test]
-    fn cached_copy_is_usable_with_the_same_key() {
-        assert!(cache_matches_key(&db(true), &cached("6161"), &store_with(Some("aa")), "acct"));
+    fn stale_salt_metadata_with_a_valid_key_rebuilds_and_then_reuses_the_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("message_0.db");
+        let old_salt = "a".repeat(crypto::SALT_LEN);
+        let new_salt = [b'b'; crypto::SALT_LEN];
+        let page = crypto::authenticated_fixture_page(&[0; crypto::KEY_LEN], &new_salt, 1);
+        fs::write(&source, page).unwrap();
+        let account = Account {
+            id: "acct".into(),
+            dir: temp.path().to_string_lossy().into(),
+            db_count: 1,
+            encrypted_count: 1,
+            total_bytes: page.len() as u64,
+            modified_at: None,
+            dbs: vec![DbFile {
+                path: source.to_string_lossy().into(),
+                salt: Some(hex::encode(&old_salt)),
+                ..db(true)
+            }],
+        };
+        let cache = cache_dir(temp.path(), &account.id);
+        let out = cache.join(&account.dbs[0].rel);
+        fs::create_dir_all(out.parent().unwrap()).unwrap();
+        fs::write(&out, b"previous snapshot").unwrap();
+        let mut entry = cached(&hex::encode(&old_salt));
+        entry.src_size = page.len() as u64;
+        entry.src_mtime = mtime_nanos(&source);
+        save_meta(
+            &cache,
+            &SyncMeta {
+                entries: BTreeMap::from([(account.dbs[0].rel.clone(), entry)]),
+            },
+        );
+
+        let store = store_with(Some(&old_salt));
+        assert_eq!(
+            decrypt_account(temp.path(), &account, &store, true, true)[0].status,
+            "ok"
+        );
+        let snapshot = fs::read(&out).unwrap();
+        assert_ne!(snapshot, b"previous snapshot");
+        assert_eq!(
+            decrypt_account(temp.path(), &account, &store, true, true)[0].status,
+            "cached"
+        );
+
+        // A page-one WAL frame must use the authenticated salt, not the stale saved salt.
+        let key = [0; crypto::KEY_LEN];
+        let changed_page = marked_page(&key, &new_salt, 1, 0x11);
+        let mut header = [0u8; 32];
+        header[..4].copy_from_slice(&0x377f_0682u32.to_be_bytes());
+        header[8..12].copy_from_slice(&(crypto::PAGE_SIZE as u32).to_be_bytes());
+        fs::write(
+            wal_path(&account.dbs[0].path),
+            [header.as_slice(), wal_frame(1, 1, &changed_page).as_slice()].concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            decrypt_account(temp.path(), &account, &store, true, true)[0].status,
+            "ok"
+        );
+        let snapshot = fs::read(&out).unwrap();
+        assert_eq!(
+            snapshot,
+            crypto::decrypt_page(&changed_page, &key, 1).unwrap()
+        );
+        assert_eq!(
+            decrypt_account(temp.path(), &account, &KeyStore::default(), true, true)[0].status,
+            "no-key"
+        );
+        fs::write(&source, &page[..128]).unwrap();
+        assert_eq!(
+            decrypt_account(temp.path(), &account, &store, true, true)[0].status,
+            "failed"
+        );
+        assert_eq!(fs::read(&out).unwrap(), snapshot);
     }
 
     #[test]
@@ -899,13 +969,4 @@ mod tests {
         assert_eq!(fs::read(meta_path(&cache)).unwrap(), kept_meta);
     }
 
-    #[test]
-    fn entries_written_before_the_salt_was_tracked_force_one_decryption() {
-        assert!(!cache_matches_key(&db(true), &cached(""), &store_with(Some("aa")), "acct"));
-    }
-
-    #[test]
-    fn plaintext_databases_do_not_need_a_key() {
-        assert!(cache_matches_key(&db(false), &cached(""), &store_with(None), "acct"));
-    }
 }

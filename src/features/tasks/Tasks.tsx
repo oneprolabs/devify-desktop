@@ -23,7 +23,7 @@ function taskMessage(job: RuntimeJob): string {
   return errorText(job.message, job.status === 'failed' ? undefined : labels[job.status]);
 }
 
-export function Tasks({ onContinueSetup }: { onNewUpload: () => void; startCreating?: boolean; onContinueSetup?: (platform: string) => void }) {
+export function Tasks({ onContinueSetup, onRecoverWechatKeys }: { onNewUpload: () => void; startCreating?: boolean; onContinueSetup?: (platform: string) => void; onRecoverWechatKeys: (accountId: string) => void }) {
   const runtime = useTaskRuntime();
   const [error, setError] = useState('');
   const [page, setPage] = useState(0);
@@ -110,6 +110,12 @@ export function Tasks({ onContinueSetup }: { onNewUpload: () => void; startCreat
     </header>
     {runtime.pending_config > 0 && <p role="status">{t('设置已保存在本地，正在等待同步。同步完成后自动继续备份。')}</p>}
     {[...new Set((runtime.sources ?? []).filter(source => !source.setup_complete).map(source => source.platform))].map(platform => <div key={platform} className="task-setup-notice" role="status"><p>{tf('{0} 配置未完成，备份已暂停。', platform === 'whatsapp' ? 'WhatsApp' : t('微信'))}</p>{onContinueSetup && <button type="button" className="wxv-btn" onClick={() => onContinueSetup(platform)}>{t('继续配置')}</button>}</div>)}
+    {runtime.sources?.filter(source => source.backup_needs_keys && source.setup_complete && source.backup_enabled).map(source => (
+      <div key={source.account_id} className="task-setup-notice">
+        <p role="alert">{t('微信备份已暂停，请更新密钥。')}</p>
+        <button type="button" className="wxv-btn" onClick={() => onRecoverWechatKeys(source.account_id)}>{t('更新微信密钥')}</button>
+      </div>
+    ))}
     {(error || runtime.error) && <p className="wx-setup-error" role="alert">{errorText(error || runtime.error)}</p>}
     {!visible.length && <p>{t('暂无任务。完成备份设置或生成聊天总结后，会显示在这里。')}</p>}
     <div className="task-runtime-list">{visible.map(job => <article key={job.id} className="task-runtime-job"><div><strong>{taskTitle(job)}</strong><p>{taskMessage(job)}{emptyCounts.has(job.id) && <> · {tf('当天 {0} 次', emptyCounts.get(job.id)!)}</>}</p>{job.kind==='summary'&&<p className="task-summary-caller">{job.caller} · {tf('发起账号：{0}',job.initiator_id??'—')}</p>}<small>{new Date(job.updated_at).toLocaleString(dateLocale())}</small>{job.status === 'failed' && <WizardActionButton disabled={job.kind!=='summary'&&runtime.paused} onAction={async () => { if(job.kind==='summary')await invoke('summary_task_retry',{taskId:job.id});else await invoke('task_runtime_retry', { jobId: job.id }); await refreshTaskRuntime(); }}>{t('重试')}</WizardActionButton>}</div><span className={`task-status ${job.status === 'completed' ? 'done' : job.status === 'failed' ? 'failed' : 'pending'}`}>{t(job.kind==='summary'?({queued:'排队中',running:'正在生成',processing:'云端生成中',completed:'已完成',failed:'等待重试'} as Record<string,string>)[job.status]||job.status:labels[job.status] || job.status)}</span></article>)}</div>

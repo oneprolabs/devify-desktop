@@ -640,6 +640,7 @@ fn source_errors_respect_the_login_and_backup_schedule() {
         data,
         &owner,
         revision,
+        false,
         &Err("old user's failed upload".into()),
     )
     .unwrap();
@@ -649,8 +650,14 @@ fn source_errors_respect_the_login_and_backup_schedule() {
 
     for message in ["temporary source read failure", WECHAT_ACCOUNT_UNAVAILABLE] {
         let error = task_runtime::SourceTickError::WakeFollowUp(message.into());
-        task_runtime::record_source_result(data, &current, s.user_settings_revision, &Err(error))
-            .unwrap();
+        task_runtime::record_source_result(
+            data,
+            &current,
+            s.user_settings_revision,
+            false,
+            &Err(error),
+        )
+        .unwrap();
     }
     let s = settings::load(data).unwrap();
     let source = &s.runtime.sources["local"];
@@ -669,6 +676,7 @@ fn source_errors_respect_the_login_and_backup_schedule() {
         data,
         &current,
         s.user_settings_revision,
+        false,
         &Err(WECHAT_ACCOUNT_UNAVAILABLE.into()),
     )
     .unwrap();
@@ -685,6 +693,7 @@ fn source_errors_respect_the_login_and_backup_schedule() {
         data,
         &current,
         s.user_settings_revision,
+        false,
         &Err("upload failed".into()),
     )
     .unwrap();
@@ -1017,3 +1026,6 @@ fn backup_pause_reserves_a_stop_intent_without_rewriting_a_full_outbox() {
     assert_eq!(restored.backup.wifi_only, after.backup.wifi_only);
     assert_eq!(restored.runtime.pending.len(), 129);
 }
+
+#[path = "wechat_backup_recovery.rs"]
+mod wechat_backup_recovery;

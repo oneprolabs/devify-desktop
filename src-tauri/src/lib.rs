@@ -6340,6 +6340,7 @@ const WECHAT_ACCOUNT_UNAVAILABLE: &str = "WECHAT_ACCOUNT_UNAVAILABLE: 暂时无�
 struct WechatSyncResult {
     outcomes: Vec<DecryptOutcome>,
     revision: String,
+    backup_read_error: Option<task_runtime::WechatBackupReadError>,
 }
 
 #[tauri::command]
@@ -6357,6 +6358,15 @@ async fn wechat_sync(app: AppHandle, account_id: String) -> Result<WechatSyncRes
         }
         let data = app_data(&app);
         let store = keys::load(&keys::store_path(&data));
+        let blocked_backup = settings::load(&data).ok().and_then(|value| {
+            let source = value.runtime.sources.get(&account_id)?;
+            let owner = config_runtime::local_owner(&data, &value, &account_id).ok()?;
+            let same_owner = source
+                .owner
+                .as_ref()
+                .is_some_and(|old| config_runtime::same_principal(old, &owner));
+            (same_owner && source.wechat_key_failure.is_some()).then_some(owner)
+        });
         let outcomes = read_new_wechat_data(
             &data,
             &connector_environment(&app),
@@ -6365,9 +6375,25 @@ async fn wechat_sync(app: AppHandle, account_id: String) -> Result<WechatSyncRes
             true,
             true,
         )
-        .map(|outcomes| WechatSyncResult {
-            revision: decrypt::snapshot_revision(&outcomes),
-            outcomes,
+        .and_then(|outcomes| {
+            let backup_read_error = if let Some(owner) = blocked_backup {
+                match task_runtime::resume_wechat_backup(&data, &owner, &outcomes)? {
+                    task_runtime::WechatBackupRecovery::Resumed => {
+                        TASK_WAKE.notify_one();
+                        emit_task_runtime(&app);
+                        None
+                    }
+                    task_runtime::WechatBackupRecovery::Blocked(error) => Some(error),
+                    task_runtime::WechatBackupRecovery::Unchanged => None,
+                }
+            } else {
+                None
+            };
+            Ok(WechatSyncResult {
+                revision: decrypt::snapshot_revision(&outcomes),
+                outcomes,
+                backup_read_error,
+            })
         });
         end_sync(&state, &account_id);
         outcomes

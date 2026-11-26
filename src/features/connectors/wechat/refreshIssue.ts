@@ -21,11 +21,10 @@ export function databaseKind(rel: string): string {
   return '数据库';
 }
 
-export function classifyWechatRefresh(outcomes: RefreshOutcome[]): ClassifiedRefresh | null {
+export function classifyWechatRefresh(outcomes: RefreshOutcome[], backupNeedsKeys = false): ClassifiedRefresh | null {
   const content = outcomes.filter(outcome => isChatContent(outcome.rel));
   const failures = content.filter(outcome => !isReadable(outcome));
-  if (!failures.length && content.length) return null;
-  if (failures.some(outcome => outcome.status === 'no-key' || outcome.error === '保存的密钥格式无效。')) {
+  if (backupNeedsKeys || failures.some(outcome => outcome.status === 'no-key' || outcome.error === '保存的密钥格式无效。')) {
     return {
       wal: false,
       needsKeys: true,
@@ -33,6 +32,7 @@ export function classifyWechatRefresh(outcomes: RefreshOutcome[]): ClassifiedRef
       message: '重新获取或导入当前微信账号的密钥，才能读取新消息。',
     };
   }
+  if (!failures.length && content.length) return null;
   const failure = failures[0];
   const wal = Boolean(failure?.error?.includes('WAL'));
   return {
