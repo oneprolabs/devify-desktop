@@ -2,6 +2,7 @@ export type SummaryBudget = { unit: 'utf8_bytes'; max_request_bytes: number; pro
 export type SummaryScenario = { id: string; name: string; description: string; requires_instructions: boolean; sha256: string; budgets: { cloud: SummaryBudget; local_cli: SummaryBudget } };
 export type SummaryCatalog = { schema_version: 1; version: string; default_scenario: string; scenarios: SummaryScenario[]; max_instructions_chars: number };
 export type SummaryOptionsView = { config: SummaryCatalog; language: string; ui_language: string; instructions: string };
+export type SummaryConfigError = { message: string; retry_at?: number };
 export type SummaryDraft = { scenario: string; language: string; instructions: string };
 export const summaryScenarioLabel = (id: string | null | undefined): string =>
   ({ three_part: '综合分析', summary: '总结', action_items: '待办', timeline: '时间线', custom: '自定义' } as Record<string, string>)[id ?? ''] ?? '';
@@ -12,7 +13,7 @@ export function summaryOutputLanguage(view: SummaryOptionsView, draft: SummaryDr
 }
 
 export function summaryOptionFields(view: SummaryOptionsView | null, draft: SummaryDraft) {
-  if (!view) throw Error('总结方式尚未初始化，请联网后点击「重新初始化」。');
+  if (!view) throw Error('当前空间没有可用的总结配置，请重试。');
   const selected = view.config.scenarios.find(item => item.id === draft.scenario);
   if (!selected) throw Error('所选总结方式已不可用，请重新选择。');
   const instructions = draft.instructions.trim();

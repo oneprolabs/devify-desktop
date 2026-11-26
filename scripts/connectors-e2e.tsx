@@ -211,7 +211,6 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     if(state.summaryConfigError)throw state.summaryConfigError;
     return {config:clone(state.summaryConfig),language:state.settings.language.summary==='跟随界面'?state.settings.language.ui:state.settings.language.summary,ui_language:state.settings.language.ui,instructions:state.settings.agent.instructions};
    }
-   case 'summary_config_refresh':if(state.summaryConfigError)throw state.summaryConfigError;return null;
    case 'summary_config_preview_local': {
     const encoder = new TextEncoder();
     const largestMessage = args.body.messages.some((message: { text: string }) => encoder.encode(message.text).length > 11000);

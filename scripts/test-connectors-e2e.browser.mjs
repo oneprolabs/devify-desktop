@@ -616,7 +616,25 @@ export async function runSummaryDateUiE2E(task, base = 'http://127.0.0.1:1422', 
     return {start:new Date(start*1000).toISOString(),end:new Date(end*1000).toISOString()};
   });
   await page.click('loc=role:tab[name="聊天总结"]',{label:'Open chat summary tab'});
+  await page.evaluate(() => {
+    window.__E2E__.summaryConfigError = {
+      message: '无法连接总结服务，请检查网络。',
+      retry_at: Math.floor(Date.now() / 1000) + 120,
+    };
+  });
   await open();
+  const configError = '.summary-request-options [role="alert"]';
+  await page.waitForSelector(configError);
+  assert.match(await page.evaluate(selector => document.querySelector(selector).textContent, configError),
+    /无法连接总结服务.*可在 .* 后重试/);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.summary-request-options [role="alert"]').length), 1);
+  assert.equal(await page.evaluate(selector => document.querySelector(selector).disabled, generate), true);
+  assert.equal(await page.evaluate(() => window.__E2E__.calls.filter(call => call.command === 'summary_config_get').length), 1);
+  await page.evaluate(() => { window.__E2E__.summaryConfigError = ''; });
+  await page.click(`${configError} button`, { label: 'Retry reading summary configuration' });
+  await page.waitForSelector('.summary-scenario-pills');
+  assert.equal(await page.evaluate(selector => document.querySelector(selector), configError), null);
+  assert.equal(await page.evaluate(() => window.__E2E__.calls.filter(call => call.command === 'summary_config_get').length), 2);
   await page.waitForSelector(local);
   assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('.summary-date-range button')].map(el=>el.textContent)), ['今天','昨天','近 3 天','本周','本月','自定义']);
   await range('自定义');
@@ -746,7 +764,7 @@ export async function runSummaryDateUiE2E(task, base = 'http://127.0.0.1:1422', 
   await page.click(generate);
   await page.waitForFunction(()=>document.querySelector('.summary-feedback.error')?.textContent.includes('没有可总结'));
   assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue').length),6);
-  console.log('PASS chat summary dates: cloud guard, inclusive history, local date ranges and full history, selection, cancellation and duplicate confirmation (synthetic IPC)');
+  console.log('PASS chat summary dates: configuration recovery, cloud guard, inclusive history, local date ranges and full history, selection, cancellation and duplicate confirmation (synthetic IPC)');
 }
 
 // Real React shell with synthetic IPC, not a server integration test.

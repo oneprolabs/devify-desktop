@@ -758,6 +758,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           localAgentReady={chatState.agentReady}
           localAgentName={chatState.agentName}
           localAgentModel={chatState.agentModel}
+          serviceUrl={settings?.devify?.base_url}
           spaceId={settings?.devify?.active_space_id??null}
           accountId={accountId}
           sessions={sessions.filter(session => session.accountId === accountId)}

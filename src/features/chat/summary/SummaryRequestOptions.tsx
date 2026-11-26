@@ -1,15 +1,14 @@
-import { t } from '../../../shared/i18n/locale';
-import { summaryOutputLanguage, type SummaryDraft, type SummaryOptionsView } from './summaryOptions';
+import { dateLocale, t, tf } from '../../../shared/i18n/locale';
+import { summaryOutputLanguage, type SummaryConfigError, type SummaryDraft, type SummaryOptionsView } from './summaryOptions';
 
-export function SummaryRequestOptions({ view, draft, loading, error, disabled, onChange, onInitialize, onReload }: {
-  view: SummaryOptionsView | null; draft: SummaryDraft; loading: boolean; error: string; disabled: boolean;
-  onChange: (patch: Partial<SummaryDraft>) => void; onInitialize: () => void; onReload: () => void;
+export function SummaryRequestOptions({ view, draft, loading, error, disabled, onChange, onReload }: {
+  view: SummaryOptionsView | null; draft: SummaryDraft; loading: boolean; error: SummaryConfigError | null; disabled: boolean;
+  onChange: (patch: Partial<SummaryDraft>) => void; onReload: () => void;
 }) {
   const selected = view?.config.scenarios.find(item => item.id === draft.scenario);
   const count = Array.from(draft.instructions).length;
   return <div className="summary-request-options">
-    {!view && <div className="summary-feedback" role="status"><span>{loading ? t('正在读取总结方式…') : t('总结方式尚未初始化，请联网后重新初始化。')}</span>
-      <button type="button" disabled={loading || disabled} onClick={onInitialize}>{t('重新初始化')}</button></div>}
+    {!view && loading && <div className="summary-feedback" role="status">{t('正在读取总结方式…')}</div>}
     {view && <>
       <div className="chat-summary-row"><span className="chat-summary-label">{t('总结方式')}</span><div className="summary-option-field">
         <div className="chat-summary-pills summary-scenario-pills" role="group" aria-label={t('总结方式')}>{view.config.scenarios.map(item => <button key={item.id} type="button" className={draft.scenario === item.id ? 'on' : ''} aria-pressed={draft.scenario === item.id} disabled={disabled || loading} onClick={() => onChange({ scenario: item.id })}>{t(item.name)}</button>)}</div>
@@ -25,6 +24,8 @@ export function SummaryRequestOptions({ view, draft, loading, error, disabled, o
         <div className="summary-instructions-hint" id="summary-instructions-hint"><span>{t(selected?.requires_instructions || selected?.id === 'custom' ? '自定义总结需填写目标、关注点或输出结构。' : '可选，仅用于本次总结。待办以文字展示，不自动创建任务。')}</span><span className={count > view.config.max_instructions_chars ? 'over-limit' : ''}>{count} / {view.config.max_instructions_chars}</span></div>
       </div></div>
     </>}
-    {error && <div className="summary-feedback error" role="alert"><span>{t(error.replace(/^Error: /, ''))}</span>{view && <button type="button" disabled={loading || disabled} onClick={onReload}>{t('重新读取')}</button>}</div>}
+    {error && <div className="summary-feedback error" role="alert"><span>{t(error.message)}
+      {error.retry_at != null && error.retry_at * 1000 > Date.now() && ` ${tf('可在 {0} 后重试。', new Date(error.retry_at * 1000).toLocaleString(dateLocale()))}`}
+    </span><button type="button" disabled={loading || disabled} onClick={onReload}>{t('重试')}</button></div>}
   </div>;
 }
