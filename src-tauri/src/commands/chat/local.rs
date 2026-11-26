@@ -219,13 +219,15 @@ pub(crate) async fn wechat_messages(
     before_id: Option<i64>,
     before_shard: Option<String>,
     include_attachments: Option<bool>,
+    strict_history: Option<bool>,
 ) -> Result<Vec<whatsapp::DesktopMessage>, String> {
+    let strict_history = strict_history.unwrap_or(false);
+    let include_attachments = include_attachments.unwrap_or(false) && !strict_history;
     let _read_budget = LOCAL_READ_BUDGET
         .acquire()
         .await
         .map_err(|e| e.to_string())?;
     if whatsapp::is_account(&account_id) {
-        let include_attachments = include_attachments.unwrap_or(false);
         if !include_attachments && !whatsapp_allowed_usernames(&app, &account_id)?.contains(&username) {
             return Err("该会话不在当前策略白名单中。".into());
         }
@@ -240,7 +242,9 @@ pub(crate) async fn wechat_messages(
         let data = app_data(&app);
         return tauri::async_runtime::spawn_blocking(move || {
             let limit = limit.unwrap_or(100).clamp(1, 100);
-            let rows = if include_attachments {
+            let rows = if strict_history {
+                without_attachments(whatsapp::summary_messages(&data, &username, limit, cursor)?)
+            } else if include_attachments {
                 let authorize = || {
                     let _identity = crate::UPLOAD_IDENTITY_LOCK.blocking_read();
                     require_whatsapp_attachment_session(&app, &account_id, &username)
@@ -254,7 +258,7 @@ pub(crate) async fn wechat_messages(
             } else {
                 without_attachments(whatsapp::messages(&data, &username, limit, cursor)?)
             };
-            if rows.is_empty() && before.is_none() {
+            if rows.is_empty() && before.is_none() && !strict_history {
                 return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());
             }
             Ok(rows)
@@ -284,15 +288,16 @@ pub(crate) async fn wechat_messages(
         if username.ends_with("@qy_g") || username.ends_with("@qy_u") {
             decrypt::prepare_business_cache(&app_data(&app), &account_id, true)?;
         }
+        let limit = limit.unwrap_or(100).clamp(1, 100);
+        if strict_history {
+            return Ok(without_attachments(query::summary_messages(
+                &cache, &username, limit, cursor,
+            )?));
+        }
         if !query::chat_present(&cache, &username)? {
             return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());
         }
-        let rows = query::messages(
-            &cache,
-            &username,
-            limit.unwrap_or(100).clamp(1, 100),
-            cursor,
-        )?;
+        let rows = query::messages(&cache, &username, limit, cursor)?;
         if rows.is_empty() && before.is_none() {
             return Err("LOCAL_CHAT_MISSING: 本地没有这段聊天记录。".into());
         }

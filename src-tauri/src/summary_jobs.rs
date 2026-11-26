@@ -2,9 +2,11 @@
 //! Cloud execution is delegated; local CLI execution is serialized with preparation.
 use super::*;
 use crate::chat::access::{allowed_usernames, whatsapp_allowed_usernames};
+use crate::summary_config::{batches, prompt};
 use rusqlite::{params, TransactionBehavior};
 
 static ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static LOCAL_AGENT_ACTIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Job {
@@ -26,6 +28,8 @@ pub(crate) struct Job {
     pub prompt: Option<crate::summary_config::prompt::Frozen>,
     #[serde(default)]
     pub config_retried: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batches: Option<batches::Progress>,
 }
 
 fn owner_key(owner: &settings::UploadOwner) -> String {
@@ -173,7 +177,8 @@ pub(crate) async fn summary_task_enqueue(
         return Err("无效的总结请求标识。".into());
     }
     let messages = body["messages"].as_array().ok_or("缺少总结消息。")?;
-    if messages.is_empty() || messages.len() > 2000 {
+    let all_messages = engine == "local" && crate::summary_config::prompt::is_all_messages(&body);
+    if messages.is_empty() || (!all_messages && messages.len() > 2000) {
         return Err("请选择 1 至 2000 条文字消息。".into());
     }
     let allowed = if whatsapp::is_account(&account_id) {
@@ -224,7 +229,10 @@ pub(crate) async fn summary_task_enqueue(
     }
     let config = crate::summary_config::catalog(&data)?;
     validate_catalog_owner(&config, &owner)?;
-    let prompt = crate::summary_config::prompt::freeze(&config, &mut body, &value.language, &engine, true)?;
+    let (prompt, plan) = prompt::freeze(&config, &mut body, &value.language, &engine, true)?;
+    let batch_progress = plan
+        .filter(|plan| plan.ends.len() > 1)
+        .map(batches::Progress::new);
     let count = body["messages"].as_array().map_or(0, Vec::len);
     body["message_count"] = count.into();
     let mut sessions = BTreeMap::<String, serde_json::Value>::new();
@@ -252,6 +260,7 @@ pub(crate) async fn summary_task_enqueue(
         result: None,
         prompt: Some(prompt),
         config_retried: false,
+        batches: batch_progress,
     };
     if current(&app)?
         .iter()
@@ -375,6 +384,9 @@ pub(crate) async fn tick(app: &AppHandle) {
         emit_task_runtime(app);
         return;
     }
+    let Ok(lease) = LOCAL_AGENT_ACTIVE.try_lock() else {
+        return;
+    };
     job.status = "running".into();
     job.message = "正在通过本地工具生成总结。".into();
     job.updated_at = Utc::now().to_rfc3339();
@@ -382,53 +394,38 @@ pub(crate) async fn tick(app: &AppHandle) {
         return;
     }
     emit_task_runtime(app);
-    let input = job.body["messages"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|mut value| {
-            if value.get("is_group").is_none() {
-                value["is_group"] = false.into();
-            }
-            serde_json::from_value::<query::SummaryMessage>(value)
-        })
-        .collect::<Result<Vec<_>, _>>();
-    let result = async {
-        let settings = settings::load(&data)?;
-        if !config_runtime::local_owner(&data, &settings, &job.owner.account_id)
-            .is_ok_and(|o| o == job.owner)
-            || !entitlements::is_internal(&data, &job.owner.base_url)
-        {
-            return Err("登录状态或本地工具权限已改变，请重新操作。".into());
-        }
-        let input = if job.prompt.is_some() { crate::summary_config::prompt::local_input(&job.body)? }
-            else { query::summarize_messages(input.map_err(|_| "总结消息格式无效。")?) };
-        if input.truncated {
-            return Err("本地工具的单次处理范围已超限，请减少选择后重试。".into());
-        }
-        let selected = job.agent.clone().ok_or("未选择本地工具。")?;
-        entitlements::require(&data, &job.owner.base_url, capabilities::AI_AGENT_SUMMARY)?;
-        let root = data.join("summary-runs").join(owner_key(&job.owner));
-        let language = job.body["language"].as_str().unwrap_or("中文").to_string();
-        let prompt = job.prompt.as_ref().map(|snapshot| crate::summary_config::prompt::local_prompt(snapshot, &job.body, &input)).transpose()?;
-        tauri::async_runtime::spawn_blocking(move || {
-            if let Some(prompt) = prompt { agent::summarize_chat(&selected, &prompt, &root) }
-            else { agent::summarize(&selected, &input, &language, &root) }
-        })
-        .await
-        .map_err(|e| format!("本地总结任务失败：{e}"))?
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run_local(&app, &data, job).await;
+        drop(lease);
+        TASK_WAKE.notify_one();
+    });
+}
+
+fn validate_local_owner(data: &Path, owner: &settings::UploadOwner) -> Result<(), String> {
+    let settings = settings::load(data)?;
+    if !config_runtime::local_owner(data, &settings, &owner.account_id)
+        .is_ok_and(|current| current == *owner)
+        || !entitlements::is_internal(data, &owner.base_url)
+    {
+        return Err("登录状态或本地工具权限已改变，请重新操作。".into());
     }
-    .await;
+    entitlements::require(data, &owner.base_url, capabilities::AI_AGENT_SUMMARY)?;
+    Ok(())
+}
+
+async fn run_local(app: &AppHandle, data: &Path, mut job: Job) {
+    let result = execute_local(app, data, &mut job).await;
     match result {
         Ok(output) => {
             let mut record = record(&job);
-            record["body"] = output.output.into();
+            record["body"] = output.into();
             record["status"] = "ready".into();
             job.result = Some(record);
             job.status = "completed".into();
             job.message = "总结已完成。".into();
             job.body["messages"] = serde_json::json!([]);
+            job.batches = None;
         }
         Err(error) => {
             job.status = "failed".into();
@@ -436,8 +433,78 @@ pub(crate) async fn tick(app: &AppHandle) {
         }
     }
     job.updated_at = Utc::now().to_rfc3339();
-    let _ = store(&data, &job, Some("running"));
+    let _ = store(data, &job, Some("running"));
     emit_task_runtime(app);
+}
+
+async fn execute_local(app: &AppHandle, data: &Path, job: &mut Job) -> Result<String, String> {
+    validate_local_owner(data, &job.owner)?;
+    let selected = job.agent.clone().ok_or("未选择本地工具。")?;
+    let root = data.join("summary-runs").join(owner_key(&job.owner));
+    let Some(snapshot) = job.prompt.clone() else {
+        let messages = job.body["messages"]
+            .as_array()
+            .ok_or("缺少总结消息。")?
+            .iter()
+            .cloned()
+            .map(|mut value| {
+                if value.get("is_group").is_none() {
+                    value["is_group"] = false.into();
+                }
+                serde_json::from_value::<query::SummaryMessage>(value)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "总结消息格式无效。")?;
+        let input = query::summarize_messages(messages);
+        if input.truncated {
+            return Err("本地工具的单次处理范围已超限，请减少选择后重试。".into());
+        }
+        let language = job.body["language"].as_str().unwrap_or("中文").to_string();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            agent::summarize(&selected, &input, &language, &root)
+        })
+        .await
+        .map_err(|error| format!("本地总结任务失败：{error}"))??;
+        validate_local_owner(data, &job.owner)?;
+        return Ok(result.output);
+    };
+
+    loop {
+        validate_local_owner(data, &job.owner)?;
+        let step = match job.batches.as_mut() {
+            Some(progress) => progress.next(&snapshot, &job.body)?,
+            None => batches::Step::Final(prompt::local_prompt(
+                &snapshot,
+                &job.body,
+                &prompt::local_input(&job.body)?,
+            )?),
+        };
+        let (agent, run_root, request) =
+            (selected.clone(), root.clone(), step.prompt().to_string());
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            agent::summarize_chat(&agent, &request, &run_root)
+        })
+        .await
+        .map_err(|error| format!("本地总结任务失败：{error}"))??;
+        validate_local_owner(data, &job.owner)?;
+        let Some(progress) = job.batches.as_mut() else {
+            return Ok(result.output);
+        };
+        if let Some(output) = progress.accept(&snapshot, &job.body, step, result.output)? {
+            return Ok(output);
+        }
+        let (completed, total) = progress.counts();
+        job.message = if completed == total {
+            "正在合并分批摘要。".into()
+        } else {
+            format!("已完成 {completed} / {total} 批。")
+        };
+        job.updated_at = Utc::now().to_rfc3339();
+        if !store(data, job, Some("running"))? {
+            return Err("总结任务状态已改变。".into());
+        }
+        emit_task_runtime(app);
+    }
 }
 
 async fn submit_cloud(app: &AppHandle, job: &mut Job) -> Result<serde_json::Value, crate::summary_config::CloudError> {
@@ -451,8 +518,15 @@ async fn submit_cloud(app: &AppHandle, job: &mut Job) -> Result<serde_json::Valu
             validate_catalog_owner(&config, &job.owner)?;
             // This precise 409 guarantees no remote task exists. Keep the request key
             // and user choices; persist the replacement snapshot before sending again.
-            let prompt = crate::summary_config::prompt::freeze(&config, &mut job.body, &value.language, &job.engine, false)?;
-            job.prompt = Some(prompt); job.config_retried = true;
+            let (prompt, _) = crate::summary_config::prompt::freeze(
+                &config,
+                &mut job.body,
+                &value.language,
+                &job.engine,
+                false,
+            )?;
+            job.prompt = Some(prompt);
+            job.config_retried = true;
             job.updated_at = Utc::now().to_rfc3339();
             if !store(&data, job, Some("queued"))? { return Err("总结任务状态已改变。".into()); }
             cloud_request(app, job, reqwest::Method::POST, None, Some(&job.body)).await
@@ -550,7 +624,25 @@ pub(crate) fn forget_remote(app: &AppHandle, id: i64) -> Result<(), String> {
 }
 
 pub(crate) fn snapshots(app: &AppHandle) -> Vec<serde_json::Value> {
-    current(app).unwrap_or_default().iter().take(100).map(|j|serde_json::json!({"id":j.id,"kind":"summary","account_id":j.owner.account_id,"status":j.status,"message":j.message,"updated_at":j.updated_at,"title":j.title,"engine":j.engine,"caller":j.agent.as_ref().map(|a|agent::agent_name(&a.provider_id)).unwrap_or_else(||"云端模型".into()),"initiator_id":j.owner.user_id,"scope":{"usernames":[]}})).collect()
+    current(app)
+        .unwrap_or_default()
+        .iter()
+        .take(100)
+        .map(|job| {
+            let progress = job.batches.as_ref().map(|state| {
+                let (completed, total) = state.counts();
+                serde_json::json!({"completed": completed, "total": total})
+            });
+            serde_json::json!({
+                "id": job.id, "kind": "summary", "account_id": job.owner.account_id,
+                "status": job.status, "message": job.message, "updated_at": job.updated_at,
+                "title": job.title, "engine": job.engine, "initiator_id": job.owner.user_id,
+                "caller": job.agent.as_ref().map(|agent| agent::agent_name(&agent.provider_id))
+                    .unwrap_or_else(|| "云端模型".into()),
+                "scope": {"usernames": []}, "summary_progress": progress,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn cleanup(data: &Path) -> Result<(), String> {
@@ -597,6 +689,7 @@ mod tests {
             result: None,
             prompt: None,
             config_retried: false,
+            batches: None,
         }
     }
     #[test]

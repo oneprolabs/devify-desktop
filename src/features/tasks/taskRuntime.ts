@@ -3,7 +3,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { desktopInvoke } from '../../shared/api/desktopInvoke';
 
-export type RuntimeJob = { id: string; account_id: string; status: string; message: string; updated_at: string; batch_id?: number; kind?:'summary';title?:string;engine?:string;caller?:string;initiator_id?:number;scope?: { usernames: string[]; message_selection?: Record<string, unknown[]> } };
+export type RuntimeJob = { id: string; account_id: string; status: string; message: string; updated_at: string; batch_id?: number; kind?:'summary';title?:string;engine?:string;caller?:string;initiator_id?:number;summary_progress?: { completed: number; total: number } | null;scope?: { usernames: string[]; message_selection?: Record<string, unknown[]> } };
 export type RuntimeSource = { account_id: string; platform: string; setup_complete: boolean; backup_enabled: boolean; wizard_step?: 'sessions' | 'backup' | null };
 export type TaskRuntime = { context?: string | null; revision?: number; sources?: RuntimeSource[]; paused: boolean; running: boolean; pending_config: number; error?: string | null; jobs: RuntimeJob[] };
 let snapshot: TaskRuntime = { paused: true, running: false, pending_config: 0, jobs: [] };

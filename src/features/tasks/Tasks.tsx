@@ -12,6 +12,12 @@ const emptyBackup = (job: { kind?: string; status: string; message: string }) =>
 const labels: Record<string, string> = { queued: '等待备份', running: '正在准备', uploading: '正在上传', processing: '服务端处理中', completed: '已完成', failed: '等待重试', cancelled: '已取消' };
 function taskMessage(job: RuntimeJob): string {
   if (emptyBackup(job)) return t('本批未新增消息');
+  if (job.summary_progress) {
+    const { completed, total } = job.summary_progress;
+    const progress = tf('已完成 {0} / {1} 批。', completed, total);
+    if (job.status === 'running') return completed === total ? t('正在合并分批摘要。') : progress;
+    if (job.status === 'failed') return `${progress} ${errorText(job.message)}`;
+  }
   const parsed = /^服务端解析完成，共 (\d+) 条消息$/.exec(job.message);
   if (parsed) return tf('服务端解析完成，共 {0} 条消息', Number(parsed[1]));
   return errorText(job.message, job.status === 'failed' ? undefined : labels[job.status]);

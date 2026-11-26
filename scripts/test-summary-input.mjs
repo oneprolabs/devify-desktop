@@ -77,3 +77,52 @@ repeatedNames.messages=Array.from({length:68},()=>({...repeatedNames.messages[0]
 assert.doesNotThrow(()=>validateCloudSummaryInput(repeatedNames),'Repeated names are compacted, avoiding the old transport-JSON false rejection');
 assert.doesNotThrow(()=>validateSummaryMessages(cloudInput('a'.repeat(3001)).messages,'group','local'),'Local tools keep their own limits');
 console.log('Cloud pre-submit character, UTF-8, metadata and many-message admission checks passed');
+
+const allBounds = summaryBounds('all',now);
+assert.equal(allBounds,null,'All messages has no date bounds');
+assert.equal(summaryPeriodError(allBounds,'local'),'');
+assert.match(summaryPeriodError(allBounds,'cloud'),/仅支持本地/);
+const acrossMonths = [{...chosen[0],time:epoch(2025,0,1)},{...chosen[1],time:epoch(2026,10,20)}];
+assert.throws(()=>validateSummaryMessages(acrossMonths,chat.username,'local'),/一个自然月/);
+assert.deepEqual(validateSummaryMessages(acrossMonths,chat.username,'local',true),{since:epoch(2025,0,1),until:epoch(2026,10,20)});
+assert.throws(()=>validateSummaryMessages(acrossMonths,chat.username,'cloud',true),/仅支持本地/);
+
+// The 100th and 101st rows have equal timestamps and local IDs but different shards.
+const sameSecond = Array.from({length:99},(_,i)=>({...messages[0],local_id:100-i})).concat(
+  {...messages[0],local_id:1,source_shard:'message_1.db',text:'newer shard'},
+  {...messages[0],local_id:1,source_shard:'message_0.db',text:'older shard'},
+  {...messages[0],local_id:9,time:10,text:'oldest'});
+const readAll = async args => {
+  assert.equal(args.strictHistory,true);
+  const offset = args.before === undefined ? 0 : sameSecond.findIndex(m=>m.time===args.before && m.local_id===args.beforeId && m.source_shard===args.beforeShard)+1;
+  assert.ok(args.before === undefined || offset > 0,'Retain the full exclusive cursor');
+  return sameSecond.slice(offset,offset+args.limit);
+};
+const all = (read, maxBytes = 1024 * 1024) =>
+  readSummaryRange(read, 'account', chat, null, null, () => true, { bytes: 0, maxBytes });
+assert.deepEqual((await all(readAll)).slice(-3).map(m=>m.text),['newer shard','older shard','oldest']);
+assert.deepEqual(await all(async()=>[]),[]);
+await assert.rejects(()=>all(async args=>readAll({...args,before:undefined})),/未能继续/);
+const scan = Array.from({ length: 2501 }, (_, i) => ({
+  ...messages[0], local_id: 2501 - i, kind: i < 2100 ? 3 : 1, text: i < 2100 ? '' : '短',
+}));
+const scanPage = ({ beforeId, limit }) => Promise.resolve(
+  scan.filter(row => beforeId === undefined || row.local_id < beforeId).slice(0, limit),
+);
+const fullHistory = await all(scanPage);
+assert.equal(fullHistory.length, 401, 'Read through over 2,000 rows to collect all 401 texts');
+assert.equal(fullHistory.at(-1).local_id, 1);
+const oversizedText = { ...messages[0], text: '😀'.repeat(60) };
+await assert.rejects(() => all(async () => [oversizedText], 240), /4 MiB 上限/);
+const sharedBudget = { bytes: 0, maxBytes: 220 };
+await readSummaryRange(async () => [{ ...messages[0], text: '短' }], 'account', chat, null, null, () => true, sharedBudget);
+await assert.rejects(
+  () => readSummaryRange(async () => [{ ...messages[0], text: '文' }], 'account', chat, null, null, () => true, sharedBudget),
+  /4 MiB 上限/,
+);
+let reading = true;
+let snapshotPages = 0;
+await assert.rejects(()=>readSummaryRange(async args=>{
+  snapshotPages++; reading=false; return readAll(args);
+},'account',chat,null,null,()=>reading,{bytes:0,maxBytes:12000}),/SUMMARY_SCOPE_CHANGED/);
+assert.equal(snapshotPages,1,'Cancellation after an IPC starts must not advance to another page');

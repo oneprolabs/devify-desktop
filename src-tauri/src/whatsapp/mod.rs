@@ -476,6 +476,24 @@ pub fn messages(
     messages_from(&*open(app_data)?, chat, limit, before, None, None)
 }
 
+pub(crate) fn summary_messages(
+    app_data: &Path,
+    chat: &str,
+    limit: usize,
+    before: Option<MessageCursor>,
+) -> Result<Vec<MessageItem>, String> {
+    summary_messages_from(&*open(app_data)?, chat, limit, before)
+}
+
+fn summary_messages_from(
+    conn: &Connection,
+    chat: &str,
+    limit: usize,
+    before: Option<MessageCursor>,
+) -> Result<Vec<MessageItem>, String> {
+    messages_ordered(conn, chat, limit, before, None, None, false, None, true)
+}
+
 #[derive(Serialize)]
 pub(crate) struct DesktopMessage {
     #[serde(flatten)]
@@ -524,14 +542,41 @@ fn messages_from(
     since: Option<i64>,
     until: Option<i64>,
 ) -> Result<Vec<MessageItem>, String> {
-    messages_ordered(conn,chat,limit,before,since,until,false,None)
+    messages_ordered(conn, chat, limit, before, since, until, false, None, false)
 }
 
-pub fn upload_page(data: &Path, chat: &str, since: i64, until: Option<i64>, after: Option<MessageCursor>,limit:usize)->Result<Vec<MessageItem>,String>{
-    messages_ordered(&*open(data)?,chat,limit,after,Some(since),until,true,None)
+pub fn upload_page(
+    data: &Path,
+    chat: &str,
+    since: i64,
+    until: Option<i64>,
+    after: Option<MessageCursor>,
+    limit: usize,
+) -> Result<Vec<MessageItem>, String> {
+    messages_ordered(
+        &*open(data)?,
+        chat,
+        limit,
+        after,
+        Some(since),
+        until,
+        true,
+        None,
+        false,
+    )
 }
 
-fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<MessageCursor>,since:Option<i64>,until:Option<i64>,ascending:bool,selection:Option<&[crate::settings::MessageRef]>)->Result<Vec<MessageItem>,String>{
+fn messages_ordered(
+    conn: &Connection,
+    chat: &str,
+    limit: usize,
+    before: Option<MessageCursor>,
+    since: Option<i64>,
+    until: Option<i64>,
+    ascending: bool,
+    selection: Option<&[crate::settings::MessageRef]>,
+    strict_history: bool,
+) -> Result<Vec<MessageItem>, String> {
     if !table_exists(&conn, "ZWACHATSESSION") || !table_exists(&conn, "ZWAMESSAGE") {
         return Err("WHATSAPP_DATA_UNSUPPORTED: WhatsApp 数据版本不受支持（缺少会话或消息表）。".into());
     }
@@ -626,7 +671,7 @@ fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<Message
             ))
         })
         .map_err(|error| format!("读取 WhatsApp 消息失败：{error}"))?;
-    let raw: Vec<_> = if ascending || selection.is_some() {
+    let raw: Vec<_> = if ascending || selection.is_some() || strict_history {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("读取 WhatsApp 备份消息失败：{error}"))?
     } else {
@@ -638,7 +683,8 @@ fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<Message
     let mut items = Vec::new();
     for (pk, time, kind, text, self_sent, from, media_pk, member, push_name) in raw {
         let rendered = render_text(kind, &text, media_pk.and_then(|id| media.get(&id)));
-        if rendered.is_empty() {
+        // The last raw row is the cursor even when its content is not summarizable.
+        if rendered.is_empty() && !strict_history {
             continue;
         }
         let sender = if group {
@@ -667,7 +713,12 @@ fn messages_ordered(conn:&Connection,chat:&str,limit:usize,before:Option<Message
             local_id: pk,
             server_id: 0,
             source_shard: "whatsapp".into(),
-            time: core_data_time(time),
+            // Full-history cursors must use the same whole second as SQLite's CAST.
+            time: if strict_history {
+                (time as i64).saturating_add(CORE_DATA_EPOCH)
+            } else {
+                core_data_time(time)
+            },
             sender,
             sender_name,
             kind,
@@ -1010,8 +1061,18 @@ pub fn upload_conversations(
             .ok_or("部分所选会话已不可用，请重新选择。")?;
         let mut before = None;
         let mut messages: Vec<MessageItem> = Vec::new();
-        if let Some(refs)=selection.get(username) {
-            messages=messages_ordered(&conn,username,refs.len().max(1),None,since,until,false,Some(refs))?;
+        if let Some(refs) = selection.get(username) {
+            messages = messages_ordered(
+                &conn,
+                username,
+                refs.len().max(1),
+                None,
+                since,
+                until,
+                false,
+                Some(refs),
+                false,
+            )?;
         } else {
         loop {
             let page = messages_from(&conn, username, UPLOAD_PAGE, before, None, None)?;
@@ -1400,6 +1461,38 @@ mod tests {
     }
 
     #[test]
+    fn summary_pages_do_not_mistake_unrendered_rows_for_end_of_history() {
+        let (_root, conn) = fixture();
+        let chat = "8613800000000@s.whatsapp.net";
+        conn.execute(
+            "UPDATE ZWAMESSAGE SET ZMESSAGEDATE = 816590671.9999999 WHERE Z_PK = 2",
+            [],
+        )
+        .unwrap();
+        let first = summary_messages_from(&conn, chat, 1, None).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].local_id, 3);
+        assert!(first[0].text.is_empty());
+        let rest =
+            summary_messages_from(&conn, chat, 2, Some(MessageCursor::from_message(&first[0])))
+                .unwrap();
+        assert_eq!(rest[0].time, CORE_DATA_EPOCH + 816590671);
+        assert_eq!(
+            summary_messages_from(&conn, chat, 1, Some(MessageCursor::from_message(&rest[0])))
+                .unwrap()[0]
+                .local_id,
+            1
+        );
+        assert_eq!(rest.last().unwrap().text, "hello");
+        conn.execute(
+            "UPDATE ZWAMESSAGE SET ZTEXT = x'68656c6c6f' WHERE Z_PK = 1",
+            [],
+        )
+        .unwrap();
+        assert!(summary_messages_from(&conn, chat, 10, None).is_err());
+    }
+
+    #[test]
     fn message_range_uses_unix_seconds_and_excludes_end() {
         let (_root, conn) = fixture();
         conn.execute("UPDATE ZWAMESSAGE SET ZMESSAGEDATE = 816590671.75 WHERE Z_PK = 2", []).unwrap();
@@ -1415,13 +1508,23 @@ mod tests {
         let (_root, conn) = fixture();
         let chat = "8613800000000@s.whatsapp.net";
         let messages = messages_from(&conn, chat, 10, None, None, None).unwrap();
-        let refs: Vec<_> = messages.iter().map(|message| crate::settings::MessageRef {
-            local_id: message.local_id, time: message.time, source_shard: String::new(),
-        }).collect();
-        conn.execute("UPDATE ZWAMESSAGE SET ZTEXT = x'68656c6c6f' WHERE Z_PK = 1", []).unwrap();
-        let error = messages_ordered(&conn, chat, 10, None, None, None, false, Some(&refs)).unwrap_err();
+        let refs: Vec<_> = messages
+            .iter()
+            .map(|message| crate::settings::MessageRef {
+                local_id: message.local_id,
+                time: message.time,
+                source_shard: String::new(),
+            })
+            .collect();
+        conn.execute(
+            "UPDATE ZWAMESSAGE SET ZTEXT = x'68656c6c6f' WHERE Z_PK = 1",
+            [],
+        )
+        .unwrap();
+        let error = messages_ordered(&conn, chat, 10, None, None, None, false, Some(&refs), false)
+            .unwrap_err();
         assert_ne!(error, "部分待上传消息已变化，请重新读取。");
-        assert!(messages_ordered(&conn, chat, 10, None, None, None, true, None).is_err());
+        assert!(messages_ordered(&conn, chat, 10, None, None, None, true, None, false).is_err());
         assert_eq!(messages_from(&conn, chat, 10, None, None, None).unwrap().len(), 1);
     }
 

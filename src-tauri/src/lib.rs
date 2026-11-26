@@ -6911,6 +6911,7 @@ pub fn run() {
             cloud_summary::cloud_summary_action,
             summary_config::summary_config_get,
             summary_config::summary_config_refresh,
+            summary_config::summary_config_preview_local,
             summary_jobs::summary_task_enqueue,
             summary_jobs::summary_task_retry,
             summary_jobs::summary_task_delete,
