@@ -796,6 +796,109 @@ mod tests {
         assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "cached");
     }
 
+    fn marked_page(key: &[u8], salt: &[u8], pgno: u32, mark: u8) -> [u8; crypto::PAGE_SIZE] {
+        use hmac::Mac;
+        let mut page = crypto::authenticated_fixture_page(key, salt, pgno);
+        let at = if pgno == 1 { crypto::SALT_LEN } else { 0 };
+        page[at] = mark;
+        let mac_key = crypto::derive_mac_key(key, salt).unwrap();
+        let mut mac = hmac::Hmac::<sha2::Sha512>::new_from_slice(&mac_key).unwrap();
+        mac.update(&page[at..crypto::PAGE_SIZE - crypto::HMAC_LEN]);
+        mac.update(&pgno.to_le_bytes());
+        page[crypto::PAGE_SIZE - crypto::HMAC_LEN..].copy_from_slice(&mac.finalize().into_bytes());
+        assert!(crypto::verify_page(&page, &mac_key, pgno));
+        page
+    }
+
+    fn wal_frame(pgno: u32, db_size: u32, page: &[u8]) -> Vec<u8> {
+        let mut frame = [0u8; 24];
+        frame[..4].copy_from_slice(&pgno.to_be_bytes());
+        frame[4..8].copy_from_slice(&db_size.to_be_bytes());
+        [frame.as_slice(), page].concat()
+    }
+
+    #[test]
+    fn committed_page_one_wal_frame_replays_and_bad_frames_keep_the_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("message_0.db");
+        let salt = "a".repeat(crypto::SALT_LEN);
+        let key = [0; crypto::KEY_LEN];
+        let page = crypto::authenticated_fixture_page(&key, salt.as_bytes(), 1);
+        fs::write(&source, page).unwrap();
+        let account = Account {
+            id: "acct".into(),
+            dir: temp.path().to_string_lossy().into(),
+            db_count: 1,
+            encrypted_count: 1,
+            total_bytes: page.len() as u64,
+            modified_at: None,
+            dbs: vec![DbFile {
+                path: source.to_string_lossy().into(),
+                salt: Some(hex::encode(salt.as_bytes())),
+                has_wal: true,
+                ..db(true)
+            }],
+        };
+        let cache = cache_dir(temp.path(), &account.id);
+        let out = cache.join(&account.dbs[0].rel);
+        let wal = wal_path(&account.dbs[0].path);
+        let store = store_with(Some(&salt));
+        fs::write(&wal, []).unwrap();
+        assert_eq!(decrypt_account(temp.path(), &account, &store, true, true)[0].status, "ok");
+
+        let mut header = [0u8; 32];
+        header[..4].copy_from_slice(&0x377f_0682u32.to_be_bytes());
+        header[8..12].copy_from_slice(&(crypto::PAGE_SIZE as u32).to_be_bytes());
+        let page2 = marked_page(&key, salt.as_bytes(), 2, 0x22);
+        fs::write(&wal, [header.as_slice(), wal_frame(2, 2, &page2).as_slice()].concat()).unwrap();
+        let ordinary = decrypt_account(temp.path(), &account, &store, true, true);
+        assert_eq!(ordinary[0].status, "ok", "{:?}", ordinary[0].error);
+        let expected_page2 = crypto::decrypt_page(&page2, &key, 2).unwrap();
+        let ordinary_bytes = fs::read(&out).unwrap();
+        assert_eq!(ordinary_bytes.len(), 2 * crypto::PAGE_SIZE);
+        assert_eq!(&ordinary_bytes[crypto::PAGE_SIZE..], expected_page2.as_slice());
+
+        let page1 = marked_page(&key, salt.as_bytes(), 1, 0x11);
+        fs::write(
+            &wal,
+            [
+                header.as_slice(),
+                wal_frame(2, 0, &page2).as_slice(),
+                wal_frame(1, 2, &page1).as_slice(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let replayed = decrypt_account(temp.path(), &account, &store, true, true);
+        assert_eq!(replayed[0].status, "ok", "{:?}", replayed[0].error);
+        let expected_page1 = crypto::decrypt_page(&page1, &key, 1).unwrap();
+        let replayed_bytes = fs::read(&out).unwrap();
+        assert_eq!(&replayed_bytes[..crypto::PAGE_SIZE], expected_page1.as_slice());
+        assert_eq!(&replayed_bytes[..crypto::SQLITE_HEADER.len()], crypto::SQLITE_HEADER);
+        assert_eq!(&replayed_bytes[crypto::PAGE_SIZE..], expected_page2.as_slice());
+        let kept = fs::read(&out).unwrap();
+        let kept_base = fs::read(base_path(&out)).unwrap();
+        let kept_meta = fs::read(meta_path(&cache)).unwrap();
+
+        let mut broken = page1;
+        *broken.last_mut().unwrap() ^= 0xff;
+        fs::write(&wal, [header.as_slice(), wal_frame(1, 1, &broken).as_slice()].concat()).unwrap();
+        let damaged = decrypt_account(temp.path(), &account, &store, true, true);
+        assert_eq!(damaged[0].status, "failed");
+        assert!(damaged[0].error.as_deref().unwrap().contains("HMAC"));
+        assert_eq!(fs::read(&out).unwrap(), kept);
+        assert_eq!(fs::read(base_path(&out)).unwrap(), kept_base);
+        assert_eq!(fs::read(meta_path(&cache)).unwrap(), kept_meta);
+
+        header[..4].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+        fs::write(&wal, [header.as_slice(), wal_frame(2, 2, &page2).as_slice()].concat()).unwrap();
+        let unsupported = decrypt_account(temp.path(), &account, &store, true, true);
+        assert_eq!(unsupported[0].status, "failed");
+        assert!(unsupported[0].error.as_deref().unwrap().contains("WAL"));
+        assert_eq!(fs::read(&out).unwrap(), kept);
+        assert_eq!(fs::read(meta_path(&cache)).unwrap(), kept_meta);
+    }
+
     #[test]
     fn entries_written_before_the_salt_was_tracked_force_one_decryption() {
         assert!(!cache_matches_key(&db(true), &cached(""), &store_with(Some("aa")), "acct"));
