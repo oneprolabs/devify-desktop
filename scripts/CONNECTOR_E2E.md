@@ -12,6 +12,8 @@ After observing successful results, finish the task space in a separate browser 
 
 The fixture renders the production `PrototypeShell`, connector catalogue, WeChat and WhatsApp wizards, import selection, backup schedule and completion page. IPC is a strict in-memory test double: unknown commands fail the test, saves enforce revisions, and save conflicts/delays can be injected. It never reads credentials, touches real chat databases, changes system permissions/signatures, or uploads messages. It is a development-only entry point, absent from the production Vite entry graph.
 
+`runWechatBackupKeyRecoveryUiE2E(task, base)` covers the task-page repair action, its account scope, and retaining the recovery flow until the backup read succeeds.
+
 `runChatRefreshUiE2E(task, 'http://127.0.0.1:1420')` exercises the visible refresh button: a stale key on a message shard despite a usable cache, reimport for the same account without resetting setup, sync rejection, refresh of the open chat, and a WhatsApp refresh without WeChat decryption.
 
 `runWechatRestartUiE2E(task, base)` advances the chat poll with backup disabled. It checks that a temporarily unavailable WeChat account leaves history visible, a newer cached snapshot appears without a click, unchanged snapshots skip reload, and a late result is ignored after switching platforms.

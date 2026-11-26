@@ -55,6 +55,12 @@ export type DecryptOutcome = {
   output: string | null;
 };
 
+export type WechatSyncResponse = {
+  outcomes: DecryptOutcome[];
+  revision: string;
+  backup_read_error?: { kind: 'key' | 'read'; detail: string } | null;
+};
+
 export type WechatEnv = {
   app_data_dir: string;
   cache_root: string;

@@ -457,7 +457,7 @@ export default function PrototypeShell() {
         </div></div>}
         {chatReady && firstBackupStep !== 'confirm' && <ChatWorkbench key={`workbench-${chatKey}`} visible={section === 'chat'} startFirstBackup={startFirstBackup} onFirstBackupStarted={() => setStartFirstBackup(false)} onOpenData={() => openSettings('connectors', true)} onRecoverWechatKeys={recoverWechatKeys} wechatRecovery={wechatRecovery} onOpenWhitelist={() => openSettings('imports')} onNewUpload={openNewUpload} onOpenTasks={() => { setStartTaskCreate(false); setSection('tasks'); }} onSchedule={() => openSettings('backup')} onOpenAccount={() => openSettings('account')} onOpenEvent={openEvent} onAddPlatform={() => openSettings('connectors')} />}
       </div>
-      {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} onContinueSetup={continueSetup} />}
+      {section === 'tasks' && <Tasks startCreating={startTaskCreate} onNewUpload={() => openSettings('account')} onContinueSetup={continueSetup} onRecoverWechatKeys={recoverWechatKeys} />}
       {section === 'settings' && <div className="prototype-settings-layout">
         <header className="prototype-settings-breadcrumb">{t("设置")} <span>/</span> {t(settingsNav.find(item => item.id === settingsPage)?.label ?? '')}</header>
         <div className="prototype-settings">

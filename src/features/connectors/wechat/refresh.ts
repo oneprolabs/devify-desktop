@@ -1,7 +1,7 @@
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import { t } from '../../../shared/i18n/locale';
 import { errorText, nativeErrorCode } from '../../../shared/i18n/errorText';
-import type { DecryptOutcome } from './nativeTypes';
+import type { WechatSyncResponse } from './nativeTypes';
 import { classifyWechatRefresh } from './refreshIssue';
 
 export type WechatRefreshIssue = {
@@ -23,10 +23,14 @@ export function localRefreshError(reason: unknown): WechatRefreshIssue {
   };
 }
 
-export async function syncWechatForRefresh(accountId: string): Promise<WechatRefreshResult> {
+export async function syncWechatForRefresh(accountId: string, recoveringKeys = false): Promise<WechatRefreshResult> {
   try {
-    const { outcomes, revision } = await invoke<{ outcomes: DecryptOutcome[]; revision: string }>('wechat_sync', { accountId });
-    const classified = classifyWechatRefresh(outcomes);
+    const { outcomes, revision, backup_read_error } = await invoke<WechatSyncResponse>('wechat_sync', { accountId });
+    const backupIssue = recoveringKeys ? backup_read_error : null;
+    const classified = classifyWechatRefresh(outcomes, backupIssue?.kind === 'key');
+    if (backupIssue?.kind === 'read' && (!classified?.wal || classified.error !== backupIssue.detail)) {
+      return { issue: localRefreshError(backupIssue.detail) };
+    }
     if (!classified) return { revision };
     return { issue: {
       needsKeys: classified.needsKeys,

@@ -787,6 +787,69 @@ export async function runSummaryDateUiE2E(task, base = 'http://127.0.0.1:1422', 
   console.log('PASS chat summary dates: configuration recovery, cloud guard, inclusive history, local date ranges and full history, selection, cancellation and duplicate confirmation (synthetic IPC)');
 }
 
+export async function runWechatBackupKeyRecoveryUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const click = name => page.click(`loc=role:button[name="${name}"]`);
+  const ready = name => page.waitForFunction(text => [...document.querySelectorAll('.wechat-wizard button')]
+    .some(button => button.textContent.trim() === text && !button.disabled && button.getClientRects().length), name);
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForSelector('.wxv-messages');
+  await click('任务');
+  await page.waitForSelector('.task-runtime-page');
+  assert.equal(await page.evaluate(() => document.querySelector('.task-setup-notice [role="alert"]')), null);
+  await page.evaluate(() => {
+    const state = window.__E2E__;
+    state.runtime.sources.find(source => source.platform === 'wechat').backup_needs_keys = true;
+    state.runtime.revision += 1;
+    window.__TASK_EMIT__();
+  });
+  await page.waitForFunction(() => document.querySelector('.task-setup-notice [role="alert"]')
+    ?.textContent.includes('微信备份已暂停，请更新密钥'));
+  await click('更新微信密钥');
+  await page.waitForSelector('.wechat-wizard #wizard-method');
+  await page.click('loc=role:button[name*="导入密钥"]');
+  await click('下一步');
+  await ready('下一步：连接微信');
+  await click('下一步：连接微信');
+  await page.waitForSelector('.wx-setup-file');
+  await click('手动输入密钥');
+  await page.fill('#wx-manual-key', 'ab'.repeat(32));
+  await page.evaluate(() => {
+    window.__E2E__.wechatSyncOutcomes = [
+      {rel:'session/session.db',status:'ok',error:null},
+      {rel:'message/message_0.db',status:'ok',error:null},
+      {rel:'message/media_0.db',status:'failed',error:'Synthetic backup read error'},
+    ];
+    window.__E2E__.wechatBackupReadError = {kind:'read',detail:'Synthetic backup read error'};
+  });
+  await click('导入并校验');
+  await ready('重新读取');
+  await page.waitForFunction(() => document.querySelector('.wechat-wizard .wx-setup-details')
+    ?.textContent.includes('Synthetic backup read error'));
+  assert.ok(await page.evaluate(() => [...document.querySelectorAll('.wechat-wizard footer button')]
+    .find(button => button.textContent.trim() === '返回聊天').disabled));
+  await page.evaluate(() => {
+    const state = window.__E2E__;
+    state.wechatSyncOutcomes = null;
+    state.wechatBackupReadError = null;
+    state.runtime.sources.find(source => source.platform === 'wechat').backup_needs_keys = false;
+    state.runtime.revision += 1;
+    window.__TASK_EMIT__();
+  });
+  await click('重新读取');
+  await ready('返回聊天');
+  await click('返回聊天');
+  await click('任务');
+  await page.waitForSelector('.task-runtime-page');
+  assert.equal(await page.evaluate(() => document.querySelector('.task-setup-notice [role="alert"]')), null);
+  const calls = await page.evaluate(() => window.__E2E__.calls);
+  assert.deepEqual(calls.filter(call => call.command === 'wechat_import_keys').map(call => call.args), [
+    {accountId:'e2e-wechat',targetOnly:true},
+  ]);
+  assert.ok(!calls.some(call => call.command === 'connector_setup_state'));
+  console.log('PASS WeChat backup key recovery entry and verification (synthetic IPC)');
+}
+
 // Real React shell with synthetic IPC, not a server integration test.
 export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', pageLabel = 'p1') {
   const page = task.page(pageLabel);

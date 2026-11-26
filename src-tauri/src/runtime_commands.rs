@@ -242,7 +242,26 @@ pub(super) fn task_runtime_status(app: AppHandle) -> Result<serde_json::Value, S
                     .is_some_and(|old| config_runtime::same_principal(old, o))
             })
         })
-        .filter_map(|(_, source)| source.last_error.clone())
+        .filter(|(account, source)| !task_runtime::wechat_backup_needs_keys(account, source))
+        .filter_map(|(account, source)| {
+            let error = source.last_error.as_deref()?;
+            // Upgrade old user-facing key errors to a neutral status until a fresh read confirms them.
+            Some(
+                if !whatsapp::is_account(account)
+                    && matches!(
+                        error,
+                        "数据库已重新加密，需重新提取密钥。"
+                            | "没有该数据库的密钥。请先用密钥工具提取并导入。"
+                            | "保存的密钥格式无效。"
+                            | "已保存的密钥未通过数据库首页校验。"
+                    )
+                {
+                    task_runtime::WECHAT_BACKUP_RECHECK
+                } else {
+                    error
+                },
+            )
+        })
         .take(3)
         .collect();
     let error = s
@@ -290,6 +309,7 @@ fn source_snapshots(s: &settings::AppSettings, owners: &HashMap<String, settings
         "platform": crate::expected_source_type(account),
         "setup_complete": source.completed && !source.draft,
         "backup_enabled": source.backup_enabled != Some(false),
+        "backup_needs_keys": task_runtime::wechat_backup_needs_keys(account, source),
         "wizard_step": if source.completed && !source.draft { None } else { Some(resume_step(source)) },
     })).collect()
 }

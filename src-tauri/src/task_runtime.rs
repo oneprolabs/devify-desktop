@@ -3,6 +3,13 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+mod wechat_recovery;
+
+pub(super) use wechat_recovery::{
+    resume_wechat_backup, verify_wechat_backup_read, wechat_backup_needs_keys,
+    WechatBackupReadError, WechatBackupRecovery, WECHAT_BACKUP_RECHECK,
+};
+
 #[derive(Debug, PartialEq)]
 pub(super) enum RetryRemoteAction {
     ResumeArchive,
@@ -275,7 +282,13 @@ pub(super) async fn backup_tick(
             continue;
         }
         let result = run_source_tick(app, &owner, wake_scan).await;
-        let _ = record_source_result(&data, &owner, value.user_settings_revision, &result);
+        let _ = record_source_result(
+            &data,
+            &owner,
+            value.user_settings_revision,
+            source.key_recovery_pending,
+            &result,
+        );
     }
     emit_task_runtime(app);
 }
@@ -332,7 +345,7 @@ fn source_scan_due(
     now: chrono::DateTime<Local>,
     wake_pending: bool,
 ) -> bool {
-    if wake_pending {
+    if wake_pending || source.key_recovery_pending || source.wechat_key_failure.is_some() {
         return backup::automatic_allowed_now(&value.backup, now);
     }
     let last_run = source
@@ -351,6 +364,7 @@ fn source_scan_due(
 pub(super) enum SourceTickError {
     Backup(String),
     WakeFollowUp(String),
+    WechatKey(String),
 }
 
 impl From<String> for SourceTickError {
@@ -371,6 +385,7 @@ pub(super) fn record_source_result(
     data: &Path,
     owner: &settings::UploadOwner,
     revision: u64,
+    key_recovery_pending: bool,
     result: &Result<(), SourceTickError>,
 ) -> Result<(), String> {
     settings::update(data, |s| {
@@ -387,7 +402,41 @@ pub(super) fn record_source_result(
             .sources
             .get_mut(&owner.account_id)
             .ok_or("来源已移除。")?;
+        // A scan started before recovery must not restore the previous backoff.
+        if source.key_recovery_pending && !key_recovery_pending {
+            return Ok(());
+        }
+        if let Err(SourceTickError::Backup(_) | SourceTickError::WakeFollowUp(_)) = result {
+            // Temporary failures interrupt initial confirmation. A confirmed failure
+            // keeps its recovery action until the required databases are readable.
+            if let Some(failure) = source
+                .wechat_key_failure
+                .as_mut()
+                .filter(|failure| !failure.confirmed)
+            {
+                failure.interrupted = true;
+            }
+        }
         match result {
+            Err(SourceTickError::WechatKey(database)) => {
+                let confirmed = source.wechat_key_failure.as_ref().is_some_and(|previous| {
+                    previous.confirmed || (!previous.interrupted && previous.database == *database)
+                });
+                source.wechat_key_failure = Some(config_runtime::WechatKeyFailure {
+                    database: database.clone(),
+                    confirmed,
+                    interrupted: false,
+                });
+                source.failures = if confirmed {
+                    source.failures.saturating_add(1)
+                } else {
+                    0
+                };
+                let delay = (30_i64 << source.failures.min(6)).min(1800);
+                source.retry_after =
+                    Some((Utc::now() + chrono::Duration::seconds(delay)).to_rfc3339());
+                source.last_error = Some(WECHAT_BACKUP_RECHECK.into());
+            }
             Err(SourceTickError::Backup(error)) => {
                 source.failures = source.failures.saturating_add(1);
                 let delay = if error == WECHAT_ACCOUNT_UNAVAILABLE {
@@ -605,16 +654,14 @@ async fn run_source_tick(
         .await
         .map_err(|error| scan_error(error.to_string()))?
         .map_err(scan_error)?;
-        if let Some(failure) = outcomes
-            .iter()
-            .find(|o| matches!(o.status.as_str(), "failed" | "no-key"))
-        {
-            let error = failure
-                .error
-                .clone()
-                .unwrap_or_else(|| "本机记录读取失败，请检查微信连接。".into());
-            return Err(scan_error(error));
-        }
+        let expected = source
+            .wechat_key_failure
+            .as_ref()
+            .map(|failure| failure.database.as_str());
+        verify_wechat_backup_read(account, expected, &outcomes).map_err(|error| match error {
+            WechatBackupReadError::Key(database) => SourceTickError::WechatKey(database),
+            WechatBackupReadError::Read(message) => scan_error(message),
+        })?;
     }
     let start = source.scan_index % scan_names.len();
     let remaining = if source.scan_remaining == 0 {
@@ -657,11 +704,17 @@ async fn run_source_tick(
             return Err("备份范围或进度已改变，稍后重新读取。".into());
         }
         let source = s.runtime.sources.get_mut(account).ok_or("来源已移除。")?;
+        if starts_scan && !whatsapp::is_account(account) {
+            source.wechat_key_failure = None;
+        }
         source.scan_index = (start + scan_count) % scan_names.len();
         source.scan_remaining = if finishing { 0 } else { remaining - scan_count };
         // An empty first wake scan establishes the interval; later checks leave it alone.
         if scan_complete && updates_regular_schedule {
             source.last_run_at = Some(Utc::now().to_rfc3339());
+        }
+        if scan_complete {
+            source.key_recovery_pending = false;
         }
         source.retry_after = None;
         source.failures = 0;

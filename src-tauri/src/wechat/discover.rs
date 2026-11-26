@@ -134,6 +134,13 @@ fn find_db_storage(base: &Path, out: &mut Vec<PathBuf>) {
     walk(base, 7, out);
 }
 
+pub(crate) fn is_message_shard(rel: &str) -> bool {
+    rel.strip_prefix("message/message_")
+        .or_else(|| rel.strip_prefix("message/biz_message_"))
+        .and_then(|name| name.strip_suffix(".db"))
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn collect_dbs(db_storage: &Path) -> Vec<DbFile> {
     let mut dbs = Vec::new();
     let mut stack = vec![db_storage.to_path_buf()];
@@ -158,22 +165,26 @@ fn collect_dbs(db_storage: &Path) -> Vec<DbFile> {
             {
                 continue;
             }
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            if size < crypto::PAGE_SIZE as u64 {
-                continue;
-            }
-            let header = read_header(&path, crypto::SALT_LEN);
-            let salt = crypto::read_salt(&header);
             let rel = path
                 .strip_prefix(db_storage)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| name.clone());
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            // Don't mistake a short required database for a missing shard.
+            if size < crypto::PAGE_SIZE as u64
+                && rel != "session/session.db"
+                && !is_message_shard(&rel)
+            {
+                continue;
+            }
+            let header = read_header(&path, crypto::SALT_LEN);
+            let salt = crypto::read_salt(&header);
             let wal = PathBuf::from(format!("{}-wal", path.to_string_lossy()));
             dbs.push(DbFile {
                 rel,
                 path: path.to_string_lossy().to_string(),
                 size,
-                encrypted: salt.is_some(),
+                encrypted: salt.is_some() || header.is_empty(),
                 salt: salt.map(hex::encode),
                 has_wal: wal.exists(),
             });
@@ -257,5 +268,21 @@ pub fn scan() -> ScanResult {
             .collect(),
         accounts,
         skipped,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_database_stays_in_the_inventory_without_becoming_plaintext() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("message")).unwrap();
+        fs::write(root.path().join("message/message_1.db"), [0; 8]).unwrap();
+        let dbs = collect_dbs(root.path());
+        assert_eq!(dbs.len(), 1);
+        assert!(dbs[0].encrypted);
+        assert_eq!(dbs[0].size, 8);
     }
 }

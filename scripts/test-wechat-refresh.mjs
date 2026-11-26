@@ -27,3 +27,6 @@ const keys = classifyWechatRefresh([
 ]);
 assert.equal(keys.needsKeys, true);
 assert.equal(keys.wal, false);
+
+// A required backup database can be missing a key even when the chat view reads normally.
+assert.equal(classifyWechatRefresh([readable], true).needsKeys, true);

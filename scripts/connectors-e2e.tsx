@@ -1,3 +1,4 @@
+import type { WechatSyncResponse } from "../src/features/connectors/wechat/nativeTypes";
 // Browser E2E boundary: production React shell, isolated in-memory native IPC.
 // This route never reads credentials, changes macOS permissions or uploads chat data.
 import React from 'react';
@@ -31,7 +32,7 @@ const capture = {pending:false,needs_cleanup:false,stage:'idle',transaction_id:n
 const feedbackDraft = () => ({client_id:'00000000-0000-4000-8000-000000000001',environment:{app_version:'0.1.17',platform:'macos',arch:'aarch64',os_version:'macOS 15.7',wechat_version:'4.1.2'},related_batch_ids:[],receiver:'https://example.invalid',owner_id:1,category:'other',description:'',page:'settings',screenshots:[] as {data:string}[],diagnostics:null as any,attempted:false});
 const state = {
  summaryConfig:{schema_version:1,version:'fixture-v7',default_scenario:'three_part',max_instructions_chars:4000,scenarios:[['summary','总结','只概括主要内容、结论与当前结果。'],['action_items','待办','只列行动、负责人、期限及待确认项。'],['timeline','时间线','只按时间顺序整理事情经过。'],['three_part','综合分析','总结、时间线和待办三项都有。'],['custom','自定义','描述希望从聊天记录中得到什么，自定关注点和输出结构。']].map(([id,name,description])=>({id,name,description,requires_instructions:id==='custom',sha256:'fixture-'+id,budgets:{cloud:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:2000,reserved_overhead_bytes:64,max_content_bytes:9936},local_cli:{unit:'utf8_bytes',max_request_bytes:12000,prompt_bytes:1800,reserved_overhead_bytes:2048,max_content_bytes:8152}}}))},summaryConfigError:'',
- runtime:{context:'e2e',revision:1,paused:query.has('backup-disabled'),running:false,pending_config:0,jobs:[] as any[],sources:accounts.map(a=>({account_id:a.id,platform:a.source,setup_complete:true,backup_enabled:true,wizard_step:null as 'sessions'|'backup'|null}))},
+ runtime:{context:'e2e',revision:1,paused:query.has('backup-disabled'),running:false,pending_config:0,jobs:[] as any[],sources:accounts.map(a=>({account_id:a.id,platform:a.source,setup_complete:true,backup_enabled:true,backup_needs_keys:false,wizard_step:null as 'sessions'|'backup'|null}))},
  settings:{...defaultSettings(),sync:{...defaultSettings().sync,enabled:!query.has('backup-disabled')},user_settings_revision:1,active_account_id:wx,devify:{...defaultSettings().devify,...(query.has('anonymous')?{base_url:query.has('no-server')?'':'https://example.invalid'}:{})},language:{...defaultSettings().language,ui:query.has('english')?'English':'中文'}},
  calls:[] as Array<{command:string;args:unknown}>, errors:[] as string[], writes:[] as unknown[],
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
@@ -42,6 +43,7 @@ const state = {
  chatMessagesError:'', chatOlderPaused:false, chatOlderResolvers:[] as Array<()=>void>,
  chatLatestPaused:false, chatLatestResolvers:[] as Array<()=>void>,
  wechatSyncOutcomes:null as Array<{rel:string;status:string;error:string|null}> | null,
+ wechatBackupReadError:null as WechatSyncResponse['backup_read_error'],
  wechatSyncError:'', wechatSyncRevision:'initial', wechatSyncPaused:false, wechatSyncResolvers:[] as Array<()=>void>,
  wechatPolls:new Map<number, () => void>(),
  summaries:[] as any[],summaryLocal:[] as any[],summaryError:'',
@@ -298,6 +300,7 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     if(state.wechatSyncError)throw state.wechatSyncError;
     return {
      revision:state.wechatSyncRevision,
+     backup_read_error:state.wechatBackupReadError,
      outcomes:clone(state.wechatSyncOutcomes ?? ['session/session.db','message/message_0.db'].map(rel=>({account:args.accountId,rel,status:'cached',pages:1,error:null}))),
     };
    }
@@ -348,7 +351,7 @@ if(query.has('chat')) {
 }
 if(localSnapshot) {
  state.accounts=localSnapshot.accounts;
- state.runtime.sources=localSnapshot.accounts.map((account:any)=>({account_id:account.id,platform:account.source,setup_complete:true,backup_enabled:true,wizard_step:null}));
+ state.runtime.sources=localSnapshot.accounts.map((account:any)=>({account_id:account.id,platform:account.source,setup_complete:true,backup_enabled:true,backup_needs_keys:false,wizard_step:null}));
  state.settings.active_account_id=localSnapshot.accounts[0]?.id;
  state.settings.chat.allowed_usernames=Object.fromEntries(localSnapshot.accounts.map((account:any)=>[account.id,catalog(account.id).map((session:any)=>session.username)]));
  document.title='AIMyChats · 本地聊天快照预览';
