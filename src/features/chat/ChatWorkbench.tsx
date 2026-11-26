@@ -114,6 +114,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   useEffect(() => { setDetailQueries({}); }, [selectedSession?.accountId, selectedSession?.username]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [eventsScope, setEventsScope] = useState('');
+  const [eventCount, setEventCount] = useState<{ scope: string; total: number } | null>(null);
   const [summaryStatus, setSummaryStatus] = useState({count:0,busy:false});
   const [summarySelection,setSummarySelection] = useState<SummaryMessage[]>([]);
   const [summaryPickRequest,setSummaryPickRequest] = useState(0);
@@ -372,33 +373,41 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     finally { moreLock.current = false; if (generation === loadGeneration.current) { setLoading(false); setLoadingSource(null); } }
   };
 
+  const eventSpaceId = settings?.devify?.active_space_id;
+  const eventUsername = selectedSession?.username;
+  const eventScope = JSON.stringify([runtime.context, settings?.devify?.base_url, eventSpaceId, accountId, eventUsername]);
+  const showEvents = view === 'events';
   useEffect(() => {
     let cancelled = false;
-    const spaceId = settings?.devify?.active_space_id;
-    const username = selectedSession?.username;
-    const requestScope = JSON.stringify([settings?.devify?.base_url, spaceId, accountId, username]);
     setEventsError('');
-    if (!isTauri() || !visible || view !== 'events' || !spaceId || !username || !accountId) {
-      setEventsLoading(false);
-      return () => { cancelled = true; };
-    }
-    setEventsLoading(true);
+    const canRead = isTauri() && visible && eventSpaceId && eventUsername && accountId;
+    setEventsLoading(Boolean(canRead && showEvents));
+    if (!canRead) return;
     void (async () => {
       try {
-        const found = await invoke<{ conversation: { id: number } | null }>('chat_remote_lookup', { accountId, username });
+        const { conversation } = await invoke<{ conversation: { id: number } | null }>('chat_remote_lookup', { accountId, username: eventUsername });
         if (cancelled) return;
-        const conversation = found.conversation;
-        if (!conversation) { setEventsScope(requestScope); setEvents([]); return; }
-        const result = await invoke<Page<EventItem>>('devify_analysis_list', { kind: 'events', spaceId, page: 1, conversationId: conversation.id });
-        if (!cancelled) { setEventsScope(requestScope); setEvents(result.list ?? []); }
+        // The native command only fetches one page when a page size is explicit.
+        const result = conversation
+          ? await invoke<Page<EventItem>>('devify_analysis_list', {
+              kind: 'events', spaceId: eventSpaceId, page: 1, conversationId: conversation.id,
+              ...(!showEvents && { pageSize: 1 }),
+            })
+          : { list: [], pagination: { total: 0 } };
+        if (cancelled) return;
+        const total = result.pagination?.total;
+        setEventCount(typeof total === 'number' && Number.isSafeInteger(total) && total >= 0 ? { scope: eventScope, total } : null);
+        if (showEvents) { setEventsScope(eventScope); setEvents(result.list ?? []); }
       } catch (reason) {
-        if (!cancelled) setEventsError(String(reason));
+        if (cancelled) return;
+        setEventCount(null);
+        if (showEvents) setEventsError(String(reason));
       } finally {
-        if (!cancelled) setEventsLoading(false);
+        if (!cancelled && showEvents) setEventsLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username, eventRefresh, visible, view]);
+  }, [eventScope, eventSpaceId, accountId, eventUsername, eventRefresh, visible, showEvents]);
 
   useEffect(() => {
     if (!eventsError) return;
@@ -574,7 +583,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
     const keyword = query.trim().toLowerCase();
     return platformSessions.filter(session => (!keyword || `${session.display} ${session.username}`.toLowerCase().includes(keyword)) && (filter === 'all' || pendingSessions.has(sessionKey(session.accountId, session.username))));
   }, [platformSessions, query, filter, pendingSessions]);
-  const scopedEvents = eventsScope === JSON.stringify([settings?.devify?.base_url, settings?.devify?.active_space_id, accountId, selectedSession?.username]) ? events : [];
+  const scopedEvents = eventsScope === eventScope ? events : [];
+  const scopedEventCount = eventCount?.scope === eventScope ? eventCount.total : null;
 
   const openEventPage = (eventId: number) => {
     if (onOpenEvent) onOpenEvent(eventId);
@@ -674,7 +684,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         <div className="chat-workbench-head-right">
           <div className="chat-workbench-tabs" role="tablist" aria-label={t("聊天视图")}>
             <button type="button" role="tab" aria-selected={view === 'raw'} className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>{t("原始记录")}{view === 'raw' && chatState.active && <small>{chatState.messages}</small>}</button>
-            <button type="button" role="tab" aria-selected={view === 'events'} className={view === 'events' ? 'active' : ''} onClick={() => setView('events')}>{t("待办")} <small>{scopedEvents.length}</small></button>
+            <button type="button" role="tab" aria-selected={showEvents} className={showEvents ? 'active' : ''} onClick={() => setView('events')}>{t("待办")}{scopedEventCount !== null && <> <small>{scopedEventCount}</small></>}</button>
             <button type="button" role="tab" aria-selected={view === 'summary'} className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>
               {t("聊天总结")}
               {summaryStatus.busy
@@ -704,7 +714,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       />}
 
       <ChatEventsPane
-        active={view === 'events'}
+        active={showEvents}
         loading={eventsLoading}
         error={currentLoadError?.message || eventsError}
         events={scopedEvents}

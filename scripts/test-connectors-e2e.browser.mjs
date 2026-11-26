@@ -1036,6 +1036,56 @@ export async function runWakeChatRefreshUiE2E(task, base, pageLabel = 'p1') {
   return 'PASS wake chat refresh: scoped to the open conversation, preserves search and scroll, reads local messages only';
 }
 
+export async function runChatTodoCountUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const tab = '.chat-workbench-tabs [role="tab"]:nth-child(2)';
+  const count = () => page.evaluate(selector => document.querySelector(`${selector} small`)?.textContent ?? null, tab);
+  const select = index => page.click(`button[data-session-key='["e2e-wechat","e2e-wechat-chat-${index}"]']`);
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat&controlled-chat-poll`);
+  await page.waitForSelector('.wxv-messages #msg-1');
+  await page.evaluate(() => {
+    const ipc = window.__TAURI_INTERNALS__;
+    const invoke = ipc.invoke;
+    const items = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, title: `待办夹具 ${i + 1}` }));
+    window.__todoReads = [];
+    ipc.invoke = async (command, args) => {
+      if (command === 'chat_remote_lookup') return { conversation: { id: Number(args.username.split('-').at(-1)) + 10 } };
+      if (command !== 'devify_analysis_list' || args.kind !== 'events') return invoke(command, args);
+      window.__todoReads.push(args);
+      if (args.conversationId === 11) await new Promise(resolve => { window.__releaseTodoCount = resolve; });
+      if (args.conversationId === 13) throw Error('Synthetic to-do count failure');
+      const rows = args.conversationId === 11 ? items : [];
+      return { list: args.pageSize ? rows.slice(0, args.pageSize) : rows, pagination: { total: rows.length } };
+    };
+  });
+  await select(1);
+  assert.equal(await count(), null, 'an unqueried conversation must not show zero');
+  await page.waitForFunction(() => typeof window.__releaseTodoCount === 'function');
+  await select(2);
+  await page.waitForFunction(selector => document.querySelector(`${selector} small`)?.textContent === '0', tab);
+  await page.evaluate(async () => {
+    window.__releaseTodoCount();
+    delete window.__releaseTodoCount;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  assert.equal(await count(), '0', 'a late response must not replace the current conversation count');
+
+  await select(3);
+  await page.waitForFunction(() => window.__todoReads.some(args => args.conversationId === 13));
+  assert.equal(await count(), null, 'a failed count is not a confirmed zero');
+  await select(1);
+  await page.waitForFunction(() => typeof window.__releaseTodoCount === 'function');
+  await page.evaluate(() => window.__releaseTodoCount());
+  await page.waitForFunction(selector => document.querySelector(`${selector} small`)?.textContent === '60', tab);
+  assert.deepEqual(await page.evaluate(() => window.__todoReads.map(args => args.pageSize)), [1, 1, 1, 1]);
+  await page.click(tab);
+  await page.waitForFunction(() => window.__todoReads.some(args => args.conversationId === 11 && !args.pageSize));
+  await page.evaluate(() => window.__releaseTodoCount());
+  await page.waitForFunction(() => document.querySelectorAll('.chat-event-card').length === 60);
+  assert.equal(await count(), '60');
+  return 'PASS chat to-do count: unknown, zero, request failure, stale response and lazy list';
+}
+
 export async function runChatMessageRetryUiE2E(task, base, pageLabel = 'p1') {
   const page = task.page(pageLabel);
   const refresh = '.chat-workbench-refresh';
