@@ -55,7 +55,9 @@ Thumbs.db
 
 # Local design review artifacts
 .impeccable/
-docs/
+docs/*
+!docs/development.md
+!docs/releasing.md
 /mcp/
 
 # Local design reference (not part of the product)

@@ -13,6 +13,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
 import WeChatLocal from './local-reader/WeChatLocal';
+import type { MessageItem } from './local-reader/nativeTypes';
 import { ConversationSummary } from './summary/ConversationSummary';
 import type { SummaryMessage } from './summary/summaryInput';
 import { WhitelistSettings } from '../settings/Settings';
@@ -24,7 +25,7 @@ import { currentAccount as pickAccount, type ChatAccount } from '../connectors/c
 import { useTaskRuntime } from '../tasks/taskRuntime';
 
 type Session = { username: string; display: string; is_group: boolean; last_time: number | null; preview?: string | null; unread?: number | null; member_count?: number | null; community?: { id: string; name: string; is_parent: boolean } | null };
-type OwnedSession = Session & { accountId: string; source: string };
+type OwnedSession = Session & { accountId: string; source: string; previewFromMessages?: boolean };
 type Settings = { sync?: { enabled?: boolean }; backup?: { mode?: string }; active_account_id?: string; connectors?: { wechat_enabled?: boolean; whatsapp_enabled?: boolean }; chat?: { sync_interval_seconds?: number; allowed_usernames?: Record<string, string[]> }; devify?: { active_space_id?: string | null; base_url?: string }; upload_queue?: Array<{ status?: string }> };
 type SyncResult = { uploaded: number; message_count: number; batch_ids?: number[]; error?: string | null };
 type Page<T> = { list?: T[]; pagination?: { total?: number; next?: unknown } };
@@ -70,9 +71,19 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [seenActivity, setSeenActivity] = useState<Record<string, number>>({});
   const [query, setQuery] = useState('');
   const [detailQueries, setDetailQueries] = useState<Partial<Record<View, string>>>({});
+  const [searchAdvance, setSearchAdvance] = useState(0);
   const detailQuery = detailQueries[view] ?? '';
   const [sessions, setSessions] = useState<OwnedSession[]>([]);
   const [selectedSession, setSelectedSession] = useState<OwnedSession | null>(null);
+  const selectedSessionRef = useRef(selectedSession);
+  selectedSessionRef.current = selectedSession;
+  const showLatestMessage = useCallback((id: string, username: string, message: MessageItem | null) => {
+    const preview = message?.text.trim() || null;
+    const last_time = message?.time ?? null;
+    setSessions(current => current.map(session => session.accountId === id && session.username === username
+      ? { ...session, preview, last_time, previewFromMessages: true }
+      : session));
+  }, []);
   useEffect(() => { setDetailQueries({}); }, [selectedSession?.accountId, selectedSession?.username]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [eventsScope, setEventsScope] = useState('');
@@ -144,7 +155,21 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       const failed = results.flatMap((result, index) => result.status === 'rejected' ? [accounts[index].source === 'whatsapp' ? 'WhatsApp' : t("微信")] : []);
       setSettings(stored);
       setConnectedAccounts(accounts);
-      setSessions(list);
+      const selected = selectedSessionRef.current;
+      const canKeepSelected = selected && accounts.some(account => account.id === selected.accountId)
+        && stored.chat?.allowed_usernames?.[selected.accountId]?.includes(selected.username);
+      setSessions(current => {
+        if (!canKeepSelected) return list;
+        const matchesSelected = (item: OwnedSession) => item.accountId === selected.accountId && item.username === selected.username;
+        const previous = current.find(matchesSelected) ?? selected;
+        // The list index may be ahead of or behind the readable message database.
+        // Keep the open chat on its last successful message read until the next one commits.
+        if (!list.some(matchesSelected)) return [...list, previous];
+        if (!previous.previewFromMessages) return list;
+        return list.map(item => matchesSelected(item)
+          ? { ...item, preview: previous.preview, last_time: previous.last_time, previewFromMessages: true }
+          : item);
+      });
       const available = [...new Set(accounts.map(item => item.source ?? 'wechat'))];
       const source = available.includes(activeSourceRef.current) ? activeSourceRef.current : list[0]?.source ?? available[0] ?? '';
       activeSourceRef.current = source;
@@ -227,7 +252,14 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         const anchor = [...sessionList.current.querySelectorAll<HTMLElement>('[data-session-key]')].find(node => node.getBoundingClientRect().bottom > top);
         if (anchor) pageAnchor.current = { source, key: anchor.dataset.sessionKey!, top: anchor.getBoundingClientRect().top };
       }
-      setSessions(current => [...new Map([...current, ...added].map(row => [sessionKey(row.accountId, row.username), row])).values()]);
+      setSessions(current => {
+        const rows = new Map(current.map(row => [sessionKey(row.accountId, row.username), row]));
+        for (const row of added) {
+          const key = sessionKey(row.accountId, row.username);
+          if (!rows.get(key)?.previewFromMessages) rows.set(key, row);
+        }
+        return [...rows.values()];
+      });
     } catch (reason) { if (generation === loadGeneration.current) setMoreSessionsErrors(current => ({ ...current, [source]: String(reason) })); }
     finally { moreLock.current = false; if (generation === loadGeneration.current) { setLoading(false); setLoadingSource(null); } }
   };
@@ -270,7 +302,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
 
   useEffect(()=>{setSummarySelection([]);setSummaryPickRequest(0);},[accountId]);
 
-  const platformSessions = useMemo(() => sessions.filter(session => session.source === activeSource), [sessions, activeSource]);
+  const platformSessions = useMemo(() => sessions.filter(session => session.source === activeSource)
+    .sort((a, b) => (b.last_time ?? 0) - (a.last_time ?? 0)), [sessions, activeSource]);
   useEffect(() => {
     const anchor = pageAnchor.current;
     pageAnchor.current = null;
@@ -556,7 +589,13 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                 : summaryStatus.count > 0 && <small>{summaryStatus.count}</small>}
             </button>
           </div>
-          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索待办")} value={detailQuery} onChange={event => { const value = event.target.value; setDetailQueries(current => ({ ...current, [view]: value })); }} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索待办")}/>
+          <div className="chat-workbench-head-tools"><input className="chat-workbench-head-search" aria-label={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索待办")} value={detailQuery} onChange={event => { const value = event.target.value; setDetailQueries(current => ({ ...current, [view]: value })); }} onKeyDown={event => {
+            if (view !== 'raw' || !detailQuery.trim() || event.key !== 'Enter'
+              || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
+              || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            event.preventDefault();
+            setSearchAdvance(value => value + 1);
+          }} placeholder={view === 'raw' ? t("在此会话中搜索") : view === 'summary' ? t("搜索聊天总结") : t("搜索待办")}/>
           </div>
         </div>
         {selectedSession && <p className="chat-workbench-conversation-meta"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">{selectedSession.is_group?<><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M21 20v-2a6 6 0 0 0-3-5"/></>:<><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></>}</svg>{selectedSession.is_group ? t("群聊") : t("单聊")}{selectedSession.is_group && selectedSession.member_count != null ? tf(" · {0} 人", selectedSession.member_count) : ''}{view === 'raw' && chatState.active ? ` · ${tf('已加载 {0} 条消息', chatState.messages)}` : ''}</p>}
@@ -604,11 +643,14 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           accountDisplay={connectedAccounts.find(account => account.id === accountId)?.display}
           sessionRevision={sessionRevision}
           messageRevision={messageRevisions[accountId] ?? 0}
+          refreshOnWake={visible && view === 'raw'}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
           focusMessageId={rawFocus?.messageId}
           searchKeyword={view === 'raw' ? detailQuery : ''}
-          onClearSearch={() => setQuery('')}
+          searchAdvance={searchAdvance}
+          onClearSearch={() => setDetailQueries(current => ({ ...current, raw: '' }))}
           onChatState={setChatState}
+          onLatestMessage={showLatestMessage}
           onSummarySelection={setSummarySelection}
           onSummarizeSelection={()=>{setSummaryPickRequest(value=>value+1);setView('summary');}}
           onOpenData={onOpenData}

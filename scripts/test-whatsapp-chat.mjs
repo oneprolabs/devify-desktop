@@ -50,15 +50,28 @@ const badgeReads = [];
 let pagedSessions = false, failNextWeChatPage = false, resolvePagedBadges = false;
 const pageReads = [];
 const sessionReads = [];
+const pagedTotal = id => id === wechat ? 1000 : 52;
+const pagedUsernames = id => Array.from({ length: pagedTotal(id) }, (_, index) => `${id}-${index}`);
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
-  if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: removedWhatsApp ? [] : [session.username], [wechat]: [wechatSession.username] } } };
+  if (command === 'app_settings_get') {
+    return {
+      active_account_id: account,
+      connectors: { whatsapp_enabled: true },
+      chat: {
+        allowed_usernames: {
+          [account]: removedWhatsApp ? [] : pagedSessions ? pagedUsernames(account) : [session.username],
+          [wechat]: pagedSessions ? pagedUsernames(wechat) : [wechatSession.username],
+        },
+      },
+    };
+  }
   if (command === 'chat_sessions') {
     sessionReads.push(args.accountId);
     if(removedWhatsApp&&args.accountId===account)return [];
     if (pagedSessions) {
       const offset=args.offset??0;
-      const total = args.accountId === wechat ? 1000 : 52;
+      const total = pagedTotal(args.accountId);
       if(offset)pageReads.push([args.accountId,offset]);
       if(offset&&args.accountId===wechat&&failNextWeChatPage){failNextWeChatPage=false;throw Error('temporary local read failure');}
       return Array.from({length:Math.min(args.limit, total - offset)},(_,i)=>({username:`${args.accountId}-${offset+i}`,display:`${args.accountId} chat ${offset+i}`,last_time:1000-offset-i,is_group:false}));
@@ -298,8 +311,16 @@ searchInput('chat-workbench-search').props.onChange({ target: { value: '' } });t
 resolvePagedBadges = true;
 resolveUploadState([]);await flush();tree=render();await flush();tree=render();
 for (let offset = 150; offset <= 1000; offset += 50) {
+  if (offset === 200) failNextWeChatPage = true;
   scrollList().props.onScroll(scrollAt('wechat'));await flush();tree=render();
   assert.deepEqual(pageReads.at(-1),[wechat,offset]);
+  if (offset === 200) {
+    assert.equal(rows().length, 200, 'a failed page leaves the loaded conversations visible');
+    buttons().find(node => node.props.children === '重试').props.onClick();
+    await flush();
+    tree=render();
+    assert.deepEqual(pageReads.slice(-2), [[wechat, 200], [wechat, 200]]);
+  }
   assert.equal(rows().length,Math.min(offset + 50, 1000),'later pages append rather than evict previous pages');
 }
 assert.deepEqual(rows().map(row => row.props['data-session-key']), Array.from({length:1000}, (_, i) => JSON.stringify([wechat, `${wechat}-${i}`])));
