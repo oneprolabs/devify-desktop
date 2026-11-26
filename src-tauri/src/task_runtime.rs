@@ -1,6 +1,7 @@
 //! The single coordinator for durable automatic backups.
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 #[derive(Debug, PartialEq)]
 pub(super) enum RetryRemoteAction {
@@ -207,15 +208,36 @@ pub(super) async fn task_runtime_retry(app: AppHandle, job_id: String) -> Result
 
 /// One coordinator, one preparation/upload at a time. Sources and chats rotate;
 /// each batch contains at most 200 messages from eight conversations.
-pub(super) async fn backup_tick(app: &AppHandle) {
+pub(super) async fn backup_tick(
+    app: &AppHandle,
+    wake_pending: &mut Vec<(settings::UploadOwner, backup_wake::WakeScan)>,
+) {
     let data = app_data(app);
     let Ok(value) = settings::load(&data) else {
         return;
     };
-    if !config_runtime::backup_enabled(&value) {
+    let woke = backup_wake::take();
+    if !config_runtime::backup_enabled(&value) || value.backup.mode == "manual" {
+        wake_pending.clear();
         return;
     }
     let accounts: Vec<_> = value.runtime.sources.keys().cloned().collect();
+    if woke {
+        let previous = std::mem::take(wake_pending);
+        *wake_pending = accounts
+            .iter()
+            .filter_map(|account| config_runtime::local_owner(&data, &value, account).ok())
+            .map(|owner| {
+                let mut scan = previous
+                    .iter()
+                    .find_map(|(pending, scan)| (*pending == owner).then_some(*scan))
+                    .unwrap_or_else(backup_wake::WakeScan::pending);
+                scan.rearm();
+                (owner, scan)
+            })
+            .collect();
+    }
+    wake_pending.retain(|(_, scan)| scan.keep(Instant::now()));
     for account in accounts {
         let Ok(value) = settings::load(&data) else {
             return;
@@ -243,10 +265,16 @@ pub(super) async fn backup_tick(app: &AppHandle) {
         {
             continue;
         }
-        if !source_needs_execution(&value, &owner, Local::now()) {
+        let wake_scan = wake_pending
+            .iter_mut()
+            .find_map(|(pending, scan)| (*pending == owner).then_some(scan));
+        let wake_due = wake_scan
+            .as_ref()
+            .is_some_and(|scan| scan.is_due(Instant::now()));
+        if !source_needs_execution(&value, &owner, Local::now(), wake_due) {
             continue;
         }
-        let result = run_source_tick(app, &owner).await;
+        let result = run_source_tick(app, &owner, wake_scan).await;
         let _ = record_source_result(&data, &owner, value.user_settings_revision, &result);
     }
     emit_task_runtime(app);
@@ -258,6 +286,7 @@ pub(super) fn source_needs_execution(
     s: &settings::AppSettings,
     owner: &settings::UploadOwner,
     now: chrono::DateTime<Local>,
+    wake_pending: bool,
 ) -> bool {
     let jobs: Vec<_> = s
         .upload_queue
@@ -294,18 +323,46 @@ pub(super) fn source_needs_execution(
             .continuation
             .get(&owner.account_id)
             .is_some_and(|v| !v.is_empty());
-    source.scan_remaining > 0
-        || continuing
-        || backup::due(
-            &s.backup,
-            s.chat.sync_interval_seconds,
-            source
-                .last_run_at
-                .as_deref()
-                .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
-                .map(|d| d.with_timezone(&Local)),
-            now,
-        )
+    source.scan_remaining > 0 || continuing || source_scan_due(s, source, now, wake_pending)
+}
+
+fn source_scan_due(
+    value: &settings::AppSettings,
+    source: &config_runtime::Source,
+    now: chrono::DateTime<Local>,
+    wake_pending: bool,
+) -> bool {
+    if wake_pending {
+        return backup::automatic_allowed_now(&value.backup, now);
+    }
+    let last_run = source
+        .last_run_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|date| date.with_timezone(&Local));
+    backup::due(
+        &value.backup,
+        value.chat.sync_interval_seconds,
+        last_run,
+        now,
+    )
+}
+
+pub(super) enum SourceTickError {
+    Backup(String),
+    WakeFollowUp(String),
+}
+
+impl From<String> for SourceTickError {
+    fn from(error: String) -> Self {
+        Self::Backup(error)
+    }
+}
+
+impl From<&str> for SourceTickError {
+    fn from(error: &str) -> Self {
+        Self::Backup(error.into())
+    }
 }
 
 /// A task may finish after logout, reconfiguration, or a space switch. It may
@@ -314,7 +371,7 @@ pub(super) fn record_source_result(
     data: &Path,
     owner: &settings::UploadOwner,
     revision: u64,
-    result: &Result<(), String>,
+    result: &Result<(), SourceTickError>,
 ) -> Result<(), String> {
     settings::update(data, |s| {
         if s.user_settings_revision != revision
@@ -330,19 +387,27 @@ pub(super) fn record_source_result(
             .sources
             .get_mut(&owner.account_id)
             .ok_or("来源已移除。")?;
-        if let Err(error) = result {
-            source.failures = source.failures.saturating_add(1);
-            let delay = if error == WECHAT_ACCOUNT_UNAVAILABLE {
-                30
-            } else {
-                (30_i64.saturating_mul(1_i64 << source.failures.min(6))).min(1800)
-            };
-            source.retry_after = Some((Utc::now() + chrono::Duration::seconds(delay)).to_rfc3339());
-            source.last_error = Some(error.clone());
-        } else {
-            source.failures = 0;
-            source.retry_after = None;
-            source.last_error = None;
+        match result {
+            Err(SourceTickError::Backup(error)) => {
+                source.failures = source.failures.saturating_add(1);
+                let delay = if error == WECHAT_ACCOUNT_UNAVAILABLE {
+                    30
+                } else {
+                    (30_i64.saturating_mul(1_i64 << source.failures.min(6))).min(1800)
+                };
+                source.retry_after =
+                    Some((Utc::now() + chrono::Duration::seconds(delay)).to_rfc3339());
+                source.last_error = Some(error.clone());
+            }
+            Err(SourceTickError::WakeFollowUp(error)) => {
+                // The next scheduler tick can recheck; this failure must not delay the regular run.
+                source.last_error = Some(error.clone());
+            }
+            Ok(()) => {
+                source.failures = 0;
+                source.retry_after = None;
+                source.last_error = None;
+            }
         }
         Ok(())
     })?;
@@ -362,7 +427,11 @@ pub(super) fn unfinished_scan_names(value: &settings::AppSettings, owner: &setti
     })).cloned().collect()
 }
 
-async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> Result<(), String> {
+async fn run_source_tick(
+    app: &AppHandle,
+    expected: &settings::UploadOwner,
+    wake_scan: Option<&mut backup_wake::WakeScan>,
+) -> Result<(), SourceTickError> {
     let data = app_data(app);
     let account = &expected.account_id;
     if whatsapp::is_account(account) && whatsapp::account().is_none_or(|a| a.id != *account) {
@@ -472,18 +541,15 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
             })?;
             return Ok(());
         }
-        return run_automatic_job(app, &owner, &token, &job).await;
+        return run_automatic_job(app, &owner, &token, &job)
+            .await
+            .map_err(Into::into);
     }
     let source = value
         .runtime
         .sources
         .get(account)
         .ok_or("找不到来源配置。")?;
-    let last = source
-        .last_run_at
-        .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Local));
     let continuing = value
         .sync
         .initial_progress
@@ -494,30 +560,42 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
             .continuation
             .get(account)
             .is_some_and(|v| !v.is_empty());
-    if source.scan_remaining == 0
-        && !continuing
-        && !backup::due(
-            &value.backup,
-            value.chat.sync_interval_seconds,
-            last,
-            Local::now(),
-        )
-    {
+    let now = Instant::now();
+    let mut next_wake_scan = wake_scan.as_deref().copied();
+    let wake_due = next_wake_scan.is_some_and(|scan| scan.is_due(now));
+    let local_now = Local::now();
+    let regular_due = source_scan_due(&value, source, local_now, false);
+    let wake_allowed = wake_due && backup::automatic_allowed_now(&value.backup, local_now);
+    if source.scan_remaining == 0 && !continuing && !regular_due && !wake_allowed {
         return Ok(());
     }
     let unfinished = unfinished_scan_names(&value, &owner, &names);
     let finishing = !unfinished.is_empty();
     let scan_names = if finishing { &unfinished } else { &names };
     let epoch = upload_epoch();
-    // Refresh only for a due scan, never on page navigation. Existing read transaction
-    // checks permission and only decrypts files which changed.
-    if !whatsapp::is_account(account) && source.scan_remaining == 0 && !finishing {
+    let starts_scan = source.scan_remaining == 0 && !finishing;
+    if starts_scan && (regular_due || wake_allowed) {
+        if let Some(scan) = &mut next_wake_scan {
+            scan.start(now, regular_due);
+        }
+    }
+    let updates_regular_schedule =
+        next_wake_scan.is_none_or(|scan| scan.updates_regular_schedule());
+    let scan_error = |error| {
+        if !finishing && !regular_due && !updates_regular_schedule {
+            SourceTickError::WakeFollowUp(error)
+        } else {
+            SourceTickError::Backup(error)
+        }
+    };
+    // A new scan refreshes changed WeChat databases before planning its first batch.
+    if starts_scan && !whatsapp::is_account(account) {
         let scan = discover::scan();
         let local = scan
             .accounts
             .into_iter()
             .find(|a| a.id == *account)
-            .ok_or(WECHAT_ACCOUNT_UNAVAILABLE)?;
+            .ok_or_else(|| scan_error(WECHAT_ACCOUNT_UNAVAILABLE.into()))?;
         let store = keys::load(&keys::store_path(&data));
         let env = connector_environment(app);
         let copy = data.clone();
@@ -525,15 +603,17 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
             read_new_wechat_data(&copy, &env, &local, &store, true, true)
         })
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|error| scan_error(error.to_string()))?
+        .map_err(scan_error)?;
         if let Some(failure) = outcomes
             .iter()
             .find(|o| matches!(o.status.as_str(), "failed" | "no-key"))
         {
-            return Err(failure
+            let error = failure
                 .error
                 .clone()
-                .unwrap_or_else(|| "本机记录读取失败，请检查微信连接。".into()));
+                .unwrap_or_else(|| "本机记录读取失败，请检查微信连接。".into());
+            return Err(scan_error(error));
         }
     }
     let start = source.scan_index % scan_names.len();
@@ -543,6 +623,7 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
         source.scan_remaining.min(scan_names.len())
     };
     let scan_count = remaining.min(8);
+    let scan_complete = !finishing && remaining == scan_count;
     let selected: Vec<_> = (0..scan_count)
         .map(|i| scan_names[(start + i) % scan_names.len()].clone())
         .collect();
@@ -553,7 +634,8 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
         plan_automatic_batch(&copy, &snapshot, &owner_copy, &selected)
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|error| scan_error(error.to_string()))?
+    .map_err(scan_error)?;
     if upload_aborted(epoch) {
         return Ok(());
     }
@@ -577,7 +659,8 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
         let source = s.runtime.sources.get_mut(account).ok_or("来源已移除。")?;
         source.scan_index = (start + scan_count) % scan_names.len();
         source.scan_remaining = if finishing { 0 } else { remaining - scan_count };
-        if !finishing && source.scan_remaining == 0 {
+        // An empty first wake scan establishes the interval; later checks leave it alone.
+        if scan_complete && updates_regular_schedule {
             source.last_run_at = Some(Utc::now().to_rfc3339());
         }
         source.retry_after = None;
@@ -588,7 +671,24 @@ async fn run_source_tick(app: &AppHandle, expected: &settings::UploadOwner) -> R
         }
         Ok(())
     })?;
+    let scanned_after_wake = !finishing && next_wake_scan.is_some_and(|scan| scan.is_scanning());
+    if let (Some(scan), Some(mut next)) = (wake_scan, next_wake_scan) {
+        if !finishing {
+            next.commit_chunk(Instant::now(), scan_complete, job.is_some());
+        }
+        *scan = next;
+    }
     if let Some(job) = job {
+        if scanned_after_wake {
+            if let Some(scope) = &job.scope {
+                let usernames: Vec<_> = scope.message_selection.keys().collect();
+                let _ = app.emit_to(
+                    "main",
+                    "wake-chat-messages-ready",
+                    serde_json::json!({ "account_id": account, "usernames": usernames }),
+                );
+            }
+        }
         emit_task_runtime(app);
         run_automatic_job(app, &owner, &token, &job).await?;
     }

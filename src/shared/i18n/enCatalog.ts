@@ -1424,6 +1424,7 @@ export const en: Record<string, string> = {
   "（{0}，权限 {1}）": "({0}, permissions {1})",
   "已就绪 {0}/{1} 个加密库": "{0} of {1} encrypted databases ready",
   "正在高亮「{0}」的 {1} 处命中": "Highlighting {1} matches for “{0}”",
+  "「{0}」 · {1}/{2} · Enter 跳到下一处": "“{0}” · {1}/{2} · Enter for next match",
   "「{0}」在当前记录中没有命中，已尝试向前加载更多消息": "No matches for “{0}” in what's loaded. Tried loading earlier messages.",
   "已选 {0} 条 · 点击消息可切换，Shift + 点击连续选择": "{0} selected · click to toggle, Shift-click to select a range",
   "{0} · {1} 个会话": "{0} · {1} chats",

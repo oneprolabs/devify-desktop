@@ -26,6 +26,7 @@ extern crate self as wechat_devify_bridge_lib;
 pub mod access;
 pub mod agent;
 pub mod backup;
+mod backup_wake;
 pub mod build_flavor;
 pub mod capabilities;
 pub mod connectors;
@@ -6868,11 +6869,14 @@ pub fn run() {
                     tokio::time::sleep(Duration::from_secs(30)).await;
                 }
             });
+            #[cfg(target_os = "macos")]
+            backup_wake::observe();
             let sync_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let mut wake_pending = Vec::new();
                 loop {
                     summary_jobs::tick(&sync_handle).await;
-                    task_runtime::backup_tick(&sync_handle).await;
+                    task_runtime::backup_tick(&sync_handle, &mut wake_pending).await;
                     emit_task_runtime(&sync_handle);
                     let idle=sync_handle.state::<UploadState>().syncing.uploading_accounts().is_ok_and(|v|v.is_empty());
                     if idle {let data=app_data(&sync_handle);let _=tauri::async_runtime::spawn_blocking(move||task_store::idle_maintenance(&data)).await;}
