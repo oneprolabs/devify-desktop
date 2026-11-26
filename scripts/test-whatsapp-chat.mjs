@@ -47,24 +47,43 @@ let runtime = { sources: [{account_id:account,platform:'whatsapp',setup_complete
 let emptyWhatsApp = false;
 let removedWhatsApp = false;
 const badgeReads = [];
-let pagedSessions = false, failNextWeChatPage = false;
+let pagedSessions = false, failNextWeChatPage = false, resolvePagedBadges = false;
 const pageReads = [];
 const sessionReads = [];
+const pagedTotal = id => id === wechat ? 1000 : 52;
+const pagedUsernames = id => Array.from({ length: pagedTotal(id) }, (_, index) => `${id}-${index}`);
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
-  if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: removedWhatsApp ? [] : [session.username], [wechat]: [wechatSession.username] } } };
+  if (command === 'app_settings_get') {
+    return {
+      active_account_id: account,
+      connectors: { whatsapp_enabled: true },
+      chat: {
+        allowed_usernames: {
+          [account]: removedWhatsApp ? [] : pagedSessions ? pagedUsernames(account) : [session.username],
+          [wechat]: pagedSessions ? pagedUsernames(wechat) : [wechatSession.username],
+        },
+      },
+    };
+  }
   if (command === 'chat_sessions') {
     sessionReads.push(args.accountId);
     if(removedWhatsApp&&args.accountId===account)return [];
     if (pagedSessions) {
       const offset=args.offset??0;
+      const total = pagedTotal(args.accountId);
       if(offset)pageReads.push([args.accountId,offset]);
       if(offset&&args.accountId===wechat&&failNextWeChatPage){failNextWeChatPage=false;throw Error('temporary local read failure');}
-      return Array.from({length:offset?2:50},(_,i)=>({username:`${args.accountId}-${offset+i}`,display:`${args.accountId} chat ${offset+i}`,last_time:1000-offset-i,is_group:false}));
+      return Array.from({length:Math.min(args.limit, total - offset)},(_,i)=>({username:`${args.accountId}-${offset+i}`,display:`${args.accountId} chat ${offset+i}`,last_time:1000-offset-i,is_group:false}));
     }
     return args.accountId === wechat ? [wechatSession] : hideWhatsAppFromFirstPage || emptyWhatsApp ? [] : [session];
   }
-  if (command === 'wechat_upload_state') { badgeReads.push(args); uploadStateCalls++; return new Promise(resolve => { resolveUploadState = resolve; }); }
+  if (command === 'wechat_upload_state') {
+    badgeReads.push(args); uploadStateCalls++;
+    if (resolvePagedBadges && args.usernames.length <= 200) return args.usernames.filter(username => username === `${wechat}-999`).map(username => ({ username, state: 'pending', new_messages: 7 }));
+    if (resolvePagedBadges) throw Error('请分页读取会话状态。');
+    return new Promise(resolve => { resolveUploadState = resolve; });
+  }
   if (['wechat_avatars', 'summary_history_list'].includes(command)) return [];
   return null;
 };
@@ -276,9 +295,44 @@ assert.ok(!textOf(tree).includes(`${wechat} chat 51`),'WeChat rows cannot leak i
 scrollList().props.onScroll(scrollAt('whatsapp'));await flush();tree=render();
 assert.deepEqual(pageReads,[[wechat,50],[wechat,50],[account,50]],'platforms keep separate page offsets');
 assert.ok(textOf(tree).includes(`${account} chat 51`));
+assert.ok(textOf(tree).includes('已到列表末尾。'),'a short final page confirms the end');
+scrollList().props.onScroll(scrollAt('whatsapp'));assert.equal(pageReads.length,3);
 selectPlatform('wechat');
 assert.ok(textOf(tree).includes(`${wechat} chat 51`),'switching does not discard the other platform page');
-scrollList().props.onScroll(scrollAt('wechat'));assert.equal(pageReads.length,3,'end of list does not request more pages');
+assert.ok(!textOf(tree).includes('已到列表末尾。'),'the end marker follows the platform');
+const moreButton = () => buttons().find(node => textOf(node) === '加载更多会话');
+assert.ok(moreButton(), 'the unfiltered list offers a manual paging fallback');
+searchInput('chat-workbench-search').props.onChange({ target: { value: `${wechat} chat 999` } });tree=render();
+assert.equal(rows().length,0);
+assert.ok(!textOf(tree).includes('没有符合条件的会话。'),'unread pages can still match the search');
+moreButton().props.onClick();await flush();tree=render();
+assert.deepEqual(pageReads.at(-1),[wechat,100]);
+searchInput('chat-workbench-search').props.onChange({ target: { value: '' } });tree=render();
+resolvePagedBadges = true;
+resolveUploadState([]);await flush();tree=render();await flush();tree=render();
+for (let offset = 150; offset <= 1000; offset += 50) {
+  if (offset === 200) failNextWeChatPage = true;
+  scrollList().props.onScroll(scrollAt('wechat'));await flush();tree=render();
+  assert.deepEqual(pageReads.at(-1),[wechat,offset]);
+  if (offset === 200) {
+    assert.equal(rows().length, 200, 'a failed page leaves the loaded conversations visible');
+    buttons().find(node => node.props.children === '重试').props.onClick();
+    await flush();
+    tree=render();
+    assert.deepEqual(pageReads.slice(-2), [[wechat, 200], [wechat, 200]]);
+  }
+  assert.equal(rows().length,Math.min(offset + 50, 1000),'later pages append rather than evict previous pages');
+}
+assert.deepEqual(rows().map(row => row.props['data-session-key']), Array.from({length:1000}, (_, i) => JSON.stringify([wechat, `${wechat}-${i}`])));
+assert.ok(textOf(tree).includes('已到列表末尾。'),'an exact multiple ends only after the next page returns empty');
+assert.equal(moreButton(),undefined);
+const readsAtEnd = pageReads.length;
+scrollList().props.onScroll(scrollAt('wechat'));assert.equal(pageReads.length,readsAtEnd,'end of list does not request more pages');
+await flush();tree=render();
+assert.ok(badgeReads.every(read => read.usernames.length <= 200),'badge requests must respect the native limit');
+pendingFilter().props.onClick();tree=render();
+assert.equal(rows().length,1);
+assert.ok(textOf(rows()[0]).includes(`${wechat} chat 999`),'the last badge batch participates in pending filtering');
 selectPlatform('whatsapp');removedWhatsApp=true;
 nodes(tree).find(node=>node.props?.['aria-label']==='刷新会话').props.onClick();await flush();tree=render();
 assert.equal(nodes(tree).filter(node=>node.type===MessagePane).length,0,'removing a platform selection cannot retain a stale private reader');

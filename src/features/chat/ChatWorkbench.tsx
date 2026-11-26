@@ -40,6 +40,10 @@ type Filter = 'all' | 'pending';
 type PlatformMemory = { session: OwnedSession | null; scrollTop: number; query: string; filter: Filter };
 const needsBackup = (item: UploadState) => ['pending', 'local', 'failed', 'history_failed'].includes(item.state);
 const sessionKey = (accountId: string, username: string) => JSON.stringify([accountId, username]);
+const SESSION_PAGE_SIZE = 50;
+// shortcut: chat_sessions clamps larger offsets, revisit when the native API supports deeper paging.
+const MAX_SESSION_OFFSET = 1000;
+const UPLOAD_STATE_BATCH_SIZE = 200;
 
 const timeLabel = (value?: number | null) => {
   if (!value) return '';
@@ -121,10 +125,12 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const [evidence, setEvidence] = useState<EvidenceTarget | null>(null);
   // Read messages only for the selected conversation, including the initial first chat.
   useEffect(() => { if (selectedSession && view === 'raw') setRawMounted(true); }, [selectedSession, view]);
-  const [hasMoreSessions, setHasMoreSessions] = useState(false);
   const [moreSessionsErrors, setMoreSessionsErrors] = useState<Record<string, string>>({});
   const [loadingSource, setLoadingSource] = useState<string | null>(null);
   const sessionOffsets = useRef(new Map<string, { account: ChatAccount; offset: number }>());
+  const activeOffsets = [...sessionOffsets.current.values()].filter(entry => (entry.account.source ?? 'wechat') === activeSource);
+  const hasMoreSessions = activeOffsets.some(entry => entry.offset <= MAX_SESSION_OFFSET);
+  const sessionLimitReached = activeOffsets.some(entry => entry.offset > MAX_SESSION_OFFSET);
   const moreLock = useRef(false);
 
   const load = useCallback(async () => {
@@ -141,7 +147,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
         ? connections.whatsapp_enabled !== false
         : connections.wechat_enabled !== false);
 
-      const results = await Promise.allSettled(accounts.map(async item => ({ account: item, sessions: await invoke<Session[]>('chat_sessions', { accountId: item.id, limit: 50 }) })));
+      const results = await Promise.allSettled(accounts.map(async item => ({ account: item, sessions: await invoke<Session[]>('chat_sessions', { accountId: item.id, limit: SESSION_PAGE_SIZE }) })));
       if (generation !== loadGeneration.current) return;
       const list = results.flatMap(result => result.status === 'fulfilled'
         ? (result.value.sessions ?? []).map(session => ({ ...session, accountId: result.value.account.id, source: result.value.account.source ?? 'wechat' })) : []);
@@ -149,24 +155,18 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       const failed = results.flatMap((result, index) => result.status === 'rejected' ? [accounts[index].source === 'whatsapp' ? 'WhatsApp' : t("微信")] : []);
       setSettings(stored);
       setConnectedAccounts(accounts);
-      const sourceCounts = new Map<string, number>();
-      const firstPage = list.filter(item => {
-        const count = sourceCounts.get(item.source) ?? 0;
-        sourceCounts.set(item.source, count + 1);
-        return count < 200;
-      });
       const selected = selectedSessionRef.current;
       const canKeepSelected = selected && accounts.some(account => account.id === selected.accountId)
         && stored.chat?.allowed_usernames?.[selected.accountId]?.includes(selected.username);
       setSessions(current => {
-        if (!canKeepSelected) return firstPage;
+        if (!canKeepSelected) return list;
         const matchesSelected = (item: OwnedSession) => item.accountId === selected.accountId && item.username === selected.username;
         const previous = current.find(matchesSelected) ?? selected;
         // The list index may be ahead of or behind the readable message database.
         // Keep the open chat on its last successful message read until the next one commits.
-        if (!firstPage.some(matchesSelected)) return [...firstPage, previous];
-        if (!previous.previewFromMessages) return firstPage;
-        return firstPage.map(item => matchesSelected(item)
+        if (!list.some(matchesSelected)) return [...list, previous];
+        if (!previous.previewFromMessages) return list;
+        return list.map(item => matchesSelected(item)
           ? { ...item, preview: previous.preview, last_time: previous.last_time, previewFromMessages: true }
           : item);
       });
@@ -174,8 +174,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       const source = available.includes(activeSourceRef.current) ? activeSourceRef.current : list[0]?.source ?? available[0] ?? '';
       activeSourceRef.current = source;
       setActiveSource(source);
-      sessionOffsets.current = new Map(results.flatMap(result => result.status === 'fulfilled' && result.value.sessions.length === 50 ? [[result.value.account.id, { account: result.value.account, offset: 50 }] as const] : []));
-      setHasMoreSessions(sessionOffsets.current.size > 0);
+      sessionOffsets.current = new Map(results.flatMap(result => result.status === 'fulfilled' && result.value.sessions.length === SESSION_PAGE_SIZE ? [[result.value.account.id, { account: result.value.account, offset: SESSION_PAGE_SIZE }] as const] : []));
       setSelectedSession(current => {
         const remembered = current?.source === source ? current : platformMemory.current.get(source)?.session;
         // A refreshed first page does not prove a previously selected chat was deleted.
@@ -228,7 +227,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   };
 
   const loadMoreSessions = async (source: string) => {
-    if (moreLock.current) return;
+    if (!visible || loading || refreshLock.current || moreLock.current) return;
     moreLock.current = true; setLoading(true); setMoreSessionsErrors(current => ({ ...current, [source]: '' })); setLoadingSource(source);
     const generation = loadGeneration.current;
     try {
@@ -236,15 +235,17 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       const added: OwnedSession[] = [];
       const pages: Array<{ id: string; entry: { account: ChatAccount; offset: number }; count: number }> = [];
       for (const [id, entry] of sessionOffsets.current) {
-        if ((entry.account.source ?? 'wechat') !== source) continue;
-        const rows = await invoke<Session[]>('chat_sessions', { accountId: id, limit: 50, offset: entry.offset });
+        if ((entry.account.source ?? 'wechat') !== source || entry.offset > MAX_SESSION_OFFSET) continue;
+        const rows = await invoke<Session[]>('chat_sessions', { accountId: id, limit: SESSION_PAGE_SIZE, offset: entry.offset });
         if (generation !== loadGeneration.current) return;
         added.push(...rows.map(row => ({ ...row, accountId: id, source: entry.account.source ?? 'wechat' })));
         pages.push({ id, entry, count: rows.length });
       }
       // Commit offsets only after the whole page succeeds, so a retry cannot skip rows.
       for (const { id, entry, count } of pages) {
-        if (count < 50) sessionOffsets.current.delete(id); else entry.offset += 50;
+        // A short page proves exhaustion; a full page at the cap does not.
+        if (count < SESSION_PAGE_SIZE) sessionOffsets.current.delete(id);
+        else entry.offset += SESSION_PAGE_SIZE;
       }
       if (activeSourceRef.current === source && sessionList.current) {
         const top = sessionList.current.getBoundingClientRect().top;
@@ -257,14 +258,8 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           const key = sessionKey(row.accountId, row.username);
           if (!rows.get(key)?.previewFromMessages) rows.set(key, row);
         }
-        const merged = [...rows.values()];
-        // Keep each platform's paging window independent; loading one never evicts
-        // another platform's rows while leaving its offset advanced.
-        const other = merged.filter(row => row.source !== source);
-        const own = merged.filter(row => row.source === source).slice(-200);
-        return [...other, ...own];
+        return [...rows.values()];
       });
-      setHasMoreSessions(sessionOffsets.current.size > 0);
     } catch (reason) { if (generation === loadGeneration.current) setMoreSessionsErrors(current => ({ ...current, [source]: String(reason) })); }
     finally { moreLock.current = false; if (generation === loadGeneration.current) { setLoading(false); setLoadingSource(null); } }
   };
@@ -340,9 +335,11 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
       const next: Record<string, UploadState> = {};
       for (const id of new Set(platformSessions.map(item => item.accountId))) {
         const usernames = platformSessions.filter(session => session.accountId === id).map(session => session.username);
-        const items = await invoke<UploadState[]>('wechat_upload_state', { accountId: id, usernames });
-        if (currentUploadStateScope.current !== scope) return;
-        for (const item of items) next[sessionKey(id, item.username)] = item;
+        for (let i = 0; i < usernames.length; i += UPLOAD_STATE_BATCH_SIZE) {
+          const items = await invoke<UploadState[]>('wechat_upload_state', { accountId: id, usernames: usernames.slice(i, i + UPLOAD_STATE_BATCH_SIZE) });
+          if (currentUploadStateScope.current !== scope) return;
+          for (const item of items) next[sessionKey(id, item.username)] = item;
+        }
       }
       if (currentUploadStateScope.current === scope) setUploadStates(current => {
         const retained = new Set(sessions.map(session => sessionKey(session.accountId, session.username)));
@@ -562,13 +559,15 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                 </button>;
               })}
             </Fragment>)}
-            {[...sessionOffsets.current.values()].some(entry => (entry.account.source ?? 'wechat') === activeSource) && <div className="chat-workbench-source-more" data-more-source={activeSource}>
+            {hasMoreSessions && <div className="chat-workbench-source-more" data-more-source={activeSource}>
               {loadingSource === activeSource && <p className="chat-workbench-empty" role="status">{t('正在读取会话…')}</p>}
-              {moreSessionsErrors[activeSource] && <p className="chat-workbench-load-error" role="alert">{errorText(moreSessionsErrors[activeSource])} <button type="button" disabled={loading} onClick={() => void loadMoreSessions(activeSource)}>{t('重试')}</button></p>}
-              {!loading && !moreSessionsErrors[activeSource] && (query.trim() || filter !== 'all') && <button type="button" className="connector-quiet" onClick={() => void loadMoreSessions(activeSource)}>{t('加载更多会话')}</button>}
+              {moreSessionsErrors[activeSource] && <p className="chat-workbench-load-error" role="alert">{errorText(moreSessionsErrors[activeSource])} <button type="button" disabled={loading || refreshing} onClick={() => void loadMoreSessions(activeSource)}>{t('重试')}</button></p>}
+              {!loading && !moreSessionsErrors[activeSource] && <button type="button" className="connector-quiet" disabled={refreshing} onClick={() => void loadMoreSessions(activeSource)}>{t('加载更多会话')}</button>}
             </div>}
           </div>
-        {!loading && !visibleSessions.length && <p className="chat-workbench-empty">{t("没有符合条件的会话。")}</p>}
+        {!loading && !refreshing && !error && !hasMoreSessions && (sessionLimitReached || visibleSessions.length
+          ? <p className="chat-workbench-empty" role="status">{sessionLimitReached ? t("已达到会话读取上限，可能还有更早的会话。") : t("已到列表末尾。")}</p>
+          : <p className="chat-workbench-empty">{t("没有符合条件的会话。")}</p>)}
       </div>
       <SidebarResizeHandle/>
     </aside>
