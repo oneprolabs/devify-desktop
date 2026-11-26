@@ -741,6 +741,26 @@ export async function runSummaryDateUiE2E(task, base = 'http://127.0.0.1:1422', 
   });
   await page.click(generate);
   await page.waitForFunction(() => document.querySelector('.summary-date-value')?.textContent.includes('401 条文字消息，分 2 批'));
+  assert.match(
+    await page.evaluate(() => document.querySelector('.summary-date-value').textContent),
+    /预计输入 17 KB/,
+    'A multi-batch preview shows the estimated input size before confirmation',
+  );
+  const summaryButtonColors = await page.evaluate(() => {
+    const colors = (selector) => {
+      const { backgroundColor, color } = getComputedStyle(document.querySelector(selector));
+      return { backgroundColor, color };
+    };
+    return {
+      confirm: colors('.summary-all-confirm'),
+      primary: colors('.chat-summary-actions button.primary'),
+      selectedFilter: colors('.chat-workbench-filters button.active'),
+    };
+  });
+  assert.deepEqual(summaryButtonColors.confirm, summaryButtonColors.primary,
+    'The confirmation uses the same colors as the primary summary action');
+  assert.deepEqual(summaryButtonColors.confirm, summaryButtonColors.selectedFilter,
+    'The confirmation matches the selected chat filter colors');
   await page.click('.summary-all-confirm');
   await page.waitForSelector('.chat-summary-cta');
   const larger = await page.evaluate(() => window.__E2E__.calls

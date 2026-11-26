@@ -2919,7 +2919,7 @@ export const en: Record<string, string> = {
   "全部消息仅支持本地工具。请重新选择云端时间范围。": "All messages is available only with a local tool. Choose a date range for the cloud summary.",
   "读取所选聊天在本机已有的全部文字。历史较多时耗时更长，也可能占用更多模型上下文和额度；本地工具仍可能使用在线模型。": "This reads all text available on this device in the selected chats. Larger histories may take longer and use more model context and quota. The local tool may still use an online model.",
   "{0} 条文字消息，预计输入 {1}（含提示词）。": "{0} text messages, estimated input {1} (including the prompt).",
-  "{0} 条文字消息，分 {1} 批总结，完成后合并。": "{0} text messages will be summarized in {1} batches and combined into one summary.",
+  "{0} 条文字消息，分 {1} 批总结，预计输入 {2}（含各批提示词）。完成后合并。": "{0} text messages in {1} batches. Estimated input is {2}, including batch prompts. The results will be combined into one summary.",
   "本次聊天记录超过本地任务的 4 MiB 上限，请缩小范围。": "This chat history exceeds the 4 MiB limit for a local task. Choose a shorter range.",
   "单条消息超过本地单次总结范围，无法完整生成。": "One message exceeds the local input limit, so the full summary could not be generated.",
   "总结规则或我的要求占用过多输入空间，无法合并分批摘要。": "The summary template or your instructions leave too little room to merge the batch summaries.",

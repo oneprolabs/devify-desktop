@@ -41,6 +41,10 @@
 .summary-feedback { display: flex; align-items: baseline; gap: 12px; padding: 10px 12px; border-radius: 8px; background: #f5f5f3; color: #4f4f4a; font-size: 12.5px; line-height: 1.6; }
 .summary-feedback > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .summary-feedback button { flex: none; }
+.summary-feedback .summary-all-confirm { min-height: 32px; padding: 5px 12px; border-radius: 7px; font-weight: 600; }
+.summary-feedback .summary-all-confirm:hover:not(:disabled) { filter: brightness(.9); }
+.summary-feedback .summary-all-confirm:focus-visible { outline: 2px solid #a3279a; outline-offset: 2px; }
+.summary-feedback .summary-all-confirm:disabled { opacity: .55; cursor: default; }
 .summary-feedback.error { background: #fff4f1; color: #9b3f36; }
 .summary-progress { display: flex; align-items: center; gap: 10px; color: #6c6c67; font-size: 13px; padding: 12px 0; }
 .summary-body { display: flex; flex-direction: column; min-width: 0; gap: 8px; }

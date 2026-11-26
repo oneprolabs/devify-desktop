@@ -129,6 +129,9 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
   const selectedTotal=selected.length+nonTextCount;
   const allMessages=mode==='time'&&range==='all';
   const localAll=allMessages&&engine==='local';
+  const estimatedInputSize = allStats
+    ? (allStats.bytes < 1024 ? `${allStats.bytes} B` : formatSize(allStats.bytes))
+    : '';
   const preview=(()=>{
     if(!visible||!open||mode!=='time')return null;
     try {
@@ -236,8 +239,8 @@ export function ConversationSummary({ visible, localAgentReady = false, localAge
           {preview?.bounds&&!preview.invalid&&(range==='month'||range==='custom')&&<p className="summary-date-value"><strong>{t('范围')}</strong> {dateRangeLabel(preview.bounds,range==='month')}{range==='custom'&&` ${t('（含结束日）')}`}</p>}
           {localAll?<><p className="summary-date-feedback">{t('读取所选聊天在本机已有的全部文字。历史较多时耗时更长，也可能占用更多模型上下文和额度；本地工具仍可能使用在线模型。')}</p>
             {allStats&&<div className="summary-feedback"><span className="summary-date-value" role="status">{allStats.batches > 1
-              ? tf('{0} 条文字消息，分 {1} 批总结，完成后合并。', allStats.count, allStats.batches)
-              : tf('{0} 条文字消息，预计输入 {1}（含提示词）。', allStats.count, allStats.bytes < 1024 ? `${allStats.bytes} B` : formatSize(allStats.bytes))}</span>
+              ? tf('{0} 条文字消息，分 {1} 批总结，预计输入 {2}（含各批提示词）。完成后合并。', allStats.count, allStats.batches, estimatedInputSize)
+              : tf('{0} 条文字消息，预计输入 {1}（含提示词）。', allStats.count, estimatedInputSize)}</span>
               <button type="button" className="summary-all-confirm" disabled={cannotGenerate} onClick={()=>void generate(true)}>{t('确认并生成')}</button></div>}</>
             :!allMessages&&<p className="chat-summary-hint">{t('单次最长一个自然月；消息过多时，请缩小时间范围。')}</p>}
           {preview?.error&&<p id={rangeErrorId} className={`summary-date-feedback${preview.invalid?' invalid':''}`} role="alert">{t(preview.error)}</p>}
