@@ -52,9 +52,24 @@ let pagedSessions = false, failNextWeChatPage = false, resolvePagedBadges = fals
 let longSessionPages = false;
 const pageReads = [];
 const sessionReads = [];
+const pagedTotal = id => id === wechat ? (longSessionPages ? 1100 : 1000) : 52;
+const pagedUsernames = id => Array.from({ length: pagedTotal(id) }, (_, index) =>
+  longSessionPages && id !== account ? String(index) : `${id}-${index}`);
 const invoke = async (command, args) => {
   if (command === 'chat_accounts') return accounts;
-  if (command === 'app_settings_get') return { active_account_id: account, connectors: { whatsapp_enabled: true }, chat: { allowed_usernames: { [account]: removedWhatsApp ? [] : [session.username], [wechat]: [wechatSession.username] } } };
+  if (command === 'app_settings_get') {
+    return {
+      active_account_id: account,
+      connectors: { whatsapp_enabled: true },
+      chat: {
+        allowed_usernames: {
+          [account]: removedWhatsApp ? [] : pagedSessions ? pagedUsernames(account) : [session.username],
+          [wechat]: pagedSessions ? pagedUsernames(wechat) : [wechatSession.username],
+          ...(longSessionPages ? { [otherWeChat]: pagedUsernames(otherWeChat) } : {}),
+        },
+      },
+    };
+  }
   if (command === 'chat_sessions') {
     sessionReads.push(args.accountId);
     if(removedWhatsApp&&args.accountId===account)return [];
@@ -65,15 +80,16 @@ const invoke = async (command, args) => {
       if (longSessionPages && args.accountId !== account) {
         const start = Math.min(offset, 1000);
         const other = args.accountId === otherWeChat;
-        const count = Math.min(50, (other ? 52 : 1100) - start);
+        const count = Math.min(args.limit, pagedTotal(args.accountId) - start);
         return Array.from({ length: count }, (_, i) => {
           const index = start + i;
           if (!other && index === 50) return { username: '0', display: 'Stale duplicate', last_time: 5000, is_group: false };
           if (!other && index === 250) return { username: '1', display: 'Updated conversation', last_time: 10001, is_group: false };
+          if (!other && index === 300) return { username: '1', display: 'Unconfirmed index result', last_time: 10003, is_group: false };
           return { username: String(index), display: `${args.accountId} chat ${index}`, last_time: (other ? 9975 : 10000) - index, is_group: false };
         });
       }
-      const total = args.accountId === wechat ? 1000 : 52;
+      const total = pagedTotal(args.accountId);
       return Array.from({ length: Math.min(args.limit, total - offset) }, (_, i) => {
         const index = offset + i;
         const row = { username: `${args.accountId}-${index}`, display: `${args.accountId} chat ${index}`, last_time: 1000 - index, is_group: false };
@@ -324,8 +340,16 @@ searchInput('chat-workbench-search').props.onChange({ target: { value: '' } });t
 resolvePagedBadges = true;
 resolveUploadState([]);await flush();tree=render();await flush();tree=render();
 for (let offset = 150; offset <= 1000; offset += 50) {
+  if (offset === 200) failNextWeChatPage = true;
   scrollList().props.onScroll(scrollAt('wechat'));await flush();tree=render();
   assert.deepEqual(pageReads.at(-1),[wechat,offset]);
+  if (offset === 200) {
+    assert.equal(rows().length, 200, 'a failed page leaves the loaded conversations visible');
+    buttons().find(node => node.props.children === '重试').props.onClick();
+    await flush();
+    tree=render();
+    assert.deepEqual(pageReads.slice(-2), [[wechat, 200], [wechat, 200]]);
+  }
   assert.equal(rows().length,Math.min(offset + 50, 1000),'later pages append rather than evict previous pages');
 }
 assert.deepEqual(rows().map(row => row.props['data-session-key']), Array.from({length:1000}, (_, i) => JSON.stringify([wechat, `${wechat}-${i}`])));
@@ -387,7 +411,14 @@ buttons().find(node => textOf(node).startsWith('全部')).props.onClick(); tree 
 await loadWeChatPage();
 assert.equal(rowKeys()[0], key(wechat, 1), 'a newer duplicate updates and reorders the existing row');
 assert.ok(textOf(rows()[0]).includes('Updated conversation'));
+rows()[0].props.onClick();
+tree = render();
+nodes(tree).find(node => node.type === MessagePane).props.onLatestMessage(wechat, '1', { text: 'Preview from readable messages', time: 10002 });
+tree = render();
 for (let offset = 300; offset <= 1000; offset += 50) await loadWeChatPage();
+assert.equal(rowKeys()[0], key(wechat, 1), 'the newest conversation stays at the top after scrolling through later pages');
+assert.ok(textOf(rows()[0]).includes('Preview from readable messages'), 'a later index page cannot replace the message-backed preview');
+assert.ok(!textOf(tree).includes('Unconfirmed index result'));
 assert.deepEqual(pageReads.at(-1), [wechat, 1000]);
 assert.equal(rowKeys().at(-1), key(wechat, 1049), 'the last supported full page is retained');
 const limitNotice = '已达到会话读取上限，可能还有更早的会话。';

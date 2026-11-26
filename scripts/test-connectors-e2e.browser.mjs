@@ -790,9 +790,56 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   }, wa);
   await page.click(refresh, {label:'刷新当前 WhatsApp 会话'});
   await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('WhatsApp 刷新后的新消息'));
+  assert.equal(await page.evaluate(() => document.querySelector('.chat-workbench-session.selected small')?.textContent), 'WhatsApp 刷新后的新消息');
   assert.deepEqual(await page.evaluate(start => window.__E2E__.calls.slice(start).filter(c => c.command === 'wechat_sync'), whatsappStart), []);
   assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
   return 'PASS chat refresh: prominent key recovery, preserved setup and selection, retry with collapsed diagnostics, refreshed WeChat messages, WhatsApp local reload';
+}
+
+export async function runWakeChatRefreshUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  const [accountId, username] = await page.evaluate(() =>
+    JSON.parse(document.querySelector('.chat-workbench-session.selected').getAttribute('data-session-key')));
+  const emit = (id, names) => page.evaluate(([account_id, usernames]) => {
+    const calls = window.__E2E__.calls;
+    const start = calls.length;
+    window.__WAKE_CHAT_EMIT__({account_id, usernames});
+    return calls.slice(start).map(call => call.command);
+  }, [id, names]);
+  const fillMessages = newest => page.evaluate(({ id, end }) => {
+    window.__E2E__.chatMessageOverrides[id] = Array.from({ length: end - 39 }, (_, index) => {
+      const local_id = end - index;
+      return {local_id,source_shard:'synthetic',time:1795000000 + local_id,sender:'tester',kind:1,text:`唤醒测试消息 ${local_id}`,is_self:false};
+    });
+  }, { id: accountId, end: newest });
+  const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))));
+  await fillMessages(99);
+  assert.deepEqual(await emit('another-account', [username]), []);
+  assert.deepEqual(await emit(accountId, ['another-conversation']), []);
+  await page.fill('.chat-workbench-head-search', '测试消息');
+  await settle();
+  assert.deepEqual(await emit(accountId, [username]), []);
+  assert.ok(await page.evaluate(() => !document.querySelector('.wxv-messages #msg-99')));
+  await page.fill('.chat-workbench-head-search', '');
+  await settle();
+  assert.deepEqual(await emit(accountId, [username]), ['wechat_messages']);
+  await page.waitForSelector('.wxv-messages #msg-99');
+  assert.ok(await page.evaluate(() => document.querySelector('.wxv-messages').textContent.includes('唤醒测试消息 99')));
+
+  const rowOffset = () => page.evaluate(() => {
+    const root = document.querySelector('.wxv-messages');
+    return document.querySelector('#msg-70').getBoundingClientRect().top - root.getBoundingClientRect().top;
+  });
+  await page.evaluate(() => document.querySelector('#msg-70').scrollIntoView({block:'center',behavior:'instant'}));
+  await settle();
+  const previousOffset = await rowOffset();
+  await fillMessages(100);
+  assert.deepEqual(await emit(accountId, [username]), ['wechat_messages']);
+  await page.waitForSelector('.wxv-messages #msg-100');
+  assert.ok(Math.abs(await rowOffset() - previousOffset) <= 2, 'late messages preserve the visible history position');
+  return 'PASS wake chat refresh: scoped to the open conversation, preserves search and scroll, reads local messages only';
 }
 
 export async function runChatMessageRetryUiE2E(task, base, pageLabel = 'p1') {
@@ -812,6 +859,111 @@ export async function runChatMessageRetryUiE2E(task, base, pageLabel = 'p1') {
   await page.waitForSelector('.wxv-messages #msg-10');
   assert.ok(!await page.evaluate(() => Boolean(document.querySelector('.wxv-toast.error'))), 'a successful retry clears the previous refresh error');
   return 'PASS chat message retry: recover messages and dismiss the old error';
+}
+
+export async function runChatPreviewConsistencyUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const refresh = '.chat-workbench-refresh';
+  const selectedPreview = '.chat-workbench-session.selected small';
+  const readPreview = () => page.evaluate(selector => document.querySelector(selector)?.textContent, selectedPreview);
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  const initial = await page.evaluate(() => document.querySelector('.wxv-messages #msg-1 .wxv-bubble').textContent);
+  await page.evaluate(() => {
+    const state = window.__E2E__;
+    state.chatSessionPreviews['e2e-wechat-chat-0'] = {preview:'侧边索引独有的消息',last_time:1795000600};
+    state.chatMessageOverrides['e2e-wechat'] = [{local_id:15,source_shard:'synthetic',time:1795000300,sender:'tester',kind:1,text:'正文已读到新消息',is_self:false}];
+    state.chatLatestPaused = true;
+  });
+  await page.click(refresh, {label:'刷新，延迟正文读取'});
+  await page.waitForFunction(() => window.__E2E__.chatLatestResolvers.length === 1);
+  const pendingPreview = await readPreview();
+  await page.evaluate(() => {
+    window.__E2E__.chatLatestPaused = false;
+    window.__E2E__.chatLatestResolvers.shift()();
+  });
+  await page.waitForSelector('.wxv-messages #msg-15');
+  assert.equal(pendingPreview, initial, 'while the body is loading, keep the preview of the message still on screen');
+  assert.equal(await readPreview(), '正文已读到新消息', 'the newest readable message replaces an inconsistent index preview');
+  await page.evaluate(() => {
+    window.__E2E__.chatSessionPreviews['e2e-wechat-chat-0'].preview = null;
+    window.__E2E__.chatMessagesError = '临时消息读取失败（模拟）';
+  });
+  await page.click(refresh, {label:'刷新，模拟正文读取失败'});
+  await page.waitForSelector('.wxv-toast.error');
+  assert.equal(await readPreview(), '正文已读到新消息', 'a failed refresh keeps the previous preview and body together');
+  await page.waitForSelector('.wxv-messages #msg-15');
+  await page.evaluate(() => {
+    const state = window.__E2E__;
+    state.chatMessagesError = '';
+    state.chatMessageOverrides['e2e-wechat'] = [{local_id:16,source_shard:'synthetic',time:1795000100,sender:'tester',kind:1,text:'快照更换后的可读消息',is_self:false}];
+  });
+  await page.click(refresh, {label:'刷新，侧边索引无预览而正文有记录'});
+  await page.waitForSelector('.wxv-messages #msg-16');
+  assert.equal(await readPreview(), '快照更换后的可读消息', 'a missing index preview is filled from the committed body');
+  assert.ok(!await page.evaluate(() => document.querySelector('.wxv-messages #msg-15')), 'the replaced window does not retain a newer row that is absent in the source');
+  return 'PASS chat preview consistency: sidebar ahead or empty, delayed or failed reads, and snapshot replacement';
+}
+
+export async function runConversationSearchCycleUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  const field = '.chat-workbench-head-search';
+  const marks = '.wxv-messages mark';
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForSelector('.wxv-messages #msg-1');
+  await page.evaluate(() => {
+    window.__E2E__.chatMessageOverrides['e2e-wechat'] = Array.from({length:40}, (_, index) => {
+      const id = 50 - index;
+      const text = id === 12 ? '关键词 关键词' : id === 32 ? '第三处关键词' : id === 48 ? '末尾关键词' : '其他消息';
+      return {local_id:id,source_shard:'synthetic',time:1795000000+id,sender:'tester',kind:1,text,is_self:false};
+    });
+  });
+  await page.click('.chat-workbench-refresh', {label:'加载有重复关键词的模拟会话'});
+  await page.waitForSelector('.wxv-messages #msg-50');
+  await page.fill(field, '关键词');
+  await page.waitForFunction(selector => document.querySelectorAll(selector).length === 4, marks);
+  const current = () => page.evaluate(selector => {
+    const index = [...document.querySelectorAll(selector)].findIndex(node => node.getAttribute('aria-current') === 'true');
+    return index;
+  }, marks);
+  assert.equal(await current(), 0, 'the first occurrence is active when a query finds matches');
+  for (const index of [1, 2, 3, 0]) {
+    await page.press(field, 'Enter');
+    assert.equal(await current(), index);
+    assert.ok(await page.evaluate(selector => {
+      const bounds = document.querySelector(selector + '[aria-current="true"]').getBoundingClientRect();
+      const pane = document.querySelector('.wxv-messages').getBoundingClientRect();
+      return document.activeElement.matches('.chat-workbench-head-search') && bounds.top >= pane.top && bounds.bottom <= pane.bottom;
+    }, marks), 'the active occurrence is visible and the input keeps keyboard focus');
+  }
+  await page.evaluate(selector => document.querySelector(selector).dispatchEvent(new KeyboardEvent('keydown', {
+    key:'Enter', isComposing:true, bubbles:true,
+  })), field);
+  assert.equal(await current(), 0, 'committing an IME composition does not advance');
+  await page.fill(field, '末尾');
+  await page.waitForFunction(selector => document.querySelector(selector + '[aria-current="true"]')?.textContent === '末尾', marks);
+  await page.press(field, 'Enter');
+  assert.equal(await current(), 0, 'one match wraps to itself');
+  await page.click('.wxv-filterbar button', {label:'取消本次会话搜索'});
+  assert.equal(await page.evaluate(selector => document.querySelector(selector).value, field), '');
+  await page.waitForFunction(selector => !document.querySelector(selector), marks);
+  await page.evaluate(() => {
+    window.__E2E__.chatMessageOverrides['e2e-wechat'] = Array.from({length:120}, (_, index) => {
+      const id = 250 - index;
+      return {local_id:id,source_shard:'synthetic',time:1795000000+id,sender:'tester',kind:1,text:id === 132 || id === 143 ? '历史记录命中' : '近期消息',is_self:false};
+    });
+  });
+  await page.click('.chat-workbench-refresh', {label:'载入需要翻历史页才能命中的会话'});
+  await page.waitForSelector('.wxv-messages #msg-250');
+  assert.ok(!await page.evaluate(() => document.querySelector('.wxv-messages #msg-143')));
+  await page.fill(field, '历史记录命中');
+  await page.waitForFunction(selector => document.querySelectorAll(selector).length === 2, marks);
+  assert.equal(await current(), 0);
+  await page.press(field, 'Enter');
+  assert.equal(await current(), 1);
+  await page.press(field, 'Enter');
+  assert.equal(await current(), 0);
+  return 'PASS in-chat search: individual matches, Enter wraparound, retained focus, IME, reset and older messages';
 }
 
 export async function runChatRefreshPagingUiE2E(task, base, pageLabel = 'p1') {

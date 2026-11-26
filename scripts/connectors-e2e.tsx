@@ -37,6 +37,7 @@ const state = {
  permission:query.get('permission')!=='denied', keys:query.has('fresh')?0:1,
  capture, failNextSave:false, saveDelay:0, opened:0, whatsappError:'', accounts,
  chatPageError:'', chatPageAccount:'', chatBadgeDelay:0,
+ chatSessionPreviews:{} as Record<string,{preview:string|null;last_time:number}>,
  chatMessageOverrides:{} as Record<string,any[]>,
  chatMessagesError:'', chatOlderPaused:false, chatOlderResolvers:[] as Array<()=>void>,
  chatLatestPaused:false, chatLatestResolvers:[] as Array<()=>void>,
@@ -59,7 +60,13 @@ const state = {
 };
 Object.assign(window,{__E2E__:state,isTauri:true});
 const callbacks = new Map<number,Function>();const eventHandlers = new Map<string,number[]>();let callbackId=0;
-Object.assign(window,{__TASK_EMIT__:()=>{for(const id of eventHandlers.get('task-runtime')??[]) callbacks.get(id)?.({event:'task-runtime',id,payload:structuredClone(state.runtime)});}});
+function emitFixtureEvent<T>(event: string, payload: T) {
+  for (const id of eventHandlers.get(event) ?? []) callbacks.get(id)?.({ event, id, payload: structuredClone(payload) });
+}
+Object.assign(window, {
+  __TASK_EMIT__: () => emitFixtureEvent('task-runtime', state.runtime),
+  __WAKE_CHAT_EMIT__: (payload: {account_id: string; usernames: string[]}) => emitFixtureEvent('wake-chat-messages-ready', payload),
+});
 Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},__TAURI_INTERNALS__:{
  metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},
  transformCallback(fn:Function){const id=++callbackId;callbacks.set(id,fn);return id;},
@@ -234,7 +241,8 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
    case 'wechat_session_catalog':return catalog(args.accountId);
    case 'chat_sessions':{
     if(args.offset&&state.chatPageError&&args.accountId===state.chatPageAccount)throw state.chatPageError;
-    const all=state.keys||args.accountId===wa?catalog(args.accountId).filter(s=>(state.settings.chat.allowed_usernames[args.accountId]??[]).includes(s.username)):[];
+    const all=state.keys||args.accountId===wa?catalog(args.accountId).filter(s=>(state.settings.chat.allowed_usernames[args.accountId]??[]).includes(s.username))
+      .map(session=>({...session,...state.chatSessionPreviews[session.username]})):[];
     if(args.focusUsername)return all.filter(s=>s.username===args.focusUsername);
     if(args.focusUsernames)return all.filter(s=>args.focusUsernames.includes(s.username));
     return all.slice(args.offset??0,(args.offset??0)+(args.limit??50));

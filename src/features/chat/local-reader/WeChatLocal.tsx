@@ -27,6 +27,7 @@ import { LoadingSkeleton } from '../../../shared/ui/LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import './wechat.css';
 import { Icons } from '../../../shared/ui/icons';
@@ -97,6 +98,22 @@ function messageKey(username: string, message: MessageItem): string {
   return `${username}:${message.source_shard}:${message.local_id}:${message.time}`;
 }
 
+// Match the native cursor order when keeping history behind a fresh page.
+function isOlderMessage(message: MessageItem, end: MessageItem): boolean {
+  if (message.time !== end.time) return message.time < end.time;
+  if (message.local_id !== end.local_id) return message.local_id < end.local_id;
+  return message.source_shard < end.source_shard;
+}
+
+function mergeLatestPage(username: string, latest: MessageItem[], previous: MessageItem[]): MessageItem[] {
+  if (latest.length < PAGE) return latest;
+  const keys = new Set(latest.map(message => messageKey(username, message)));
+  // A disconnected old page leaves a gap; refetch it through normal pagination.
+  if (!previous.some(message => keys.has(messageKey(username, message)))) return latest;
+  const end = latest[latest.length - 1];
+  return [...latest, ...previous.filter(message => isOlderMessage(message, end))];
+}
+
 function isPlaceholder(text: string): boolean {
   return text.startsWith('[') && text.endsWith(']');
 }
@@ -146,12 +163,15 @@ export default function WeChatLocal({
   focusConversation,
   focusMessageId,
   searchKeyword = '',
+  searchAdvance = 0,
   onClearSearch,
   sessionRevision = 0,
   messageRevision = 0,
+  refreshOnWake = false,
   accountId: pinnedAccountId,
   accountDisplay,
   onChatState,
+  onLatestMessage,
   onSummarySelection,
   onSummarizeSelection,
 }: {
@@ -170,14 +190,18 @@ export default function WeChatLocal({
   focusMessageId?: string | number | null;
   /** Keyword typed in the embedding page's header. Highlights matches in the open chat. */
   searchKeyword?: string;
+  searchAdvance?: number;
   onClearSearch?: () => void;
   sessionRevision?: number;
   messageRevision?: number;
+  refreshOnWake?: boolean;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
   accountDisplay?: string | null;
   /** Reports loaded and selected messages to the page-level actions. */
   onChatState?: (state: { active: boolean; messages: number; selected: number; agentReady: boolean; agentName: string; agentModel: string }) => void;
+  /** Only the newest unfiltered page can change the embedding sidebar's preview. */
+  onLatestMessage?: (accountId: string, username: string, message: MessageItem | null) => void;
   onSummarySelection?: (messages: import('../summary/summaryInput').SummaryMessage[]) => void;
   onSummarizeSelection?: () => void;
 } = {}) {
@@ -203,13 +227,14 @@ export default function WeChatLocal({
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [localMissing, setLocalMissing] = useState<string | null>(null);
   /** Keyword from the embedding page's header, used for in-conversation search. */
-  const [inlineKeyword, setInlineKeyword] = useState('');
   const messagesRef = useRef<MessageItem[]>([]);
   const recentMessages = useRef(new Map<string, { messages: MessageItem[]; hasMore: boolean }>());
   const sessionRequest = useRef(0);
   const messageRefreshRequest = useRef<number | null>(null);
   const [refreshingMessages, setRefreshingMessages] = useState(false);
   const deepSearchKey = useRef('');
+  const searchCursor = useRef<{ scope: string; node: HTMLElement | null; request: number }>({ scope: '', node: null, request: 0 });
+  const [searchPosition, setSearchPosition] = useState({ current: 0, total: 0 });
   /** Real avatars by WeChat username; a missing entry keeps the letter avatar. */
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const avatarAsked = useRef<Set<string>>(new Set());
@@ -259,10 +284,16 @@ export default function WeChatLocal({
   const followNewest = useRef(true);
   const activeRef = useRef<string | null>(null);
   const scrollIntent = useRef<'bottom' | 'preserve'>('bottom');
-  const scrollSnapshot = useRef<{ top: number; height: number } | null>(null);
+  const scrollSnapshot = useRef<{
+    top: number;
+    height: number;
+    anchor?: { row: HTMLElement; top: number } | null;
+  } | null>(null);
   const pendingHighlight = useRef<string>('');
   const pendingFocusMessage = useRef<string>('');
   const syncLock = useRef(false);
+  const wakeRefreshAllowed = useRef(false);
+  wakeRefreshAllowed.current = refreshOnWake && wechatEnabled && !searchKeyword.trim();
   const clearingRef = useRef(false);
   const [loadSeq, setLoadSeq] = useState(0);
 
@@ -400,35 +431,34 @@ export default function WeChatLocal({
     if (sessionRevision > 0 && accountId) void loadSessions(accountId);
   }, [sessionRevision, accountId, loadSessions]);
 
-  const refreshMessageWindow = useCallback(async (id: string, username: string | null) => {
+  const refreshMessageWindow = useCallback(async (id: string, username: string | null, canApplyWakeRefresh?: () => boolean) => {
     if (!username || readerAccount.current !== id || activeRef.current !== username) return true;
     const request = ++sessionRequest.current;
     const currentRequest = () => request === sessionRequest.current && readerAccount.current === id
-      && activeRef.current === username && !clearingRef.current;
+      && activeRef.current === username && !clearingRef.current
+      && (!focusConversationRef.current || focusConversationRef.current === username);
     messageRefreshRequest.current = request;
     setRefreshingMessages(true);
     try {
       const latest = await invoke<MessageItem[]>('wechat_messages', { accountId: id, username, limit: PAGE, includeAttachments: true });
-      if (!currentRequest()) return true;
+      if (!currentRequest() || canApplyWakeRefresh?.() === false) return true;
       const root = messageRef.current;
       scrollIntent.current = followNewest.current ? 'bottom' : 'preserve';
       scrollSnapshot.current = root ? { top: root.scrollTop, height: root.scrollHeight } : null;
-      setMessages(current => {
-        const key = (message: MessageItem) => `${message.source_shard}:${message.local_id}:${message.time}`;
-        const keys = new Set(latest.map(key));
-        const overlaps = current.some(message => keys.has(key(message)));
-        // Retain older loaded pages when they adjoin the refreshed page.
-        const merged = latest.length < PAGE || overlaps
-          ? [...latest, ...current.filter(message => !keys.has(key(message)))]
-          : latest;
-        return merged.slice(0, 200);
-      });
+      if (root && scrollSnapshot.current && canApplyWakeRefresh && !followNewest.current) {
+        const viewportTop = root.getBoundingClientRect().top;
+        const row = Array.from(root.querySelectorAll<HTMLElement>('.wxv-msg'))
+          .find(message => message.getBoundingClientRect().bottom > viewportTop);
+        scrollSnapshot.current.anchor = row ? { row, top: row.getBoundingClientRect().top } : null;
+      }
+      setMessages(current => mergeLatestPage(username, latest, current).slice(0, 200));
       setLocalMissing(null);
-      setHasMore(current => current || latest.length >= PAGE);
+      setHasMore(latest.length >= PAGE);
+      onLatestMessage?.(id, username, latest[0] ?? null);
       setMessageRefreshError(null);
       return true;
     } catch (reason) {
-      if (!currentRequest()) return true;
+      if (!currentRequest() || canApplyWakeRefresh?.() === false) return true;
       setMessageRefreshError({ accountId: id, username, message: tf("刷新会话失败：{0}", errorText(reason)) });
       return false;
     } finally {
@@ -438,7 +468,7 @@ export default function WeChatLocal({
       }
       if (currentRequest()) setBusy(current => current === 'messages' ? null : current);
     }
-  }, []);
+  }, [onLatestMessage]);
 
   const appliedMessageRevision = useRef(messageRevision);
   useEffect(() => {
@@ -446,6 +476,25 @@ export default function WeChatLocal({
     appliedMessageRevision.current = messageRevision;
     void refreshMessageWindow(accountId, activeRef.current);
   }, [messageRevision, accountId, refreshMessageWindow]);
+
+  useEffect(() => {
+    if (!refreshOnWake || !isTauri()) return;
+    let active = true;
+    let unsubscribe: (() => void) | undefined;
+    const canApply = () => active && wakeRefreshAllowed.current && !clearingRef.current && !accountSwitchLock.current;
+    void listen<{ account_id: string; usernames: string[] }>('wake-chat-messages-ready', ({ payload }) => {
+      const username = activeRef.current;
+      if (!canApply() || !username || !payload.usernames.includes(username)) return;
+      void refreshMessageWindow(payload.account_id, username, canApply);
+    }).then(unlisten => {
+      if (active) unsubscribe = unlisten;
+      else unlisten();
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [refreshOnWake, refreshMessageWindow]);
 
   const syncLatest = useCallback(async () => {
     if (!account || !wechatEnabled || syncLock.current || accountSwitchLock.current || clearingRef.current) return;
@@ -668,6 +717,9 @@ export default function WeChatLocal({
       setMobilePane('chat');
       setBusy('messages');
       setLoadSeq(seq => seq + 1);
+      const currentRequest = () => request === sessionRequest.current && readerAccount.current === account.id
+        && activeRef.current === session.username && !clearingRef.current
+        && (!focusConversationRef.current || focusConversationRef.current === session.username);
       try {
         let list = await invoke<MessageItem[]>('wechat_messages', {
           accountId: account.id,
@@ -675,6 +727,7 @@ export default function WeChatLocal({
           limit: PAGE,
           includeAttachments: true,
         });
+        const newest = list[0] ?? null;
         // A keyword hit can be older than the first page; pull more pages so the
         // highlighted message is actually on screen instead of silently missing. Twelve
         // pages covers ~1200 recent messages, which keeps the search responsive while
@@ -696,28 +749,35 @@ export default function WeChatLocal({
           if (!page.length) break;
           list = [...list, ...page];
         }
-        if (request !== sessionRequest.current || activeRef.current !== session.username) return;
+        if (!currentRequest()) return;
         const root = messageRef.current;
         if (cached && root && !followNewest.current) {
           scrollIntent.current = 'preserve';
           scrollSnapshot.current = { top: root.scrollTop, height: root.scrollHeight };
         }
-        const keys = new Set(list.map(message => `${message.source_shard}:${message.local_id}:${message.time}`));
-        const overlaps = cached?.messages.some(message => keys.has(`${message.source_shard}:${message.local_id}:${message.time}`));
-        const merged = cached && !keyword && focusMessageId == null && (list.length < PAGE || overlaps)
-          ? [...list, ...cached.messages.filter(message => !keys.has(`${message.source_shard}:${message.local_id}:${message.time}`))]
-          : list;
+        const merged = cached && !keyword && focusMessageId == null
+          ? mergeLatestPage(session.username, list, cached.messages) : list;
         setMessages(keyword ? merged.slice(-200) : merged.slice(0, 200));
-        setHasMore(Boolean(cached?.hasMore) || list.length >= PAGE);
+        setHasMore(page.length >= PAGE);
+        onLatestMessage?.(account.id, session.username, newest);
         pendingHighlight.current = keyword;
-      pendingFocusMessage.current = focusMessageId == null ? '' : String(focusMessageId);
+        pendingFocusMessage.current = focusMessageId == null ? '' : String(focusMessageId);
       } catch (e) {
-        if (request === sessionRequest.current && activeRef.current === session.username) { if (String(e).startsWith('LOCAL_CHAT_MISSING:')) setLocalMissing(session.username); else setError(String(e)); }
+        if (!currentRequest()) return;
+        if (String(e).startsWith('LOCAL_CHAT_MISSING:')) {
+          recentMessages.current.delete(cacheKey);
+          setMessages([]);
+          setHasMore(false);
+          setLocalMissing(session.username);
+          onLatestMessage?.(account.id, session.username, null);
+        } else {
+          setError(String(e));
+        }
       } finally {
-        if (request === sessionRequest.current && activeRef.current === session.username) setBusy(null);
+        if (currentRequest()) setBusy(null);
       }
     },
-    [account, resetMessageRefresh],
+    [account, onLatestMessage, resetMessageRefresh],
   );
 
   useEffect(() => {
@@ -924,7 +984,10 @@ export default function WeChatLocal({
       }
     }
     if (scrollIntent.current === 'preserve' && scrollSnapshot.current) {
-      root.scrollTop = scrollSnapshot.current.top + root.scrollHeight - scrollSnapshot.current.height;
+      const { top, height, anchor } = scrollSnapshot.current;
+      if (anchor === undefined) root.scrollTop = top + root.scrollHeight - height;
+      else if (anchor && root.contains(anchor.row)) root.scrollTop += anchor.row.getBoundingClientRect().top - anchor.top;
+      else root.scrollTop = top;
     } else { followNewest.current = true; root.scrollTop = root.scrollHeight; }
     scrollSnapshot.current = null;
   }, [messages, loadSeq]);
@@ -1049,7 +1112,6 @@ export default function WeChatLocal({
   // when the loaded window has none, pull older pages for this keyword exactly once.
   useEffect(() => {
     const keyword = searchKeyword.trim();
-    setInlineKeyword(keyword);
     if (!keyword || !active) {
       deepSearchKey.current = '';
       return;
@@ -1059,13 +1121,7 @@ export default function WeChatLocal({
     const timer = window.setTimeout(() => {
       if (deepSearchKey.current === key) return;
       deepSearchKey.current = key;
-      if (messagesRef.current.some(message => contains(message.text, keyword))) {
-        pendingHighlight.current = keyword;
-        const root = messageRef.current;
-        const hit = root?.querySelector<HTMLElement>('[data-hit="true"]');
-        hit?.scrollIntoView({ block: 'center' });
-        return;
-      }
+      if (messagesRef.current.some(message => contains(message.text, keyword))) return;
       void openSession(active, keyword);
     }, 320);
     return () => window.clearTimeout(timer);
@@ -1565,7 +1621,31 @@ export default function WeChatLocal({
     if (!search || !active) return '';
     return search.hits.some(hit => hit.username === active.username) ? search.keyword : '';
   }, [search, active]);
+  const inlineKeyword = active && (!focusConversation || focusConversation === active.username) ? searchKeyword.trim() : '';
   const highlightKeyword = inlineKeyword || searchHighlight;
+  const searchScope = inlineKeyword ? JSON.stringify([accountId, active?.username, inlineKeyword]) : '';
+  useLayoutEffect(() => {
+    const cursor = searchCursor.current;
+    // The rendered marks are in reading order, including repeated hits in one bubble.
+    const root = messageRef.current;
+    const hits = searchScope && root ? Array.from(root.querySelectorAll<HTMLElement>('[data-hit="true"] mark')) : [];
+    const sameSearch = cursor.scope === searchScope;
+    const last = sameSearch && cursor.node ? hits.indexOf(cursor.node) : -1;
+    const steps = sameSearch ? searchAdvance - cursor.request : 0;
+    const next = hits.length ? (last < 0 ? 0 : (last + steps) % hits.length) : -1;
+    const node = hits[next] ?? null;
+    if (cursor.node !== node) {
+      cursor.node?.removeAttribute('aria-current');
+      node?.setAttribute('aria-current', 'true');
+    }
+    if (node && (!sameSearch || cursor.node !== node || steps > 0)) {
+      followNewest.current = false;
+      node.scrollIntoView({ block: 'center', inline: 'nearest' });
+    }
+    searchCursor.current = { scope: searchScope, node, request: searchAdvance };
+    setSearchPosition(position => position.current === next + 1 && position.total === hits.length
+      ? position : { current: next + 1, total: hits.length });
+  }, [searchScope, searchAdvance, messages]);
   const highlightHits = useMemo(
     () => (highlightKeyword ? messages.filter(message => contains(message.text, highlightKeyword)).length : 0),
     [messages, highlightKeyword],
@@ -1730,8 +1810,9 @@ export default function WeChatLocal({
         if (system) {
           return (
             <div
-              key={`${message.local_id}-${message.time}`}
+              key={messageKey(active?.username ?? '', message)}
               className={`wxv-system ${selected ? 'selected' : ''}`}
+              data-hit={hit ? 'true' : 'false'}
               onClick={event => {
                 // A hit on the image opens the full-size copy even when the nested button
                 // does not receive the click itself (WebKit hit-testing on the bubble).
@@ -1755,14 +1836,14 @@ export default function WeChatLocal({
             >
               {divider && <div className="wxv-divider">{divider}</div>}
               {stamp && <div className="wxv-divider">{stamp}</div>}
-              <span>{message.text}</span>
+              <span><Highlight text={message.text} keyword={highlightKeyword} /></span>
             </div>
           );
         }
         const avatar = messageAvatar(message, active, accountId, accountDisplay);
         const sender = isWhatsApp && active?.is_group ? avatar.username : message.sender;
         return (
-          <div key={`${message.local_id}-${message.time}`}>
+          <div key={messageKey(active?.username ?? '', message)}>
             {divider && <div className="wxv-divider">{divider}</div>}
             {stamp && <div className="wxv-divider wxv-stamp">{stamp}</div>}
             <div
@@ -1814,9 +1895,7 @@ export default function WeChatLocal({
                   <span className="wxv-sender">{message.is_self ? t("我") : (message.sender_name || sender || t("未知成员"))}{onChatState && <time className="wxv-message-time">{message.time > 0 ? new Date(message.time * 1000).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>}</span>
                 )}
                 <div className={`wxv-bubble ${imageMessage || videoMessage || whatsappMedia ? 'image-only' : ''} ${voiceMessage ? 'voice-only' : ''} ${placeholder ? 'media' : ''} ${media ? 'media' : ''} ${hit ? 'hit' : ''}`}>
-                  {imageMessage || voiceMessage || videoMessage || whatsappMedia ? null : placeholder ? (
-                    message.text
-                  ) : (
+                  {imageMessage || voiceMessage || videoMessage || whatsappMedia ? null : (
                     <Highlight text={message.text} keyword={highlightKeyword} />
                   )}
                   {whatsappMedia && <WhatsAppAttachment
@@ -1955,14 +2034,15 @@ export default function WeChatLocal({
 
         {highlightKeyword && (
           <div className="wxv-filterbar">
-            {highlightHits
-              ? tf("正在高亮「{0}」的 {1} 处命中", highlightKeyword, highlightHits)
-              : tf("「{0}」在当前记录中没有命中，已尝试向前加载更多消息", highlightKeyword)}
+            <span role="status">{inlineKeyword && searchPosition.total
+              ? tf("「{0}」 · {1}/{2} · Enter 跳到下一处", inlineKeyword, searchPosition.current, searchPosition.total)
+              : !inlineKeyword && highlightHits
+                ? tf("正在高亮「{0}」的 {1} 处命中", highlightKeyword, highlightHits)
+                : tf("「{0}」在当前记录中没有命中，已尝试向前加载更多消息", highlightKeyword)}</span>
             <button
               type="button"
               className="wxv-link"
               onClick={() => {
-                setInlineKeyword('');
                 clearSearch();
                 onClearSearch?.();
               }}
