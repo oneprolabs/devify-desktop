@@ -56,6 +56,15 @@ pub fn schedule_allows(backup: &BackupSettings, weekday: u32, minute: u32) -> bo
     }
 }
 
+pub(super) fn automatic_allowed_now(backup: &BackupSettings, now: DateTime<Local>) -> bool {
+    backup.mode != "manual"
+        && schedule_allows(
+            backup,
+            now.weekday().num_days_from_monday(),
+            clock_minutes(now),
+        )
+}
+
 /// True when the scheduler should start a run now.
 ///
 /// ``interval`` mode compares against the last run, ``times`` mode catches up to the newest
@@ -67,10 +76,7 @@ pub fn due(
     last_run: Option<DateTime<Local>>,
     now: DateTime<Local>,
 ) -> bool {
-    if backup.mode == "manual" {
-        return false;
-    }
-    if !schedule_allows(backup, now.weekday().num_days_from_monday(), clock_minutes(now)) {
+    if !automatic_allowed_now(backup, now) {
         return false;
     }
     match backup.mode.as_str() {
@@ -173,6 +179,20 @@ mod tests {
         assert!(due(&backup, 1800, None, at(12, 0)));
         assert!(!due(&backup, 1800, Some(at(11, 45)), at(12, 0)));
         assert!(due(&backup, 1800, Some(at(11, 30)), at(12, 0)));
+    }
+
+    #[test]
+    fn wake_scan_completion_restarts_the_interval_and_preserves_later_daily_slots() {
+        let completed_at = at(10, 20);
+        let interval = BackupSettings::default();
+        assert!(!due(&interval, 1800, Some(completed_at), at(10, 49)));
+        assert!(due(&interval, 1800, Some(completed_at), at(10, 50)));
+        assert!(!due(&interval, 300, Some(completed_at), at(10, 24)));
+        assert!(due(&interval, 300, Some(completed_at), at(10, 25)));
+
+        let daily = times(&["09:00", "18:00"]);
+        assert!(!due(&daily, 1800, Some(completed_at), at(17, 59)));
+        assert!(due(&daily, 1800, Some(completed_at), at(18, 0)));
     }
 
     #[test]

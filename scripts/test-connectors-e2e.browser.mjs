@@ -796,6 +796,52 @@ export async function runChatRefreshUiE2E(task, base = 'http://127.0.0.1:1437', 
   return 'PASS chat refresh: prominent key recovery, preserved setup and selection, retry with collapsed diagnostics, refreshed WeChat messages, WhatsApp local reload';
 }
 
+export async function runWakeChatRefreshUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat`);
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('的测试消息'));
+  const [accountId, username] = await page.evaluate(() =>
+    JSON.parse(document.querySelector('.chat-workbench-session.selected').getAttribute('data-session-key')));
+  const emit = (id, names) => page.evaluate(([account_id, usernames]) => {
+    const calls = window.__E2E__.calls;
+    const start = calls.length;
+    window.__WAKE_CHAT_EMIT__({account_id, usernames});
+    return calls.slice(start).map(call => call.command);
+  }, [id, names]);
+  const fillMessages = newest => page.evaluate(({ id, end }) => {
+    window.__E2E__.chatMessageOverrides[id] = Array.from({ length: end - 39 }, (_, index) => {
+      const local_id = end - index;
+      return {local_id,source_shard:'synthetic',time:1795000000 + local_id,sender:'tester',kind:1,text:`唤醒测试消息 ${local_id}`,is_self:false};
+    });
+  }, { id: accountId, end: newest });
+  const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))));
+  await fillMessages(99);
+  assert.deepEqual(await emit('another-account', [username]), []);
+  assert.deepEqual(await emit(accountId, ['another-conversation']), []);
+  await page.fill('.chat-workbench-head-search', '测试消息');
+  await settle();
+  assert.deepEqual(await emit(accountId, [username]), []);
+  assert.ok(await page.evaluate(() => !document.querySelector('.wxv-messages #msg-99')));
+  await page.fill('.chat-workbench-head-search', '');
+  await settle();
+  assert.deepEqual(await emit(accountId, [username]), ['wechat_messages']);
+  await page.waitForSelector('.wxv-messages #msg-99');
+  assert.ok(await page.evaluate(() => document.querySelector('.wxv-messages').textContent.includes('唤醒测试消息 99')));
+
+  const rowOffset = () => page.evaluate(() => {
+    const root = document.querySelector('.wxv-messages');
+    return document.querySelector('#msg-70').getBoundingClientRect().top - root.getBoundingClientRect().top;
+  });
+  await page.evaluate(() => document.querySelector('#msg-70').scrollIntoView({block:'center',behavior:'instant'}));
+  await settle();
+  const previousOffset = await rowOffset();
+  await fillMessages(100);
+  assert.deepEqual(await emit(accountId, [username]), ['wechat_messages']);
+  await page.waitForSelector('.wxv-messages #msg-100');
+  assert.ok(Math.abs(await rowOffset() - previousOffset) <= 2, 'late messages preserve the visible history position');
+  return 'PASS wake chat refresh: scoped to the open conversation, preserves search and scroll, reads local messages only';
+}
+
 export async function runChatMessageRetryUiE2E(task, base, pageLabel = 'p1') {
   const page = task.page(pageLabel);
   const refresh = '.chat-workbench-refresh';

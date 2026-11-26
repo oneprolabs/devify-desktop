@@ -145,13 +145,23 @@ fn stale_unsent_automatic_selection_is_replanned_without_advancing_upload_progre
     assert_eq!(value.upload_queue[0].scope, old.scope);
     assert_eq!(serde_json::to_value(&value.sync).unwrap(), progress);
     assert_eq!(value.runtime.sources[&owner.account_id].scan_remaining, 1);
-    assert!(task_runtime::source_needs_execution(&value, &owner, Local::now()));
+    assert!(task_runtime::source_needs_execution(
+        &value,
+        &owner,
+        Local::now(),
+        false,
+    ));
     assert!(!task_runtime::retire_stale_plan(&mut value, &old, &owner));
     settings::save(data, &value).unwrap();
     value = settings::load(data).unwrap();
     assert_eq!(value.upload_queue[0].status, "cancelled");
     assert_eq!(serde_json::to_value(&value.sync).unwrap(), progress);
-    assert!(task_runtime::source_needs_execution(&value, &owner, Local::now()));
+    assert!(task_runtime::source_needs_execution(
+        &value,
+        &owner,
+        Local::now(),
+        false,
+    ));
     let new = plan_automatic_batch(data, &value, &owner, &["chat".into()]).unwrap().unwrap();
     assert_ne!(new.id, old.id);
     let refs = &new.scope.as_ref().unwrap().message_selection["chat"];
@@ -601,7 +611,7 @@ fn interrupted_logout_journal_is_completed_before_credentials_can_be_reused() {
 }
 
 #[test]
-fn a_late_source_error_does_not_poison_another_login_profile() {
+fn source_errors_respect_the_login_and_backup_schedule() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path();
     let owner = identity(data, 1);
@@ -609,12 +619,16 @@ fn a_late_source_error_does_not_poison_another_login_profile() {
     let revision = settings::load(data).unwrap().user_settings_revision;
     let current = identity(data, 2);
     config_runtime::activate_profile(data).unwrap();
+    let started = Local::now();
     settings::update(data, |s| {
+        s.backup.mode = "interval".into();
+        s.chat.sync_interval_seconds = 300;
         s.runtime.sources.insert(
             "local".into(),
             config_runtime::Source {
                 owner: Some(current.clone()),
                 completed: true,
+                last_run_at: Some(started.to_rfc3339()),
                 acknowledged: Some(serde_json::json!({})),
                 ..Default::default()
             },
@@ -632,37 +646,69 @@ fn a_late_source_error_does_not_poison_another_login_profile() {
     let s = settings::load(data).unwrap();
     assert!(s.runtime.sources["local"].last_error.is_none());
     assert_eq!(s.runtime.sources["local"].failures, 0);
+
+    for _ in 0..2 {
+        let error =
+            task_runtime::SourceTickError::WakeFollowUp("temporary source read failure".into());
+        task_runtime::record_source_result(data, &current, s.user_settings_revision, &Err(error))
+            .unwrap();
+    }
+    let s = settings::load(data).unwrap();
+    let source = &s.runtime.sources["local"];
+    assert!(source.last_error.is_some());
+    assert!(source.retry_after.is_none());
+    assert_eq!(source.failures, 0);
+    assert!(task_runtime::source_needs_execution(
+        &s,
+        &current,
+        started + chrono::Duration::minutes(5),
+        false,
+    ));
+
+    task_runtime::record_source_result(
+        data,
+        &current,
+        s.user_settings_revision,
+        &Err("upload failed".into()),
+    )
+    .unwrap();
+    let s = settings::load(data).unwrap();
+    assert!(s.runtime.sources["local"].retry_after.is_some());
+    assert_eq!(s.runtime.sources["local"].failures, 1);
 }
 
 #[test]
-fn an_idle_or_server_processing_source_does_not_start_local_execution() {
+fn source_execution_respects_schedule_wake_and_existing_batches() {
     let temp = tempfile::tempdir().unwrap();
     let owner = identity(temp.path(), 1);
     let mut s = settings::load(temp.path()).unwrap();
+    let now = Local::now();
     s.backup.mode = "interval".into();
     s.chat.sync_interval_seconds = 1800;
     s.runtime.sources.insert(
         owner.account_id.clone(),
         config_runtime::Source {
-            last_run_at: Some(Utc::now().to_rfc3339()),
+            last_run_at: Some(now.to_rfc3339()),
             ..Default::default()
         },
     );
     assert!(!task_runtime::source_needs_execution(
-        &s,
-        &owner,
-        Local::now()
+        &s, &owner, now, false,
     ));
+    assert!(task_runtime::source_needs_execution(&s, &owner, now, true));
+    s.backup.mode = "manual".into();
+    assert!(!task_runtime::source_needs_execution(&s, &owner, now, true));
+    s.backup.mode = "interval".into();
+    s.backup.window_enabled = true;
+    s.backup.days.clear();
+    assert!(!task_runtime::source_needs_execution(&s, &owner, now, true));
+    s.backup.window_enabled = false;
     s.runtime
         .sources
         .get_mut(&owner.account_id)
         .unwrap()
         .last_run_at = None;
-    assert!(task_runtime::source_needs_execution(
-        &s,
-        &owner,
-        Local::now()
-    ));
+    assert!(task_runtime::source_needs_execution(&s, &owner, now, false,));
     s.upload_queue.push(settings::UploadJob {
         id: "server-job".into(),
         owner: Some(owner.clone()),
@@ -671,16 +717,11 @@ fn an_idle_or_server_processing_source_does_not_start_local_execution() {
         ..Default::default()
     });
     assert!(!task_runtime::source_needs_execution(
-        &s,
-        &owner,
-        Local::now()
+        &s, &owner, now, false,
     ));
+    assert!(!task_runtime::source_needs_execution(&s, &owner, now, true));
     s.upload_queue[0].message = "上传中断，等待恢复".into();
-    assert!(task_runtime::source_needs_execution(
-        &s,
-        &owner,
-        Local::now()
-    ));
+    assert!(task_runtime::source_needs_execution(&s, &owner, now, false,));
 }
 
 #[test]
@@ -856,7 +897,12 @@ fn backup_switch_repairs_real_state_and_durably_submits_each_owned_source() {
     }).unwrap();
     let ready = settings::load(data).unwrap();
     assert!(config_runtime::ready(&ready, &owner));
-    assert!(task_runtime::source_needs_execution(&ready, &owner, Local::now()));
+    assert!(task_runtime::source_needs_execution(
+        &ready,
+        &owner,
+        Local::now(),
+        false,
+    ));
     runtime_commands::set_backup_paused(data, true).unwrap();
     let paused = settings::load(data).unwrap();
     assert!(!config_runtime::backup_enabled(&paused));

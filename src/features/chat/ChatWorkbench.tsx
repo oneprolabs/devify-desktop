@@ -644,6 +644,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           accountDisplay={connectedAccounts.find(account => account.id === accountId)?.display}
           sessionRevision={sessionRevision}
           messageRevision={messageRevisions[accountId] ?? 0}
+          refreshOnWake={visible && view === 'raw'}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
           focusMessageId={rawFocus?.messageId}
           searchKeyword={view === 'raw' ? detailQuery : ''}
