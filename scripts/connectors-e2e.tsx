@@ -60,7 +60,13 @@ const state = {
 };
 Object.assign(window,{__E2E__:state,isTauri:true});
 const callbacks = new Map<number,Function>();const eventHandlers = new Map<string,number[]>();let callbackId=0;
-Object.assign(window,{__TASK_EMIT__:()=>{for(const id of eventHandlers.get('task-runtime')??[]) callbacks.get(id)?.({event:'task-runtime',id,payload:structuredClone(state.runtime)});}});
+function emitFixtureEvent<T>(event: string, payload: T) {
+  for (const id of eventHandlers.get(event) ?? []) callbacks.get(id)?.({ event, id, payload: structuredClone(payload) });
+}
+Object.assign(window, {
+  __TASK_EMIT__: () => emitFixtureEvent('task-runtime', state.runtime),
+  __WAKE_CHAT_EMIT__: (payload: {account_id: string; usernames: string[]}) => emitFixtureEvent('wake-chat-messages-ready', payload),
+});
 Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},__TAURI_INTERNALS__:{
  metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},
  transformCallback(fn:Function){const id=++callbackId;callbacks.set(id,fn);return id;},

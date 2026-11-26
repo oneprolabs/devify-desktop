@@ -27,6 +27,7 @@ import { LoadingSkeleton } from '../../../shared/ui/LoadingSkeleton';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { desktopInvoke as invoke } from '../../../shared/api/desktopInvoke';
 import './wechat.css';
 import { Icons } from '../../../shared/ui/icons';
@@ -166,6 +167,7 @@ export default function WeChatLocal({
   onClearSearch,
   sessionRevision = 0,
   messageRevision = 0,
+  refreshOnWake = false,
   accountId: pinnedAccountId,
   accountDisplay,
   onChatState,
@@ -192,6 +194,7 @@ export default function WeChatLocal({
   onClearSearch?: () => void;
   sessionRevision?: number;
   messageRevision?: number;
+  refreshOnWake?: boolean;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
   accountDisplay?: string | null;
@@ -281,10 +284,16 @@ export default function WeChatLocal({
   const followNewest = useRef(true);
   const activeRef = useRef<string | null>(null);
   const scrollIntent = useRef<'bottom' | 'preserve'>('bottom');
-  const scrollSnapshot = useRef<{ top: number; height: number } | null>(null);
+  const scrollSnapshot = useRef<{
+    top: number;
+    height: number;
+    anchor?: { row: HTMLElement; top: number } | null;
+  } | null>(null);
   const pendingHighlight = useRef<string>('');
   const pendingFocusMessage = useRef<string>('');
   const syncLock = useRef(false);
+  const wakeRefreshAllowed = useRef(false);
+  wakeRefreshAllowed.current = refreshOnWake && wechatEnabled && !searchKeyword.trim();
   const clearingRef = useRef(false);
   const [loadSeq, setLoadSeq] = useState(0);
 
@@ -422,7 +431,7 @@ export default function WeChatLocal({
     if (sessionRevision > 0 && accountId) void loadSessions(accountId);
   }, [sessionRevision, accountId, loadSessions]);
 
-  const refreshMessageWindow = useCallback(async (id: string, username: string | null) => {
+  const refreshMessageWindow = useCallback(async (id: string, username: string | null, canApplyWakeRefresh?: () => boolean) => {
     if (!username || readerAccount.current !== id || activeRef.current !== username) return true;
     const request = ++sessionRequest.current;
     const currentRequest = () => request === sessionRequest.current && readerAccount.current === id
@@ -432,10 +441,16 @@ export default function WeChatLocal({
     setRefreshingMessages(true);
     try {
       const latest = await invoke<MessageItem[]>('wechat_messages', { accountId: id, username, limit: PAGE, includeAttachments: true });
-      if (!currentRequest()) return true;
+      if (!currentRequest() || canApplyWakeRefresh?.() === false) return true;
       const root = messageRef.current;
       scrollIntent.current = followNewest.current ? 'bottom' : 'preserve';
       scrollSnapshot.current = root ? { top: root.scrollTop, height: root.scrollHeight } : null;
+      if (root && scrollSnapshot.current && canApplyWakeRefresh && !followNewest.current) {
+        const viewportTop = root.getBoundingClientRect().top;
+        const row = Array.from(root.querySelectorAll<HTMLElement>('.wxv-msg'))
+          .find(message => message.getBoundingClientRect().bottom > viewportTop);
+        scrollSnapshot.current.anchor = row ? { row, top: row.getBoundingClientRect().top } : null;
+      }
       setMessages(current => mergeLatestPage(username, latest, current).slice(0, 200));
       setLocalMissing(null);
       setHasMore(latest.length >= PAGE);
@@ -443,7 +458,7 @@ export default function WeChatLocal({
       setMessageRefreshError(null);
       return true;
     } catch (reason) {
-      if (!currentRequest()) return true;
+      if (!currentRequest() || canApplyWakeRefresh?.() === false) return true;
       setMessageRefreshError({ accountId: id, username, message: tf("刷新会话失败：{0}", errorText(reason)) });
       return false;
     } finally {
@@ -461,6 +476,25 @@ export default function WeChatLocal({
     appliedMessageRevision.current = messageRevision;
     void refreshMessageWindow(accountId, activeRef.current);
   }, [messageRevision, accountId, refreshMessageWindow]);
+
+  useEffect(() => {
+    if (!refreshOnWake || !isTauri()) return;
+    let active = true;
+    let unsubscribe: (() => void) | undefined;
+    const canApply = () => active && wakeRefreshAllowed.current && !clearingRef.current && !accountSwitchLock.current;
+    void listen<{ account_id: string; usernames: string[] }>('wake-chat-messages-ready', ({ payload }) => {
+      const username = activeRef.current;
+      if (!canApply() || !username || !payload.usernames.includes(username)) return;
+      void refreshMessageWindow(payload.account_id, username, canApply);
+    }).then(unlisten => {
+      if (active) unsubscribe = unlisten;
+      else unlisten();
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [refreshOnWake, refreshMessageWindow]);
 
   const syncLatest = useCallback(async () => {
     if (!account || !wechatEnabled || syncLock.current || accountSwitchLock.current || clearingRef.current) return;
@@ -950,7 +984,10 @@ export default function WeChatLocal({
       }
     }
     if (scrollIntent.current === 'preserve' && scrollSnapshot.current) {
-      root.scrollTop = scrollSnapshot.current.top + root.scrollHeight - scrollSnapshot.current.height;
+      const { top, height, anchor } = scrollSnapshot.current;
+      if (anchor === undefined) root.scrollTop = top + root.scrollHeight - height;
+      else if (anchor && root.contains(anchor.row)) root.scrollTop += anchor.row.getBoundingClientRect().top - anchor.top;
+      else root.scrollTop = top;
     } else { followNewest.current = true; root.scrollTop = root.scrollHeight; }
     scrollSnapshot.current = null;
   }, [messages, loadSeq]);
