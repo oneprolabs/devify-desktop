@@ -109,9 +109,6 @@ pub fn apply(
         if pgno == 0 {
             return Err("WAL 帧页码为 0，格式不合法".into());
         }
-        if pgno == 1 {
-            return Err("遇到第 1 页的 WAL 帧，受限重放不支持该布局".into());
-        }
         let mut page = vec![0u8; page_size];
         reader
             .read_exact(&mut page)
