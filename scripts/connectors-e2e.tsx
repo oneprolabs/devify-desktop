@@ -212,6 +212,13 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     return {config:clone(state.summaryConfig),language:state.settings.language.summary==='跟随界面'?state.settings.language.ui:state.settings.language.summary,ui_language:state.settings.language.ui,instructions:state.settings.agent.instructions};
    }
    case 'summary_config_refresh':if(state.summaryConfigError)throw state.summaryConfigError;return null;
+   case 'summary_config_preview_local': {
+    const encoder = new TextEncoder();
+    const largestMessage = args.body.messages.some((message: { text: string }) => encoder.encode(message.text).length > 11000);
+    if (largestMessage) throw '单条消息超过本地单次总结范围，无法完整生成。';
+    const bytes = 1000 + args.body.messages.reduce((sum: number, message: { text: string }) => sum + 22 + encoder.encode(message.text).length, 0);
+    return { bytes, batches: Math.ceil(bytes / 12000) };
+   }
    case 'summary_task_enqueue':{
     if(state.summaryError)throw state.summaryError;
     const old=state.summaries.find(row=>row.request_key===args.body.request_key);if(old)return clone(old);

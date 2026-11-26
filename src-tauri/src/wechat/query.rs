@@ -8,6 +8,7 @@ use md5::{Digest, Md5};
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use chrono::{Local, TimeZone};
@@ -986,6 +987,28 @@ fn decode_text(raw: Option<Vec<u8>>, compression: Option<i64>) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
+fn decode_summary_text(raw: Option<Vec<u8>>, compression: Option<i64>) -> Result<String, String> {
+    // Cap expansion before allocation grows past what a single summary could use.
+    const MAX_ROW_BYTES: usize = 256 * 1024;
+    const UNREADABLE: &str = "部分本地文字无法解码，不能生成全部消息总结。";
+    let mut bytes = raw.unwrap_or_default();
+    if compression == Some(4) && !bytes.is_empty() {
+        let mut plain = Vec::new();
+        zstd::stream::read::Decoder::new(bytes.as_slice())
+            .and_then(|decoder| {
+                decoder
+                    .take((MAX_ROW_BYTES + 1) as u64)
+                    .read_to_end(&mut plain)
+            })
+            .map_err(|_| UNREADABLE)?;
+        bytes = plain;
+    }
+    if bytes.len() > MAX_ROW_BYTES {
+        return Err("本地单条消息过大，请缩小总结范围。".into());
+    }
+    String::from_utf8(bytes).map_err(|_| UNREADABLE.into())
+}
+
 /// Add a human label to already-decoded, prefix-free message body.
 fn label_text(kind: i64, body: &str) -> String {
     let base = kind & 0xFFFF_FFFF;
@@ -1217,6 +1240,27 @@ pub fn messages(
 ) -> Result<Vec<MessageItem>, String> {
     let me = self_username(cache);
     messages_inner(cache, username, limit, before, None, None, me.as_deref())
+}
+
+pub(crate) fn summary_messages(
+    cache: &Path,
+    username: &str,
+    limit: usize,
+    before: Option<MessageCursor>,
+) -> Result<Vec<MessageItem>, String> {
+    let me = self_username(cache);
+    messages_ordered(
+        cache,
+        username,
+        limit,
+        before,
+        None,
+        None,
+        me.as_deref(),
+        false,
+        None,
+        true,
+    )
 }
 
 /// IDs are only unique inside a message shard, not across a conversation.
@@ -1502,32 +1546,84 @@ fn messages_inner(
     until: Option<i64>,
     me: Option<&str>,
 ) -> Result<Vec<MessageItem>, String> {
-    messages_ordered(cache,username,limit,before,since,until,me,false,None)
+    messages_ordered(
+        cache, username, limit, before, since, until, me, false, None, false,
+    )
 }
 
-pub fn upload_page(cache: &Path, username: &str, since: i64, until: Option<i64>, after: Option<MessageCursor>, limit: usize) -> Result<Vec<MessageItem>,String> {
-    messages_ordered(cache,username,limit,after,Some(since),until.map(|v|v.saturating_sub(1)),None,true,None)
+pub fn upload_page(
+    cache: &Path,
+    username: &str,
+    since: i64,
+    until: Option<i64>,
+    after: Option<MessageCursor>,
+    limit: usize,
+) -> Result<Vec<MessageItem>, String> {
+    messages_ordered(
+        cache,
+        username,
+        limit,
+        after,
+        Some(since),
+        until.map(|v| v.saturating_sub(1)),
+        None,
+        true,
+        None,
+        false,
+    )
 }
 
-pub fn messages_selected(cache: &Path, username: &str, selected: &[crate::settings::MessageRef]) -> Result<Vec<MessageItem>,String> {
-    if selected.is_empty() {return Ok(Vec::new());}
-    if selected.len()>1000 {return Err("单批消息超过读取上限。".into());}
-    let me=self_username(cache);
-    let rows=messages_ordered(cache,username,selected.len(),None,None,None,me.as_deref(),false,Some(selected))?;
-    if rows.len()!=selected.len() {return Err("部分待上传消息已变化，请重新读取。".into());}
+pub fn messages_selected(
+    cache: &Path,
+    username: &str,
+    selected: &[crate::settings::MessageRef],
+) -> Result<Vec<MessageItem>, String> {
+    if selected.is_empty() {
+        return Ok(Vec::new());
+    }
+    if selected.len() > 1000 {
+        return Err("单批消息超过读取上限。".into());
+    }
+    let me = self_username(cache);
+    let rows = messages_ordered(
+        cache,
+        username,
+        selected.len(),
+        None,
+        None,
+        None,
+        me.as_deref(),
+        false,
+        Some(selected),
+        false,
+    )?;
+    if rows.len() != selected.len() {
+        return Err("部分待上传消息已变化，请重新读取。".into());
+    }
     Ok(rows)
 }
 
-fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<MessageCursor>,since: Option<i64>,until: Option<i64>,me: Option<&str>,ascending: bool,selected: Option<&[crate::settings::MessageRef]>) -> Result<Vec<MessageItem>,String> {
+fn messages_ordered(
+    cache: &Path,
+    username: &str,
+    limit: usize,
+    before: Option<MessageCursor>,
+    since: Option<i64>,
+    until: Option<i64>,
+    me: Option<&str>,
+    ascending: bool,
+    selected: Option<&[crate::settings::MessageRef]>,
+    strict_history: bool,
+) -> Result<Vec<MessageItem>, String> {
     let table = format!("Msg_{}", md5_hex(username));
     let limit = limit.clamp(1, 5000);
     let mut collected: Vec<MessageItem> = Vec::new();
     let mut found_table = false;
     let names = contacts(cache);
     let group = is_group_username(username);
-    // Browsing remains best-effort; upload planning and exact-selection reads
+    // Browsing remains best-effort; backup and full-history reads
     // must fail closed rather than advancing coverage over an unreadable shard.
-    let strict = ascending || selected.is_some();
+    let strict = ascending || selected.is_some() || strict_history;
     let shards = if strict { upload_message_shards(cache)? } else { message_shards(cache) };
     if let Some(selected) = selected {
         if selected.iter().any(|message| !message.source_shard.is_empty()
@@ -1569,6 +1665,9 @@ fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<Mess
         };
         let local_id = pick(&cols, &["local_id", "localId", "id"]).unwrap_or("rowid");
         let kind_col = pick(&cols, &["local_type", "type"]);
+        if strict_history && kind_col.is_none() {
+            return Err("本地消息库缺少消息类型字段。".into());
+        }
         let sender_col = pick(&cols, &["real_sender_id", "sender_id", "sender"]);
         let compress_col = pick(&cols, &["WCDB_CT_message_content", "compress_flag"]);
         let server_col = pick(&cols, &["server_id", "serverId"]);
@@ -1635,12 +1734,32 @@ fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<Mess
             Err(_) => continue,
         };
         let rows = stmt.query_map([], |row| {
-            let local: i64 = if strict { row.get(0)? } else { row.get(0).unwrap_or(0) };
-            let time: i64 = if strict { row.get(1)? } else { row.get(1).unwrap_or(0) };
-            let raw = value_to_bytes(row.get_ref(2)?).filter(|b| !b.is_empty());
-            let kind: i64 = row.get(3).unwrap_or(0);
+            let local: i64 = if strict {
+                row.get(0)?
+            } else {
+                row.get(0).unwrap_or(0)
+            };
+            let time: i64 = if strict {
+                row.get(1)?
+            } else {
+                row.get(1).unwrap_or(0)
+            };
+            let kind: i64 = if strict_history {
+                row.get(3)?
+            } else {
+                row.get(3).unwrap_or(0)
+            };
+            let raw = if strict_history && kind & 0xffff != 1 {
+                None
+            } else {
+                value_to_bytes(row.get_ref(2)?).filter(|b| !b.is_empty())
+            };
             let sender_id: Option<i64> = row.get(4).ok();
-            let compress: Option<i64> = row.get(5).ok();
+            let compress: Option<i64> = if strict_history {
+                row.get(5)?
+            } else {
+                row.get(5).ok()
+            };
             let server: i64 = row.get(6).unwrap_or(0);
             Ok((local, time, raw, kind, sender_id, compress, server))
         });
@@ -1656,7 +1775,17 @@ fn messages_ordered(cache: &Path,username: &str,limit: usize,before: Option<Mess
                 Err(_) => continue,
             };
             let stored = sender_id.and_then(|id| sender_map.get(&id).cloned());
-            let (sender, text) = prepare_text(kind, raw, compress, group, stored);
+            let (sender, text) = if strict_history {
+                let text = decode_summary_text(raw, compress)?;
+                if group {
+                    let (prefix, text) = split_sender_prefix(text);
+                    (stored.or(prefix), text)
+                } else {
+                    (stored, text)
+                }
+            } else {
+                prepare_text(kind, raw, compress, group, stored)
+            };
             let sender_name = sender.as_ref().and_then(|s| names.get(s).cloned());
             let is_self = match (sender.as_deref(), me) {
                 (Some(sender), Some(me)) => sender == me,

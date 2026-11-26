@@ -664,7 +664,89 @@ export async function runSummaryDateUiE2E(task, base = 'http://127.0.0.1:1422', 
   const picked=await submit(4);
   assert.equal(picked.body.mode,'pick');
   assert.equal(picked.body.messages.length,1);
-  console.log('PASS chat summary dates: legacy cloud guard, inclusive history, local month and custom, and selection (synthetic IPC)');
+
+  await open();
+  await page.click('loc=role:button[name="按时间周期"]');
+  await range('全部消息');
+  assert.match(await page.evaluate(()=>document.querySelector('.summary-date-feedback').textContent),/在线模型/);
+  await page.click('.summary-agent-options button:first-child');
+  assert.equal(await page.evaluate(selector=>document.querySelector(selector).disabled,generate),true);
+  await page.click(local);
+  await page.evaluate(() => {
+    const state=window.__E2E__;
+    state.chatMessageOverrides[state.settings.active_account_id]=[
+      {local_id:2,time:1735689600,kind:1,text:'new',source_shard:'synthetic'},
+      {local_id:1,time:1609459200,kind:1,text:'old',source_shard:'synthetic'},
+    ];
+    state.chatLatestPaused=true;
+  });
+  await page.click(generate);
+  await page.waitForFunction(()=>window.__E2E__.chatLatestResolvers.length === 1);
+  await page.click('.chat-summary-actions button:first-child:not(:disabled)');
+  await page.waitForSelector(`${generate}:not(:disabled)`);
+  assert.equal(await page.evaluate(()=>window.__E2E__.chatLatestResolvers.length),1,'The form unlocks even while the cancelled IPC is still in flight');
+  await page.evaluate(() => {
+    const state=window.__E2E__;
+    state.chatLatestPaused=false;
+    state.chatLatestResolvers.splice(0).forEach(resolve=>resolve());
+  });
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue').length),4,'Cancelled reading does not enqueue');
+  await page.click(generate);
+  await page.waitForFunction(()=>document.querySelector('.summary-date-value')?.textContent.includes('2 条文字'));
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue').length),4,'The full-history estimate appears before generation');
+  await page.evaluate(selector=>document.querySelector(selector).click(),generate);
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue').length),4,'A second read click cannot act as confirmation');
+  await page.click('loc=role:tab[name="原始记录"]');
+  await page.evaluate(() => { window.__E2E__.settings.language.summary='English'; });
+  await page.click('loc=css:.chat-workbench-tabs button:has-text("聊天总结")',{label:'Return to summary tab'});
+  await page.waitForFunction(()=>document.querySelector('#summary-output-language')?.value==='English');
+  assert.equal(await page.evaluate(()=>document.querySelector('.summary-all-confirm')),null,'Returning with a different default language invalidates the unsubmitted preview');
+  await page.click(generate);
+  await page.waitForSelector('.summary-all-confirm:not(:disabled)');
+  await page.evaluate(selector=>{
+    const button=document.querySelector(selector);
+    button.click();button.click();
+  },'.summary-all-confirm');
+  await page.waitForSelector('.chat-summary-cta');
+  const all=await page.evaluate(()=>window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue').slice(4));
+  assert.equal(all.length,1,'Duplicate confirmation enqueues only once');
+  assert.equal(all[0].args.engine,'local');
+  assert.equal(all[0].args.body.all_messages,true);
+  assert.equal(all[0].args.body.language,'English');
+  assert.deepEqual(all[0].args.body.messages.map(m=>m.text),['old','new']);
+  await open();
+  await page.evaluate(() => {
+    const state=window.__E2E__;
+    state.chatMessageOverrides[state.settings.active_account_id]=Array.from({length:401},(_,i)=>({
+      local_id:401-i,time:1735689600,kind:1,text:'用于测试分批',source_shard:'synthetic',
+    }));
+  });
+  await page.click(generate);
+  await page.waitForFunction(() => document.querySelector('.summary-date-value')?.textContent.includes('401 条文字消息，分 2 批'));
+  await page.click('.summary-all-confirm');
+  await page.waitForSelector('.chat-summary-cta');
+  const larger = await page.evaluate(() => window.__E2E__.calls
+    .filter(call => call.command === 'summary_task_enqueue').at(-1).args.body.messages);
+  assert.equal(larger.length, 401);
+  assert.deepEqual(larger.map(message => message.local_id), Array.from({ length: 401 }, (_, i) => i + 1));
+
+  await open();
+  await page.evaluate(() => {
+    const state = window.__E2E__;
+    state.chatMessageOverrides[state.settings.active_account_id] = [
+      { local_id: 1, time: 1735689600, kind: 1, text: '文'.repeat(4001), source_shard: 'synthetic' },
+    ];
+  });
+  await page.click(generate);
+  await page.waitForFunction(() => document.querySelector('.summary-feedback.error')?.textContent.includes('超过本地单次总结范围'));
+  await page.evaluate(() => {
+    const state=window.__E2E__;
+    state.chatMessageOverrides[state.settings.active_account_id]=[];
+  });
+  await page.click(generate);
+  await page.waitForFunction(()=>document.querySelector('.summary-feedback.error')?.textContent.includes('没有可总结'));
+  assert.equal(await page.evaluate(()=>window.__E2E__.calls.filter(call=>call.command==='summary_task_enqueue').length),6);
+  console.log('PASS chat summary dates: cloud guard, inclusive history, local date ranges and full history, selection, cancellation and duplicate confirmation (synthetic IPC)');
 }
 
 // Real React shell with synthetic IPC, not a server integration test.

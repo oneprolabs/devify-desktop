@@ -1,6 +1,63 @@
 use super::*;
 use rusqlite::Connection;
 
+#[test]
+fn summary_history_preserves_same_second_shards_and_rejects_unreadable_shards() {
+    let username = "wxid_summary";
+    let root = cache_with_messages(username, &[(1, 100)]);
+    let dir = root.join("message");
+    fs::copy(dir.join("message_0.db"), dir.join("message_1.db")).unwrap();
+    let first = query::summary_messages(&root, username, 1, None).unwrap();
+    assert_eq!(first[0].source_shard, "message_1.db");
+    let second = query::summary_messages(
+        &root,
+        username,
+        1,
+        Some(query::MessageCursor::from_message(&first[0])),
+    )
+    .unwrap();
+    assert_eq!(second[0].source_shard, "message_0.db");
+    fs::write(dir.join("message_1.db"), b"not a database").unwrap();
+    assert!(query::messages(&root, username, 100, None).is_ok());
+    let result = query::summary_messages(&root, username, 100, None);
+    let _ = fs::remove_dir_all(&root);
+    assert!(
+        result.is_err(),
+        "A full summary must not advance over an unreadable shard"
+    );
+}
+
+#[test]
+fn summary_history_reads_full_text_without_display_placeholders() {
+    let username = "wxid_summary_text";
+    let root = cache_with_messages(username, &[(1, 100), (2, 101)]);
+    let conn = Connection::open(root.join("message/message_0.db")).unwrap();
+    let table = format!("Msg_{}", query::md5_hex(username));
+    let text = format!("<msg><title>{}</title></msg>", "a".repeat(200));
+    conn.execute(
+        &format!("UPDATE {table} SET message_content=?1 WHERE local_id=1"),
+        [&text],
+    )
+    .unwrap();
+    conn.execute(
+        &format!("UPDATE {table} SET message_content=NULL WHERE local_id=2"),
+        [],
+    )
+    .unwrap();
+    let rows = query::summary_messages(&root, username, 2, None).unwrap();
+    assert_eq!(rows[0].text, "");
+    assert_eq!(rows[1].text, text);
+    conn.execute(
+        &format!("UPDATE {table} SET message_content=x'FF' WHERE local_id=1"),
+        [],
+    )
+    .unwrap();
+    let result = query::summary_messages(&root, username, 2, None);
+    drop(conn);
+    let _ = fs::remove_dir_all(&root);
+    assert!(result.is_err());
+}
+
 fn cache_with_messages(username: &str, rows: &[(i64, i64)]) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!(
         "wc-paging-test-{}-{}",

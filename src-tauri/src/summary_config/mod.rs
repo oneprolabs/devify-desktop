@@ -1,4 +1,5 @@
 //! Versioned chat-summary rules. Cache scope never grants a capability.
+pub(crate) mod batches;
 pub(crate) mod prompt;
 mod transport;
 use crate::{desktop_credentials, entitlements, settings};
@@ -80,7 +81,11 @@ pub(crate) fn scope(data: &Path) -> Result<Scope, String> {
         .filter(|id| id.parse::<i64>().is_ok_and(|id| id > 0))
         .ok_or("请先登录。")?;
     let space_id = value.devify.active_space_id.ok_or("请先选择空间。")?;
-    if space_id.len() > 128 || !space_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+    if space_id.len() > 128
+        || !space_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    {
         return Err("空间标识无效，请重新选择空间。".into());
     }
     let view = entitlements::effective(data, &server).ok_or("正在初始化账号权限，请稍后重试。")?;
@@ -227,6 +232,33 @@ pub(crate) fn summary_config_get(app: tauri::AppHandle) -> Result<serde_json::Va
 #[tauri::command]
 pub(crate) async fn summary_config_refresh(app: tauri::AppHandle) -> Result<(), String> {
     refresh(&app, true).await
+}
+
+#[derive(Serialize)]
+pub(crate) struct LocalPreview {
+    bytes: usize,
+    batches: usize,
+}
+
+/// Plan local batches before asking the user to submit them.
+#[tauri::command]
+pub(crate) async fn summary_config_preview_local(
+    app: tauri::AppHandle,
+    mut body: serde_json::Value,
+) -> Result<LocalPreview, String> {
+    let data = crate::app_data(&app);
+    let config = catalog(&data)?;
+    let language = settings::load(&data)?.language;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (_, plan) = prompt::freeze(&config, &mut body, &language, "local", true)?;
+        let plan = plan.ok_or("无法计算本地总结输入大小。")?;
+        Ok(LocalPreview {
+            bytes: plan.bytes,
+            batches: plan.ends.len(),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]

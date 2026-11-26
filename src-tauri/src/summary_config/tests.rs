@@ -133,13 +133,14 @@ fn requests_freeze_scenario_language_instructions_and_original_template() {
     assert!(prompt::freeze(&config, &mut body, &settings, "local", true).is_err());
     body["instructions"] = "  Focus on deadlines  ".into();
     body["language"] = "按原文语言".into();
-    let frozen = prompt::freeze(&config, &mut body, &settings, "local", true).unwrap();
+    let (frozen, plan) = prompt::freeze(&config, &mut body, &settings, "local", true).unwrap();
     assert_eq!(body["language"], "按原文语言");
     assert_eq!(body["instructions"], "Focus on deadlines");
     config.scenarios[4].template = "Changed later".into();
     config.version = "v8".into();
     let generated =
         prompt::local_prompt(&frozen, &body, &prompt::local_input(&body).unwrap()).unwrap();
+    assert!(plan.is_none());
     assert!(generated.starts_with("仅据资料"));
     assert!(!generated.contains("Changed later"));
     assert!(
@@ -221,6 +222,174 @@ fn summary_period_uses_local_calendar_dates_and_checks_sparse_requests() {
             .unwrap_err()
             .contains("时间范围无效"));
     }
+}
+
+#[test]
+fn all_messages_admits_long_local_history_only_and_still_checks_input() {
+    let config = fixture();
+    let settings = settings::LanguageSettings::default();
+    let mut body = input(&config, "summary");
+    body["mode"] = "time".into();
+    body["all_messages"] = true.into();
+    body["period_end"] = "2024-01-14T22:13:20Z".into();
+    body["messages"].as_array_mut().unwrap().push(json!({
+        "username":"group", "time":1705270400, "text":"Follow-up"
+    }));
+    assert!(prompt::freeze(&config, &mut body, &settings, "local", true).is_ok());
+    assert!(prompt::freeze(&config, &mut body, &settings, "cloud", true)
+        .unwrap_err()
+        .contains("仅支持本地"));
+    body["mode"] = "pick".into();
+    assert!(prompt::freeze(&config, &mut body, &settings, "local", true).is_err());
+    body["mode"] = "time".into();
+    body["messages"][1]["time"] = 1705270401_i64.into();
+    assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
+        .unwrap_err()
+        .contains("不在本次时间范围内"));
+    body["messages"][1]["time"] = 1705270400_i64.into();
+    body["messages"][1]["text"] = "中".repeat(5000).into();
+    assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
+        .unwrap_err()
+        .contains("超过本地单次总结范围"));
+}
+
+#[test]
+fn all_messages_uses_the_prompt_budget_for_more_than_400_messages() {
+    let config = fixture();
+    let settings = settings::LanguageSettings::default();
+    let mut body = input(&config, "summary");
+    body["mode"] = "time".into();
+    let time = body["messages"][0]["time"].as_i64().unwrap();
+    body["messages"] = json!((0..401)
+        .map(|i| json!({
+            "username": "group", "display": "Team", "sender": "Member",
+            "is_group": true, "time": time, "text": if i == 400 { "last" } else { "ok" }
+        }))
+        .collect::<Vec<_>>());
+    assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
+        .unwrap_err()
+        .contains("已超限"));
+
+    body["all_messages"] = true.into();
+    let (frozen, plan) = prompt::freeze(&config, &mut body, &settings, "local", true).unwrap();
+    let prompt =
+        prompt::local_prompt(&frozen, &body, &prompt::local_input(&body).unwrap()).unwrap();
+    assert_eq!(plan.unwrap().bytes, prompt.len());
+    let material: serde_json::Value = serde_json::from_str(prompt.lines().last().unwrap()).unwrap();
+    let rows = material["messages_by_date"][0]["messages"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), 401);
+    assert_eq!(rows[400][3], "last");
+    assert_eq!(material["speakers"], json!(["Member"]));
+
+    body["messages"][0]["text"] = "a".repeat(12000).into();
+    assert!(prompt::freeze(&config, &mut body, &settings, "local", true)
+        .unwrap_err()
+        .contains("超过本地单次总结范围"));
+}
+
+#[test]
+fn all_messages_accepts_multiple_budgeted_batches() {
+    let config = fixture();
+    let mut body = input(&config, "summary");
+    body["mode"] = "time".into();
+    body["all_messages"] = true.into();
+    let time = body["messages"][0]["time"].as_i64().unwrap();
+    body["messages"] = json!((0..60)
+        .map(|i| json!({
+            "username": "group", "display": "Team", "sender": "Member",
+            "time": time, "text": format!("{i}:{}", "中".repeat(300))
+        }))
+        .collect::<Vec<_>>());
+    let (snapshot, plan) = prompt::freeze(
+        &config,
+        &mut body,
+        &settings::LanguageSettings::default(),
+        "local",
+        true,
+    )
+    .unwrap();
+    let plan = plan.unwrap();
+    assert!(plan.ends.len() > 4);
+    let mut progress = super::batches::Progress::new(plan);
+    let budget = snapshot.scenario.budgets.local_cli.max_request_bytes;
+    let mut expected_index = 0;
+    let mut merged_intermediate = false;
+    let mut restored = false;
+    loop {
+        let step = progress.next(&snapshot, &body).unwrap();
+        assert!(step.prompt().len() <= budget);
+        let output = match &step {
+            super::batches::Step::Batch(prompt) => {
+                let material: serde_json::Value =
+                    serde_json::from_str(prompt.lines().last().unwrap()).unwrap();
+                for row in material["messages_by_date"][0]["messages"]
+                    .as_array()
+                    .unwrap()
+                {
+                    assert_eq!(
+                        row[3].as_str().unwrap().split(':').next().unwrap(),
+                        expected_index.to_string()
+                    );
+                    expected_index += 1;
+                }
+                "中".repeat(750)
+            }
+            super::batches::Step::Merge { .. } => {
+                merged_intermediate = true;
+                "已保留事件、决定和待办。".to_string()
+            }
+            super::batches::Step::Final(_) => "最终总结".to_string(),
+        };
+        if let Some(final_summary) = progress.accept(&snapshot, &body, step, output).unwrap() {
+            assert_eq!(final_summary, "最终总结");
+            break;
+        }
+        if !restored {
+            let persisted = serde_json::to_string(&progress).unwrap();
+            progress = serde_json::from_str(&persisted).unwrap();
+            assert_eq!(progress.counts().0, 1);
+            let next = progress.next(&snapshot, &body).unwrap();
+            assert!(progress
+                .accept(&snapshot, &body, next, "x".repeat(budget))
+                .is_err());
+            assert_eq!(
+                progress.counts().0,
+                1,
+                "A failed batch must stay available for retry"
+            );
+            restored = true;
+        }
+    }
+    assert!(merged_intermediate);
+    assert_eq!(expected_index, 60);
+}
+
+#[test]
+fn each_batch_also_respects_the_character_limit() {
+    let mut config = fixture();
+    for scenario in &mut config.scenarios {
+        scenario.budgets.local_cli.max_request_bytes = 256 * 1024;
+    }
+    let mut body = input(&config, "summary");
+    body["mode"] = "time".into();
+    body["all_messages"] = true.into();
+    let time = body["messages"][0]["time"].as_i64().unwrap();
+    body["messages"] = json!([
+        {"username": "group", "time": time, "text": "a".repeat(20_000)},
+        {"username": "group", "time": time, "text": "b".repeat(20_000)},
+        {"username": "group", "time": time, "text": "c"},
+    ]);
+    let (_, plan) = prompt::freeze(
+        &config,
+        &mut body,
+        &settings::LanguageSettings::default(),
+        "local",
+        true,
+    )
+    .unwrap();
+    assert_eq!(plan.unwrap().ends, [2, 3]);
 }
 
 #[test]
