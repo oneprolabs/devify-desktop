@@ -1,6 +1,6 @@
 [package]
 name = "wechat-devify-bridge"
-version = "0.1.36"
+version = "0.1.37"
 description = "Manually review and forward selected chat text to a self-hosted Devify inbox"
 authors = ["You"]
 edition = "2021"
