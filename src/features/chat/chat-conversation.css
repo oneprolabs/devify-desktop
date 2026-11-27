@@ -25,12 +25,12 @@
 .chat-workbench-source-icon { flex: none; display: grid; place-items: center; width: 26px; height: 26px; }
 .chat-workbench-source-icon img { width: 24px; height: 24px; object-fit: contain; }
 .chat-workbench-conversation-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 5px; margin: 0; color: #6c6c67; font-size: 12px; line-height: 1.5; }
-.chat-workbench-embedded .wxv-messages { padding: 8px 24px 32px; scrollbar-color: #d1d1cd #fff; }
+.chat-workbench-embedded .wxv-messages { padding: 8px max(20px, calc((100% - 744px) / 2)) 32px; scrollbar-color: #d1d1cd #fff; }
 .chat-workbench-embedded .wxv-msg,
 .chat-workbench-embedded .wxv-msg.self { grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 5px 8px; margin: 0 -8px; border-radius: 6px; }
 .chat-workbench-embedded .wxv-timeline-time { display: none; }
 .chat-workbench-embedded .wxv-avatar.sm { width: 30px; height: 30px; border-radius: 5px; font-size: 12px; }
-.chat-workbench-embedded .wxv-msg-body { width: fit-content; max-width: 76%; gap: 4px; }
+.chat-workbench-embedded .wxv-msg-body { width: fit-content; max-width: min(68ch, 76%); gap: 4px; }
 .chat-workbench-embedded .wxv-msg.self { grid-template-columns: minmax(0, 1fr) 30px; }
 .chat-workbench-embedded .wxv-msg.self .wxv-avatar { grid-column: 2; grid-row: 1; }
 .chat-workbench-embedded .wxv-msg.self .wxv-msg-body { grid-column: 1; grid-row: 1; }
@@ -67,8 +67,5 @@
   .chat-workbench-head-tools { flex: 1; }
   .chat-workbench-head-search { flex: 1; width: 100%; }
   .chat-workbench-tabs button { padding: 5px 10px; }
-  .chat-workbench-embedded .wxv-messages { padding: 8px 16px 32px; }
   .chat-workbench-embedded .wxv-msg-body { max-width: 90%; }
-  .chat-workbench-embedded .wxv-chat-foot { padding: 8px 16px; }
-  .chat-workbench-embedded .wxv-chat-foot.has-selection { padding: 12px 16px; }
 }
