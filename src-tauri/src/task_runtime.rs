@@ -646,10 +646,10 @@ async fn run_source_tick(
             .find(|a| a.id == *account)
             .ok_or_else(|| scan_error(WECHAT_ACCOUNT_UNAVAILABLE.into()))?;
         let store = keys::load(&keys::store_path(&data));
-        let env = connector_environment(app);
+        let app = app.clone();
         let copy = data.clone();
         let outcomes = tauri::async_runtime::spawn_blocking(move || {
-            read_new_wechat_data(&copy, &env, &local, &store, true, true)
+            read_new_wechat_data(&app, &copy, &local, &store, true, true)
         })
         .await
         .map_err(|error| scan_error(error.to_string()))?

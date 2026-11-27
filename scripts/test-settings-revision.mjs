@@ -247,7 +247,7 @@ assert.ok(elements(tree).some(node => node.props?.role === 'alert'));
 // Exercise the actual WeChat callbacks with controlled save completion.
 const wxSource = fs.readFileSync(new URL('../src/features/chat/local-reader/WeChatLocal.tsx', import.meta.url), 'utf8');
 const start = wxSource.indexOf('  const rememberAccount = useCallback(');
-const end = wxSource.indexOf('  /** Fetch the avatars', start);
+const end = wxSource.indexOf('  const ensureAvatars', start);
 const switchStart = wxSource.indexOf('  const switchAccount = useCallback(');
 const switchEnd = wxSource.indexOf('  const openSession', switchStart);
 assert.ok(start >= 0 && end > start && switchStart >= 0 && switchEnd > switchStart);
@@ -258,7 +258,7 @@ wxContext.sessionRequest = { current: 42 };
 wxContext.activeRef = { current: 'open-chat' };
 wxContext.resetMessageRefresh = () => { wxContext.messageRefreshReset = true; };
 wxContext.setBusy = update => { wxContext.busy = update(wxContext.busy); };
-for (const name of ['setAccountSwitching','setError','setAccountId','setSessions','setSessionsLoaded','setActive','setMessages','setSelectedMessages','setSelectionAnchor','setWorkGroups','setWorkInsights','setAvatars']) wxContext[name] = value => { wxContext[name + 'Value'] = value; };
+for (const name of ['setAccountSwitching','setError','setAccountId','setSessions','setSessionsLoaded','setActive','setMessages','setSelectedMessages','setSelectionAnchor','setWorkGroups','setWorkInsights']) wxContext[name] = value => { wxContext[name + 'Value'] = value; };
 wxContext.resetAccountResult = () => { wxContext.connectionResultsReset = true; };
 wxContext.loadSessions = async () => [];
 wxContext.requireSettingsRevision = requireSettingsRevision;

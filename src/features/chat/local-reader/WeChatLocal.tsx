@@ -167,6 +167,7 @@ export default function WeChatLocal({
   onClearSearch,
   sessionRevision = 0,
   messageRevision = 0,
+  avatarRevision = 0,
   refreshOnWake = false,
   accountId: pinnedAccountId,
   accountDisplay,
@@ -195,6 +196,7 @@ export default function WeChatLocal({
   onClearSearch?: () => void;
   sessionRevision?: number;
   messageRevision?: number;
+  avatarRevision?: number;
   refreshOnWake?: boolean;
   /** The account the embedding page already resolved (WeChat or WhatsApp). */
   accountId?: string | null;
@@ -240,6 +242,12 @@ export default function WeChatLocal({
   /** Real avatars by WeChat username; a missing entry keeps the letter avatar. */
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const avatarAsked = useRef<Set<string>>(new Set());
+  useLayoutEffect(() => {
+    setAvatars({});
+  }, [accountId]);
+  useLayoutEffect(() => () => {
+    avatarAsked.current = new Set();
+  }, [accountId, avatarRevision]);
   const [hasMore, setHasMore] = useState(false);
 
   const [query, setQuery] = useState('');
@@ -400,6 +408,8 @@ export default function WeChatLocal({
   /** Drop every view derived from the decrypted snapshot (used when that snapshot is deleted). */
   const resetDecryptedView = useCallback(() => {
     sessionRequest.current++;
+    avatarAsked.current = new Set();
+    setAvatars({});
     activeRef.current = null;
     resetMessageRefresh();
     setBusy(current => current === 'messages' ? null : current);
@@ -555,21 +565,22 @@ export default function WeChatLocal({
     }
   }, []);
 
-  /** Fetch the avatars we do not have yet, one batch per call, and never ask twice. */
+  /** Fetch each username once per account and avatar snapshot. */
   const ensureAvatars = useCallback((id: string, names: Array<string | null | undefined>) => {
+    const asked = avatarAsked.current;
     const missing = [...new Set(names.filter((name): name is string => Boolean(name)))].filter(
-      name => !avatarAsked.current.has(name),
+      name => !asked.has(name),
     );
     if (!missing.length) return;
-    missing.forEach(name => avatarAsked.current.add(name));
-    for (let index = 0; index < missing.length; index += 120) {
-      const batch = missing.slice(index, index + 120);
+    missing.forEach(name => asked.add(name));
+    for (let index = 0; index < missing.length; index += 100) {
+      const batch = missing.slice(index, index + 100);
       void invoke<Array<{ username: string; data_url: string }>>('wechat_avatars', {
         accountId: id,
         usernames: batch,
       })
         .then(rows => {
-          if (!rows.length) return;
+          if (asked !== avatarAsked.current || !rows.length) return;
           setAvatars(previous => {
             const next = { ...previous };
             rows.forEach(row => {
@@ -651,14 +662,9 @@ export default function WeChatLocal({
 
   /** Sessions and message senders are the only things that own an avatar on screen. */
   useEffect(() => {
-    if (!accountId || !sessions.length) return;
-    ensureAvatars(accountId, sessions.map(session => session.username));
-  }, [accountId, sessions, ensureAvatars]);
-
-  useEffect(() => {
-    if (!accountId || !messages.length) return;
-    ensureAvatars(accountId, messages.map(message => message.sender));
-  }, [accountId, messages, ensureAvatars]);
+    if (!accountId) return;
+    ensureAvatars(accountId, [...sessions.map(session => session.username), ...messages.map(message => message.sender)]);
+  }, [accountId, sessions, messages, avatarRevision, ensureAvatars]);
 
   const switchAccount = useCallback(
     async (nextId: string) => {
@@ -682,8 +688,7 @@ export default function WeChatLocal({
         setSelectionAnchor(null);
         setWorkGroups([]);
         setWorkInsights(null);
-        avatarAsked.current.clear();
-        setAvatars({});
+        avatarAsked.current = new Set();
         await loadSessions(nextId);
       } catch (reason) {
         setError(tf("账号未切换：{0}", settingsSaveError(reason)));
