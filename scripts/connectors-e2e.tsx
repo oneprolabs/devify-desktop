@@ -40,6 +40,7 @@ const state = {
  chatPageError:'', chatPageAccount:'', chatBadgeDelay:0,
  chatSessionPreviews:{} as Record<string,{preview:string|null;last_time:number}>,
  chatMessageOverrides:{} as Record<string,any[]>,
+ avatarColor:'gray', holdAvatarRead:false, avatarReadResolvers:[] as Array<() => void>,
  chatMessagesError:'', chatOlderPaused:false, chatOlderResolvers:[] as Array<()=>void>,
  chatLatestPaused:false, chatLatestResolvers:[] as Array<()=>void>,
  wechatSyncOutcomes:null as Array<{rel:string;status:string;error:string|null}> | null,
@@ -79,6 +80,7 @@ function emitFixtureEvent<T>(event: string, payload: T) {
 Object.assign(window, {
   __TASK_EMIT__: () => emitFixtureEvent('task-runtime', state.runtime),
   __WAKE_CHAT_EMIT__: (payload: {account_id: string; usernames: string[]}) => emitFixtureEvent('wake-chat-messages-ready', payload),
+  __AVATAR_REFRESH_EMIT__: (account_id: string) => emitFixtureEvent('wechat-avatars-updated', {account_id}),
 });
 Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},__TAURI_INTERNALS__:{
  metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},
@@ -326,7 +328,16 @@ Object.assign(window,{__TAURI_EVENT_PLUGIN_INTERNALS__:{unregisterListener(){}},
     if(state.chatBadgeDelay)await new Promise(resolve=>setTimeout(resolve,state.chatBadgeDelay));
     return query.has('chat')?args.usernames.map((username:string,index:number)=>({username,state:index===0?'local':index===1?'pending':'synced',new_messages:index===1?3:0})):[];
    }
-   case 'wechat_avatars':case 'devify_my_spaces':case 'summary_history_list':return [];
+   case 'wechat_avatars': {
+    if (!query.has('avatar-refresh') || args.accountId !== wx || !state.avatarColor) return [];
+    const data_url = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'><rect width='8' height='8' fill='${state.avatarColor}'/></svg>`;
+    if (state.holdAvatarRead && (args.usernames.includes('sender-101') ||
+     (args.usernames.length === 1 && args.usernames[0] === `${wx}-chat-0`))) {
+     await new Promise<void>(resolve => state.avatarReadResolvers.push(resolve));
+    }
+    return args.usernames.slice(0,100).map((username:string) => ({username,data_url}));
+   }
+   case 'devify_my_spaces':case 'summary_history_list':return [];
    case 'agent_current': {
     const id=state.settings.agent.provider_id||state.agents[0]?.id||'';
     const configured=state.settings.agent.enabled??Boolean(state.settings.agent.provider_id);
@@ -348,6 +359,12 @@ if (query.has('analysis-completion')) {
 if(query.has('chat')) {
  state.settings.devify.active_space_id='e2e-space';
  state.settings.chat.allowed_usernames={[wx]:catalog(wx).map(s=>s.username),[wa]:catalog(wa).map(s=>s.username)};
+}
+if (query.has('avatar-refresh')) {
+ state.chatMessageOverrides[wx] = Array.from({length:101}, (_, index) => {
+  const local_id = 101 - index;
+  return {local_id,source_shard:'synthetic',time:1795000000 + local_id,sender:`sender-${local_id}`,kind:1,text:`头像测试 ${local_id}`,is_self:false};
+ });
 }
 if(localSnapshot) {
  state.accounts=localSnapshot.accounts;

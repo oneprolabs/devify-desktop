@@ -5598,15 +5598,25 @@ async fn connector_detect(app: AppHandle, kind: String) -> Result<connectors::Co
 /// execute or modify WeChat. Signature validation remains enforced by the in-app capture path,
 /// which temporarily replaces the installed bundle.
 fn read_new_wechat_data(
+    app: &AppHandle,
     data: &Path,
-    env: &connectors::Environment,
     account: &discover::Account,
     store: &KeyStore,
     apply_wal: bool,
     only_chat: bool,
 ) -> Result<Vec<DecryptOutcome>, String> {
-    let _ = env;
-    Ok(decrypt::decrypt_account(data, account, store, apply_wal, only_chat))
+    let outcomes = decrypt::decrypt_account(data, account, store, apply_wal, only_chat);
+    if outcomes
+        .iter()
+        .any(|outcome| outcome.rel == "head_image/head_image.db" && outcome.status == "ok")
+    {
+        let _ = app.emit_to(
+            "main",
+            "wechat-avatars-updated",
+            serde_json::json!({ "account_id": account.id }),
+        );
+    }
+    Ok(outcomes)
 }
 
 fn capture_backup_root(app: &AppHandle) -> PathBuf {
@@ -6325,8 +6335,8 @@ async fn wechat_decrypt(
         .ok_or_else(|| format!("找不到账号 {account_id}"))?;
     let store = keys::load(&keys::store_path(&app_data(&app)));
     read_new_wechat_data(
+        &app,
         &app_data(&app),
-        &connector_environment(&app),
         &account,
         &store,
         apply_wal,
@@ -6368,8 +6378,8 @@ async fn wechat_sync(app: AppHandle, account_id: String) -> Result<WechatSyncRes
             (same_owner && source.wechat_key_failure.is_some()).then_some(owner)
         });
         let outcomes = read_new_wechat_data(
+            &app,
             &data,
-            &connector_environment(&app),
             &account,
             &store,
             true,

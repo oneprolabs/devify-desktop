@@ -10,6 +10,7 @@ import { ChatEventsPane, type EventItem } from './ChatEventsPane';
 import { SidebarResizeHandle } from '../../shared/ui/SidebarResizeHandle';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { desktopInvoke as invoke } from '../../shared/api/desktopInvoke';
 import { EvidenceDrawer, type EvidenceTarget } from '../../shared/ui/EvidenceDrawer';
 import WeChatLocal from './local-reader/WeChatLocal';
@@ -288,6 +289,19 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
   const refreshAccountId = refreshAccount?.id;
   const refreshIsWechat = Boolean(refreshAccount && (refreshAccount.source ?? 'wechat') === 'wechat');
   const refreshIssue = refreshError?.accountId === refreshAccountId ? refreshError?.issue : undefined;
+  const [avatarRevisions, setAvatarRevisions] = useState<Partial<Record<string, number>>>({});
+  useEffect(() => {
+    if (!isTauri()) return;
+    let active = true;
+    let unsubscribe: (() => void) | undefined;
+    void listen<{ account_id: string }>('wechat-avatars-updated', ({ payload: { account_id } }) => {
+      if (active) setAvatarRevisions(current => ({ ...current, [account_id]: (current[account_id] ?? 0) + 1 }));
+    }, { target: 'main' }).then(unlisten => {
+      if (active) unsubscribe = unlisten;
+      else unlisten();
+    }).catch(() => undefined);
+    return () => { active = false; unsubscribe?.(); };
+  }, []);
   const refreshScope = useMemo(() => ({}), [refreshAccountId, visible, runtime.context, configuredKey]);
   const activeRefreshScope = useRef<object | null>(null);
   const appliedSessionSnapshot = useRef<string>();
@@ -651,7 +665,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
                 {showCommunity && <div className="chat-workbench-community-label">{community.name} {t("· 社区")}</div>}
                 <button type="button" data-session-key={key} className={`chat-workbench-session${selectedSession?.accountId === session.accountId && selectedSession?.username === session.username ? ' selected' : ''}`} onClick={() => { setRawFocus(null); setSelectedSession(session); }}>
                   <span className="chat-workbench-avatar">
-                    <LocalChatAvatar key={sessionKey(session.accountId, session.username)} accountId={session.accountId} username={session.username} label={session.display} />
+                    <LocalChatAvatar key={key} accountId={session.accountId} username={session.username} label={session.display} avatarRevision={avatarRevisions[session.accountId] ?? 0} />
                     <i className="chat-workbench-avatar-badge" aria-hidden="true"><img src={session.source === 'whatsapp' ? whatsappIcon : wechatIcon} alt="" /></i>
                   </span>
                   <span className="chat-workbench-session-body">
@@ -746,6 +760,7 @@ export function ChatWorkbench({ visible = true, startFirstBackup, onFirstBackupS
           accountDisplay={connectedAccounts.find(account => account.id === accountId)?.display}
           sessionRevision={sessionRevision}
           messageRevision={messageRevisions[accountId] ?? 0}
+          avatarRevision={avatarRevisions[accountId] ?? 0}
           refreshOnWake={visible && view === 'raw'}
           focusConversation={rawFocus?.conversationId ?? selectedSession?.username}
           focusMessageId={rawFocus?.messageId}

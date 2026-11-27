@@ -1099,6 +1099,66 @@ export async function runWakeChatRefreshUiE2E(task, base, pageLabel = 'p1') {
   return 'PASS wake chat refresh: scoped to the open conversation, preserves search and scroll, reads local messages only';
 }
 
+export async function runWechatAvatarRefreshUiE2E(task, base, pageLabel = 'p1') {
+  const page = task.page(pageLabel);
+  await page.goto(`${base}/scripts/connectors-e2e.html?chat&avatar-refresh&controlled-chat-poll`);
+  const sidebar = '.chat-workbench-session.selected .chat-workbench-avatar > span > img';
+  const newest = '.wxv-messages #msg-101 .wxv-avatar-img';
+  const oldest = '.wxv-messages #msg-1 .wxv-avatar-img';
+  const shows = (selectors, color) => page.waitForFunction(({selectors, color}) => selectors.every(selector =>
+    document.querySelector(selector)?.getAttribute('src')?.includes(`fill='${color}'`)), {selectors, color}, {timeout: 5000});
+  await shows([sidebar, newest], 'gray');
+  await page.click('.wxv-more');
+  await shows([oldest], 'gray');
+  const emit = (id, color, hold = false) => page.evaluate(({id, color, hold}) => {
+    window.__E2E__.avatarColor = color;
+    window.__E2E__.holdAvatarRead = hold;
+    window.__AVATAR_REFRESH_EMIT__(id);
+  }, {id, color, hold});
+  const reads = () => page.evaluate(() => window.__E2E__.calls.length);
+  const requestsSince = offset => page.evaluate(offset => window.__E2E__.calls.slice(offset)
+    .filter(call => ['wechat_avatars', 'chat_sessions', 'wechat_messages'].includes(call.command)), offset);
+  const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))));
+  const id = 'e2e-wechat', start = await reads();
+  await emit('unrelated-account', 'red');
+  await settle();
+  assert.deepEqual(await requestsSince(start), [], 'another account cannot invalidate these avatars');
+
+  await emit(id, 'green');
+  await shows([sidebar, newest, oldest], 'green');
+  assert.ok((await requestsSince(start)).every(call => call.command === 'wechat_avatars' &&
+    call.args.accountId === id && call.args.usernames.length <= 100), 'refresh reads only bounded avatar batches');
+
+  const missing = await reads();
+  await emit(id, '');
+  await page.waitForFunction(offset => window.__E2E__.calls.slice(offset).some(call =>
+    call.command === 'wechat_avatars' && call.args.usernames.includes('sender-101')), missing);
+  await settle();
+  await shows([sidebar, newest, oldest], 'green');
+
+  const delayedReads = () => page.waitForFunction(() => window.__E2E__.avatarReadResolvers.length === 2);
+  const releaseReads = () => page.evaluate(() => window.__E2E__.avatarReadResolvers.splice(0).forEach(resolve => resolve()));
+  await emit(id, 'orange', true);
+  await delayedReads();
+  await emit(id, 'blue');
+  await shows([sidebar, newest, oldest], 'blue');
+  await releaseReads();
+  await settle();
+  await shows([sidebar, newest, oldest], 'blue');
+
+  await emit(id, 'purple', true);
+  await delayedReads();
+  await page.click('[role="tab"][data-platform="whatsapp"]', {label:'切换到 WhatsApp 会话'});
+  await page.waitForFunction(() => document.querySelector('.wxv-messages')?.textContent.includes('WhatsApp ·'));
+  await releaseReads();
+  await settle();
+  assert.equal(await page.evaluate(([sidebar, message]) =>
+    Boolean(document.querySelector(`${sidebar}, ${message} .wxv-avatar-img`)), [sidebar, '.wxv-messages']), false,
+  'pending WeChat images cannot leak into another account');
+  assert.deepEqual(await page.evaluate(() => window.__E2E__.errors), []);
+  return 'PASS WeChat avatars: sidebar and open messages refresh without reloading chat, retain missing images, and ignore stale reads';
+}
+
 export async function runChatTodoCountUiE2E(task, base, pageLabel = 'p1') {
   const page = task.page(pageLabel);
   const tab = '.chat-workbench-tabs [role="tab"]:nth-child(2)';

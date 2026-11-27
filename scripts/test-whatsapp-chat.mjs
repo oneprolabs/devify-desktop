@@ -127,6 +127,7 @@ const mockedRequire = id => {
   if (id === 'react') return react;
   if (id === 'react/jsx-runtime') return jsx;
   if (id === '@tauri-apps/api/core') return { isTauri: () => true };
+  if (id === '@tauri-apps/api/event') return { listen: async () => () => {} };
   if (id === '../../shared/api/desktopInvoke') return { desktopInvoke: invoke, requestFeedback() {} };
   if (id === './ChatPlatformBar') return { ChatPlatformBar: PlatformBar };
   if (id === '../connectors/wechat/refresh') return { syncWechatForRefresh: async () => ({ revision: syncRevision }) };
